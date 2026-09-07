@@ -3055,6 +3055,22 @@ impl Term {
     /// soft wraps reverse (the previous row carries `WRAPLINE`); a hard CR/LF
     /// line does not. BS only (not cursor-left), matching xterm.js (#80).
     fn backspace(&mut self) {
+        // A parked cursor is logically one past the column it sits on, so under `?45`
+        // the first step back lands *on* that column — which is where it already is.
+        // The park is therefore **spent** as the first unit of the move rather than
+        // cleared alongside it: clearing and decrementing discards the logical `+1` and
+        // collapses the parked and unparked states onto the same landing (#80).
+        //
+        // The gate is the mode, not autowrap, which is what xterm gates on:
+        // `if ((rev || rev2) && screen->do_wrap) { --count; } else { --col; }`
+        // (`cursor.c:154-157`). ghostty does the same under a comment saying it is
+        // *"to match xterm"* (`Terminal.zig:1773-1778`), and xterm.js reaches the same
+        // landing by letting `x == cols` stand in this branch. Reachable with autowrap
+        // off as well, since #869 arms the park there too.
+        if self.reverse_wraparound && self.cursor.pending_wrap {
+            self.cursor.pending_wrap = false;
+            return;
+        }
         self.cursor.pending_wrap = false;
         if self.cursor.col > 0 {
             self.cursor.col -= 1;
