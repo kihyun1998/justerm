@@ -2309,6 +2309,39 @@ byte classes, not two: `BEL`, the cancel pair `CAN`/`SUB`, and a bare `ESC` open
 bell-terminated, so a cancelled query still reaches the consumer and is answered ST — which is what
 xterm hardcodes for that shape (`charproc.c:8964`).
 
+#### `OSC 4`'s empty *spec* splits 1–1, and xterm's trigger is one justerm cannot observe
+
+Added 2026-09-08 while implementing #834, and read out of the trees rather than out of the issue —
+the issue's own citation was wrong, which is the reason this row exists. Given
+`OSC 4 ; 1 ; ; 2 ; #fff`, the references answer three different ways:
+
+| Reference | Result | Site |
+|---|---|---|
+| xterm | **nothing at all** — the empty name fails to allocate and the pair loop aborts, discarding the well-formed pair too | `misc.c:3013-3016` |
+| xterm.js | **index 2 only** — the pair is skipped and the loop keeps shifting | `src/common/InputHandler.ts:3073`, loop at `:3064` |
+| ghostty | **index 1 set to the string `2`** — the empty field is never seen, so the pairing re-aligns | `src/terminal/osc/parsers/color.zig:130` |
+| justerm | **index 2 only** (#834) | `term.rs`, the `b"4"` arm |
+
+⚠ **`misc.c:3003` is a different guard, and the mis-citation survives a grep.** That line is also a
+`break`, also inside the same loop, and its comment reads *"quit on any error"* — but it is the
+**index-range** check (`color < 0 || color >= last`). The colour-failure abort is ten lines further
+down and its comment reads *"stop on any error"*. The full chain, verified at the pinned SHA:
+`AllocateAnsiColor` → `xtermAllocColor` fails on the empty name → `result = -1` (`misc.c:2918`) →
+`ChangeOneAnsiColor` returns negative (`:3013`) → `if (code < 0) … break` (`:3014-3016`). Anyone
+quoting `:3003` for this behaviour has landed on the neighbour.
+
+**Why justerm follows xterm.js rather than the tie-breaker.** ADR-0004 does not reach this: xterm's
+trigger is *a colour that failed to parse*, and this engine never parses a colour, so the only
+condition available to it — *the field is empty* — is strictly narrower. Choosing the abort would be
+transplanting xterm's shape onto a different trigger and would borrow none of ADR-0004's authority.
+The decision and its five other grounds are recorded on #834.
+
+**Ghostty's third answer is accidental in the same way its `OSC 10` divergence is**, and by the same
+mechanism: `tokenizeScalar` never yields an empty token. Its pair loop *does* mean to follow xterm —
+`// Note: in ANY error scenario below we return the accumulated results. This matches the xterm
+behavior (see misc.c ChangeAnsiColorRequest)` (`color.zig:165-166`) — so reading the comment gives
+xterm's answer while running the code gives neither reference's.
+
 #### A routing fact: alacritty's OSC dispatch is not in the alacritty tree
 
 `alacritty_terminal` delegates its whole ANSI layer to the **`vte` crate**

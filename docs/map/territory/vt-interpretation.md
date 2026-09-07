@@ -77,7 +77,10 @@ for a terminal engine, that list is half the specification.
   `:3687` — its *implementation*; `ctlseqs.txt:2082` documents only the stack); for a **hyperlink**
   (OSC 8) an empty URI *closes* the current link; for a **title** (OSC 0/2) an empty string *is* the
   new title. The neighbour that looks identical is not: xterm's OSC 4 path has no skip at all — an
-  unparseable name **aborts the remaining pairs** (`misc.c:2993-3003`, *"quit on any error"*).
+  unparseable name **aborts the remaining pairs** (`misc.c:3013-3016`, *"stop on any error"*, in the
+  loop opening at `:2993`). **Do not cite `:3003` for this**, as this entry did until #834 read the
+  tree: that line is another `break` in the same loop, carrying the near-identical comment *"quit on
+  any error"*, and it guards the **index range** rather than the colour.
 
   *And `OSC 52` is a fifth answer, added by #828*: an empty **target** field is neither "skip" nor
   "unrecognised" — it *names the clipboard*, and it is the only form real applications emit (tmux
@@ -85,8 +88,18 @@ for a terminal engine, that list is half the specification.
   empty field means skip for a colour slot, close for a hyperlink, the new value for a title,
   reset-everything for `OSC 104`, and **a default target** for a clipboard request. Nothing
   generalises across the five, which is the entry's point; what generalises is that each one has a
-  deliberate rule somewhere and none of them is the obvious one. The `OSC 4` arm is still undecided
-  (#834). Note the shape #828 added on the *payload* side too, since it looks like the same question
+  deliberate rule somewhere and none of them is the obvious one. **`OSC 4` is the sixth (#834): an
+  empty *spec* names no colour, so its own pair is dropped and the sequence continues** —
+  `OSC 4 ; 1 ; ; 2 ; #fff` relays index 2 alone. That is xterm.js's answer
+  (`InputHandler.ts:3073`) rather than the tie-breaker's, and **ADR-0004 does not reach the choice**:
+  xterm aborts on *a colour that failed to parse*, a condition a theme-agnostic engine structurally
+  cannot observe, so the only available condition — *the field is empty* — is strictly narrower and
+  "follow xterm" is not a well-defined instruction. Choosing the abort would apply xterm's shape to a
+  different trigger and borrow none of its authority. The other five grounds, including the one that
+  decided it — reading a blank field as evidence that well-formed pairs are corrupt is an inference
+  about *application intent*, which ADR-0017 puts on the consumer's side — are on #834; the 1–1 split
+  is cached in [`reference-facts.md`](../../agents/reference-facts.md). Note the shape #828 added on
+  the *payload* side too, since it looks like the same question
   and is not: a payload **field that is absent** (`OSC 52 ; c`) and an **empty payload**
   (`OSC 52 ; c ;`) are different sequences — the second is a store of the empty string, which is how
   the sequence clears a selection.
