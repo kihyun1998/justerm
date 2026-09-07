@@ -2839,3 +2839,48 @@ deferred-wrap flag could not express. #869 fixed the flag's arm, the anchor read
 and removed, and the helper is now one mechanism outright: read an unconditionally-armed park, else
 step back one. **The half that was borrowed from xterm was borrowed to work around a defect, and it
 left when the defect did** — which is the more useful thing to know than the composite ever was.
+
+## Reverse wraparound, and the mode name that hides an autowrap requirement (#80, verified 2026-09-07)
+
+The rule: with reverse wrap on, a **backspace at a parked cursor spends the deferred wrap as the
+first unit of the move** and therefore does not change the column. Without it a parked and an
+unparked backspace land in the same place — which is the defect's sharp form, not "one column off".
+
+| Reference | Where | Gate |
+|---|---|---|
+| xterm | `cursor.c:153` — `if ((rev \|\| rev2) && screen->do_wrap) { --count; } else { --col; }` @ `6380a3e` | **`?45` AND `?7h`** — see below |
+| ghostty | `Terminal.zig:1774-1777`, under *"to match xterm"* @ `e6e26e1` | `?45` AND `?7h`, gated earlier at `:1756` |
+| xterm.js | `InputHandler.ts:806` — `_restrictCursor(cols)` lets `x == cols` stand, then decrements @ `699f553` | reachable only with `?7h`, structurally |
+| alacritty | no `?45` at all; `term/mod.rs:1398-1408` always clears and decrements @ `852e971` | n/a |
+
+⚠⚠ **`rev` is not the mode flag, and reading the conditional alone gets this exactly backwards.**
+Four lines above the gate, `cursor.c:123-127`:
+
+```c
+#define WRAP_MASK (REVERSEWRAP | WRAPAROUND)
+int rev  = (((xw->flags & WRAP_MASK)  == WRAP_MASK)  != 0);
+```
+
+So `rev` means *reverse-wrap **and** autowrap*, and the whole spend branch is **dead under `?7l`** —
+as is the loop's other reverse-wrap arm at `:165`. ghostty reaches the same answer more plainly
+(`if (!self.modes.get(.wraparound)) break :wrap_mode .none;`), and xterm.js cannot reach the state
+because its `?7l` print pins `x = cols - 1` (`:612`). **Under `?7l` all three spend the park by
+*moving*.**
+
+This row exists because #80's first attempt gated the spend on the mode alone and shipped a test and
+a map note asserting that xterm *"does not consult `WRAPAROUND`"*. It does. Both review passes caught
+it independently, and the citation that had been used to authorise the unconditional gate is the exact
+line that refutes it. The file's own rule at the tab section — *"read the mechanism, not the name"* —
+is what a row here would have enforced, and there was no row.
+
+**Consequence for the park #869 arms under `?7l`:** it is not this rule's to consume. Two ways of
+arriving at it, both measured and both answered by moving — armed under `?7l`, and armed under `?7h`
+then carried across a later `?7l`.
+
+**BS versus CUB is 2-2, and this engine follows xterm.js by mechanism.** xterm routes `CASE_BS`
+(`charproc.c:3703`) and `CASE_CUB` (`:3933`) through the same `CursorBack`, so the spend applies to
+cursor-left and to its count; ghostty likewise (`Terminal.zig:1696`, `backspace` → `cursorLeft(1)`).
+xterm.js's `backspace` calls `_restrictCursor(cols)` so the park survives into the decrement, while
+`cursorBackward` clamps to `cols - 1` first (`:889-890`, `:919`) and never spends. justerm spends on
+BS only. **`?1045` (`rev2`) carries the same autowrap requirement** (`cursor.c:124`, `:128`) and
+differs only in the *walk*; this engine models no `?1045`, so it changes nothing here.

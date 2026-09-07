@@ -37,8 +37,16 @@ Read out of the source; there is no record to read instead.
   transparent to the shell underneath it.
 - **Origin mode (DECOM) makes addressing relative** to the scroll region's top margin, and clamps to
   it — so the same escape sequence means different absolute rows depending on a mode set earlier.
-- Reverse wraparound (DEC ?45) lets a **backspace** at column 0 of a soft-wrapped row move back to the
-  end of the previous row — BS only, soft wraps only.
+- Reverse wraparound (DEC ?45) does **two** things to a backspace, and the second is easy to miss:
+  at column 0 of a soft-wrapped row it moves back to the end of the previous row (BS only, soft wraps
+  only), and at a **parked** cursor it spends the deferred wrap as the first unit of the move, so the
+  cursor does not move at all (#80). The second is gated on `?45` **and** `?7h`, and the trap is that
+  xterm's spend site does not look like it: `cursor.c:153` reads `(rev || rev2) && screen->do_wrap`,
+  but `rev` is `((flags & WRAP_MASK) == WRAP_MASK)` with `WRAP_MASK (REVERSEWRAP | WRAPAROUND)`
+  (`:123-127`) — the mode name hides an autowrap requirement. ghostty gates earlier and plainly
+  (`Terminal.zig:1756`). Under `?7l` all three references spend the park by *moving*, so the park
+  #869 arms there is not this rule's to consume. Without the spend a parked and an unparked backspace
+  land in the same place, which is the sharper statement of the defect than "one column off".
 
 ## Code
 

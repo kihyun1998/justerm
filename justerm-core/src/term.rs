@@ -3055,6 +3055,30 @@ impl Term {
     /// soft wraps reverse (the previous row carries `WRAPLINE`); a hard CR/LF
     /// line does not. BS only (not cursor-left), matching xterm.js (#80).
     fn backspace(&mut self) {
+        // A parked cursor is logically one past the column it sits on, so under `?45`
+        // the first step back lands *on* that column — which is where it already is.
+        // The park is therefore **spent** as the first unit of the move rather than
+        // cleared alongside it: clearing and decrementing discards the logical `+1` and
+        // collapses the parked and unparked states onto the same landing (#80).
+        //
+        // **The gate needs autowrap as well as the mode**, and reading only the
+        // conditional at xterm's spend site says otherwise — which is how a first
+        // version of this got it backwards. `cursor.c:153` reads
+        // `if ((rev || rev2) && screen->do_wrap) { --count; } else { --col; }`, but
+        // `rev` is not the mode flag: `:123-127` define
+        // `WRAP_MASK (REVERSEWRAP | WRAPAROUND)` and `rev = ((flags & WRAP_MASK) ==
+        // WRAP_MASK)`, so `rev` means *`?45` **and** `?7h`* and the whole branch is dead
+        // under `?7l`. ghostty gates the same way and earlier —
+        // `if (!self.modes.get(.wraparound)) break :wrap_mode .none;`
+        // (`Terminal.zig:1756`), returning through the plain decrement at `:1766-1769`
+        // before it can reach the spend at `:1774`. xterm.js never reaches the state at
+        // all, since its `?7l` print pins `x = cols - 1` (`InputHandler.ts:612`). So a
+        // park taken under `?7l` is **spent by moving**, 3-0, and the park #869 arms
+        // there is not this rule's to consume.
+        if self.reverse_wraparound && self.autowrap && self.cursor.pending_wrap {
+            self.cursor.pending_wrap = false;
+            return;
+        }
         self.cursor.pending_wrap = false;
         if self.cursor.col > 0 {
             self.cursor.col -= 1;
