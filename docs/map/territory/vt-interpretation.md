@@ -77,29 +77,40 @@ for a terminal engine, that list is half the specification.
   `:3687` — its *implementation*; `ctlseqs.txt:2082` documents only the stack); for a **hyperlink**
   (OSC 8) an empty URI *closes* the current link; for a **title** (OSC 0/2) an empty string *is* the
   new title. The neighbour that looks identical is not: xterm's OSC 4 path has no skip at all — an
-  unparseable name **aborts the remaining pairs** (`misc.c:3013-3016`, *"stop on any error"*, in the
-  loop opening at `:2993`). **Do not cite `:3003` for this**, as this entry did until #834 read the
-  tree: that line is another `break` in the same loop, carrying the near-identical comment *"quit on
-  any error"*, and it guards the **index range** rather than the colour.
+  empty or unparseable name **aborts the remaining pairs** (`misc.c:3013-3016`, *"stop on any
+  error"*, in the loop opening at `:2993`). **Do not cite `:3003` for this**, as this entry did until
+  #834 read the tree: that line is another `break` in the same loop, carrying the near-identical
+  comment *"quit on any error"*, and it guards the **index range** rather than the colour. And the
+  abort's trigger for a blank field is `strlen(spec) == 0` — checked with no parser at `:3105-3107`,
+  with `XParseColor` in the `else if` at `:3111` and never reached — which is exactly the observation
+  a theme-agnostic engine *can* make. Rows in
+  [`reference-facts.md`](../../agents/reference-facts.md).
 
   *And `OSC 52` is a fifth answer, added by #828*: an empty **target** field is neither "skip" nor
   "unrecognised" — it *names the clipboard*, and it is the only form real applications emit (tmux
-  3.2a, captured). That makes the family table complete on the axis rather than merely longer: an
-  empty field means skip for a colour slot, close for a hyperlink, the new value for a title,
-  reset-everything for `OSC 104`, and **a default target** for a clipboard request. Nothing
-  generalises across the five, which is the entry's point; what generalises is that each one has a
-  deliberate rule somewhere and none of them is the obvious one. **`OSC 4` is the sixth (#834): an
-  empty *spec* names no colour, so its own pair is dropped and the sequence continues** —
-  `OSC 4 ; 1 ; ; 2 ; #fff` relays index 2 alone. That is xterm.js's answer
-  (`InputHandler.ts:3073`) rather than the tie-breaker's, and **ADR-0004 does not reach the choice**:
-  xterm aborts on *a colour that failed to parse*, a condition a theme-agnostic engine structurally
-  cannot observe, so the only available condition — *the field is empty* — is strictly narrower and
-  "follow xterm" is not a well-defined instruction. Choosing the abort would apply xterm's shape to a
-  different trigger and borrow none of its authority. The other five grounds, including the one that
-  decided it — reading a blank field as evidence that well-formed pairs are corrupt is an inference
-  about *application intent*, which ADR-0017 puts on the consumer's side — are on #834; the 1–1 split
-  is cached in [`reference-facts.md`](../../agents/reference-facts.md). Note the shape #828 added on
-  the *payload* side too, since it looks like the same question
+  3.2a, captured). So far: an empty field means skip for a colour slot, close for a hyperlink, the
+  new value for a title, reset-everything for `OSC 104`, and **a default target** for a clipboard
+  request. Nothing generalises across them, which is the entry's point; what generalises is that each
+  one has a deliberate rule somewhere and none of them is the obvious one.
+
+  **`OSC 4` is the sixth (#834): an empty *spec* names no colour, so its own pair is dropped and the
+  sequence continues** — `OSC 4 ; 1 ; ; 2 ; #fff` relays index 2 alone, and the pairs *before* the
+  blank survive too. That is xterm.js's and alacritty-via-`vte`'s answer, **not** the tie-breaker's,
+  and it is a **deliberate divergence rather than a gap ADR-0004 fails to reach** — the reading that
+  xterm's trigger is unavailable to a theme-agnostic engine is false, and was believed here until the
+  tree was read (`misc.c:3105-3107`). What decided it is on #834: inferring "the rest is corrupt"
+  from a blank field is a judgement about *application intent*, which ADR-0017 puts on the consumer's
+  side. The references are **2–2**, cached in
+  [`reference-facts.md`](../../agents/reference-facts.md).
+
+  **And `OSC 7` is a seventh, in the opposite direction**: an empty payload is relayed *as itself*,
+  `OSC 7 ;` → `Cwd("")` (`term.rs`), because there the blank carries information the consumer can
+  act on. One reference pins exactly that shape under a named test (ghostty
+  `osc/parsers/report_pwd.zig:38-48`) and reads it consumer-side as "reset the pwd as if we never saw
+  one" (`termio/stream_handler.zig:1074-1081`) — a *policy* justerm deliberately leaves to its own
+  consumer. **This list is open, not closed**: it grows whenever an arm is settled, and an arm's
+  absence here means nobody has asked, never that it agrees with a neighbour. Note the shape #828
+  added on the *payload* side too, since it looks like the same question
   and is not: a payload **field that is absent** (`OSC 52 ; c`) and an **empty payload**
   (`OSC 52 ; c ;`) are different sequences — the second is a store of the empty string, which is how
   the sequence clears a selection.

@@ -5804,26 +5804,44 @@ impl Perform for Term {
             // field is empty" needs no parser, and forwarding `""` hands the
             // consumer a value it must invent a policy for.
             //
-            // Dropping *the rest of the sequence* was the alternative and is what
-            // xterm does: `ChangeOneAnsiColor` returns negative on an unparseable
-            // name and that hits `/* stop on any error */ break` (`misc.c:3013-3016`,
-            // pair loop at `:2993`; the chain is `AllocateAnsiColor` →
-            // `xtermAllocColor` fails → `-1` at `:2918`). ADR-0004 does not reach
-            // it, because **xterm's trigger is unavailable here**: it aborts on *a
-            // colour that failed to parse*, while the only observable condition on
-            // this side is *the field is empty*, which is strictly narrower. Taking
-            // a blank field as evidence that structurally well-formed pairs are
-            // corrupt is an inference about application intent, and ADR-0017 puts
-            // that on the consumer's side of the boundary. It would also discard a
-            // value the application explicitly sent, and would make an empty field
-            // mean *skip* in the `OSC 10`/`11`/`12` arm (#832) and *abort* in this
-            // one, inside a single `match`. xterm.js is the reference that agrees
-            // with the choice made here — `parseColor` returns falsy, nothing is
-            // pushed, and the pair loop keeps shifting (`InputHandler.ts:3073`,
-            // loop at `:3064`). ghostty never observes the gap at all: its
-            // `tokenizeScalar` drops empty tokens (`color.zig:130`), so the pairing
-            // silently re-aligns — a third answer, and an accidental one, under a
-            // comment claiming it matches xterm (`:165-166`).
+            // Dropping *the rest of the sequence* was the alternative, and it is
+            // what xterm does: `ChangeOneAnsiColor` returns negative and that hits
+            // `/* stop on any error */ break` (`misc.c:3013-3016`, pair loop at
+            // `:2993`; chain `AllocateAnsiColor` → `xtermAllocColor` → `-1` at
+            // `:2918`).
+            //
+            // **This is a deliberate divergence from the ADR-0004 tie-breaker, not
+            // a case the tie-breaker fails to reach.** An earlier draft of this
+            // comment claimed the latter and was wrong, which is worth stating
+            // because the wrong version is the intuitive one: xterm makes the
+            // *same* observation this engine makes — `strlen(spec) == 0`, no
+            // parser, `misc.c:3105-3107` — and `XParseColor` at `:3111` is in the
+            // `else if`, so it is never reached for an empty spec. The trigger IS
+            // available here and "follow xterm" IS well defined. It is declined
+            // because reading a blank field as evidence that structurally
+            // well-formed pairs are corrupt is an inference about *application
+            // intent*, which ADR-0017 puts on the consumer's side, and because it
+            // would discard a value the application explicitly sent. That call is
+            // the maintainer's, recorded on #834 with its grounds, and theirs to
+            // reverse.
+            //
+            // **The references are 2–2 on this input, not 1–1**, and the two that
+            // answer as this engine does are the two that keep walking: xterm.js
+            // (`InputHandler.ts:3073`, loop `:3064`) and alacritty via `vte`
+            // (`vte-0.15.0/src/ansi.rs:1372-1389` — a failed `xparse_color` falls
+            // to `unhandled` with no `break`). ghostty relays nothing here, by a
+            // *third* mechanism rather than by agreeing: `tokenizeScalar` drops
+            // the empty token (`color.zig:130`) so the pairing re-aligns, and then
+            // `RGB.parse("2")` fails into `catch return result` (`:210`), yielding
+            // the accumulated — empty — list. Its re-alignment only becomes
+            // *visible* where the re-aligned pair parses: `OSC 4 ; 1 ; ; #fff`
+            // sets index 1 there and nothing anywhere else.
+            //
+            // The guard tests **emptiness only**, deliberately (#834 Out of
+            // Scope). A space-only spec is relayed verbatim; TAB and NUL are C0
+            // bytes `vte` drops inside an OSC string, so those fields arrive
+            // genuinely empty and *are* dropped. Both are pinned by tests, so a
+            // later "align with the reference" widening to whitespace reddens.
             b"4" => {
                 // One event per `index ; spec` pair (xterm's `while slots > 1`).
                 // The walk advances two fields whether or not a pair produces an

@@ -2309,38 +2309,54 @@ byte classes, not two: `BEL`, the cancel pair `CAN`/`SUB`, and a bare `ESC` open
 bell-terminated, so a cancelled query still reaches the consumer and is answered ST — which is what
 xterm hardcodes for that shape (`charproc.c:8964`).
 
-#### `OSC 4`'s empty *spec* splits 1–1, and xterm's trigger is one justerm cannot observe
+#### `OSC 4`'s empty *spec* splits 2–2, and xterm's trigger **is** available to justerm
 
-Added 2026-09-08 while implementing #834, and read out of the trees rather than out of the issue —
-the issue's own citation was wrong, which is the reason this row exists. Given
-`OSC 4 ; 1 ; ; 2 ; #fff`, the references answer three different ways:
+Added 2026-09-08 while implementing #834. Every row was read out of the trees, and the row exists
+because **three separate readings of this question got it wrong first** — the issue body, then the
+first draft of this section, then one of the two review passes. Given `OSC 4 ; 1 ; ; 2 ; #fff`:
 
-| Reference | Result | Site |
-|---|---|---|
-| xterm | **nothing at all** — the empty name fails to allocate and the pair loop aborts, discarding the well-formed pair too | `misc.c:3013-3016` |
-| xterm.js | **index 2 only** — the pair is skipped and the loop keeps shifting | `src/common/InputHandler.ts:3073`, loop at `:3064` |
-| ghostty | **index 1 set to the string `2`** — the empty field is never seen, so the pairing re-aligns | `src/terminal/osc/parsers/color.zig:130` |
-| justerm | **index 2 only** (#834) | `term.rs`, the `b"4"` arm |
+| Reference | Result | Mechanism | Site |
+|---|---|---|---|
+| xterm | **nothing** | empty spec fails to allocate; the pair loop aborts, discarding the well-formed pair too | `misc.c:3013-3016` |
+| ghostty | **nothing** | a *different* route to the same outcome — see below | `color.zig:130`, `:210` |
+| xterm.js | **index 2 only** | the pair is skipped and the loop keeps shifting | `InputHandler.ts:3073`, loop `:3064` |
+| alacritty (via `vte`) | **index 2 only** | a failed `xparse_color` falls to `unhandled` with **no `break`** | `vte-0.15.0/src/ansi.rs:1372-1389` |
+| justerm | **index 2 only** (#834) | `term.rs`, the `b"4"` arm | — |
 
 ⚠ **`misc.c:3003` is a different guard, and the mis-citation survives a grep.** That line is also a
 `break`, also inside the same loop, and its comment reads *"quit on any error"* — but it is the
 **index-range** check (`color < 0 || color >= last`). The colour-failure abort is ten lines further
-down and its comment reads *"stop on any error"*. The full chain, verified at the pinned SHA:
+down and its comment reads *"stop on any error"*. The chain, verified at the pinned SHA:
 `AllocateAnsiColor` → `xtermAllocColor` fails on the empty name → `result = -1` (`misc.c:2918`) →
 `ChangeOneAnsiColor` returns negative (`:3013`) → `if (code < 0) … break` (`:3014-3016`). Anyone
 quoting `:3003` for this behaviour has landed on the neighbour.
 
-**Why justerm follows xterm.js rather than the tie-breaker.** ADR-0004 does not reach this: xterm's
-trigger is *a colour that failed to parse*, and this engine never parses a colour, so the only
-condition available to it — *the field is empty* — is strictly narrower. Choosing the abort would be
-transplanting xterm's shape onto a different trigger and would borrow none of ADR-0004's authority.
-The decision and its five other grounds are recorded on #834.
+⚠⚠ **And the abort's trigger is *not* "a colour that failed to parse" — it is length-zero, checked
+without a parser.** `xtermAllocColor` opens `size_t have = strlen(spec); if (have == 0 || have >
+MAX_U_STRING) { … } else if (XParseColor(...))` (`misc.c:3105-3111`), so for an empty spec
+`XParseColor` is **never reached**. This matters more than an ordinary citation slip: the claim that
+justerm "structurally cannot observe xterm's condition" was the stated reason ADR-0004 did not reach
+this decision, and it is false — xterm makes *exactly* the observation a theme-agnostic engine can
+make. justerm's answer is therefore a **deliberate divergence from the tie-breaker**, on the grounds
+recorded on #834 (chiefly: inferring "the rest is corrupt" from a blank field is a judgement about
+application intent, which ADR-0017 places on the consumer's side), not a case the tie-breaker fails
+to reach. The distinction has a different reversal criterion, which is why it is written here.
 
-**Ghostty's third answer is accidental in the same way its `OSC 10` divergence is**, and by the same
-mechanism: `tokenizeScalar` never yields an empty token. Its pair loop *does* mean to follow xterm —
-`// Note: in ANY error scenario below we return the accumulated results. This matches the xterm
-behavior (see misc.c ChangeAnsiColorRequest)` (`color.zig:165-166`) — so reading the comment gives
-xterm's answer while running the code gives neither reference's.
+**Ghostty reaches xterm's outcome by neither xterm's route nor a unique one, on this input.**
+`tokenizeScalar` never yields an empty token (`color.zig:130`), so the pairing re-aligns to
+`(1, "2")`; then `RGB.parse("2")` fails and `catch return result` (`:210`) yields the accumulated —
+empty — list. Its own loop comment claims xterm's behaviour (`// Note: in ANY error scenario below
+we return the accumulated results. This matches the xterm behavior …`, `:165-166`) and here it
+coincidentally gets it. **The re-alignment is only *observable* where the re-aligned pair parses**:
+`OSC 4 ; 1 ; ; #fff` sets index 1 in ghostty and nothing in all four others. Use that input, not
+this one, to demonstrate the divergence.
+
+**Two neighbouring facts worth not re-deriving.** xterm is *itself* asymmetric between these arms —
+`OSC 10`/`11`/`12` skips an empty slot and advances (`misc.c:3687`, `:3693`) while `OSC 4` aborts —
+so "an empty field must mean one thing across the family" is not a rule any reference keeps. And on
+the sibling reset path ghostty records an explicit preference for the drop-one-and-continue shape:
+*"xterm stops parsing the reset list on any error, but we're more flexible and try the next value.
+This matches the behavior of Kitty…"* (`color.zig:225-228`).
 
 #### A routing fact: alacritty's OSC dispatch is not in the alacritty tree
 
