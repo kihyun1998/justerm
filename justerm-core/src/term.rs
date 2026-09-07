@@ -3585,7 +3585,7 @@ impl Term {
             self.cursor.col = cols - 1;
             // With autowrap off (DECAWM ?7l) the cursor pins to the last column
             // and the next glyph overwrites in place — no deferred wrap (#63).
-            self.cursor.pending_wrap = self.autowrap;
+            self.cursor.pending_wrap = true;
         } else {
             self.cursor.col = new_col;
         }
@@ -3896,7 +3896,7 @@ impl Term {
         let new_col = col + 2;
         if new_col >= cols {
             self.cursor.col = cols - 1;
-            self.cursor.pending_wrap = self.autowrap;
+            self.cursor.pending_wrap = true;
         } else {
             self.cursor.col = new_col;
         }
@@ -4023,7 +4023,7 @@ impl Term {
         // Cursor just past the wide cell (pending-wrap if it fills a 2-column row).
         if cols <= 2 {
             self.cursor.col = cols - 1;
-            self.cursor.pending_wrap = self.autowrap;
+            self.cursor.pending_wrap = true;
         } else {
             self.cursor.col = 2;
             self.cursor.pending_wrap = false;

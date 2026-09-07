@@ -1360,6 +1360,15 @@ fn reverse_index_consumes_the_deferred_wrap() {
 /// `?7l` arriving *after* the deferred wrap is armed must not wrap: the park is
 /// consumed and the glyph overwrites the last column in place, which is what all
 /// four references do (#848).
+///
+/// **The flag now survives that print (#869), and the reference ground moved with it.**
+/// #848 chose xterm's shape — consume the park *and* put the flag down — on a ground
+/// that was local rather than a majority: this crate armed with
+/// `pending_wrap = self.autowrap`, so a flag outliving `?7l` contradicted the site that
+/// wrote it. #869 made the arm unconditional, which is what all three references that
+/// arm do, so that ground is gone and this engine now matches ghostty and alacritty,
+/// which keep it. The observable — overwrite in place, never wrap — is unchanged and is
+/// what the assertions below lead with.
 #[test]
 fn autowrap_off_after_the_wrap_is_armed_prints_in_place() {
     let mut term = Engine::new(3, 2);
@@ -1371,7 +1380,17 @@ fn autowrap_off_after_the_wrap_is_armed_prints_in_place() {
 
     assert_eq!(term.grid().cell(0, 2).c(), 'X');
     assert_eq!(term.grid().cell(1, 0).c(), ' ');
-    assert!(!term.cursor().pending_wrap);
+    // Re-armed by the print that just landed, because the cursor is again logically one
+    // past the column it sits on — the flag's stated meaning, now true under `?7l` too.
+    assert!(term.cursor().pending_wrap);
+
+    // What the surviving flag must not buy: a *second* print still overwrites in place
+    // and still does not wrap. This is the behaviour the old assertion was protecting,
+    // and it is asserted directly here rather than through the flag that stood in for it.
+    term.feed(b"Y");
+    assert_eq!(term.grid().cell(0, 2).c(), 'Y');
+    assert_eq!(term.grid().cell(1, 0).c(), ' ', "still nothing wrapped");
+    assert_eq!(term.cursor().row, 0, "the cursor never left row 0");
 }
 
 /// The control for the test above: with `?7l` set *before* anything is printed the
