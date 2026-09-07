@@ -1,7 +1,7 @@
 //! Issue #8 — VT compliance (common 90%). Grown test-first, one behaviour per
 //! cycle. (The vttest-style conformance harness is a later slice of #8.)
 
-use justerm_core::{Color, Engine, Key, KeyEvent, Modifiers, SelectionType, Side};
+use justerm_core::{Color, Engine, Key, KeyEvent, Modifiers, SelectionType, Side, TermDamage};
 
 // ===========================================================================
 // Background Color Erase (BCE)
@@ -1438,4 +1438,479 @@ fn insert_and_delete_line_clear_the_deferred_wrap_but_su_sd_do_not() {
         term.feed(seq);
         assert!(term.cursor().pending_wrap, "{seq:?} should keep");
     }
+}
+
+// ===========================================================================
+// REP — repeat the preceding grapheme (CSI Ps b)  [#825]
+// ===========================================================================
+
+/// The defect this issue is named for: the repeat is dropped and the row comes
+/// out short, with no error anywhere.
+#[test]
+fn rep_repeats_the_preceding_character() {
+    let mut term = Engine::new(20, 1);
+    term.feed(b"-\x1b[9b"); // one dash, then nine more
+
+    for col in 0..10 {
+        assert_eq!(term.grid().cell(0, col).c(), '-', "col {col}");
+    }
+    assert_eq!(term.grid().cell(0, 10).c(), ' ');
+    assert_eq!(term.cursor().col, 10);
+}
+
+/// The repeats carry the pen of the character they repeat — a coloured rule does
+/// not change colour half way along.
+#[test]
+fn rep_carries_the_pen_of_the_character_it_repeats() {
+    let mut term = Engine::new(10, 1);
+    term.feed(b"\x1b[31m-\x1b[2b"); // fg red, a dash, two more
+
+    for col in 0..3 {
+        assert_eq!(
+            term.grid().cell(0, col).fg(),
+            Color::Indexed(1),
+            "col {col}"
+        );
+    }
+}
+
+/// An absent parameter and an explicit zero both mean one, as with every other
+/// count-taking final in this dispatcher.
+#[test]
+fn rep_absent_and_zero_counts_both_repeat_once() {
+    for seq in [&b"-\x1b[b"[..], &b"-\x1b[0b"[..]] {
+        let mut term = Engine::new(10, 1);
+        term.feed(seq);
+        assert_eq!(term.grid().cell(0, 1).c(), '-', "{seq:?}");
+        assert_eq!(term.grid().cell(0, 2).c(), ' ', "{seq:?}");
+    }
+}
+
+/// A stream may legitimately open with the sequence; there is no character to
+/// invent, so it writes nothing and moves nothing.
+#[test]
+fn rep_with_nothing_printed_before_it_is_a_no_op() {
+    let mut term = Engine::new(5, 1);
+    term.feed(b"\x1b[3b");
+
+    assert_eq!(term.grid().cell(0, 0).c(), ' ');
+    assert_eq!(term.cursor().col, 0);
+}
+
+// --- The retained grapheme's lifecycle (xterm's, derived from the parser) ----
+
+/// The load-bearing rule: a completed escape sequence disarms the repeat, so it
+/// can never resurrect a character from an unrelated part of the stream. ghostty
+/// clears only on full reset and *does* resurrect; xterm and xterm.js agree with
+/// this, and ADR-0004 puts xterm on top (`reference-facts.md`, "REP's retained
+/// character").
+#[test]
+fn rep_after_a_completed_escape_sequence_repeats_nothing() {
+    // One of each dispatch kind that lands the parser back in the ground state.
+    for seq in [
+        &b"\x1b[5G"[..],      // cursor move: csi_dispatch
+        &b"\x1b[K"[..],       // erase: csi_dispatch
+        &b"\x1b[1m"[..],      // SGR: csi_dispatch
+        &b"\x1b[?7h"[..],     // private mode: csi_dispatch
+        &b"\x1b7"[..],        // DECSC: esc_dispatch
+        &b"\x1b]0;t\x07"[..], // title: osc_dispatch
+    ] {
+        let mut term = Engine::new(20, 1);
+        term.feed(b"-");
+        term.feed(seq);
+        term.feed(b"\x1b[3b");
+        let row: String = (0..20).map(|c| term.grid().cell(0, c).c()).collect();
+        assert_eq!(row.matches('-').count(), 1, "{seq:?} should disarm");
+    }
+}
+
+/// A C0 control disarms too — it reaches `execute`, which is the same class of
+/// "the parser did something that was not a print".
+///
+/// `BEL` rather than `CR`, which is what this test fed first. `CR` moves the cursor
+/// to column 0, where the read-back's own "nothing precedes on this row" guard
+/// returns before the disarm is ever consulted — so the test passed with the disarm
+/// deleted. A vacuous window, found by mutating the guard rather than by reading it.
+/// `BEL` moves nothing, so the disarm is the only thing between the dash and three
+/// more of it.
+#[test]
+fn rep_after_a_c0_control_repeats_nothing() {
+    let mut term = Engine::new(20, 2);
+    term.feed(b"-\x07\x1b[3b"); // dash, BEL, repeat
+
+    let row: String = (0..20).map(|c| term.grid().cell(0, c).c()).collect();
+    assert_eq!(row.matches('-').count(), 1);
+}
+
+/// A DCS disarms. This is not hypothetical: since #824 answered DA2, `vim`
+/// follows up with XTGETTCAP (`DCS + q <hex> ST`) queries this engine does not
+/// answer, so a DCS genuinely sits between a print and a later sequence.
+///
+/// All three terminators, because they do not exercise the same guard and the first
+/// version of this test fed only the first: with `unhook`'s disarm deleted, the
+/// `ESC \` form still passes (the `\` reaches `esc_dispatch`, which disarms) while
+/// the other two repeat four dashes. Feeding one terminator here would have proved
+/// a guard that a different one was already covering.
+#[test]
+fn rep_after_a_dcs_repeats_nothing() {
+    for dcs in [
+        &b"\x1bP+q544e\x1b\\"[..], // XTGETTCAP for "TN", 7-bit ST
+        &b"\x1bP+q544e\x9c"[..],   // the same, 8-bit ST — accepted for DCS (#847)
+        &b"\x1bP+q544e"[..],       // unterminated; the next ESC aborts it
+    ] {
+        let mut term = Engine::new(20, 1);
+        term.feed(b"-");
+        term.feed(dcs);
+        term.feed(b"\x1b[3b");
+
+        let row: String = (0..20).map(|c| term.grid().cell(0, c).c()).collect();
+        assert_eq!(row.matches('-').count(), 1, "{dcs:?}");
+    }
+}
+
+/// Only printing re-arms, so a repeat separated from its character by more
+/// printing repeats the *last* one.
+#[test]
+fn rep_separated_only_by_more_printing_repeats_the_last_one() {
+    let mut term = Engine::new(10, 1);
+    term.feed(b"ab\x1b[2b"); // two repeats of 'b', not of 'a'
+
+    let row: String = (0..5).map(|c| term.grid().cell(0, c).c()).collect();
+    assert_eq!(row, "abbb ");
+}
+
+/// REP does not re-arm itself. xterm's gate assigns the retained char at the end
+/// of each byte only when the parser is back in the ground state, and the value
+/// is `-1` unless a *graphic character* was printed — so the byte that completes
+/// `CSI b` disarms it and a second `CSI b` repeats nothing. ghostty is the
+/// outlier (its `printRepeat` re-arms through `print`); this engine follows
+/// xterm's lifecycle, so the two are observably different.
+#[test]
+fn rep_does_not_rearm_itself() {
+    let mut term = Engine::new(20, 1);
+    term.feed(b"-\x1b[2b\x1b[2b"); // dash + 2 + 2 → three dashes, not five
+
+    let row: String = (0..20).map(|c| term.grid().cell(0, c).c()).collect();
+    assert_eq!(row.matches('-').count(), 3);
+}
+
+// --- The repeat re-enters the print path ------------------------------------
+
+/// A run that crosses the right margin wraps exactly as typed text would, and
+/// leaves the row it left marked soft-wrapped.
+#[test]
+fn rep_wraps_at_the_right_margin_like_typed_text() {
+    let mut term = Engine::new(3, 2);
+    term.feed(b"ab\x1b[3b"); // "ab" then three more 'b'
+
+    let row0: String = (0..3).map(|c| term.grid().cell(0, c).c()).collect();
+    let row1: String = (0..3).map(|c| term.grid().cell(1, c).c()).collect();
+    assert_eq!(row0, "abb");
+    assert_eq!(row1, "bb ");
+    assert!(term.grid().is_row_wrapped(0), "the run soft-wrapped row 0");
+}
+
+/// With autowrap off the repeat pins at the last column and overwrites in place,
+/// exactly as typed text does under `?7l` (#63). The mode is set *before* the
+/// arming print, because setting it afterwards would disarm the repeat.
+#[test]
+fn rep_with_autowrap_off_stops_at_the_last_column() {
+    let mut term = Engine::new(3, 2);
+    term.feed(b"\x1b[?7labc\x1b[5b");
+
+    let row0: String = (0..3).map(|c| term.grid().cell(0, c).c()).collect();
+    let row1: String = (0..3).map(|c| term.grid().cell(1, c).c()).collect();
+    assert_eq!(row0, "abc");
+    assert_eq!(row1, "   ", "nothing wrapped");
+}
+
+/// A repeat of a wide character lays down complete lead+spacer pairs — never a
+/// lone lead, and never a spacer without one.
+#[test]
+fn rep_of_a_wide_char_lays_down_complete_pairs() {
+    let mut term = Engine::new(6, 1);
+    term.feed("한".as_bytes());
+    term.feed(b"\x1b[2b");
+
+    for lead in [0, 2, 4] {
+        assert_eq!(term.grid().cell(0, lead).c(), '한', "lead at {lead}");
+        assert!(term.grid().cell(0, lead).is_wide(), "wide at {lead}");
+        assert!(
+            term.grid().cell(0, lead + 1).is_wide_spacer(),
+            "spacer at {}",
+            lead + 1
+        );
+    }
+}
+
+/// A wide repeat that cannot fit the last column wraps the whole pair rather
+/// than splitting it.
+#[test]
+fn rep_of_a_wide_char_wraps_the_whole_pair() {
+    let mut term = Engine::new(3, 2);
+    term.feed("한".as_bytes()); // cols 0-1; cursor at col 2, one column left
+    term.feed(b"\x1b[1b");
+
+    assert_eq!(
+        term.grid().cell(0, 2).c(),
+        ' ',
+        "no half-glyph in the last column"
+    );
+    assert_eq!(term.grid().cell(1, 0).c(), '한');
+    assert!(term.grid().cell(1, 1).is_wide_spacer());
+}
+
+/// Under IRM the repeat shifts the row's tail right, like the equivalent typed
+/// characters. The mode is set before the arming print for the same reason as
+/// the autowrap case above.
+#[test]
+fn rep_under_insert_mode_shifts_the_row() {
+    let mut term = Engine::new(5, 1);
+    term.feed(b"XY\x1b[1;1H\x1b[4ha"); // "XY", home, IRM on, insert 'a'
+    term.feed(b"\x1b[2b"); // two more 'a', inserted
+
+    let row: String = (0..5).map(|c| term.grid().cell(0, c).c()).collect();
+    assert_eq!(row, "aaaXY");
+}
+
+/// A repeat that runs off the last line of a scroll region scrolls the *region*,
+/// not the screen — it obeys the margins like any other printing.
+#[test]
+fn rep_at_the_bottom_of_a_scroll_region_scrolls_the_region() {
+    let mut term = Engine::new(3, 4);
+    term.feed(b"ZZZ"); // row 0, above the region set below
+    term.feed(b"\x1b[2;3r"); // region = rows 1..2 (0-based)
+    term.feed(b"\x1b[3;1Habc"); // last row of the region, filled
+    term.feed(b"\x1b[1b"); // one more 'c' → wraps → the region scrolls
+
+    let row0: String = (0..3).map(|c| term.grid().cell(0, c).c()).collect();
+    let row1: String = (0..3).map(|c| term.grid().cell(1, c).c()).collect();
+    let row2: String = (0..3).map(|c| term.grid().cell(2, c).c()).collect();
+    assert_eq!(row0, "ZZZ", "the row above the region did not move");
+    assert_eq!(row1, "abc");
+    assert_eq!(row2, "c  ");
+}
+
+/// Damage covers exactly the cells the repeat wrote, so the renderer redraws the
+/// run and nothing more.
+#[test]
+fn rep_damages_exactly_the_cells_it_wrote() {
+    let mut term = Engine::new(10, 1);
+    term.feed(b"-");
+    term.reset_damage(); // ack: the consumer has seen the first dash
+    term.feed(b"\x1b[4b");
+
+    match term.damage() {
+        TermDamage::Partial(lines) => {
+            assert_eq!(lines.len(), 1);
+            assert_eq!((lines[0].line, lines[0].left, lines[0].right), (0, 1, 4));
+        }
+        other => panic!("expected partial damage, got {other:?}"),
+    }
+}
+
+// --- The unit that is repeated ----------------------------------------------
+
+/// The repeated unit is the **cluster the cell holds**, not the base scalar. The
+/// three references give three answers — xterm repeats nothing (its retained
+/// value is one scalar, so the mark replaces the base and its positive-width
+/// guard then rejects it), ghostty repeats the base without its marks, xterm.js
+/// repeats the whole cluster. This is a recorded **product judgement**, not a
+/// derivation: xterm's answer follows from a scalar `lastchar` rather than from
+/// a reading of the spec, and a cell here holds a cluster.
+#[test]
+fn rep_repeats_the_whole_cluster_not_just_the_base() {
+    let mut term = Engine::new(6, 1);
+    term.feed("e\u{0301}".as_bytes()); // é as base + combining acute
+    term.feed(b"\x1b[2b");
+
+    assert_eq!(cell_text(&mut term, 0, 1), "e\u{0301}");
+    assert_eq!(cell_text(&mut term, 0, 2), "e\u{0301}");
+}
+
+/// The same holds under grapheme-cluster mode (?2027), where the cluster is
+/// joined by a different arm site than the combining-mark path above.
+#[test]
+fn rep_repeats_a_clustered_grapheme_under_mode_2027() {
+    let mut term = Engine::new(9, 1);
+    term.feed(b"\x1b[?2027h");
+    term.feed("e\u{0301}".as_bytes());
+    term.feed(b"\x1b[2b");
+
+    assert_eq!(cell_text(&mut term, 0, 1), "e\u{0301}");
+    assert_eq!(cell_text(&mut term, 0, 2), "e\u{0301}");
+}
+
+/// The glyph repeated is the one the cell holds — already translated through the
+/// active character set, so a repeat under DEC Special Graphics reproduces the
+/// line-drawing glyph rather than the byte that selected it.
+#[test]
+fn rep_repeats_the_charset_translated_glyph() {
+    let mut term = Engine::new(6, 1);
+    term.feed(b"\x1b(0q\x1b[2b"); // designate DEC graphics, print 'q' (─), repeat
+
+    for col in 0..3 {
+        assert_eq!(term.grid().cell(0, col).c(), '─', "col {col}");
+    }
+}
+
+/// The form terminfo actually generates, so what is asserted is what ncurses
+/// would send: `rep=%p1%c\E[%p2%{1}%-%db` emits the character and then asks for
+/// `count - 1` more.
+#[test]
+fn rep_in_the_form_terminfo_generates() {
+    let mut term = Engine::new(80, 1);
+    term.feed(b"-\x1b[59b"); // terminfo's expansion of rep('-', 60)
+
+    for col in 0..60 {
+        assert_eq!(term.grid().cell(0, col).c(), '-', "col {col}");
+    }
+    assert_eq!(term.grid().cell(0, 60).c(), ' ');
+}
+
+// --- Where the anchor is, which a cursor cannot say (#825 review round) ------
+
+/// With autowrap off the cursor reaches the last column two ways — by *filling* it
+/// (pinned there) and by merely *advancing onto* it — and no cursor state tells them
+/// apart. The shipped version of this feature guessed, and repeated whatever happened
+/// to be sitting in the last column. Here the arming print landed at column 1, so the
+/// repeat is of `b` and not of the blank at column 2.
+#[test]
+fn rep_under_autowrap_off_repeats_the_glyph_not_the_column_the_cursor_sits_in() {
+    let mut term = Engine::new(3, 2);
+    term.feed(b"\x1b[?7lab\x1b[2b");
+
+    let row0: String = (0..3).map(|c| term.grid().cell(0, c).c()).collect();
+    let row1: String = (0..3).map(|c| term.grid().cell(1, c).c()).collect();
+    assert_eq!(row0, "abb");
+    assert_eq!(row1, "   ", "autowrap is off; nothing wrapped");
+}
+
+/// The sharpest form of the same defect: with the cursor merely sitting on the last
+/// column, a cursor-derived read-back resurrects a character from an unrelated earlier
+/// part of the stream — the exact thing `rep_after_a_completed_escape_sequence_repeats_nothing`
+/// claims cannot happen. It repeats `d`, which is what was actually printed last.
+#[test]
+fn rep_never_repeats_a_glyph_an_earlier_part_of_the_stream_left_behind() {
+    let mut term = Engine::new(5, 1);
+    term.feed(b"\x1b[?7lZZZZZ"); // fill the row, cursor pinned at column 4
+    term.feed(b"\x1b[1;1Habcd"); // home, then four glyphs: cursor lands on column 4
+    term.feed(b"\x1b[1b");
+
+    let row: String = (0..5).map(|c| term.grid().cell(0, c).c()).collect();
+    assert_eq!(row, "abcdd");
+}
+
+/// A print that placed no cell must not arm the repeat. `write_glyph` has exactly one
+/// such path: with autowrap off, a width-2 glyph that cannot fit the last column is
+/// dropped rather than squeezed or wrapped (#63).
+///
+/// Asserted on **damage**, not on the grid, and that is the whole point: the drop always
+/// leaves the cursor on the last column, so an anchor taken from the cursor names a cell
+/// that is blank — and repeating a blank into a blank column looks identical on screen.
+/// What separates the two is that the wrong answer *writes*: it stamps pen-coloured
+/// blanks and reports damage where the right answer touches nothing. Reading the grid
+/// here proved nothing, and a mutation is what said so.
+#[test]
+fn rep_is_not_armed_by_a_wide_glyph_that_was_dropped() {
+    let mut term = Engine::new(4, 2);
+    term.feed(b"\x1b[?7labc"); // cursor on column 3, one column left
+    term.feed("한".as_bytes()); // width 2, does not fit, dropped
+    term.reset_damage(); // ack everything up to and including the drop
+    term.feed(b"\x1b[2b");
+
+    let row0: String = (0..4).map(|c| term.grid().cell(0, c).c()).collect();
+    assert_eq!(row0, "abc ", "the dropped glyph armed nothing");
+    match term.damage() {
+        TermDamage::Partial(lines) => assert!(lines.is_empty(), "wrote cells: {lines:?}"),
+        other => panic!("expected no damage at all, got {other:?}"),
+    }
+}
+
+/// `resize` is the only member of the disarm rule that is not a `Perform` callback, and
+/// the reason the rule is stated as a rule rather than as a list of dispatch methods: a
+/// reflow rewrites cells and moves the cursor, so the anchor no longer names the cell
+/// the arming print wrote.
+///
+/// The reflow **narrows**, and that is deliberate. Widening moves the anchored cell to a
+/// blank, so a stale anchor repeats blanks and the grid looks identical either way —
+/// which is how the first version of this test passed with the disarm deleted. Narrowing
+/// puts a *different glyph* under the stale anchor: `abcde` on three columns anchors on
+/// `e` at (1, 1), and after the reflow to two columns that cell holds `d`.
+#[test]
+fn rep_after_a_resize_repeats_nothing() {
+    let mut term = Engine::new(3, 3);
+    term.feed(b"abcde"); // soft-wraps: row 0 "abc", row 1 "de"; anchored on 'e' at (1, 1)
+    term.resize(2, 3); // reflow: "ab" / "cd" / "e" — (1, 1) now holds 'd'
+    term.feed(b"\x1b[3b");
+
+    let rows: Vec<String> = (0..3)
+        .map(|r| (0..2).map(|c| term.grid().cell(r, c).c()).collect())
+        .collect();
+    assert_eq!(
+        rows,
+        ["ab", "cd", "e "],
+        "a stale anchor would repeat 'd' here"
+    );
+}
+
+/// `DEL` (0x7F) is the one scalar that reaches `print` with no width: `vte` routes C0
+/// and the 8-bit C1 range to `execute`, but its ground dispatch matches only those two
+/// ranges, so `DEL` prints. It writes no cell, so it disarms — which is xterm's answer
+/// too, reached by its own route (its `REP` guards on positive width).
+#[test]
+fn rep_after_a_del_repeats_nothing() {
+    let mut term = Engine::new(20, 1);
+    term.feed(b"-\x7f\x1b[3b");
+
+    let row: String = (0..20).map(|c| term.grid().cell(0, c).c()).collect();
+    assert_eq!(row.matches('-').count(), 1);
+}
+
+// --- The two bounds on an untrusted count -----------------------------------
+
+/// The progress guard, and the case it exists for. Under mode 2027 a cluster ending in
+/// `ZWJ` re-joins the cluster it was read from, so each replay grows one cell's cluster
+/// instead of writing a second one — and the join is O(L) in that length, so the loop is
+/// quadratic. Unguarded, these eight bytes cost 593 seconds.
+///
+/// Asserted on the cluster's length rather than on a clock: the guard stops after the
+/// first iteration that placed no new cell, so the cell holds the original two scalars
+/// plus exactly one replay of them, and never 131 072 of them.
+#[test]
+fn rep_stops_when_an_iteration_places_no_new_cell() {
+    let mut term = Engine::new(20, 2);
+    term.feed(b"\x1b[?2027h");
+    term.feed("\u{1F468}\u{200D}".as_bytes()); // a man, then ZWJ — an open cluster
+    term.feed(b"\x1b[65535b");
+
+    let cluster = cell_text(&mut term, 0, 0);
+    assert_eq!(
+        cluster.chars().count(),
+        4,
+        "one replay joined, then the loop stopped: {cluster:?}"
+    );
+}
+
+/// The count cap, which is defence in depth and NOT what bounds the case above. It is a
+/// whole buffer's worth of cells, so at the default 10 000-line scrollback it never
+/// binds against a `u16` parameter; it binds on a small buffer, and it is a deliberate
+/// divergence from every reference (all of which loop uncapped) justified by justerm
+/// being a library on a consumer's thread rather than a terminal that owns its own.
+///
+/// Observable through the cursor: 4x2 with no scrollback caps at 8 repeats, so 9 glyphs
+/// land and the cursor stops one column into the last row, where 102 would put it two.
+#[test]
+fn rep_caps_a_count_larger_than_the_buffer_can_hold() {
+    let mut term = Engine::with_scrollback(4, 2, 0); // cap = (0 + 2) * 4 = 8
+    term.feed(b"-\x1b[101b"); // 102 glyphs asked for, 9 written
+
+    assert_eq!(term.cursor().col, 1, "9 glyphs => 1 past a row boundary");
+    assert_eq!(term.cursor().row, 1);
+
+    // Control: a count inside the cap is not touched.
+    let mut small = Engine::with_scrollback(4, 2, 0);
+    small.feed(b"-\x1b[5b"); // 6 glyphs, well under the cap
+    assert_eq!(small.cursor().col, 2);
+    assert_eq!(small.cursor().row, 1);
 }

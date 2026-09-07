@@ -2135,6 +2135,55 @@ re-entering print) with **xterm's lifecycle** (the retained char does not surviv
 sequence). Those are two different questions and picking one reference for both is the error #825's
 body made before this row existed.
 
+### REP's repeated *unit* — a third axis, and here the trees split 3:0
+
+Read while implementing #825. The two rows above settle the mechanism and the lifecycle and say
+nothing about **what** is repeated, which turns out to be the axis with the widest disagreement.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The retained value is a single `IChar`, so a combining mark **replaces** the base; `REP` then guards on positive width, and the observable result is that **a repeat after a combining mark does nothing at all** | xterm | `charproc.c:3364` (armed for every printed scalar), `:6154` (the guard) |
+| The cluster-append branch `return`s **before** `previous_char = c`, so the retained value stays the base and a repeat writes the base **without its marks** | ghostty | `src/terminal/Terminal.zig:1355-1365` |
+| Nothing is retained: the cell is read back (`bufferRow.getString(x)`) and the **whole cluster** is repeated | xterm.js | `src/common/InputHandler.ts:1649-1671` |
+
+⚠ **ADR-0004's tie-breaker does not decide this one, and that is the finding.** xterm's answer is
+not a reading of the spec — `ctlseqs` says *"repeat the preceding graphic character"*, and a
+decorated cluster is one — it is a consequence of `lastchar` being a scalar. The guard that produces
+it is stated, at its own site and in the row above, as *"a control or zero-width char is not
+repeatable"*; combining marks are caught by it incidentally. On *whether* a repeat still happens the
+trees are 2-1 in favour (ghostty and xterm.js against xterm), and on *what* is repeated justerm's own
+cell model answers, because a cell here holds a cluster. justerm takes xterm.js's answer as a
+**product judgement**, recorded on `Term::repeat_last`.
+
+### `unhook` is the only disarm on two of three DCS terminators (#825, measured 2026-09-07)
+
+Not a reference fact but a `vte` one, recorded because it decides whether a test proves anything.
+Feeding `-`, a DCS, then `CSI 3 b`, with the disarm in `unhook` deleted:
+
+| DCS terminator | dashes |
+|---|---|
+| `ESC \` (7-bit ST) | 1 — the `\` reaches `esc_dispatch`, which disarms |
+| `0x9C` (8-bit ST — accepted for DCS where OSC refuses it, #847) | **4** |
+| none; aborted by the `ESC` of the next sequence | **4** |
+
+A test that feeds only the first form proves a guard a *different* guard is covering.
+
+### Two `vte` routings that a single grep gets backwards (#825, verified 2026-09-07)
+
+Both cost a wrong claim in a shipped doc-comment before they were read properly, and both are about
+`vte-0.15.0` rather than about a reference terminal.
+
+| Fact | Site |
+|---|---|
+| ⚠ **`DEL` (0x7F) reaches `print`, in the ground state.** `ground_dispatch` sends only `'\x00'..='\x1f' \| '\u{80}'..='\u{9f}'` to `execute`; everything else prints. `'\u{7f}'.width()` is `None`, so it arrives at a match arm that looks unreachable and is not | `vte-0.15.0/src/lib.rs:722-729` |
+| ⚠ **The obvious grep says the opposite.** `rg '0x7F'` over `lib.rs` returns seven `0x7F => ()` lines, and *none of them is ground* — they belong to the escape / CSI / DCS states. Reading one and generalising is how the doc-comment came to claim `DEL` was dropped outright | `vte-0.15.0/src/lib.rs:222` and six siblings |
+| **`State::CsiIgnore` returns to ground with no dispatch at all**: `0x40..=0x7E => self.state = State::Ground`. A malformed `CSI 1 ? b` therefore completes without `csi_dispatch`, and nothing in `Perform` can observe it ending | `vte-0.15.0/src/lib.rs:218-224` |
+| **`State::DcsIgnore` routes to `anywhere` and never calls `hook` / `unhook`**, with the same consequence for a malformed `DCS` | `vte-0.15.0/src/lib.rs` (`advance_dcs_ignore`) |
+
+The consequence is general and worth stating once: **any rule of the form "every completed sequence
+notifies us" is false against this parser**, and a design that depends on one has to bound what a
+missed notification costs rather than assume it cannot happen.
+
 ### Secondary device attributes — report yourself, do not impersonate
 
 | Fact | Reference | Site |
