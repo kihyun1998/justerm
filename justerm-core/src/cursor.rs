@@ -90,9 +90,14 @@ pub struct Cursor {
     ///
     /// The site-classes, which are what this comment can honestly enumerate:
     ///
-    /// - **Armed** by the print path, when a glyph fills the last column and
-    ///   `DECAWM` is on — `Term::write_glyph`, `Term::promote_cluster_to_wide`,
-    ///   `Term::relocate_cluster_wide`.
+    /// - **Armed** by the print path, when a glyph fills the last column —
+    ///   `Term::write_glyph`, `Term::promote_cluster_to_wide`,
+    ///   `Term::relocate_cluster_wide`. **Unconditionally, since #869**: `DECAWM` is
+    ///   tested where the park is *consumed*, not where it is armed, which is what the
+    ///   three references that arm this state all do. Folding the mode into the arm
+    ///   made the sentence at the top false for a whole mode — under `?7l` the cursor
+    ///   was pinned with the flag clear — and cost two readers a correct answer
+    ///   (#865, #869) before it was found.
     /// - **Consumed** by the wrap machinery, which is not a clear: `Term::wrapline`
     ///   performs the deferred wrap and only then puts the flag down.
     /// - **Translated** by `Term::resize`: where a reflow leaves the cursor off the

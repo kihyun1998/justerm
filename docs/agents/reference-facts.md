@@ -2450,10 +2450,23 @@ every reference overwrites the last column in place. On the *mechanism* they spl
 | ghostty | **kept** — the whole consume is gated | `if (cursor.pending_wrap and modes.get(.wraparound))` | `src/terminal/Terminal.zig:1368` @ `e6e26e1` |
 | alacritty | **kept** — `wrapline()` returns before its own clear | `if !self.mode.contains(TermMode::LINE_WRAP) { return; }` | `alacritty_terminal/src/term/mod.rs:962` @ `852e971` |
 
-justerm takes xterm's shape, and the ground is local rather than a majority: this crate arms with
-`pending_wrap = self.autowrap`, so the flag is never set while the mode is off and one that outlives
-`?7l` contradicts the site that wrote it. The other two arm unconditionally, which is what makes
-keeping coherent *for them*.
+⚠ **SUPERSEDED by #869 (2026-09-07). justerm now KEEPS the flag, matching ghostty and alacritty.**
+The paragraph that stood here read: *"justerm takes xterm's shape, and the ground is local rather
+than a majority: this crate arms with `pending_wrap = self.autowrap`, so the flag is never set while
+the mode is off and one that outlives `?7l` contradicts the site that wrote it. The other two arm
+unconditionally, which is what makes keeping coherent for them."*
+
+Every sentence of that was true and the conclusion still fell, because **the ground was conditional
+on the arm site and the arm site was the thing worth changing**. #869 measured the arm across the
+three references that have one — alacritty `term/mod.rs:1136-1137`, ghostty `Terminal.zig:1434-1436`,
+xterm `charproc.c:7211` — and justerm was **3-0 the outlier**: the other three arm unconditionally
+and test the mode where the park is *consumed*. Once justerm does the same, "the flag is never set
+while the mode is off" is false and the coherence argument that rejected keeping now supports it.
+
+Recorded at length because this is the failure mode the file exists to prevent: a tally was taken
+correctly, a local coherence argument broke the tie correctly, and **the axis that made the argument
+necessary was never itself measured**. When a tie is broken on "our own shape says otherwise", the
+next question is whether our own shape is the outlier.
 
 **The saved cursor.** ghostty applies its live repair to the saved cursor too — `terminal/Screen.zig:2094`
 @ `e6e26e1`, `if (sc.pending_wrap and sc.x != opts.cols - 1) { sc.pending_wrap = false; sc.x += 1; }`,
