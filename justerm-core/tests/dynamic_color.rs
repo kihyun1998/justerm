@@ -209,6 +209,66 @@ fn osc4_malformed_fields_are_dropped() {
     assert_eq!(t.drain_events(), vec![]);
 }
 
+/// An `OSC 4` pair whose spec field is empty names no colour, so nothing is
+/// relayed for it (#834). The engine cannot parse a colour and never will, but
+/// *"the field is empty"* needs no parser — relaying `""` would hand the consumer
+/// a value it has to invent a policy for.
+#[test]
+fn osc4_empty_spec_relays_no_set() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]4;1;\x07");
+    assert_eq!(t.drain_events(), vec![]);
+}
+
+/// **The test that names the decision** (#834): an empty spec drops **only its own
+/// pair**; the well-formed pairs after it are still relayed.
+///
+/// The alternative was to drop the rest of the sequence, which is what xterm does
+/// — `ChangeOneAnsiColor` fails on the unparseable name and the negative return
+/// hits `/* stop on any error */ break` (`misc.c:3013-3016`, in the pair loop
+/// opening at `:2993`; the chain is `AllocateAnsiColor` → `xtermAllocColor` fails
+/// → `-1` at `:2918`). It was rejected because **xterm's trigger is not available
+/// here**: it aborts on *a colour that failed to parse*, and this engine is
+/// theme-agnostic by identity, so the only condition it can observe is *the field
+/// is empty* — strictly narrower. Reading a blank field as evidence that
+/// structurally well-formed pairs are corrupt is an inference about application
+/// intent, which ADR-0017 puts on the consumer's side. Dropping the rest would
+/// also discard `index 2 = #fff`, a value the application explicitly sent, and
+/// would make an empty field mean *skip* in one arm of this `match` (`OSC 10`,
+/// #832) and *abort* in its neighbour.
+///
+/// xterm.js is the reference that agrees: `parseColor(spec)` returns falsy and
+/// nothing is pushed, while the `while (slots.length > 1)` loop keeps shifting
+/// pairs (`src/common/InputHandler.ts:3073`, loop at `:3064`).
+#[test]
+fn osc4_empty_spec_drops_only_that_pair() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]4;1;;2;#fff\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![TermEvent::SetPaletteColor {
+            index: 2,
+            spec: "#fff".into()
+        }]
+    );
+}
+
+/// The empty-spec drop is classified *before* the pair is read as anything else,
+/// and it does not disturb the `?` classification of a later pair: the blank pair
+/// relays nothing — not a query — and the `?` pair after it still queries (#834).
+#[test]
+fn osc4_empty_spec_is_not_a_query_and_leaves_a_later_query_intact() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]4;1;;2;?\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![TermEvent::QueryPaletteColor {
+            index: 2,
+            terminator: Terminator::Bel
+        }]
+    );
+}
+
 /// Raw-forward is format-agnostic: the engine never parses the spec, so every
 /// XParseColor form (16-bit `rgb:`, `#RRGGBB`, long `#hex`) reaches the consumer
 /// verbatim for it to interpret.

@@ -5797,8 +5797,37 @@ impl Perform for Term {
             // OSC 4 = set/query an ANSI palette entry: `OSC 4 ; index ; spec`
             // (#122). The engine forwards index + raw spec; the consumer applies
             // it to its palette (theme-agnostic — the cell keeps `Indexed`).
+            //
+            // **An empty spec relays nothing, and drops only its own pair** (#834).
+            // The engine cannot tell a *malformed* colour from a good one — it
+            // never parses one, which is its identity and not a gap — but "this
+            // field is empty" needs no parser, and forwarding `""` hands the
+            // consumer a value it must invent a policy for.
+            //
+            // Dropping *the rest of the sequence* was the alternative and is what
+            // xterm does: `ChangeOneAnsiColor` returns negative on an unparseable
+            // name and that hits `/* stop on any error */ break` (`misc.c:3013-3016`,
+            // pair loop at `:2993`; the chain is `AllocateAnsiColor` →
+            // `xtermAllocColor` fails → `-1` at `:2918`). ADR-0004 does not reach
+            // it, because **xterm's trigger is unavailable here**: it aborts on *a
+            // colour that failed to parse*, while the only observable condition on
+            // this side is *the field is empty*, which is strictly narrower. Taking
+            // a blank field as evidence that structurally well-formed pairs are
+            // corrupt is an inference about application intent, and ADR-0017 puts
+            // that on the consumer's side of the boundary. It would also discard a
+            // value the application explicitly sent, and would make an empty field
+            // mean *skip* in the `OSC 10`/`11`/`12` arm (#832) and *abort* in this
+            // one, inside a single `match`. xterm.js is the reference that agrees
+            // with the choice made here — `parseColor` returns falsy, nothing is
+            // pushed, and the pair loop keeps shifting (`InputHandler.ts:3073`,
+            // loop at `:3064`). ghostty never observes the gap at all: its
+            // `tokenizeScalar` drops empty tokens (`color.zig:130`), so the pairing
+            // silently re-aligns — a third answer, and an accidental one, under a
+            // comment claiming it matches xterm (`:165-166`).
             b"4" => {
                 // One event per `index ; spec` pair (xterm's `while slots > 1`).
+                // The walk advances two fields whether or not a pair produces an
+                // event, so dropping one cannot misalign the pairs after it.
                 let mut rest = &params[1..];
                 while let [idx, spec, tail @ ..] = rest {
                     rest = tail;
@@ -5806,7 +5835,7 @@ impl Perform for Term {
                         if *spec == b"?" {
                             self.events
                                 .push(TermEvent::QueryPaletteColor { index, terminator });
-                        } else {
+                        } else if !spec.is_empty() {
                             self.events.push(TermEvent::SetPaletteColor {
                                 index,
                                 spec: String::from_utf8_lossy(spec).into_owned(),
