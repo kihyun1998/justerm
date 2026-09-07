@@ -182,3 +182,55 @@ fn a_parked_backspace_with_autowrap_off_moves() {
         "a park carried into ?7l is spent by moving too"
     );
 }
+
+/// `CSI D` does **not** spend the park, and moves a full column from it (#80).
+///
+/// The asymmetry with backspace is deliberate and reference-backed, but until now
+/// nothing could see it: `cursor_left_does_not_reverse_wrap` drives to column 0 with
+/// `CUP` first, which clears the park, so it pins only the row-walk half. Giving
+/// `move_back` the same spend left the entire core suite green.
+///
+/// The split is 2-2 and this engine follows xterm.js by mechanism rather than by
+/// preference: its `backspace` calls `_restrictCursor(cols)` (`InputHandler.ts:806`) so
+/// the park survives into the decrement, while `cursorBackward` clamps to `cols - 1`
+/// first (`:889-890`, `:919`) and therefore never spends. xterm and ghostty route both
+/// verbs through one function and so spend on either — xterm's `CursorBack` is reached
+/// from `CASE_BS` (`charproc.c:3703`) and `CASE_CUB` (`:3933`) alike — so at the parked
+/// column 3 below, xterm's `CSI D` spends the park and stays at 3 where this engine moves to 2.
+#[test]
+fn cursor_left_does_not_spend_a_park() {
+    for (seq, want) in [(&b"\x1b[D"[..], 2usize), (&b"\x1b[3D"[..], 0)] {
+        let mut t = Engine::new(4, 2);
+        t.feed(b"\x1b[?45h");
+        t.feed(b"abcd"); // fills row 0, parked at column 3
+        assert!(t.cursor().pending_wrap, "precondition: parked");
+        t.feed(seq);
+        assert_eq!(
+            (t.cursor().row, t.cursor().col),
+            (0, want),
+            "CUB {seq:?} moves its full count from a parked cursor"
+        );
+    }
+}
+
+/// Spending the park over a wide glyph leaves the cursor on the pair's **spacer**, not
+/// on its lead (#80).
+///
+/// This is the one shape where the fix is visible as a destroyed glyph: the next print
+/// lands on the spacer and blanks the lead beside it. It is nonetheless the reference
+/// answer — ghostty lands on the spacer identically, and xterm.js reaches the same cell
+/// and then blanks `x - 1` because `getWidth(x - 1) === 2` (`InputHandler.ts:537-539`),
+/// producing the same row. Pinned because "correct" and "harmless" are different claims
+/// and only the first is being made.
+#[test]
+fn a_spent_park_lands_on_a_wide_pairs_spacer() {
+    let mut t = Engine::new(4, 2);
+    t.feed(b"\x1b[?45h");
+    t.feed("ab\u{4e00}".as_bytes()); // lead at column 2, spacer at column 3, parked
+    assert!(t.cursor().pending_wrap, "precondition: parked");
+    t.feed(b"\x08");
+    assert_eq!((t.cursor().row, t.cursor().col), (0, 3), "on the spacer");
+    t.feed(b"X");
+    let row: String = (0..4).map(|c| t.grid().cell(0, c).c()).collect();
+    assert_eq!(row, "ab X", "the print blanks the orphaned lead beside it");
+}
