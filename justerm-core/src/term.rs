@@ -166,6 +166,53 @@ pub struct Term {
     /// one cell per scalar (#295). OFF keeps the per-char (wcwidth-compatible) behaviour so the
     /// cursor stays in sync with wcwidth apps — clustering is opt-in for exactly that reason (#301).
     grapheme_clustering: bool,
+    /// Where the last content-producing print landed — `(row, col)` of that cluster's
+    /// lead cell — or `None` when `REP` (CSI b) has nothing to repeat (#825).
+    ///
+    /// The grapheme itself is not stored: it is read back from this cell, which is what
+    /// keeps the repeated unit in step with what the cell model actually holds. The
+    /// **position** is recorded rather than re-derived, because re-deriving it from the
+    /// cursor cannot be done: with autowrap off the cursor reaches the last column both
+    /// by *filling* it (pinned, the cluster is under the cursor) and by *advancing onto*
+    /// it (the cluster is one to the left), and no cursor state distinguishes them. An
+    /// earlier version of this guessed with `pending_wrap || (!autowrap && col + 1 ==
+    /// cols)` and repeated whatever happened to sit in the last column — including, on
+    /// `?7l` + `ZZZZZ` + `CUP` + `abcd` + `CSI 1 b`, a `Z` from an unrelated earlier part
+    /// of the stream. Recording the site cannot be wrong about it.
+    ///
+    /// **Set** by the three sites that give a cell content, all reached through
+    /// `place_grapheme`, each returning where it wrote; **cleared** by every other
+    /// `Perform` callback and by [`Term::resize`], whose reflow moves the cell out from
+    /// under the anchor.
+    ///
+    /// That enumeration is xterm's rule (`charproc.c:6478` — assign the retained char
+    /// only when the parser is back in the ground state, and it is unset unless a
+    /// graphic character was printed) expressed the only way this crate can express it.
+    /// `vte`'s `Parser` publishes `new` / `new_with_size` / `advance` /
+    /// `advance_until_terminated` and **nothing about its state**, so the structural
+    /// formulation is unavailable and an enumeration is what is left.
+    ///
+    /// **The enumeration is incomplete, and cannot be completed against `vte` 0.15.**
+    /// Two parser states return to ground with no callback at all, so nothing here can
+    /// observe the sequence ending (measured by feeding `-`, the sequence, then
+    /// `CSI 3 b`; xterm gives one dash for every row):
+    ///
+    /// | input | reaches | dashes |
+    /// |---|---|---|
+    /// | `CSI 1 ? b`, `CSI SP 1 p`, `CSI ? ? m` | `State::CsiIgnore`, exiting at `vte-0.15.0/src/lib.rs:222` (`0x40..=0x7E => self.state = Ground`) | 4 |
+    /// | `DCS 1 ? q … ST` | `State::DcsIgnore`, which routes to `anywhere` and never calls `hook`/`unhook` | 4 |
+    ///
+    /// All of these are malformed sequences. The divergence is bounded by the anchor's
+    /// shape: with a *position* rather than a heuristic, a missed clear repeats the
+    /// genuinely last-printed grapheme where xterm repeats nothing — which is ghostty's
+    /// behaviour (`Terminal.zig:4467` clears only on full reset), not a wrong glyph.
+    ///
+    /// `Perform` methods that clear: `execute`, `esc_dispatch`, `osc_dispatch`, `unhook`,
+    /// and `csi_dispatch` (which takes it up-front and lets `REP` disarm itself —
+    /// xterm's behaviour, and not ghostty's, whose `printRepeat` re-arms through
+    /// `print`). `print` clears only on its zero-cell path; `hook` and `put` do not,
+    /// because nothing that could read this can arrive before `unhook` does.
+    repeat_anchor: Option<(usize, usize)>,
     /// win32-input-mode (DEC ?9001): the app asked for keys as raw Windows
     /// key-records. The engine only *tracks* the flag — the raw record encoding
     /// (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`) is a non-goal (raw passthrough, no semantic
@@ -898,6 +945,7 @@ impl Term {
             synchronized_output: false,
             color_scheme_updates: false,
             grapheme_clustering: false,
+            repeat_anchor: None,
             win32_input_mode: false,
             app_cursor_keys: false,
             application_keypad: false,
@@ -1804,6 +1852,11 @@ impl Term {
     /// `cols` is widened to [`MIN_COLUMNS`] — a narrower screen cannot hold a
     /// width-2 glyph, so it is clamped rather than represented (#547).
     pub fn resize(&mut self, cols: usize, rows: usize) {
+        // Not a print — and not a parser callback either, which is the whole reason
+        // [`Term::repeat_anchor`] is stated as a rule rather than as a list of
+        // `Perform` methods. A reflow rewrites cells and moves the cursor, so the cell
+        // `REP` would read back is no longer the one the arming print wrote (#825).
+        self.repeat_anchor = None;
         // A terminal is never 0-tall; clamp so the math below (rows - 1) can't
         // underflow. Columns clamp to MIN_COLUMNS, not 1: chunking by cols needs a
         // non-zero width, but a *wide glyph* needs two (#547). The ceiling is the frame
@@ -3324,9 +3377,74 @@ impl Term {
         self.damage_span(row, col, col);
     }
 
+    /// Place one already-charset-translated scalar: join it to the previous cluster
+    /// under mode 2027, attach it as a combining mark, or write it as a new glyph.
+    ///
+    /// Split out of `print` so `REP` can re-enter the print path *below* two things it
+    /// must not repeat (#825): the VT52 `ESC Y` coordinate intercept, and the GL
+    /// character-set translation — `REP` reads its grapheme back off a cell, which
+    /// holds the *translated* glyph, so passing it through `print` would map it twice.
+    /// Neither is observable today (the intercept is unreachable because `ESC Y`
+    /// disarms the repeat, and no glyph either implemented set produces is a key in
+    /// its own table), so this is insurance, and its condition is worth stating: it
+    /// stops being insurance the moment a set is added whose output overlaps its
+    /// input.
+    ///
+    /// The three arms that place content are exactly the sites that arm
+    /// [`Term::repeat_anchor`]. xterm reaches the same set from the other end — it arms
+    /// on every printed scalar and then rejects the zero-width ones with a guard at
+    /// `REP` (`charproc.c:6154`) — and the two are equivalent because the only scalars
+    /// that reach here with no width are unreachable in the first place.
+    fn place_grapheme(&mut self, c: char) {
+        // Grapheme-cluster mode (DEC ?2027, #295): if `c` extends the previous cell's cluster,
+        // join it there instead of placing a new cell. OFF → the per-char (wcwidth) path below.
+        if self.grapheme_clustering
+            && let Some(at) = self.try_grapheme_join(c)
+        {
+            self.repeat_anchor = Some(at);
+            return;
+        }
+        match c.width() {
+            // Zero-width (combining marks): a zero-width code point is a combining
+            // mark — attach it to the previous base glyph rather than dropping it.
+            Some(0) => self.repeat_anchor = Some(self.push_combining(c)),
+            // Reachable, and the only scalar that reaches it: `vte` sends C0 and the
+            // 8-bit C1 range to `execute`, but `ground_dispatch` matches only
+            // `'\x00'..='\x1f' | '\u{80}'..='\u{9f}'` there (`vte-0.15.0/src/lib.rs:722`),
+            // so `DEL` (0x7F) arrives here and `'\u{7f}'.width()` is `None`. It writes no
+            // cell, so it clears the anchor — which is xterm's answer too, reached by its
+            // own route (`lastchar` is set only by CASE_PRINT, and REP guards on positive
+            // width, `charproc.c:6154`). An earlier version of this claimed the arm was
+            // unreachable, citing a `0x7F => ()` line that belongs to `CsiIgnore`.
+            None => self.repeat_anchor = None,
+            // Coerced to a pair, because a pair is the only multi-column shape the cell model
+            // has (`WIDE_CHAR` + exactly one `WIDE_CHAR_SPACER`) — see ADR-0025, which states
+            // every clause over "a pair" and never over a wider run. `unicode-width` genuinely
+            // returns 3 for at least one codepoint (U+17D8 KHMER SIGN BEYYAL, a ligature drawn
+            // as three characters), and that value is not wrong — it is unrepresentable here.
+            //
+            // Left uncoerced, the width fell through *every* wide branch in `write_glyph`
+            // (each gated on `width == 2`) while still driving the cursor advance, so the glyph
+            // landed as a lone narrow cell followed by columns that no flag distinguished from
+            // real blanks: search could not find the text on screen and word selection split
+            // the run, handing the clipboard a space the buffer never held (#595).
+            //
+            // All three references bound it, and ghostty says why in the same words —
+            // `unicode/props.zig:11-13`, *"We clamp to [0, 2] … i.e. 3-em dash becomes a 2-em
+            // dash"*. Clamping *here* rather than inside `write_glyph` keeps the two jobs apart:
+            // this is the policy for an out-of-range external value, and the invariant it
+            // establishes is asserted at the site that depends on it.
+            Some(width) => self.repeat_anchor = self.write_glyph(c, width.min(2)),
+        }
+    }
+
     /// Write one glyph at the cursor, handling deferred wrap and the wide-char
     /// spacer, then advance the cursor (deferring the wrap if it hits the edge).
-    fn write_glyph(&mut self, c: char, width: usize) {
+    /// Returns where the glyph landed — `(row, col)` of its lead cell — or `None` on
+    /// the one path that writes nothing: a width-2 glyph that cannot fit the last column
+    /// with autowrap off is dropped. [`Term::repeat_anchor`] is set from this, so a
+    /// print that placed no cell must not arm the repeat.
+    fn write_glyph(&mut self, c: char, width: usize) -> Option<(usize, usize)> {
         // Every wide branch below is gated on `width == 2`, and the four unguarded uses
         // (`insert_chars`, `col + width - 1` twice, the cursor advance) assume the same bound.
         // The caller coerces (#595); this states the assumption at the site that holds it, so a
@@ -3386,7 +3504,7 @@ impl Term {
         // squeezed or wrapped.
         if width == 2 && self.cursor.col + 1 >= cols {
             if !self.autowrap {
-                return;
+                return None; // dropped: nothing written, so nothing to repeat
             }
             // …but only if the wrap actually happens: vacating for a wrap that never occurs
             // blanks a column holding a live glyph.
@@ -3462,6 +3580,130 @@ impl Term {
         } else {
             self.cursor.col = new_col;
         }
+        Some((row, col))
+    }
+
+    /// The column, on the cursor's row, of the cluster the cursor last printed into —
+    /// or `None` when nothing precedes it on this row.
+    ///
+    /// With pending-wrap the cursor still sits on the just-written last-column glyph, so
+    /// the cluster is *at* the cursor; otherwise it is one column left, and once more
+    /// left over a `WIDE_CHAR_SPACER` to reach its lead. Shared by the combining-mark
+    /// attach point and the mode-2027 join point, which each carried their own copy of
+    /// it before #825.
+    ///
+    /// **`REP` deliberately does not use this**, and the reason is on
+    /// [`Term::repeat_anchor`]: this reading is wrong whenever autowrap is off and the
+    /// cursor merely advanced onto the last column, which the two callers below cannot
+    /// tell apart and `REP` does not have to, because it records where it wrote.
+    fn cursor_cluster_col(&self) -> Option<usize> {
+        let row = self.cursor.row;
+        let col = if self.cursor.pending_wrap {
+            self.cursor.col
+        } else if self.cursor.col == 0 {
+            return None;
+        } else {
+            self.cursor.col - 1
+        };
+        Some(if self.grid.cell(row, col).is_wide_spacer() {
+            col.saturating_sub(1)
+        } else {
+            col
+        })
+    }
+
+    /// The text the cell at `(row, col)` holds, in print order: its base glyph followed
+    /// by any combining marks the row's side table carries for it. One grapheme cluster
+    /// by construction — it is what a single print produced.
+    ///
+    /// A `String` and not a `Vec<char>`, because the mode-2027 join path calls this for
+    /// **every printed scalar** and then needs the text: returning scalars and
+    /// collecting cost a second allocation there and measured 2.06x on that path
+    /// (11.66 ms -> 24.06 ms over 20k joins, release, best of 7). `REP` iterates
+    /// `.chars()` instead, which costs it nothing.
+    fn cluster_text(&self, row: usize, col: usize) -> String {
+        let mut out = String::new();
+        out.push(self.grid.cell(row, col).c());
+        if let Some(marks) = self.grid.row_ref(row).combining_at(col) {
+            out.extend(marks.iter().copied());
+        }
+        out
+    }
+
+    /// REP (CSI Ps b): repeat the preceding grapheme `count` times (#825). The caller
+    /// owns the armed check — see the `'b'` arm of `csi_dispatch`, which holds both
+    /// halves of the ordering this sequence needs.
+    ///
+    /// **The repeat re-enters the print path**, which is the load-bearing decision:
+    /// printing already owns pending-wrap, autowrap, wide-character pairing, cluster
+    /// promotion under mode 2027, the pen, insert mode and the scroll region, so a
+    /// cell-fill would have to re-derive every one of them and would drift from typed
+    /// text the first time any of them changed. ghostty does the same
+    /// (`src/terminal/Terminal.zig:452-456`), and so does xterm.js.
+    ///
+    /// **What is repeated is the cluster at [`Term::repeat_anchor`], read off the cell.**
+    /// A retained copy would have to be kept in step with the cell by hand at three
+    /// arming sites and nothing would catch it drifting; the anchor keeps the *position*
+    /// exact, which is the half a read-back can get wrong.
+    ///
+    /// **That the unit is the cluster is a product judgement, not a derivation**, and
+    /// the three references give three answers. xterm repeats *nothing* after a
+    /// combining mark — its retained value is a single `IChar`, so the mark replaces
+    /// the base and the positive-width guard (`charproc.c:6154`) then rejects it.
+    /// ghostty repeats the base *without* its marks: its cluster-append branch returns
+    /// before `previous_char = c` (`Terminal.zig:1355-1365`). xterm.js repeats the
+    /// whole cluster, reading it off the cell (`InputHandler.ts:1649-1671`). ADR-0004
+    /// makes xterm the tie-breaker for *the spec*, and xterm's answer here follows from
+    /// a scalar `lastchar` rather than from a reading of it — while a cell in this
+    /// engine holds a cluster. Decided by the maintainer on 2026-09-07 and theirs to
+    /// reverse; a better derivation does not settle it.
+    ///
+    /// # Two bounds, and only one of them is the load-bearing one
+    ///
+    /// The count is untrusted and the repeat is the only place in this engine where one
+    /// wire parameter buys unbounded work, so it is bounded twice — for different
+    /// reasons, and the *order of importance is the reverse of the order they read in*.
+    ///
+    /// **The progress guard is what actually bounds the pathological case.** An
+    /// iteration that places no new cell has not repeated anything: under mode 2027 a
+    /// cluster ending in `ZWJ` re-joins the cluster it was read from, so each replay
+    /// grows one cell's cluster instead of writing a second one, and `try_grapheme_join`
+    /// is O(L) in that cluster's length. Measured before the guard: `?2027h`, `U+1F468`,
+    /// `U+200D`, then the eight bytes `CSI 65535 b` cost **593 seconds** — nine minutes
+    /// and fifty-three seconds of one consumer thread, for eight bytes of PTY output.
+    /// The guard ends the loop the first time an iteration leaves the anchor where it
+    /// found it, which is exactly the condition "nothing was repeated".
+    ///
+    /// **The count cap is defence in depth and would not have caught that case**, which
+    /// is why it is stated second. The cap is a whole buffer's worth of
+    /// cells, and at the default 10 000-line scrollback that is 801 920 on an 80x24
+    /// grid — larger than the 65535 a `u16` parameter can carry, so it never binds
+    /// there. It binds on a small buffer, where a count far past what the buffer can
+    /// hold only rewrites what the repeat already wrote. Shipping the cap alone would
+    /// have looked like a fix for the measurement above and been none.
+    ///
+    /// Both are divergences from every reference: xterm (`charproc.c:6156`), xterm.js
+    /// (`InputHandler.ts:1655`) and ghostty (`Terminal.zig:452-456`) all loop uncapped,
+    /// and alacritty does not implement the sequence. The asymmetry that justifies them
+    /// is that all three *are* the terminal and own the thread they burn, while this is
+    /// a library running on a consumer's.
+    fn repeat_last(&mut self, count: usize) {
+        let Some((row, col)) = self.repeat_anchor else {
+            return;
+        };
+        // Snapshot once: the repeats move the anchor, so re-reading it per iteration
+        // would repeat the growing run rather than the grapheme.
+        let cluster = self.cluster_text(row, col);
+        let cap = (self.scrollback_limit + self.grid.rows()).saturating_mul(self.grid.cols());
+        for _ in 0..count.min(cap.max(1)) {
+            let before = self.repeat_anchor;
+            for c in cluster.chars() {
+                self.place_grapheme(c);
+            }
+            if self.repeat_anchor == before {
+                break; // placed no new cell — see "the progress guard" above
+            }
+        }
     }
 
     /// Attach a combining mark (width-0 code point) to the grapheme it modifies —
@@ -3469,54 +3711,38 @@ impl Term {
     /// the just-written last-column glyph, so attach in place (no back-up, no
     /// deferred wrap); otherwise step back one column, and once more over a
     /// wide-char spacer to reach its lead. Stored in the grapheme side-table.
-    fn push_combining(&mut self, c: char) {
+    fn push_combining(&mut self, c: char) -> (usize, usize) {
         let row = self.cursor.row;
-        let mut col = if self.cursor.pending_wrap {
-            self.cursor.col
-        } else {
-            self.cursor.col.saturating_sub(1)
-        };
-        if self.grid.cell(row, col).is_wide_spacer() {
-            col = col.saturating_sub(1);
-        }
+        // `unwrap_or(0)`: a mark that opens the stream has no base and attaches to
+        // column 0, which is what the `saturating_sub` here did before #825. The join
+        // path declines that case instead; the two differ deliberately.
+        let col = self.cursor_cluster_col().unwrap_or(0);
         // Append the mark to the row's combining map at this column (setting the
         // cell's combining bit). No global pool — the cluster rides the row.
         self.grid.row_mut(row).push_combining(col, c);
         self.damage_span(row, col, col);
+        (row, col)
     }
 
     /// Mode 2027 (#295): if `c` **extends** the previous cell's grapheme cluster (UAX #29), append
-    /// it to that cell's side-table — no new cell, no cursor advance — and return `true`. Otherwise
-    /// return `false` so `print` takes the normal per-scalar path (a break starts a new cell).
+    /// it to that cell's side-table — no new cell, no cursor advance — and return where it joined.
+    /// Otherwise `None`, so `place_grapheme` takes the per-scalar path (a break starts a cell).
     ///
     /// The break state is reconstructed fresh from the previous cell's stored cluster (base scalar +
     /// side-table marks) rather than persisted across calls, so cursor moves / CR-LF can't corrupt
     /// it (mirrors ghostty). Width promotion for a narrow base (a flag's second RI, a text-base +
     /// VS16) is handled by the caller in a later step; here the base's existing width holds.
-    fn try_grapheme_join(&mut self, c: char) -> bool {
+    fn try_grapheme_join(&mut self, c: char) -> Option<(usize, usize)> {
         let row = self.cursor.row;
-        // Locate the previous cluster's base cell, exactly as `push_combining`: with pending-wrap
-        // the cursor still sits on the last glyph; else step back one, and over a wide spacer.
-        let col = if self.cursor.pending_wrap {
-            self.cursor.col
-        } else if self.cursor.col == 0 {
-            return false; // nothing precedes on this row
-        } else {
-            self.cursor.col - 1
-        };
-        let col = if self.grid.cell(row, col).is_wide_spacer() {
-            col.saturating_sub(1)
-        } else {
-            col
+        // Locate the previous cluster's base cell; `None` means nothing precedes it on
+        // this row, so there is nothing to extend.
+        let Some(col) = self.cursor_cluster_col() else {
+            return None; // nothing precedes on this row
         };
         // Reconstruct the previous cluster's text: base scalar + any already-joined scalars.
-        let mut prev = String::new();
-        prev.push(self.grid.cell(row, col).c());
-        if let Some(marks) = self.grid.row_ref(row).combining_at(col) {
-            prev.extend(marks.iter().copied());
-        }
+        let mut prev = self.cluster_text(row, col);
         if !crate::grapheme::grapheme_extends(&prev, c) {
-            return false;
+            return None;
         }
         // Join: ride the side-table (no new cell).
         self.grid.row_mut(row).push_combining(col, c);
@@ -3534,7 +3760,7 @@ impl Term {
             self.demote_cluster_to_narrow(row, col);
         }
         self.damage_span(row, col, col);
-        true
+        Some((row, col))
     }
 
     /// Shrink a wide cluster cell back to a single-width cell (#295): a default-wide emoji joined by
@@ -5086,40 +5312,43 @@ impl Perform for Term {
         // Translate through the active (GL) character set first (#62): under DEC
         // Special Graphics a printable byte becomes a line-drawing glyph.
         let c = self.charsets[self.gl].map(c);
-        // Grapheme-cluster mode (DEC ?2027, #295): if `c` extends the previous cell's cluster,
-        // join it there instead of placing a new cell. OFF → the per-char (wcwidth) path below.
-        if self.grapheme_clustering && self.try_grapheme_join(c) {
-            return;
-        }
-        match c.width() {
-            // Zero-width (combining marks): the grapheme-cluster side-table is a
-            // later slice; drop for now rather than mis-place it as its own cell.
-            // A zero-width code point is a combining mark — attach it to the
-            // previous base glyph rather than dropping it.
-            Some(0) => self.push_combining(c),
-            None => {}
-            // Coerced to a pair, because a pair is the only multi-column shape the cell model
-            // has (`WIDE_CHAR` + exactly one `WIDE_CHAR_SPACER`) — see ADR-0025, which states
-            // every clause over "a pair" and never over a wider run. `unicode-width` genuinely
-            // returns 3 for at least one codepoint (U+17D8 KHMER SIGN BEYYAL, a ligature drawn
-            // as three characters), and that value is not wrong — it is unrepresentable here.
-            //
-            // Left uncoerced, the width fell through *every* wide branch in `write_glyph`
-            // (each gated on `width == 2`) while still driving the cursor advance, so the glyph
-            // landed as a lone narrow cell followed by columns that no flag distinguished from
-            // real blanks: search could not find the text on screen and word selection split
-            // the run, handing the clipboard a space the buffer never held (#595).
-            //
-            // All three references bound it, and ghostty says why in the same words —
-            // `unicode/props.zig:11-13`, *"We clamp to [0, 2] … i.e. 3-em dash becomes a 2-em
-            // dash"*. Clamping *here* rather than inside `write_glyph` keeps the two jobs apart:
-            // this is the policy for an out-of-range external value, and the invariant it
-            // establishes is asserted at the site that depends on it.
-            Some(width) => self.write_glyph(c, width.min(2)),
-        }
+        self.place_grapheme(c);
+    }
+
+    /// A DCS is terminated: not a print, so the repeat is disarmed (#825). This method
+    /// exists for that alone — the payload is otherwise unhandled — and it is reachable
+    /// in ordinary use: since #824 answered DA2, `vim` follows up with XTGETTCAP
+    /// (`DCS + q <hex> ST`) queries this engine does not answer.
+    ///
+    /// The end of the DCS and not its start, which is both xterm's rule (its gate fires
+    /// when the parser returns to the ground state) and the only half that can be shown
+    /// to matter: no CSI can arrive between `hook` and here, so a disarm in `hook` is a
+    /// guard no mutation can redden.
+    ///
+    /// Which DCS terminator is fed decides whether this line is load-bearing at all,
+    /// measured by deleting it (`-`, a DCS, then `CSI 3 b`, counting dashes):
+    ///
+    /// | terminator | dashes without this line |
+    /// |---|---|
+    /// | `ESC \` (7-bit ST) | 1 — `esc_dispatch` disarms on the `\` |
+    /// | `0x9C` (8-bit ST, which DCS accepts where OSC refuses it — #847) | 4 |
+    /// | none; aborted by the `ESC` of the next sequence | 4 |
+    ///
+    /// So a test that feeds only `ESC \` proves nothing here, which is what the first
+    /// version of `rep_after_a_dcs_repeats_nothing` did.
+    ///
+    /// The last row is a **deliberate divergence from xterm**, in the safe direction:
+    /// an unterminated DCS never returns xterm's parser to the ground state, so xterm
+    /// would still repeat, while `vte` calls this on the abort and this engine does
+    /// not. Disarming too eagerly can only turn `REP` into a no-op.
+    fn unhook(&mut self) {
+        self.repeat_anchor = None;
     }
 
     fn execute(&mut self, byte: u8) {
+        // Not a print, so the repeat is disarmed (#825, [`Term::repeat_anchor`]). This
+        // is also where `CAN` and `SUB` land, which abort a sequence in every state.
+        self.repeat_anchor = None;
         match byte {
             // LF, VT, FF all line-feed.
             b'\n' | 0x0b | 0x0c => self.linefeed(),
@@ -5134,6 +5363,11 @@ impl Perform for Term {
     }
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
+        // Every completed CSI disarms `REP` (#825, [`Term::repeat_anchor`]). It is
+        // *taken* here rather than cleared on the way out because this function has
+        // six early returns and a clear at the end would miss all of them; `REP` is
+        // the one arm that needs the value, and it puts it back.
+        let repeat_anchor = self.repeat_anchor.take();
         // Kitty keyboard-protocol negotiation: CSI > / = / < / ? ... u. The
         // leading intermediate distinguishes it from plain `CSI u` (SCORC) (#23).
         if action == 'u'
@@ -5266,6 +5500,20 @@ impl Perform for Term {
             // CBT (CSI Ps Z): back-tab, the mirror of HT over the tab-stop
             // table. Cursor motion only — it writes no cell (#826).
             'Z' => self.put_back_tab(param_or(params, 0, 1) as usize),
+            // REP (CSI Ps b): repeat the preceding grapheme. `param_or` folds an
+            // absent parameter and an explicit zero to one, as everywhere else here.
+            'b' => {
+                // The three lines are one rule and their order is the rule: put back
+                // what this dispatch took, repeat, then clear what the repeats re-armed
+                // through the print path. That is xterm's lifecycle — the byte
+                // completing `CSI b` returns the parser to the ground state with nothing
+                // printed, so a second `CSI b` repeats nothing. ghostty is the outlier
+                // and re-arms (`printRepeat` calls `print`); pinned by
+                // `rep_does_not_rearm_itself` (#825).
+                self.repeat_anchor = repeat_anchor;
+                self.repeat_last(param_or(params, 0, 1) as usize);
+                self.repeat_anchor = None;
+            }
             'G' | '`' => self.set_col(param_or(params, 0, 1) as usize - 1),
             'd' => self.set_row(param_or(params, 0, 1) as usize - 1),
             'H' | 'f' => {
@@ -5322,6 +5570,8 @@ impl Perform for Term {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
+        // Not a print: the repeat is disarmed (#825, [`Term::repeat_anchor`]).
+        self.repeat_anchor = None;
         // VT52 mode (#84): the pre-ANSI dialect reuses the same `ESC <final>`
         // tokens vte already produces, but with different meanings, so it is a
         // mode-gated branch here rather than a separate parser. All VT52 sequences
@@ -5365,6 +5615,8 @@ impl Perform for Term {
     /// OSC dispatch (#12 event surface): title (0/2), cwd (7). OSC 8 hyperlink
     /// is per-cell state, handled in its own slice (#26), not here.
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        // Not a print: the repeat is disarmed (#825, [`Term::repeat_anchor`]).
+        self.repeat_anchor = None;
         // Which byte ended the sequence decides which byte ends its reply, and
         // this is the only place it is observable — vte hands it over per
         // dispatch and keeps nothing (#836). It rides outward on the query

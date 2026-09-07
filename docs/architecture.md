@@ -295,6 +295,43 @@ under it.
   touching any cursor-moving verb; this bullet is the implementation detail under it, the same
   relation the two properties above have to ADR-0025. It is a doc-comment and not a record because
   the rule is derived from the flag's one-sentence meaning rather than chosen between alternatives.
+- **The preceding grapheme is retained across bytes, and `REP` is the only reader (#825).** `REP`
+  (CSI Ps b) repeats what was last printed, so *"what was last printed"* becomes state the engine
+  has to model. What is held is a **position, not a character**: `(row, col)` of the cell the last
+  content-producing print wrote, with the grapheme read back off that cell at repeat time. **Set**
+  by the three sites that give a cell content (all reached through `place_grapheme`, each returning
+  where it wrote); **cleared** by every `Perform` callback except `print`, by `print` itself on the
+  one path that writes no cell, and by `resize`, which is the member that is not a parser callback
+  and the reason this is a rule rather than a list of dispatch methods.
+  **The position is recorded rather than re-derived, and that is the part worth carrying.** It looks
+  derivable from the cursor and is not: with autowrap off the cursor reaches the last column both by
+  *filling* it and by merely *advancing onto* it, and no cursor state separates those. The first
+  implementation guessed, and repeated whatever was sitting in the last column — on
+  `?7l` + `ZZZZZ` + `CUP` + `abcd` + `CSI 1 b`, a `Z` from an unrelated earlier part of the stream.
+  **This is xterm's rule reached the long way, and it does not arrive intact.** xterm derives the
+  lifecycle structurally — assign the retained character only when the parser is back in the ground
+  state, and it is unset unless a graphic character was printed (`charproc.c:6478`) — and that
+  formulation is *unavailable here*, because `vte`'s `Parser` publishes nothing about its state. So
+  the engine enumerates what xterm derives, and pays xterm's avoided cost twice over. First, a new
+  `Perform` method or a new public mutator that moves the cursor owes a clear and nothing enforces
+  it. Second, and measured rather than feared: **two parser states return to ground with no callback
+  at all** — `State::CsiIgnore` (a malformed `CSI 1 ? b`) and `State::DcsIgnore` — so the
+  enumeration is provably incomplete and cannot be completed against `vte` 0.15. Recording a
+  *position* is what bounds the consequence: a missed clear repeats the genuinely last-printed
+  grapheme, which is ghostty's behaviour, rather than a wrong glyph.
+  **Two consequences that read as bugs and are not.** `REP` disarms itself, so `CSI 3 b` twice
+  repeats three times and not six (xterm's behaviour; ghostty re-arms). And the unit repeated is the
+  **cluster** the cell holds rather than a scalar — a product judgement recorded on
+  `Term::repeat_last`, where the three references give three different answers.
+  **The count is bounded twice, and the second bound is the load-bearing one.** A cap at a buffer's
+  worth of cells, and a progress guard that ends the loop as soon as an iteration places no new
+  cell. The guard is what matters: under mode 2027 a cluster ending in `ZWJ` re-joins the cluster it
+  was read from, so each replay grows one cell instead of writing another, and the join is O(L) in
+  that length — `?2027h`, `U+1F468`, `U+200D`, then the eight bytes `CSI 65535 b` cost **593
+  seconds** before the guard. The cap would not have caught it: at the default 10 000-line
+  scrollback a buffer's worth of cells exceeds what a `u16` parameter can carry, so it never binds
+  there. Both are divergences from all three references, which loop uncapped because each *is* the
+  terminal and owns the thread it burns. [#825]
 - **Wide-char spacer is a distinct marker, not a blank.** The trailing column of a width-2 char must
   carry a "wide-char spacer" marker (flag/variant), not a plain blank — else overwrite, erase,
   selection, and cursor positioning go wrong. [#2]

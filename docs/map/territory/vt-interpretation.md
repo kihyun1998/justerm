@@ -24,7 +24,28 @@ for a terminal engine, that list is half the specification.
 ## Design model
 
 - **`Perform` is the whole entry surface.** `print` · `execute` · `csi_dispatch` · `esc_dispatch` ·
-  `osc_dispatch` — five methods, and everything the engine does to state hangs off them.
+  `osc_dispatch` · `unhook` — six methods since #825, and everything the engine does to state hangs
+  off them. `unhook` is the odd one: it handles no DCS and exists only to clear the `REP` retention
+  bit, which is the shape the next entry is about.
+- **A rule that xterm derives from its parser, this engine has to enumerate — and `vte` gives it no
+  way not to (#825).** `REP` needs *"what was last printed"*, and xterm gets its lifecycle for free:
+  it assigns the retained character only when the parser is back in the ground state, so a completed
+  escape sequence disarms the repeat as a consequence of the parser's shape rather than by an
+  explicit clear (`charproc.c:6478`). `vte`'s `Parser` publishes `new` / `new_with_size` / `advance`
+  / `advance_until_terminated` and **nothing about its state**, so that formulation is unavailable
+  and the rule becomes a list: every `Perform` callback but `print` clears the bit. The list is what
+  xterm's shape exists to avoid, and it has already cost once — `unhook` was added, then a mutation
+  showed the `hook` half of it could never fail and it was removed. **The member that makes this a
+  rule rather than a list of dispatch methods is `resize`**, which is not a parser callback at all
+  and still invalidates the retention. Anything new that moves the cursor or reflows owes a clear,
+  and nothing enforces it; the census lives on `Term::repeat_anchor`.
+  **And the enumeration cannot be completed against `vte` 0.15 at all**: `State::CsiIgnore`
+  returns to ground at `src/lib.rs:222` without dispatching, and `State::DcsIgnore` never
+  calls `hook`/`unhook`, so a malformed `CSI 1 ? b` or `DCS 1 ? q … ST` ends with no
+  callback for the engine to hang a clear on. Measured, not derived. What bounds the
+  consequence is the *shape* of what is retained: a recorded **position** degrades to
+  repeating the genuinely last-printed grapheme, where the cursor-derived guess this
+  started with repeated whatever happened to sit in the last column.
 - **The input space is UTF-8, which puts the 8-bit C1 controls outside it — deliberately, and this
   entry exists because nothing else said so (#847).** A lone `0x80..=0x9F` byte is ill-formed input,
   not a control: `0x9B` opens no CSI, `0x9D` no OSC, `0x90` no DCS, and `0x9C` terminates no string
@@ -134,8 +155,9 @@ for a terminal engine, that list is half the specification.
 ## Code
 
 - `justerm-core/src/term.rs` — the `Perform` implementation and every verb: `print`, `execute`,
-  `csi_dispatch`, `esc_dispatch`, `osc_dispatch`, `put_tab` / `put_back_tab`, and the mode flags
-  they read
+  `csi_dispatch`, `esc_dispatch`, `osc_dispatch`, `unhook`, `put_tab` / `put_back_tab`, and the
+  mode flags they read. `place_grapheme` is the print path below the charset translation, which
+  `repeat_last` re-enters; `repeat_anchor` carries the census that keeps the two in step
 - `justerm-core/src/lib.rs` — `Engine::feed`, which is only `parser.advance(&mut term, bytes)`; the
   `Parser` and `Term` are separate fields because `advance` borrows both mutably
 - `docs/architecture.md` §"Hidden VT state" — the catalogue of what is modelled, partly modelled and
