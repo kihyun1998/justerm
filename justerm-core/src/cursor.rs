@@ -134,16 +134,20 @@ pub struct Cursor {
     /// `self.autowrap` before consuming, because `DECAWM` can be turned off after
     /// the flag is armed and the park must then be spent rather than wrapped.
     ///
-    /// **What this flag cannot tell you, and the class the list above does not have
-    /// (#865).** Because it is armed as `pending_wrap = self.autowrap`, it is not a
-    /// general answer to *is the cursor parked on the glyph it just wrote*: with
-    /// `DECAWM` off a print that fills the last column pins the cursor and arms
-    /// nothing, so a pin and a bare move onto that column are identical in every
-    /// field of this struct. `Term::cursor_cluster_col` needs that distinction and
-    /// reads `Term::repeat_anchor` for it. A new reader wanting *which cell did the
-    /// last print land in* should do the same rather than extending this flag —
-    /// and `term::markers`'s `+1` above is the reader that still derives it from
-    /// here, which is why its bound is one short under `?7l`.
+    /// **What this flag is again a general answer to, and what it cost to get there
+    /// (#865, #869).** It now answers *is the cursor parked on the glyph it just
+    /// wrote* in every mode, which is simply the sentence at the top being true. It
+    /// was not, for as long as the arm folded `DECAWM` in: under `?7l` a print that
+    /// filled the last column pinned the cursor and armed nothing, so a pin and a bare
+    /// move onto that column were identical in every field of this struct. Two readers
+    /// paid for that — `Term::cursor_cluster_col`, which grew a workaround in #865 and
+    /// lost it again in #869, and `term::markers`'s `+1` above, whose bound was one
+    /// short under `?7l` until the arm was fixed.
+    ///
+    /// **So a new reader may ask this flag *which cell did the last print land in*,
+    /// and the three arm sites owe that answer.** They are not free to re-introduce a
+    /// condition on the arm without repairing those readers; that is the obligation
+    /// the mode-gated arm carried invisibly for two releases.
     ///
     /// The rule is stated at the property because that is where it is true, the
     /// same reason ADR-0025 D2 gives for the wrap link's per-verb table living in

@@ -1952,3 +1952,66 @@ fn rep_after_a_promotion_relocated_the_cluster_repeats_the_cluster() {
         "the repeat follows the cluster to its new row, not the column it was vacated from"
     );
 }
+
+/// Re-enabling autowrap after a row-filling print *does* wrap the next glyph (#869).
+///
+/// The mirror of `autowrap_off_after_the_wrap_is_armed_prints_in_place`, and the case
+/// the unconditional arm changed: the park is taken while the mode is off, so when the
+/// mode comes back the cursor is still logically one past the last column and the next
+/// print continues on the following row. Before #869 the park was never taken under
+/// `?7l`, so the glyph overwrote the last column instead.
+///
+/// All four references wrap here, each because its own park outlives the mode: xterm
+/// re-arms `do_wrap` unconditionally at the end of the write (`charproc.c:7167`,
+/// `:7211`) and consumes it under `WRAPAROUND` (`:7192`); alacritty's `input_needs_wrap`
+/// (`term/mod.rs:1136`) reaches `wrapline` (`:1088`), which returns early only while
+/// `LINE_WRAP` is clear (`:962`); ghostty gates the consume, not the arm
+/// (`Terminal.zig:1368`); and xterm.js simply leaves `x == cols` (`InputHandler.ts:651`,
+/// no mode test) so its overflow check wraps on the next write.
+///
+/// `DECSTR` is covered beside `?7h` because it restores DECAWM too, so it reaches this
+/// state without the stream ever naming the mode.
+#[test]
+fn autowrap_re_enabled_after_a_filled_row_wraps_the_next_glyph() {
+    for reenable in [&b"\x1b[?7h"[..], &b"\x1b[!p"[..]] {
+        let mut term = Engine::new(3, 2);
+        term.feed(b"\x1b[?7l");
+        term.feed(b"abc"); // fills the row; the park is taken even with the mode off
+        term.feed(reenable);
+        term.feed(b"X");
+
+        assert_eq!(
+            term.grid().cell(0, 2).c(),
+            'c',
+            "re-enable {reenable:?}: the last column is not overwritten"
+        );
+        assert_eq!(
+            term.grid().cell(1, 0).c(),
+            'X',
+            "re-enable {reenable:?}: the glyph continues on the next row"
+        );
+        assert_eq!(term.cursor().row, 1, "re-enable {reenable:?}");
+    }
+}
+
+/// A resize repairs a park taken with autowrap off, the same as one taken with it on
+/// (#869). Before the unconditional arm there was no park to repair here, so a print
+/// after the resize overwrote the last column of the old width instead of continuing
+/// past it — visible in the reported caret column as well as on screen.
+///
+/// `Term::resize` translates a park that is no longer at the last column into a real
+/// column, which is what makes the widened row continue rather than overwrite. alacritty
+/// (`grid/resize.rs:113-116`) and ghostty (`Screen.zig:2092-2098`) both perform that
+/// repair without consulting the mode; xterm has no resize repair at all.
+#[test]
+fn a_park_taken_with_autowrap_off_survives_a_widening_resize() {
+    let mut term = Engine::new(4, 3);
+    term.feed(b"\x1b[?7l");
+    term.feed(b"abcd"); // fills the 4-column row
+    term.resize(8, 3);
+    term.feed(b"X");
+
+    let row: String = (0..8).map(|c| term.grid().cell(0, c).c()).collect();
+    assert_eq!(row, "abcdX   ", "the row continues past the old width");
+    assert_eq!(term.cursor().col, 5);
+}

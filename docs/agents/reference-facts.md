@@ -2450,7 +2450,17 @@ every reference overwrites the last column in place. On the *mechanism* they spl
 | ghostty | **kept** — the whole consume is gated | `if (cursor.pending_wrap and modes.get(.wraparound))` | `src/terminal/Terminal.zig:1368` @ `e6e26e1` |
 | alacritty | **kept** — `wrapline()` returns before its own clear | `if !self.mode.contains(TermMode::LINE_WRAP) { return; }` | `alacritty_terminal/src/term/mod.rs:962` @ `852e971` |
 
-⚠ **SUPERSEDED by #869 (2026-09-07). justerm now KEEPS the flag, matching ghostty and alacritty.**
+⚠ **SUPERSEDED by #869 (2026-09-07). justerm now KEEPS the flag — and measured at the right instant
+that is 4-of-4, not 2-of-2.**
+
+**Where you sample decides the answer, and that is what made this look like a tie twice.** Sampled
+*mid-consume* — does the reference put the flag down while spending the park — it reads 2-2, which
+is the table below. Sampled at the **end of the print**, which is the state the next verb actually
+sees, all four leave a row-filling print parked regardless of DECAWM: xterm re-arms
+unconditionally (`charproc.c:7167`, `:7211`), xterm.js's `x++` (`InputHandler.ts:651`, no mode test)
+leaves `x == cols`, which *is* its park, and ghostty and alacritty never put it down. #848 read the
+first sampling point and called it 2-2; #869's first draft of this note read it as "matching ghostty
+and alacritty" and understated its own support. Both are the same error.
 The paragraph that stood here read: *"justerm takes xterm's shape, and the ground is local rather
 than a majority: this crate arms with `pending_wrap = self.autowrap`, so the flag is never set while
 the mode is off and one that outlives `?7l` contradicts the site that wrote it. The other two arm
@@ -2806,5 +2816,13 @@ mechanism" is true of the arm/clear pairing and false of the stored value, and a
 ⚠ **xterm's fallback is not this engine's, either.** With `char_was_written` false xterm reads
 `cur_col` — *under* the cursor — and if that cell is blank it gives up and prints the mark as a base
 glyph (`charproc.c:3140-3145`). justerm falls back to `cursor.col - 1`, which is alacritty's and
-ghostty's. The helper is xterm's arming with alacritty's fallback, and that composite matches no
-single reference — deliberate, and stated so the next reader does not "restore" one half of it.
+ghostty's.
+
+⚠⚠ **The composite this paragraph warned about is gone (#869), and the warning is kept only to say
+so.** It read: *"The helper is xterm's arming with alacritty's fallback, and that composite matches
+no single reference — deliberate, and stated so the next reader does not 'restore' one half of it."*
+That was true while the helper consulted `repeat_anchor` — xterm's mechanism — to see a pin the
+deferred-wrap flag could not express. #869 fixed the flag's arm, the anchor reader was measured dead
+and removed, and the helper is now one mechanism outright: read an unconditionally-armed park, else
+step back one. **The half that was borrowed from xterm was borrowed to work around a defect, and it
+left when the defect did** — which is the more useful thing to know than the composite ever was.
