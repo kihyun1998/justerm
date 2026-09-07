@@ -129,6 +129,17 @@ pub struct Cursor {
     /// `self.autowrap` before consuming, because `DECAWM` can be turned off after
     /// the flag is armed and the park must then be spent rather than wrapped.
     ///
+    /// **What this flag cannot tell you, and the class the list above does not have
+    /// (#865).** Because it is armed as `pending_wrap = self.autowrap`, it is not a
+    /// general answer to *is the cursor parked on the glyph it just wrote*: with
+    /// `DECAWM` off a print that fills the last column pins the cursor and arms
+    /// nothing, so a pin and a bare move onto that column are identical in every
+    /// field of this struct. `Term::cursor_cluster_col` needs that distinction and
+    /// reads `Term::repeat_anchor` for it. A new reader wanting *which cell did the
+    /// last print land in* should do the same rather than extending this flag —
+    /// and `term::markers`'s `+1` above is the reader that still derives it from
+    /// here, which is why its bound is one short under `?7l`.
+    ///
     /// The rule is stated at the property because that is where it is true, the
     /// same reason ADR-0025 D2 gives for the wrap link's per-verb table living in
     /// `Term::end_wrap`'s doc-comment.
