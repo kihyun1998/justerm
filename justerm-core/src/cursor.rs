@@ -126,7 +126,14 @@ pub struct Cursor {
     /// row-shift and erase verbs, which write neither field. `IL` and `DL` now clear
     /// (3-1); `SU` and `SD` deliberately do not, because ghostty saves and restores
     /// the flag across those two on purpose (`Terminal.zig:2388`); and `ICH`, `DCH`,
-    /// `ECH`, `EL`, `ED` are **unmeasured**, except that alacritty alone makes
+    /// `ECH`, `EL`, `ED` **were unmeasured until #869 and are now measured**: xterm
+    /// clears in every one of them. `ResetWrap` (`ptyx.h:3253`) puts down `do_wrap`
+    /// *and* `char_was_written` together, and `util.c` calls it from exactly seven
+    /// sites — `InsertLine` `:1295`, `DeleteLine` `:1388`, `InsertChar` `:1497`,
+    /// `DeleteChar` `:1582`, `ClearInLine2` `:1787`, `ClearRight` `:1873`,
+    /// `ClearScreen` `:1926`. This engine keeps the park across all seven, and #869
+    /// widened that divergence's reach from one mode to both. Not a defect on any
+    /// measurement so far, but no longer an unknown. alacritty alone additionally makes
     /// `EL 0` a no-op while parked (`term/mod.rs:1643`). A grep on the cursor fields
     /// will not tell you any of that.
     ///

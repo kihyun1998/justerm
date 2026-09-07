@@ -241,3 +241,22 @@ fn a_base_less_mark_at_column_zero_is_not_a_cluster_the_join_may_extend() {
         "the join declined, so nothing promoted column 0 to a wide pair"
     );
 }
+
+#[test]
+fn a_mark_after_a_resize_still_reaches_the_glyph_the_print_filled() {
+    // The case #865 could not fix and #869 does, which is the sharpest evidence that
+    // the workaround was incomplete rather than merely redundant: `Term::resize` clears
+    // the anchor #865 consulted, so the pin became invisible again the moment the screen
+    // changed size. Fixing the flag instead of reading around it covers this for free.
+    //
+    // Measured on master before #869: `"ab\u{301}c"` — the mark on `b`.
+    let mut t = Engine::new(3, 2);
+    t.feed(b"\x1b[?7labc"); // fills the row; the cursor is pinned on `c`
+    t.resize(6, 2); // the anchor is cleared here; the park is translated
+    t.feed(ACUTE.as_bytes());
+    assert_eq!(
+        t.accessible_text(),
+        format!("abc{ACUTE}"),
+        "the mark belongs to `c` across a resize too"
+    );
+}
