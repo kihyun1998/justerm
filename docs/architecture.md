@@ -295,9 +295,13 @@ under it.
   touching any cursor-moving verb; this bullet is the implementation detail under it, the same
   relation the two properties above have to ADR-0025. It is a doc-comment and not a record because
   the rule is derived from the flag's one-sentence meaning rather than chosen between alternatives.
-- **The preceding grapheme is retained across bytes, and `REP` is the only reader (#825).** `REP`
+- **The preceding grapheme is retained across bytes, and it has two readers (#825, #865).** `REP`
   (CSI Ps b) repeats what was last printed, so *"what was last printed"* becomes state the engine
-  has to model. What is held is a **position, not a character**: `(row, col)` of the cell the last
+  has to model — and #865 found a second question only this state can answer, so the *"only reader"*
+  this bullet used to claim is no longer true. With autowrap off, a print that fills the last column
+  pins the cursor on the glyph while the deferred-wrap flag stays clear, and no cursor field
+  separates that from merely having moved onto the column; the combining-mark attach point and the
+  mode-2027 join point both need the distinction and both now read this instead of the cursor. What is held is a **position, not a character**: `(row, col)` of the cell the last
   content-producing print wrote, with the grapheme read back off that cell at repeat time. **Set**
   by the three sites that give a cell content (all reached through `place_grapheme`, each returning
   where it wrote); **cleared** by every `Perform` callback except `print`, by `print` itself on the

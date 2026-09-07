@@ -59,9 +59,18 @@ the decision has to be made per scalar, with no lookahead, against a cluster tha
 
 ## Reference behaviour
 
-**None** in `docs/agents/reference-facts.md`. The mode-2027 rationale — that clustering changes
-widths and therefore desynchronises `wcwidth` — is reasoning recorded in issues and comments rather
-than a comparison against what the references do when the mode is enabled.
+**One axis, measured; the rationale itself still prose.**
+
+- [Where a combining mark attaches, and the four mechanisms for locating it](../../agents/reference-facts.md#where-a-combining-mark-attaches-and-the-four-mechanisms-for-locating-it-865-verified-2026-09-07)
+  — #865 measured **where the join point is located**, across all four, and ghostty turns out to run
+  *two* paths that disagree with each other: a plain zero-width path and a separate mode-2027 one
+  that probes the cell's content. Only the 2027 path handles a cursor pinned with autowrap off. Note
+  what this does **not** cover: it is about locating the cell, not about what clustering does once
+  the mode is on.
+
+The mode-2027 *rationale* — that clustering changes widths and therefore desynchronises `wcwidth` —
+is still reasoning recorded in issues and comments rather than a comparison against what the
+references do when the mode is enabled.
 
 ## Cross-cutting invariants
 
@@ -87,7 +96,9 @@ than a comparison against what the references do when the mode is enabled.
 
 - **Zero governing records** for an opt-in mode whose activation silently changes how much of the
   screen a string occupies.
-- **No reference comparison** for mode-2027 behaviour, in an area where the argument for staying off
-  is entirely about how *other* software will react.
+- **Almost no reference comparison** for mode-2027 behaviour, in an area where the argument for
+  staying off is entirely about how *other* software will react. Narrowed by #865, which measured
+  the join point and found ghostty gating a *different* answer behind the same mode — but the
+  width-change question the mode exists for is still uncompared.
 - **Nothing states what happens to existing cells when the mode is toggled mid-stream.** The
   segmentation changes; the buffer already written does not.

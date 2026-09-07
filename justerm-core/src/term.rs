@@ -167,7 +167,16 @@ pub struct Term {
     /// cursor stays in sync with wcwidth apps — clustering is opt-in for exactly that reason (#301).
     grapheme_clustering: bool,
     /// Where the last content-producing print landed — `(row, col)` of that cluster's
-    /// lead cell — or `None` when `REP` (CSI b) has nothing to repeat (#825).
+    /// lead cell — or `None` when nothing has been printed since the last thing that
+    /// cleared it (#825).
+    ///
+    /// **Two readers, and the second one constrains this field harder than the first.**
+    /// `REP` (CSI b) reads the grapheme back off this cell; `Term::cursor_cluster_col`
+    /// asks the narrower question *is the cursor standing on the cell the print wrote*,
+    /// which is the only way to see a pin the deferred-wrap flag cannot express (#865).
+    /// That second reader is why the anchor has to name a cell that **still holds the
+    /// cluster**: a promotion at the last column relocates it to the next row, and the
+    /// join now anchors on where it landed rather than where it was joined.
     ///
     /// The grapheme itself is not stored: it is read back from this cell, which is what
     /// keeps the repeated unit in step with what the cell model actually holds. The
@@ -3623,9 +3632,15 @@ impl Term {
     ///
     /// **Neither.** The cursor is merely *at* a cell, so the cluster is one column
     /// left, and once more left over a `WIDE_CHAR_SPACER` to reach its lead. This is
-    /// also the answer after a bare cursor move to the last column, where xterm and
-    /// ghostty instead attach under the cursor — a 2-2 split #865 deliberately did not
-    /// settle, since nothing measured reaches it.
+    /// also the answer after a bare cursor move to the last column, which the four
+    /// references answer four different ways: xterm attaches under the cursor
+    /// (`char_was_written` is false after `ResetWrap`, so it falls back to `cur_col`),
+    /// alacritty and ghostty attach one column left, and xterm.js attaches nowhere —
+    /// its `precedingJoinState` is zeroed on every escape transition
+    /// (`EscapeSequenceParser.ts:676`), so `shouldJoin` is false
+    /// (`UnicodeV6.ts:134`) and the mark becomes its own zero-width cell. This engine
+    /// keeps the answer it had, which is the plurality's; #865 deliberately did not
+    /// reopen it, since nothing measured reaches the case.
     ///
     /// **`REP` still does not use this**, and the reason is on [`Term::repeat_anchor`]:
     /// it holds the anchor unconditionally rather than only where the anchor and the
@@ -3636,9 +3651,18 @@ impl Term {
         // The pinned case. The wide arm is the same cell reached from its spacer: a
         // pair that fills the row leaves the cursor on the trailing spacer, one past
         // the anchored lead.
+        // `col > 0` is not a bounds guard, it preserves a decision. Column 0 is never a
+        // pin — `MIN_COLUMNS = 2`, so a print that fills the last column leaves the cursor
+        // at 1 or beyond — but `push_combining` anchors a base-less mark at column 0
+        // through its own `unwrap_or(0)`, and answering `Some(0)` there would hand
+        // `try_grapheme_join` a cluster to extend where it is documented to decline
+        // (see the `unwrap_or(0)` comment on `push_combining`: *the two differ
+        // deliberately*). Without this, a base-less mark followed by a joining scalar
+        // promoted column 0 to a wide pair that master leaves narrow.
         if let Some((arow, acol)) = self.repeat_anchor
             && arow == row
             && acol == self.cursor.col
+            && self.cursor.col > 0
         {
             return Some(acol);
         }

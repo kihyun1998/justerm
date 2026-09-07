@@ -16,8 +16,12 @@
 //! alacritty (`term/mod.rs:1073`, whose `input_needs_wrap` is armed unconditionally at
 //! `:1136`), xterm.js (`InputHandler.ts:625` — its `x` runs to `cols`) and ghostty's
 //! mode-2027 path (`Terminal.zig:1124` — *"if we do not have wraparound, the logic is
-//! trickier"*). Ghostty's plain zero-width path (`:1329`) is the sole outlier and
-//! contradicts its own 2027 path.
+//! trickier"*). That makes it **3 of 4 against this engine, not 4 of 4**: mode 2027
+//! carries no `.default = true` in ghostty either (`modes.zig:283`), so ghostty's
+//! shipped answer is its plain zero-width path (`:1329`), which reads
+//! `wraparound and pending_wrap` and therefore had exactly the defect fixed here.
+//! Ghostty's two paths contradict each other; the 2027 one is the one that agrees
+//! with the other three.
 
 use justerm_core::Engine;
 
@@ -51,9 +55,11 @@ fn autowrap_off_a_mark_after_a_filled_row_attaches_to_the_last_column() {
 fn autowrap_off_a_mark_after_a_cursor_move_attaches_before_the_cursor() {
     // AC 2 — the case a naive widening breaks. Nothing was printed since the move, so
     // the cursor is *at* a cell rather than pinned on one, and the mark takes the cell
-    // before it. Unchanged from before #865, and deliberately so: xterm and ghostty
-    // put it under the cursor instead, alacritty and xterm.js put it here, and the
-    // 2-2 split is not this change's to settle.
+    // before it. Unchanged from before #865, and deliberately so. The references do not
+    // agree and none of them agrees with two others: xterm puts it under the cursor,
+    // alacritty and ghostty put it here, and xterm.js puts it in a cell of its own
+    // (the intervening CSI zeroes its join state). This is the plurality's answer and
+    // reopening it is not this change's job.
     let mut t = Engine::new(3, 1);
     t.feed(b"\x1b[?7labc\x1b[1;3H");
     t.feed(ACUTE.as_bytes());
@@ -202,4 +208,25 @@ fn a_mark_after_a_relocated_cluster_follows_it_rather_than_its_vacated_column() 
             "at {cols} columns the mark follows the cluster, not its vacated column"
         );
     }
+}
+
+#[test]
+fn a_base_less_mark_at_column_zero_is_not_a_cluster_the_join_may_extend() {
+    // `push_combining` anchors a mark that opens a row at column 0 through its own
+    // `unwrap_or(0)`; the join path is documented to decline that case instead, and the
+    // two differ deliberately. The anchor branch must not quietly reconcile them — a
+    // pin is never at column 0 anyway, because `MIN_COLUMNS = 2` puts a filled last
+    // column at 1 or beyond.
+    //
+    // Reached by the completeness pass on #865, which measured this class firing far
+    // more often than the one the fix was written for.
+    let mut t = Engine::new(6, 2);
+    t.feed(b"\x1b[?2027h");
+    t.feed("\u{25B6}".as_bytes());
+    t.feed(b"\r"); // back to column 0; the anchor is cleared by the C0
+    t.feed("\u{FE0F}\u{200D}".as_bytes()); // a base-less mark, then a joining scalar
+    assert!(
+        !t.grid().cell(0, 0).is_wide(),
+        "the join declined, so nothing promoted column 0 to a wide pair"
+    );
 }
