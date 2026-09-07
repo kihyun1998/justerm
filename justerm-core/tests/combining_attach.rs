@@ -187,7 +187,10 @@ fn a_mark_after_a_relocated_cluster_follows_it_rather_than_its_vacated_column() 
         '\u{25B6}',
         "precondition: the promoted cluster relocated to column 0"
     );
-    assert!(t.grid().cell(0, 1).is_wide_spacer(), "precondition: its spacer");
+    assert!(
+        t.grid().cell(0, 1).is_wide_spacer(),
+        "precondition: its spacer"
+    );
 
     t.feed("\u{301}".as_bytes()); // a further mark, arriving after the relocation
     // The relocation soft-wraps, so the logical line is the vacated half followed by
