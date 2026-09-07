@@ -3486,7 +3486,7 @@ impl Term {
             // the guard on the guard.
             //
             // **All four references print in place here**: xterm clears `do_wrap` and
-            // only then asks `WRAPAROUND` (`charproc.c:7059`, `:7192`), xterm.js un-parks
+            // only then asks `WRAPAROUND` (`charproc.c:7059-7061`), xterm.js un-parks
             // with `x = cols - 1` in the else arm of its `wraparoundMode` branch
             // (`InputHandler.ts:612`), ghostty gates the whole consume
             // (`Terminal.zig:1368`) and alacritty's `wrapline` early-returns on
@@ -3625,7 +3625,10 @@ impl Term {
     /// [`Term::repeat_anchor`]; #869 removed the cause instead — the arm is now
     /// unconditional and the mode is tested where it is consumed, which is what
     /// alacritty (`term/mod.rs:1136`), ghostty (`Terminal.zig:1434`) and xterm
-    /// (`charproc.c:7211`) all do. The workaround was then measured dead across the
+    /// (`charproc.c:7152`) all do — that line is the *exact-fill* arm and is
+    /// unconditional; xterm's *overflow* arm two branches up (`:7145`) is gated on
+    /// `WRAPAROUND`, and the arm site here is only ever reached by the former. The
+    /// workaround was then measured dead across the
     /// whole core suite, against a positive control that reproduced it under the old
     /// arming, and removed.
     ///

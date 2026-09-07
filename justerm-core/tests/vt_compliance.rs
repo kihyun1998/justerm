@@ -1962,8 +1962,10 @@ fn rep_after_a_promotion_relocated_the_cluster_repeats_the_cluster() {
 /// `?7l`, so the glyph overwrote the last column instead.
 ///
 /// All four references wrap here, each because its own park outlives the mode: xterm
-/// re-arms `do_wrap` unconditionally at the end of the write (`charproc.c:7167`,
-/// `:7211`) and consumes it under `WRAPAROUND` (`:7192`); alacritty's `input_needs_wrap`
+/// arms `do_wrap` on the exact-fill path unconditionally (`charproc.c:7152`, committed
+/// at `:7167`) and consumes it under `WRAPAROUND` (`:7059-7061`) — note its *overflow*
+/// arm at `:7145` IS gated, and `:7211` is the non-default `!OPT_WIDE_CHARS` build, which
+/// an earlier draft of this comment cited by mistake; alacritty's `input_needs_wrap`
 /// (`term/mod.rs:1136`) reaches `wrapline` (`:1088`), which returns early only while
 /// `LINE_WRAP` is clear (`:962`); ghostty gates the consume, not the arm
 /// (`Terminal.zig:1368`); and xterm.js simply leaves `x == cols` (`InputHandler.ts:651`,
@@ -2000,9 +2002,18 @@ fn autowrap_re_enabled_after_a_filled_row_wraps_the_next_glyph() {
 /// past it — visible in the reported caret column as well as on screen.
 ///
 /// `Term::resize` translates a park that is no longer at the last column into a real
-/// column, which is what makes the widened row continue rather than overwrite. alacritty
-/// (`grid/resize.rs:113-116`) and ghostty (`Screen.zig:2092-2098`) both perform that
-/// repair without consulting the mode; xterm has no resize repair at all.
+/// column, which is what makes the widened row continue rather than overwrite.
+///
+/// **This engine is 1-of-3 here, and that is worth stating plainly rather than
+/// discovering later.** Only alacritty repairs the *live* cursor
+/// (`grid/resize.rs:113-116`, `:248-251`). ghostty's repair is on the **saved** cursor
+/// only — `Screen.zig:2086` opens `const sc = &self.saved_cursor.?` and there is no
+/// live-cursor counterpart (`PageList.zig`'s `pending_wrap` belongs to its internal
+/// `ReflowCursor`, not the terminal's). xterm does not translate at resize at all. So
+/// before #869 this engine sat with those two by accident — it had no park to repair
+/// under `?7l` — and now sits with alacritty on purpose. The move is a consequence of
+/// the unconditional arm, not a separate choice, and it is pinned here so it is a
+/// decision somebody can revisit rather than a side effect nobody wrote down.
 #[test]
 fn a_park_taken_with_autowrap_off_survives_a_widening_resize() {
     let mut term = Engine::new(4, 3);

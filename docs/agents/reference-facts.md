@@ -2445,7 +2445,7 @@ every reference overwrites the last column in place. On the *mechanism* they spl
 
 | Reference | Flag | Wrap | Site |
 |---|---|---|---|
-| xterm | **consumed unconditionally** — `screen->do_wrap = False;` runs first | then `if ((xw->flags & WRAPAROUND)) WrapLine(xw);` | `charproc.c:7059-7062` and `:7192-7195` @ `6380a3e` |
+| xterm | **consumed unconditionally** — `screen->do_wrap = False;` runs first | then `if ((xw->flags & WRAPAROUND)) WrapLine(xw);` | `charproc.c:7059-7061` @ `6380a3e`. ⚠ **This row used to also cite `:7192-7195`, which is the `!OPT_WIDE_CHARS` build** — the `#else` opens at `:7178`. Corrected by #869; the live consume is the first pair only |
 | xterm.js | **consumed** — the else arm sets `x = cols - 1`, un-parking | `if (wraparoundMode)` guards the wrap branch | `src/common/InputHandler.ts:582`, `:612` @ `699f553` |
 | ghostty | **kept** — the whole consume is gated | `if (cursor.pending_wrap and modes.get(.wraparound))` | `src/terminal/Terminal.zig:1368` @ `e6e26e1` |
 | alacritty | **kept** — `wrapline()` returns before its own clear | `if !self.mode.contains(TermMode::LINE_WRAP) { return; }` | `alacritty_terminal/src/term/mod.rs:962` @ `852e971` |
@@ -2457,10 +2457,23 @@ that is 4-of-4, not 2-of-2.**
 *mid-consume* — does the reference put the flag down while spending the park — it reads 2-2, which
 is the table below. Sampled at the **end of the print**, which is the state the next verb actually
 sees, all four leave a row-filling print parked regardless of DECAWM: xterm re-arms
-unconditionally (`charproc.c:7167`, `:7211`), xterm.js's `x++` (`InputHandler.ts:651`, no mode test)
+unconditionally on the exact-fill path (`charproc.c:7152`, committed at `:7167`), xterm.js's `x++`
 leaves `x == cols`, which *is* its park, and ghostty and alacritty never put it down. #848 read the
 first sampling point and called it 2-2; #869's first draft of this note read it as "matching ghostty
 and alacritty" and understated its own support. Both are the same error.
+
+**Two axes, and naming them is the durable part of this section.**
+
+| axis | question | answer |
+|---|---|---|
+| **arm** | after a row-filling print with `?7l`, is the park taken? | **4-0 yes.** xterm `:7152` (exact fill, unconditional — note the *overflow* arm at `:7145` IS gated on `WRAPAROUND`), alacritty `term/mod.rs:1136`, ghostty `Terminal.zig:1434`, xterm.js `InputHandler.ts:651` |
+| **survive a consume** | after a `?7l` print *spends* that park, does the flag still stand mid-consume? | **2-2.** xterm clears it (`charproc.c:7060`) and xterm.js un-parks; ghostty and alacritty keep it. This is #848's axis and its tally was right |
+
+justerm now matches 4-0 on the arm. On the consume axis it clears and then *re-arms* through the
+same advance, which is xterm's shape too (`:7152` fires again) — so at the end of any print all four
+and justerm agree, and the 2-2 exists only at an instant inside the consume. **A tally is only
+meaningful with its sampling point attached**, which is the thing neither #848 nor #869's first draft
+of this note said.
 The paragraph that stood here read: *"justerm takes xterm's shape, and the ground is local rather
 than a majority: this crate arms with `pending_wrap = self.autowrap`, so the flag is never set while
 the mode is off and one that outlives `?7l` contradicts the site that wrote it. The other two arm
@@ -2469,7 +2482,7 @@ unconditionally, which is what makes keeping coherent for them."*
 Every sentence of that was true and the conclusion still fell, because **the ground was conditional
 on the arm site and the arm site was the thing worth changing**. #869 measured the arm across the
 three references that have one — alacritty `term/mod.rs:1136-1137`, ghostty `Terminal.zig:1434-1436`,
-xterm `charproc.c:7211` — and justerm was **3-0 the outlier**: the other three arm unconditionally
+xterm `charproc.c:7152` — and justerm was **3-0 the outlier**
 and test the mode where the park is *consumed*. Once justerm does the same, "the flag is never set
 while the mode is off" is false and the coherence argument that rejected keeping now supports it.
 
