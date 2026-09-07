@@ -37,8 +37,13 @@ Read out of the source; there is no record to read instead.
   transparent to the shell underneath it.
 - **Origin mode (DECOM) makes addressing relative** to the scroll region's top margin, and clamps to
   it — so the same escape sequence means different absolute rows depending on a mode set earlier.
-- Reverse wraparound (DEC ?45) lets a **backspace** at column 0 of a soft-wrapped row move back to the
-  end of the previous row — BS only, soft wraps only.
+- Reverse wraparound (DEC ?45) does **two** things to a backspace, and the second is easy to miss:
+  at column 0 of a soft-wrapped row it moves back to the end of the previous row (BS only, soft wraps
+  only), and at a **parked** cursor it spends the deferred wrap as the first unit of the move, so the
+  cursor does not move at all (#80). The second is gated on the mode and *not* on autowrap, which is
+  how xterm gates it, so it is reachable under `?7l` as well — a reach #869 opened by arming the park
+  there. Without it a parked and an unparked backspace land in the same place, which is the sharper
+  statement of the defect than "one column off".
 
 ## Code
 

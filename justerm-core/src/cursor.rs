@@ -98,8 +98,14 @@ pub struct Cursor {
     ///   made the sentence at the top false for a whole mode — under `?7l` the cursor
     ///   was pinned with the flag clear — and cost two readers a correct answer
     ///   (#865, #869) before it was found.
-    /// - **Consumed** by the wrap machinery, which is not a clear: `Term::wrapline`
-    ///   performs the deferred wrap and only then puts the flag down.
+    /// - **Consumed**, which is not a clear — the flag is *spent* on work it owed.
+    ///   Two sites, and they spend it in opposite directions: `Term::wrapline` performs
+    ///   the deferred wrap and only then puts the flag down, and `Term::backspace`
+    ///   under `?45` takes the park as the first unit of the move and therefore does
+    ///   **not** decrement the column (#80). A consume site that cleared instead of
+    ///   spending would be indistinguishable from a clear on the flag alone — the
+    ///   difference shows up only in where the cursor lands, which is why both are
+    ///   pinned against an unparked control at the same coordinate.
     /// - **Translated** by `Term::resize`: where a reflow leaves the cursor off the
     ///   last column the logical position becomes representable, so the flag is
     ///   dropped and `col` takes it instead. Neither an arm nor a clear.
