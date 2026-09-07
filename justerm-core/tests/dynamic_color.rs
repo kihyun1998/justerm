@@ -209,6 +209,168 @@ fn osc4_malformed_fields_are_dropped() {
     assert_eq!(t.drain_events(), vec![]);
 }
 
+/// An `OSC 4` pair whose spec field is empty names no colour, so nothing is
+/// relayed for it (#834). The engine cannot parse a colour and never will, but
+/// *"the field is empty"* needs no parser — relaying `""` would hand the consumer
+/// a value it has to invent a policy for.
+#[test]
+fn osc4_empty_spec_relays_no_set() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]4;1;\x07");
+    assert_eq!(t.drain_events(), vec![]);
+}
+
+/// **The test that names the decision** (#834): an empty spec drops **only its own
+/// pair**; the well-formed pairs after it are still relayed.
+///
+/// The alternative was to drop the rest of the sequence, which is what xterm does
+/// — `ChangeOneAnsiColor` returns negative and the return hits
+/// `/* stop on any error */ break` (`misc.c:3013-3016`, in the pair loop opening
+/// at `:2993`; the chain is `AllocateAnsiColor` → `xtermAllocColor` → `-1` at
+/// `:2918`).
+///
+/// It was **not** rejected for being out of ADR-0004's reach — that was this
+/// test's first justification and it was false. xterm makes the same observation
+/// this engine makes, `strlen(spec) == 0` with no parser at `misc.c:3105-3107`,
+/// and `XParseColor` (`:3111`) sits in the `else if` so it is never reached for an
+/// empty spec. The abort is therefore a well-defined instruction that this engine
+/// **declines**: reading a blank field as evidence that structurally well-formed
+/// pairs are corrupt is an inference about *application intent*, which ADR-0017
+/// puts on the consumer's side, and it would discard `index 2 = #fff`, a value the
+/// application explicitly sent. The full grounds are on #834; the call is the
+/// maintainer's.
+///
+/// Two references answer as this engine does, both by continuing the walk:
+/// xterm.js — `parseColor(spec)` returns falsy and nothing is pushed while
+/// `while (slots.length > 1)` keeps shifting (`InputHandler.ts:3073`, `:3064`) —
+/// and alacritty via `vte`, where a failed `xparse_color` falls to `unhandled`
+/// with no `break` (`vte-0.15.0/src/ansi.rs:1372-1389`). The tally is 2–2, not
+/// 1–1.
+#[test]
+fn osc4_empty_spec_drops_only_that_pair() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]4;1;;2;#fff\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![TermEvent::SetPaletteColor {
+            index: 2,
+            spec: "#fff".into()
+        }]
+    );
+}
+
+/// **The other half of "only its own pair": the pairs *before* it survive** (#834).
+///
+/// The sibling test above puts the empty pair first, so no assertion in it can see
+/// what the drop does to what came earlier — and an implementation that discards
+/// the *preceding* pairs (xterm's abort run backwards) passes it, and passed the
+/// whole suite when it was measured. That mutant loses `index 1` here.
+///
+/// The query row is the one with teeth: under such an implementation
+/// `OSC 4 ; 1 ; ? ; 2 ; ; 3 ; #00f` swallows the query, so the consumer never
+/// replies and an application blocked on the answer waits forever.
+#[test]
+fn osc4_empty_spec_leaves_the_pairs_before_it_intact() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]4;1;#f00;2;;3;#00f\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![
+            TermEvent::SetPaletteColor {
+                index: 1,
+                spec: "#f00".into()
+            },
+            TermEvent::SetPaletteColor {
+                index: 3,
+                spec: "#00f".into()
+            },
+        ]
+    );
+
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]4;1;?;2;;3;#00f\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![
+            TermEvent::QueryPaletteColor {
+                index: 1,
+                terminator: Terminator::Bel
+            },
+            TermEvent::SetPaletteColor {
+                index: 3,
+                spec: "#00f".into()
+            },
+        ]
+    );
+}
+
+/// The guard tests **emptiness, not blankness**, and that is deliberate (#834 Out
+/// of Scope) — so it is pinned here rather than left to be "corrected" later.
+///
+/// A space-only spec is relayed verbatim: the engine is not entitled to read a
+/// space as "no colour", because it does not parse colours and `" "` is a byte the
+/// application chose to send. Both references that *do* parse reject it (xterm
+/// `XParseColor(" ")` fails; xterm.js `parseColor(" ")` → `undefined`), so a later
+/// pass aligning with them would widen this guard — and this assertion is what
+/// makes that show up as a decision rather than a silent drift.
+///
+/// TAB and NUL behave the other way for a reason that has nothing to do with the
+/// guard: `vte` drops C0 bytes inside an OSC string, so those fields reach the
+/// engine genuinely empty. "A blank spec is dropped" is therefore true for TAB and
+/// NUL and false for SPACE.
+#[test]
+fn osc4_a_space_spec_is_relayed_but_a_c0_only_spec_arrives_empty() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]4;1; ;2;#fff\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![
+            TermEvent::SetPaletteColor {
+                index: 1,
+                spec: " ".into()
+            },
+            TermEvent::SetPaletteColor {
+                index: 2,
+                spec: "#fff".into()
+            },
+        ]
+    );
+
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]4;1;\t;2;#fff\x07"); // TAB never reaches the field
+    assert_eq!(
+        t.drain_events(),
+        vec![TermEvent::SetPaletteColor {
+            index: 2,
+            spec: "#fff".into()
+        }]
+    );
+}
+
+/// The empty-spec drop is classified *before* the pair is read as anything else,
+/// and it does not disturb the `?` classification of a later pair: the blank pair
+/// relays nothing — not a query — and the `?` pair after it still queries (#834).
+///
+/// The second feed is the acceptance criterion's literal shape: a `?` left over as
+/// an **odd trailing field** after the empty pair is consumed. The walk needs two
+/// fields, so it is not read as a query for anybody.
+#[test]
+fn osc4_empty_spec_is_not_a_query_and_leaves_a_later_query_intact() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]4;1;;?\x07");
+    assert_eq!(t.drain_events(), vec![]);
+
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]4;1;;2;?\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![TermEvent::QueryPaletteColor {
+            index: 2,
+            terminator: Terminator::Bel
+        }]
+    );
+}
+
 /// Raw-forward is format-agnostic: the engine never parses the spec, so every
 /// XParseColor form (16-bit `rgb:`, `#RRGGBB`, long `#hex`) reaches the consumer
 /// verbatim for it to interpret.

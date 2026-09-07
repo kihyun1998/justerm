@@ -276,9 +276,16 @@ pub enum TermEvent {
     /// calling `Engine::report_color_scheme` (#85).
     ColorSchemeQuery,
     /// The app set ANSI palette entry `index` to `spec` (OSC 4). One event per
-    /// `index ; spec` pair in the sequence. The cell still references
-    /// `Indexed(index)` — only the consumer's `palette[index]` changes, so the
-    /// engine stays theme-agnostic (#122).
+    /// `index ; spec` pair the engine accepts — a pair whose index does not parse
+    /// as a `u8`, or whose spec is `?` (a query) or **empty** (#834), produces
+    /// none, and the pairs around it are unaffected either way. The cell still
+    /// references `Indexed(index)` — only the consumer's `palette[index]` changes,
+    /// so the engine stays theme-agnostic (#122).
+    ///
+    /// **`spec` is never empty**, so a consumer's colour parser is never handed a
+    /// blank string. It is otherwise verbatim and unvalidated: the engine holds no
+    /// palette and parses no colour, so `spec` may still be whitespace or
+    /// nonsense, and interpreting it is the consumer's (ADR-0017).
     SetPaletteColor { index: u8, spec: String },
     /// The app set the default foreground colour (OSC 10). Raw spec, forwarded
     /// for the consumer to apply — theme-agnostic, like [`SetBackground`](Self::SetBackground) (#122).
