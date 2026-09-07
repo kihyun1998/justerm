@@ -133,31 +133,52 @@ fn a_parked_backspace_without_reverse_wrap_still_moves() {
     assert_eq!((t.cursor().row, t.cursor().col), (1, 1));
 }
 
-/// The same rule with autowrap **off** (#869 opened this reach).
+/// With autowrap **off**, a parked backspace moves — the park is spent by moving, not by
+/// standing still (#80).
 ///
-/// xterm's gate is `(rev || rev2) && do_wrap` — it does not consult `WRAPAROUND` — so a
-/// park taken under `?7l` is spent the same way. Until #869 armed the deferred wrap
-/// unconditionally there was no park here to spend, so this case could not arise; it is
-/// the same defect in a second mode rather than a new one.
+/// This test asserted the opposite in a first version of this change, on a reading of
+/// xterm's spend site that stopped one line too early. `cursor.c:153` gates on
+/// `(rev || rev2) && screen->do_wrap`, and `rev` looks like the mode flag but is not:
+/// `:123-127` define `WRAP_MASK (REVERSEWRAP | WRAPAROUND)` and
+/// `rev = ((flags & WRAP_MASK) == WRAP_MASK)`, so it means *`?45` **and** `?7h`* and the
+/// spend branch is dead under `?7l`. ghostty reaches the same answer earlier still —
+/// `if (!self.modes.get(.wraparound)) break :wrap_mode .none;` (`Terminal.zig:1756`)
+/// returns through the plain decrement at `:1766-1769`. xterm.js never reaches the state,
+/// since its `?7l` print pins `x = cols - 1` (`InputHandler.ts:612`). 3-0.
+///
+/// Both ways of arriving at the park are covered, because they are different mechanisms:
+/// armed under `?7l` (which only #869 made possible) and armed under `?7h` and then
+/// carried into `?7l` (reachable long before it).
 #[test]
-fn reverse_wrap_backspace_spends_a_park_taken_with_autowrap_off() {
-    let mut parked = Engine::new(3, 2);
-    parked.feed(b"\x1b[?7l\x1b[?45h");
-    parked.feed(b"abc"); // fills the row; the park is taken even with the mode off
+fn a_parked_backspace_with_autowrap_off_moves() {
+    // Armed with the mode already off.
+    let mut fresh = Engine::new(3, 2);
+    fresh.feed(b"\x1b[?7l\x1b[?45h");
+    fresh.feed(b"abc");
     assert!(
-        parked.cursor().pending_wrap,
+        fresh.cursor().pending_wrap,
         "precondition: parked under ?7l"
     );
-    parked.feed(b"\x08");
+    fresh.feed(b"\x08");
     assert_eq!(
-        (parked.cursor().row, parked.cursor().col),
-        (0, 2),
-        "spent, not discarded"
+        (fresh.cursor().row, fresh.cursor().col),
+        (0, 1),
+        "?7l: the park is spent by moving"
     );
 
-    let mut control = Engine::new(3, 2);
-    control.feed(b"\x1b[?7l\x1b[?45h");
-    control.feed(b"ab");
-    control.feed(b"\x08");
-    assert_eq!((control.cursor().row, control.cursor().col), (0, 1));
+    // Armed while the mode was on, then carried across `?7l`.
+    let mut carried = Engine::new(3, 2);
+    carried.feed(b"\x1b[?45h");
+    carried.feed(b"abc");
+    carried.feed(b"\x1b[?7l");
+    assert!(
+        carried.cursor().pending_wrap,
+        "precondition: park carried in"
+    );
+    carried.feed(b"\x08");
+    assert_eq!(
+        (carried.cursor().row, carried.cursor().col),
+        (0, 1),
+        "a park carried into ?7l is spent by moving too"
+    );
 }

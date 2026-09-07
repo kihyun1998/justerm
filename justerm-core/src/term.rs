@@ -3061,13 +3061,21 @@ impl Term {
         // cleared alongside it: clearing and decrementing discards the logical `+1` and
         // collapses the parked and unparked states onto the same landing (#80).
         //
-        // The gate is the mode, not autowrap, which is what xterm gates on:
-        // `if ((rev || rev2) && screen->do_wrap) { --count; } else { --col; }`
-        // (`cursor.c:154-157`). ghostty does the same under a comment saying it is
-        // *"to match xterm"* (`Terminal.zig:1773-1778`), and xterm.js reaches the same
-        // landing by letting `x == cols` stand in this branch. Reachable with autowrap
-        // off as well, since #869 arms the park there too.
-        if self.reverse_wraparound && self.cursor.pending_wrap {
+        // **The gate needs autowrap as well as the mode**, and reading only the
+        // conditional at xterm's spend site says otherwise — which is how a first
+        // version of this got it backwards. `cursor.c:153` reads
+        // `if ((rev || rev2) && screen->do_wrap) { --count; } else { --col; }`, but
+        // `rev` is not the mode flag: `:123-127` define
+        // `WRAP_MASK (REVERSEWRAP | WRAPAROUND)` and `rev = ((flags & WRAP_MASK) ==
+        // WRAP_MASK)`, so `rev` means *`?45` **and** `?7h`* and the whole branch is dead
+        // under `?7l`. ghostty gates the same way and earlier —
+        // `if (!self.modes.get(.wraparound)) break :wrap_mode .none;`
+        // (`Terminal.zig:1756`), returning through the plain decrement at `:1766-1769`
+        // before it can reach the spend at `:1774`. xterm.js never reaches the state at
+        // all, since its `?7l` print pins `x = cols - 1` (`InputHandler.ts:612`). So a
+        // park taken under `?7l` is **spent by moving**, 3-0, and the park #869 arms
+        // there is not this rule's to consume.
+        if self.reverse_wraparound && self.autowrap && self.cursor.pending_wrap {
             self.cursor.pending_wrap = false;
             return;
         }
