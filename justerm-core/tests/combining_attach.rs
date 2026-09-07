@@ -158,3 +158,43 @@ fn a_restored_deferred_wrap_still_attaches_under_the_cursor() {
         "a restored park still names the cell under the cursor"
     );
 }
+
+#[test]
+fn a_mark_after_a_relocated_cluster_follows_it_rather_than_its_vacated_column() {
+    // The window where "the cursor is standing on what the print wrote" and "wherever
+    // the print wrote" come apart, and the reason the first is asked rather than the
+    // second.
+    //
+    // Under mode 2027 a narrow base joined by VS16 grows to width 2. At the last
+    // column the pair cannot fit, so `relocate_cluster_wide` vacates it and re-places
+    // the cluster on the next row — and on a one-row grid that "next row" is reached by
+    // *scrolling*, so the cluster lands back on row 0 at column 0 while the record of
+    // where the print wrote still names the far column it came from.
+    //
+    // A helper that trusted that record alone would attach the next mark to a column
+    // the cluster no longer occupies. Reached by proptest (`robustness.rs`) before it
+    // was reached by hand.
+    let mut t = Engine::new(6, 1);
+    t.feed(b"\x1b[?2027h");
+    t.feed("abcde".as_bytes()); // fill columns 0-4, base lands on column 5
+    t.feed("\u{25B6}".as_bytes()); // ▶ , width 1, at column 5
+    t.feed("\u{FE0F}".as_bytes()); // VS16 → width 2 → cannot fit → relocated to column 0
+
+    // The window itself, asserted before the behaviour inside it: the cluster really did
+    // move to column 0, so this test cannot pass by never entering the state.
+    assert_eq!(
+        t.grid().cell(0, 0).c(),
+        '\u{25B6}',
+        "precondition: the promoted cluster relocated to column 0"
+    );
+    assert!(t.grid().cell(0, 1).is_wide_spacer(), "precondition: its spacer");
+
+    t.feed("\u{301}".as_bytes()); // a further mark, arriving after the relocation
+    // The relocation soft-wraps, so the logical line is the vacated half followed by
+    // the cluster's new home — the mark has to land on the second half.
+    assert_eq!(
+        t.accessible_text(),
+        format!("abcde\u{25B6}\u{FE0F}{ACUTE}"),
+        "the mark follows the cluster to column 0, not the column it was vacated from"
+    );
+}
