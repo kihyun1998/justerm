@@ -1035,6 +1035,18 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   mouse is recovered only by RIS, never DECSTR). The load-bearing detail, source-verified against
   xterm.js (`CoreService` default `wraparound: true // xterm - true, vt100 - false`): **DECSTR sets
   autowrap back ON**, contradicting the VT510 manual's "no autowrap" — follow xterm. [#53]
+  **Neither strength says anything about the palette, and that silence is a decision.** An application
+  that redefined the ANSI table with `OSC 4`, or the foreground/background/cursor with
+  `OSC 10`/`11`/`12`, keeps them across both resets: no `Reset*` event is announced, so a consumer that
+  honoured the redefinition still holds it. The engine is theme-agnostic and holds no palette, which is
+  why the consumer's copy is the only one — and equally why an announcement could only be
+  unconditional. xterm is the single reference that resets its own table, on RIS *and* DECSTR; the
+  decision went the other way because ADR-0004's tie-breaker does not reach a table DEC never defined,
+  because terminfo appends the palette reset *after* `RIS` rather than assuming it (`xterm-256color`'s
+  `rs1=\Ec\E]104\007`, so `tput reset` already emits the `OSC 104` the engine already relays), and
+  because ghostty — which holds the palette *and* announces every other palette change across its
+  consumer boundary — sends nothing from `fullReset`. Grounds at `Term::full_reset`, rows in
+  `docs/agents/reference-facts.md`, reversal criterion on the issue. [#835]
 
 - **VT52 mode (DECANM ?2) is a second escape *dialect*, mode-gated — not a second parser, and `ESC Y`
   coordinates are hidden state.** Resetting DECANM (`CSI ?2l`) enters the pre-ANSI VT52 dialect; `ESC <`

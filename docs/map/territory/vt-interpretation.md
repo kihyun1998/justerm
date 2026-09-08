@@ -176,7 +176,30 @@ for a terminal engine, that list is half the specification.
 - **The scroll region redefines what "scroll" means.** DECSTBM changes which rows `IND` / `RI` /
   `LF` move and which leave the screen, so nearly every vertical-motion verb reads it.
 - **RIS and DECSTR are two reset strengths** and the split is itself hidden state — what each does
-  *not* clear is the part that matters.
+  *not* clear is the part that matters. **Neither says anything about the palette, and the silence is
+  a decision (#835).** An application can redefine the ANSI table with `OSC 4`, or the
+  foreground/background/cursor with `OSC 10`/`11`/`12`, and a reset announces no `Reset*` event — so a
+  consumer that honoured the redefinition keeps it, including after the application that set it has
+  exited. The engine holds no palette, which is *why* the silence is the consumer's problem rather
+  than a no-op, and equally why an announcement could only be unconditional. xterm is the one
+  reference that resets its own table, on **both** strengths (`charproc.c:14366`, in the
+  `if_OPT_ISO_COLORS` block above the `if (full)` split). Three grounds decided against following it,
+  and the head-count is not one of them. **ADR-0004's tie-breaker does not reach the question**: it
+  defers to xterm where the *spec* mandates what alacritty omits, and `OSC 4`/`104` are xterm's own
+  invention over a table DEC never defined, so no DEC text says what `RIS` does to one — a genuine
+  ambiguity, which that ADR routes the other way. (The "the inventor owns the semantics" move that
+  settled `XTREVWRAP` does not transfer: that was an invented sequence's own meaning, this is what a
+  **DEC** sequence does to state the invented one left behind.) **terminfo then settles the reach
+  from outside every implementation**: xterm's own `xterm-256color` spells `rs1=\Ec\E]104\007` and
+  `linux` spells `rs1=\Ec\E]R` — both append an explicit palette reset *after* `RIS`, which neither
+  would need if `\Ec` implied one — so the reset an application actually performs already arrives as
+  `OSC 104` and is already relayed. **And the one reference built in this shape declines**: ghostty
+  holds the palette *and* announces every change across a consumer boundary, and its override mask
+  would make a selective announcement free — its `fullReset` still sends none. Two neighbouring facts
+  that are easy to merge and must not be: the **pen** half of xterm's block (`reset_SGR_Colors`) is
+  already mirrored on both strengths, and the **dynamic** colours are restored by no reference at
+  all, xterm included. Rows in [`reference-facts.md`](../../agents/reference-facts.md); the reversal
+  criterion is on #835.
 - **The write path was deliberately not extracted** by #584: splitting by VT verb would scatter
   ADR-0025's row and wide-pair invariants across files, which is the failure that record exists to
   name.

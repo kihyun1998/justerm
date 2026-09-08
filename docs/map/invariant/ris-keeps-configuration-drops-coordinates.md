@@ -27,6 +27,21 @@ no compiler diagnostic, says which side of the line a field is on.
 | **The id counter behind a handle the consumer still holds** | **survives iff the handle's death is not announced** | the coordinate dies with the buffer (row above) — but the *id* naming it is out in the consumer's hands, and a rebuilt counter reissues it. Then a stale ask is answered with a **different** object's state, silently. An announced death makes the question moot, because the holder has already been told | `next_tracked_id` survives (#691, no disposal event — the holder learns by being told `None`); `next_marker_id` does **not**, and reissues freely, because every marker's disposal is announced before the rebuild |
 | **Terminal state the *application* wrote through the VT stream** — not a coordinate, not derived from any cell | **dies** | RIS resets the terminal, and this *is* the terminal's state; the party that set it is the party `ESC c` is resetting. The first row's exemption is for the **embedder**, and an application is not the embedder — which is the whole distinction, since both look like "a string somebody configured" at the definition site | `window_title`, `icon_name` and the two XTWINOPS title stacks (#823). alacritty is the one reference that faces this question and answers it the same way, by hand: `title_stack = Vec::new()` and `title = None` in `reset_state` |
 
+**The axis this table does not have: state the reset invalidates that is not a field at all (#835).**
+Every row above asks what happens to something `Term` holds. A consumer holds things too, and a reset
+can invalidate one of those without any field being involved — the ANSI palette is the case. An
+application redefines it with `OSC 4`; the engine relays the event and keeps nothing, because it is
+theme-agnostic; the consumer's copy is then the **only** copy, and a reset that says nothing leaves
+the application's colours in place after the application has exited. There is no field to decide,
+which is exactly why the table cannot reach it: the question is not "does this survive the rebuild"
+but "does the rebuild owe an *announcement*". `MarkerDisposed` is the one case where the answer has
+been yes. For the palette it is **no**, decided on #835 — ADR-0004's tie-breaker does not reach a
+table DEC never defined, terminfo appends the palette reset *after* `RIS` rather than assuming it
+(`xterm-256color`'s `rs1=\Ec\E]104\007`), and the one reference built in this shape (ghostty, which
+announces every other palette change across its consumer boundary) sends nothing from `fullReset`.
+The grounds are written out at `Term::full_reset`, and the tests are
+`reset.rs::{ris,decstr}_announces_nothing_about_the_palette`.
+
 ## Why it is cross-cutting
 
 Three territories, no shared code, one shared mechanism — the fields sit in unrelated features and
@@ -49,7 +64,9 @@ amount of reading upstream settles a new field.
   the constructor argument, so it is carried **without appearing in the copy-back list**: auditing
   that list undercounts what survives
 - [events & replies](../territory/events-and-replies.md) — both queues survive, and this is the one
-  place the reset *appends*: every marker's disposal is announced before the rebuild
+  place the reset *appends*: every marker's disposal is announced before the rebuild. That append is
+  the **only** one, and since #835 it is tested rather than assumed — the palette is the other
+  consumer-held thing a reset invalidates, and its silence is a decision (paragraph above)
 
 ## What a violation looks like
 

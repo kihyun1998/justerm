@@ -144,7 +144,9 @@ for the current one.
 - [RIS keeps configuration and drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
   — both queues survive `ESC c`, and this is the only territory where the reset *adds* to one: every
   marker's disposal is announced into `events` before the rebuild, so the consumer drops decorations
-  that now name nothing
+  that now name nothing. That disposal is the **only** thing the reset appends, which #835 tested
+  rather than assumed: the palette is the other consumer-held thing a reset invalidates, and it is
+  deliberately announced by neither strength
 - [a coordinate carries the instant it is true at](../invariant/a-coordinate-carries-the-instant-it-is-true-at.md)
   — this is the channel where it bites hardest, because an occurrence's payload outlives the instant
   that gave it meaning and the frame's basis does not reach here. `MarkerCreated` is the worked case

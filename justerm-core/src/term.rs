@@ -2982,6 +2982,68 @@ impl Term {
     /// grounds are the invariant note next door, which already records that no
     /// reference can be cited here because none of them holds the embedder's
     /// configuration in the object its reset replaces.
+    ///
+    /// **That "1–2" is right for the stacks and wrong for the retained strings**, and
+    /// the sentence above ran the two together (corrected 2026-09-08, #835). Ghostty
+    /// drops the title on a reset exactly as this does — `self.title` and `self.pwd`
+    /// are both `clearRetainingCapacity()`d in `fullReset` (`Terminal.zig:4468-4469`)
+    /// — so on the **retained string** the tally is 2–2, not 1–2, and justerm is not
+    /// in a minority. It cannot be counted on the *stack* half at all, because it
+    /// holds no title stack in `Terminal` to have an opinion about; there the 1–2
+    /// stands. The correction matters because "minority position" is a standing
+    /// invitation to revisit, and half of what it was pointing at is a tie.
+    ///
+    /// **Dropping the title is also not announced, and that too matches both
+    /// references that drop it.** A consumer keeps the exited application's window
+    /// title after `ESC c` — the same shape as the palette below, and *worse* on its
+    /// face, since here the engine does hold the string and does discard it, so the
+    /// two sides actually diverge. It is nonetheless not a defect by any available
+    /// standard: alacritty clears `title`/`title_stack` in `reset_state` with no
+    /// event on its proxy, and ghostty's `StreamHandler.fullReset` sends a mouse
+    /// shape, a mode-2031 report and a progress clear — and nothing about the title.
+    /// 2–0 among the references that face the question. Measured on #835 rather than
+    /// assumed; if it is ever revisited, the first thing to re-measure is whether
+    /// dropping at all is right, since xterm and xterm.js simply keep the title.
+    ///
+    /// **The palette is deliberately *not* announced here, and the silence is a
+    /// decision rather than an omission (#835).** An application that redefined
+    /// entries with `OSC 4`, or the foreground/background/cursor with
+    /// `OSC 10`/`11`/`12`, keeps them across `ESC c`: the engine is theme-agnostic
+    /// and holds no palette, so the consumer's copy is the only one, and this path
+    /// pushes no `ResetPaletteColor` / `ResetForeground` / `ResetBackground` /
+    /// `ResetCursorColor` onto the queue above. xterm is the one reference that
+    /// resets its own palette on **both** strengths (`charproc.c:14366`, in the
+    /// `if_OPT_ISO_COLORS` block *above* the `if (full)` split); three things
+    /// decided against following it, none of them the head-count:
+    ///
+    /// * **The tie-breaker does not reach it.** ADR-0004 defers to xterm where
+    ///   *the spec* mandates something alacritty merely omits. `OSC 4`/`104` are
+    ///   xterm's own invention and DEC never defined a palette, so no spec text
+    ///   says what `RIS` does to one — a genuine ambiguity, which ADR-0004 routes
+    ///   to alacritty. ("The inventor owns the semantics", which settled
+    ///   `XTREVWRAP` on [`Self::step_back`], does not transfer: that was the
+    ///   invented sequence's *own* meaning, and this is what a **DEC** sequence
+    ///   does to state the invented one left behind.)
+    /// * **terminfo says the palette reset is not part of `RIS`.**
+    ///   `xterm-256color` spells its reset string `rs1=\Ec\E]104\007` and `linux`
+    ///   spells it `rs1=\Ec\E]R`: both append an explicit palette reset *after*
+    ///   `RIS`, which xterm's own entry would not need if `\Ec` implied one. So
+    ///   `tput reset` already emits `OSC 104` — measured, not read — and the
+    ///   engine already relays it. The reachable case is covered without adding
+    ///   anything, which is what `ris_then_osc104_is_the_reset_string_that_ships`
+    ///   pins.
+    /// * **The reference that shares this shape declines.** ghostty holds the
+    ///   palette *and* announces every change across a consumer boundary, and its
+    ///   override mask tells it exactly which entries are dirty — so a selective
+    ///   announcement would be free there, and its `fullReset` still sends none.
+    ///   justerm cannot even be selective: holding no palette, it would have to
+    ///   fire unconditionally on every `ESC c`.
+    ///
+    /// What xterm resets on both strengths is **two** things, and the engine
+    /// already does one: the pen is covered by this rebuild and by
+    /// [`Self::soft_reset`]. The *dynamic* colours are restored by nobody, xterm
+    /// included — `ReallyReset` never touches them. Rows in
+    /// `docs/agents/reference-facts.md`; reversal criterion on #835.
     fn full_reset(&mut self) {
         let replies = std::mem::take(&mut self.replies);
         let mut events = std::mem::take(&mut self.events);
@@ -3037,6 +3099,12 @@ impl Term {
     /// their defaults *without* destroying screen content or scrollback, moving
     /// the active cursor, or touching the mouse/focus reporting subsystem. Per
     /// xterm.js softReset, autowrap returns to ON (the xterm default), not off.
+    ///
+    /// The pen returning to [`Pen::default`] is this path's half of xterm's
+    /// `reset_SGR_Colors`, which runs on **both** reset strengths. The other half
+    /// of that block — resetting the indexed palette — is deliberately not
+    /// mirrored, here or in [`Self::full_reset`], where the grounds are written
+    /// out (#835).
     fn soft_reset(&mut self) {
         self.cursor.visible = true;
         self.cursor.pen = Pen::default();
