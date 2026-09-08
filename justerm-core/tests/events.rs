@@ -279,3 +279,97 @@ fn other_window_operations_remain_ignored() {
     term.feed(b"\x1b[23t");
     assert_eq!(term.drain_events(), Vec::<TermEvent>::new());
 }
+
+/// A semicolon in a window title survives to the event (#880).
+///
+/// `vte` splits an OSC on every `;`, so the payload is `params[1..]` and not `params[1]` —
+/// the same read-site rule #650 established for `OSC 8`, at the sites it did not reach.
+/// Both references keep the whole payload: xterm's `do_osc` consumes exactly one `;` after
+/// `Ps` and then takes `buf = (char *) cp`, the rest of the buffer verbatim
+/// (`misc.c:4036-4047`), and xterm.js hands its handler the whole string
+/// (`registerOscHandler(0, new OscHandler(data => ...))`, `InputHandler.ts:286`).
+///
+/// One semicolon is enough to reach this, which is what makes it worth a test rather than
+/// a note: a shell that titles itself from a command line hits it.
+#[test]
+fn osc_title_keeps_every_semicolon() {
+    for osc in [&b"0"[..], &b"2"[..]] {
+        let mut term = Engine::new(80, 24);
+        term.feed(
+            &[
+                b"\x1b]"[..].to_vec(),
+                osc.to_vec(),
+                b";vim: notes.txt; +12; ~/w\x07".to_vec(),
+            ]
+            .concat(),
+        );
+        assert_eq!(
+            term.drain_events(),
+            vec![TermEvent::Title("vim: notes.txt; +12; ~/w".into())],
+            "OSC {osc:?}: the payload is params[1..], not params[1]"
+        );
+    }
+
+    // Control: a payload with no semicolon is unchanged by the rejoin.
+    let mut plain = Engine::new(80, 24);
+    plain.feed(b"\x1b]2;hello world\x07");
+    assert_eq!(
+        plain.drain_events(),
+        vec![TermEvent::Title("hello world".into())]
+    );
+}
+
+/// The same for `OSC 7`, where a `;` is a legal byte in a path and in a URI (#880).
+#[test]
+fn osc7_keeps_every_semicolon() {
+    let mut term = Engine::new(80, 24);
+    term.feed(b"\x1b]7;file://host/srv/a;b/c\x07");
+    assert_eq!(
+        term.drain_events(),
+        vec![TermEvent::Cwd("file://host/srv/a;b/c".into())]
+    );
+}
+
+/// The rejoin must not invent a payload where there was none (#880).
+///
+/// `params.get(1..)` answers `Some(&[])` for a fieldless `OSC 2`, whose join is the empty
+/// string — so a naive rejoin would turn "no title field at all" into "set the title to
+/// empty". The two forms are distinct on the wire and stay distinct here: the guard is the
+/// **slice** being non-empty, which is exactly what `params.get(1).is_some()` used to test.
+#[test]
+fn an_osc_with_no_payload_field_is_still_ignored() {
+    let mut none = Engine::new(80, 24);
+    none.feed(b"\x1b]2\x07"); // no `;` at all
+    assert_eq!(none.drain_events(), vec![], "no field: nothing announced");
+
+    let mut empty = Engine::new(80, 24);
+    empty.feed(b"\x1b]2;\x07"); // one empty field — the idiom for clearing the title
+    assert_eq!(
+        empty.drain_events(),
+        vec![TermEvent::Title(String::new())],
+        "an empty field still clears the title"
+    );
+
+    let mut cwd = Engine::new(80, 24);
+    cwd.feed(b"\x1b]7\x07");
+    assert_eq!(cwd.drain_events(), vec![], "same for OSC 7");
+}
+
+/// A title pop restores the rejoined string, not a re-split one (#823, #880).
+///
+/// The retained copy and the announced string come from one place
+/// (`Term::set_window_title`), so this cannot drift — asserted rather than assumed,
+/// because the retention was added by a different slice than the rejoin.
+#[test]
+fn a_popped_title_keeps_its_semicolons() {
+    let mut term = Engine::new(80, 24);
+    term.feed(b"\x1b]2;make -j8; ./run\x07");
+    term.feed(b"\x1b[22;2t"); // push the window title
+    term.feed(b"\x1b]2;other\x07");
+    term.drain_events();
+    term.feed(b"\x1b[23;2t"); // pop it back
+    assert_eq!(
+        term.drain_events(),
+        vec![TermEvent::Title("make -j8; ./run".into())]
+    );
+}

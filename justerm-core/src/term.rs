@@ -5839,20 +5839,30 @@ impl Perform for Term {
             // only the window one — the distinction was invisible while the
             // engine merely forwarded, and becomes observable the moment an
             // axis-limited push/pop pair (which `vim` emits) is answered.
+            //
+            // The payload is `params[1..]` **rejoined**, not `params[1]`: `vte` splits on
+            // every `;` and a title may legally contain one, so reading a single field cut
+            // `make -j8; ./run` down to `make -j8` and announced the short string as the
+            // real one (#880). Same read-site rule #650 established for `OSC 8`. The guard
+            // is the *slice* being non-empty, not the string: a fieldless `OSC 2` must stay
+            // ignored where `OSC 2 ;` clears the title, and `params.get(1..)` answers
+            // `Some(&[])` for the first, whose join is indistinguishable from the second.
             b"0" | b"2" => {
-                if let Some(&title) = params.get(1) {
-                    let title = String::from_utf8_lossy(title).into_owned();
+                if let Some(fields) = params.get(1..).filter(|f| !f.is_empty()) {
+                    let title = String::from_utf8_lossy(&fields.join(&b';')).into_owned();
                     if number == b"0" {
                         self.icon_name.clone_from(&title);
                     }
                     self.set_window_title(title);
                 }
             }
-            // OSC 7 = current working directory (a file:// URI).
+            // OSC 7 = current working directory (a file:// URI). Rejoined for the reason
+            // on the title arm above — `;` is a legal byte in a path and in a URI, and the
+            // engine hands the value over exactly as declared (#880, ADR-0017).
             b"7" => {
-                if let Some(&cwd) = params.get(1) {
-                    self.events
-                        .push(TermEvent::Cwd(String::from_utf8_lossy(cwd).into_owned()));
+                if let Some(fields) = params.get(1..).filter(|f| !f.is_empty()) {
+                    let cwd = String::from_utf8_lossy(&fields.join(&b';')).into_owned();
+                    self.events.push(TermEvent::Cwd(cwd));
                 }
             }
             // OSC 133 = FinalTerm/iTerm2 shell-integration command marks (#158):
