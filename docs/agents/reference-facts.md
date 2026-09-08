@@ -3023,3 +3023,28 @@ numbers attribute to the tree rather than to a change). 25 600 `U+1F468 U+200D` 
 inside one `feed()`, an exponent of **2.005** fitted over a 64x range of n. Per ADR-0004 the
 tie-break falls to this project's own measurement, and the measurement is what decided it — the
 rows above only established that the field was not already paying it.
+
+## Where an OSC payload ends — neither reference splits past `Ps` (#880, verified 2026-09-08)
+
+`vte` hands `osc_dispatch` a field per `;`, which makes `params[1]` look like *the* payload. It is
+not: for every OSC whose argument is one free-form string, the payload is `params[1..]` **rejoined**.
+The rule was established once, for `OSC 8`, in #650 — and never applied to the other handlers, so a
+window title or a cwd containing a single semicolon was cut at it and the short value announced as
+the real one.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **`do_osc` splits exactly once.** It scans `Ps` in state 0, requires one `;` in state 1, then state 2 does `buf = (char *) cp` — **the rest of the buffer verbatim** — and the loop never looks for another separator again | xterm | `misc.c:4036-4047` @ `6380a3e` |
+| **The handler receives the whole string.** `registerOscHandler(0, new OscHandler(data => { this.setTitle(data); this.setIconName(data); return true; }))`, and `2` likewise — `data` is everything after `Ps;`, semicolons included | xterm.js | `src/common/InputHandler.ts:286`, `:290` @ `699f553` |
+
+**The distinction that survives the rejoin, and is easy to lose.** A fieldless `OSC 2` and `OSC 2 ;`
+are different on the wire — the first says nothing, the second clears the title — but
+`params.get(1..)` answers `Some(&[])` for the first and `Some(&[""])` for the second, whose joins are
+both `""`. The guard has to be the **slice** being non-empty, which is what the old
+`params.get(1).is_some()` happened to test. This is the same shape as the `OSC 104` note above, where
+xterm tests the payload *string* rather than the field count.
+
+**Which handlers this applies to, swept once so it is not re-derived (#880).** Free-form string, so
+rejoin: `0`, `2` (title), `7` (cwd), `8` (URI, done in #650). Genuinely field-structured, so index:
+`4` / `104` (palette pairs and indices), `10` / `11` / `12` (colour specs), `133` (letter plus exit
+code), `52` (target field, then a base64 payload that carries no `;` and so cannot reach this).
