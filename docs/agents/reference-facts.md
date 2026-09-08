@@ -3048,3 +3048,86 @@ xterm tests the payload *string* rather than the field count.
 rejoin: `0`, `2` (title), `7` (cwd), `8` (URI, done in #650). Genuinely field-structured, so index:
 `4` / `104` (palette pairs and indices), `10` / `11` / `12` (colour specs), `133` (letter plus exit
 code), `52` (target field, then a base64 payload that carries no `;` and so cannot reach this).
+
+## What a reset does to the colours — the palette splits 1–3, the dynamic colours are 0–4 (#835, verified 2026-09-08)
+
+`ReallyReset` does **two** colour things, and they are different questions. It restores the indexed
+ANSI table and it restores the *pen*. It restores **no dynamic colour at all**. Reading the two as one
+cell is how #835 was filed with a table saying xterm restores "dynamic/ANSI colours" on a reset, which
+made a settled axis look like an open one.
+
+### xterm — what the reset path actually touches
+
+| Fact | Site @ `6380a3e` |
+|---|---|
+| **The colour block sits above the `if (full)` split**, so `ESC c` *and* `CSI ! p` both take it: `static char empty[1]; reset_SGR_Colors(xw); if (ResetAnsiColorRequest(xw, empty, 0)) xtermRepaint(xw);` | `charproc.c:14363-14367`, the split at `:14393` |
+| **`empty` is the reset-everything branch.** `ResetAnsiColorRequest` tests the payload *string*: `if (*buf != '\0') { …per-index… } else { for (color = 0; color < MAXCOLORS; ++color) ResetOneAnsiColor(…); }` | `misc.c:3051`, `else` at `:3077` |
+| **The DECSTR arm resets the pen a second time and nothing else** — `if_OPT_ISO_COLORS(screen, { reset_SGR_Colors(xw); })` is its only colour statement, so the palette reset the soft path performs is the one above the split | `charproc.c:14513-14515` |
+| ⚠ **No dynamic colour is restored anywhere in `ReallyReset`.** The function was read whole, not grepped | `charproc.c:14319-14524` |
+| **The arm is live and the guard is a runtime resource, not a build flag.** `OPT_ISO_COLORS` defaults to `1`, and `if_OPT_ISO_COLORS(screen, code)` expands to `if (screen->colorMode) code` — so the block is compiled in and gated on the `colorMode` resource | `ptyx.h:657`, `:1638` |
+
+### The palette on a reset — 1–3, and two of the three share justerm's shape
+
+The asymmetry #835 proposed — that the other three "are the terminal and own their palette, so not
+announcing costs them nothing" — does not survive reading them. Two of the three face justerm's
+question and answer it.
+
+| Reference | Resets the ANSI palette on a reset? | Where the palette lives, and why the row is comparable | Site |
+|---|---|---|---|
+| xterm | **yes**, on RIS *and* DECSTR | its own | above |
+| alacritty | **no** | `Term.colors: Colors` is **inside the struct its reset rebuilds**, an override table `reset_state` simply does not clear — so an application's `OSC 4` survives `ESC c` and the observable outcome is *identical to justerm's silence* | field `alacritty_terminal/src/term/mod.rs:304`, `reset_state` `:1835` @ `852e971` |
+| ghostty | **no** | the sharpest row: it holds `Terminal.colors` **and** announces every palette change across a consumer boundary with `surfaceMessageWriter(.{ .color_change = … })`, and its `.reset_palette` walks an override **mask** — so it knows exactly which entries are dirty and a selective announcement would be free. `fullReset` still sends none | field `src/terminal/Terminal.zig:76`, `fullReset` `:4452`, the announce path `src/termio/stream_handler.zig:1215`, mask walk `:1278` @ `e6e26e1` |
+| xterm.js | **no** | colours are in `ThemeService`, outside anything `reset()` reaches; the only `restoreColor` call site is the OSC handler | `src/browser/CoreBrowserTerminal.ts:250`, `src/browser/services/ThemeService.ts:147` @ `699f553` |
+
+⚠ **Ghostty's reset has a comment saying it resets the palette, and it does not — check the layer
+above `Terminal.fullReset` before quoting either.** `StreamHandler.fullReset` calls
+`self.terminal.fullReset()` and then, under *"Reset resets our palette so we report it for mode
+2031"*, emits `.color_scheme_report` (`src/termio/stream_handler.zig:911-922`). Two things are easy to
+get wrong there. The message is a **DEC mode 2031 light/dark report back to the application**, not a
+`color_change` to the surface — so it is not the announcement this section is about, and ghostty's row
+above is unchanged. And the comment's premise is false at this pin: the only API that would clear the
+table is `DynamicPalette.resetAll` (`src/terminal/color.zig:305`), whose **sole call site in the tree
+is its own unit test** (`:993`). This is the same shape as the `tokenizeScalar` row in § cursor
+colour — a ghostty comment asserting behaviour the code does not have — and it is worth the space
+because reading only `Terminal.zig` reaches the right answer for the wrong reason.
+
+### The dynamic colours on a reset — 0–4, nothing to decide
+
+No reference restores `OSC 10`/`11`/`12` state on either reset strength, xterm included (the row
+above). This is the same answer #832 reached from the other direction, and justerm is correct as
+shipped on that axis.
+
+### terminfo settles the reach, and it is not an implementation
+
+Measured on the RHEL 9 VM, 2026-09-08. The capability that matters is `rs1`, and **two independent
+entries append an explicit palette reset after `RIS` rather than assuming `RIS` implies one** —
+including xterm's own entry:
+
+| `TERM` | `rs1` | `oc` |
+|---|---|---|
+| `xterm-256color` | `\Ec\E]104\007` | `\E]104\007` |
+| `linux` | `\Ec\E]R` | `\E]R` |
+| `tmux-256color` | *(absent)* | *(absent)* |
+| `screen-256color` | *(absent)* | *(absent)* |
+
+And at the byte level, `TERM=xterm-256color tput reset` emits:
+
+```
+^[c ^[]104^G ^[[!p ^[[?3;4l ^[[4l ^[> ^[[?69l      (spaces added for reading)
+```
+
+— RIS, **then an explicit `OSC 104`**, then DECSTR. So the palette reset an application actually
+performs already arrives on a path justerm already relays, and the silence decided on #835 has no
+measured reach. Pinned by `justerm-core/tests/reset.rs::ris_then_osc104_is_the_reset_string_that_ships`,
+which feeds the captured line whole — and which is how the neighbouring fact turned up that `rs2`'s
+`\E[?3l` is DECCOLM, so the shipped reset string announces a **column-mode change** to a consumer too.
+
+### The tie-breaker's precondition, which is the part that decided it
+
+ADR-0004 defers to xterm where **the spec** mandates a behaviour alacritty merely omits; genuine
+ambiguities go the other way. `OSC 4`/`104` are xterm's own invention over a table DEC never defined,
+so there is no DEC text about what `RIS` does to one and the precondition is not met. The
+"inventor owns the semantics" move that settled `XTREVWRAP` (§ reverse wraparound) does **not**
+transfer: that was an invented sequence's own meaning, while this is what a *DEC* sequence does to
+state the invented one left behind. Recorded because "xterm does this and we do not" is otherwise
+rediscovered from cold — which is the failure #835 was filed to prevent.
