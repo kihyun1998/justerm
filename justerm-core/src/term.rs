@@ -3693,11 +3693,15 @@ impl Term {
     /// by any combining marks the row's side table carries for it. One grapheme cluster
     /// by construction — it is what a single print produced.
     ///
-    /// A `String` and not a `Vec<char>`, because the mode-2027 join path calls this for
-    /// **every printed scalar** and then needs the text: returning scalars and
-    /// collecting cost a second allocation there and measured 2.06x on that path
+    /// A `String` and not a `Vec<char>`, because both callers want text: returning scalars
+    /// and collecting cost a second allocation and measured 2.06x on the join path
     /// (11.66 ms -> 24.06 ms over 20k joins, release, best of 7). `REP` iterates
     /// `.chars()` instead, which costs it nothing.
+    ///
+    /// **It is no longer on the per-scalar path.** Until #867 the mode-2027 join called this for
+    /// every printed scalar, which is what made a growing cluster quadratic; the join now consults
+    /// it only when a width can actually change, so this is O(L) once per cluster rather than once
+    /// per join.
     fn cluster_text(&self, row: usize, col: usize) -> String {
         let mut out = String::new();
         out.push(self.grid.cell(row, col).c());
@@ -3745,11 +3749,17 @@ impl Term {
     /// iteration that places no new cell has not repeated anything: under mode 2027 a
     /// cluster ending in `ZWJ` re-joins the cluster it was read from, so each replay
     /// grows one cell's cluster instead of writing a second one, and `try_grapheme_join`
-    /// is O(L) in that cluster's length. Measured before the guard: `?2027h`, `U+1F468`,
-    /// `U+200D`, then the eight bytes `CSI 65535 b` cost **593 seconds** — nine minutes
-    /// and fifty-three seconds of one consumer thread, for eight bytes of PTY output.
-    /// The guard ends the loop the first time an iteration leaves the anchor where it
-    /// found it, which is exactly the condition "nothing was repeated".
+    /// **was** O(L) in that cluster's length. Measured before the guard: `?2027h`,
+    /// `U+1F468`, `U+200D`, then the eight bytes `CSI 65535 b` cost **593 seconds** —
+    /// nine minutes and fifty-three seconds of one consumer thread, for eight bytes of
+    /// PTY output. The guard ends the loop the first time an iteration leaves the anchor
+    /// where it found it, which is exactly the condition "nothing was repeated".
+    ///
+    /// **#867 removed that O(L), and it did not retire this guard.** The join is now
+    /// constant in the cluster's length, so the amplification that produced 593 seconds
+    /// no longer exists — but a no-progress iteration is still a no-progress iteration,
+    /// and without the guard `CSI 65535 b` would still run 65 535 of them to place
+    /// nothing. The guard bounds pointless work; it never bounded the cost of a join.
     ///
     /// **The count cap is defence in depth and would not have caught that case**, which
     /// is why it is stated second. The cap is a whole buffer's worth of
@@ -3805,10 +3815,12 @@ impl Term {
     /// it to that cell's side-table — no new cell, no cursor advance — and return where it joined.
     /// Otherwise `None`, so `place_grapheme` takes the per-scalar path (a break starts a cell).
     ///
-    /// The break state is reconstructed fresh from the previous cell's stored cluster (base scalar +
-    /// side-table marks) rather than persisted across calls, so cursor moves / CR-LF can't corrupt
-    /// it (mirrors ghostty). Width promotion for a narrow base (a flag's second RI, a text-base +
-    /// VS16) is handled by the caller in a later step; here the base's existing width holds.
+    /// The break state lives in the cell rather than being carried across calls, so cursor moves
+    /// and CR/LF cannot corrupt it — but the cluster is **not** reconstructed to ask the question
+    /// (#867): [`crate::grapheme::joins_cluster`] reads a bounded tail of the side table, and the
+    /// width oracle is consulted only when [`crate::grapheme::width_may_change`] says the answer
+    /// can have moved. Together those make the join O(1) in the cluster's length, where it used to
+    /// be O(L) three times over.
     fn try_grapheme_join(&mut self, c: char) -> Option<(usize, usize)> {
         let row = self.cursor.row;
         // Locate the previous cluster's base cell; `None` means nothing precedes it on
@@ -3816,20 +3828,37 @@ impl Term {
         let Some(col) = self.cursor_cluster_col() else {
             return None; // nothing precedes on this row
         };
-        // Reconstruct the previous cluster's text: base scalar + any already-joined scalars.
-        let mut prev = self.cluster_text(row, col);
-        if !crate::grapheme::grapheme_extends(&prev, c) {
+        // The cell is read, never rebuilt into a string (#867): both the break question and the
+        // width question are answered from the base scalar, the side table's length, and — only
+        // when the width can actually move — the cluster text itself.
+        let base = self.grid.cell(row, col).c();
+        let base_is_wide = self.grid.cell(row, col).is_wide();
+        let (joins, first_join) = {
+            let marks = self.grid.row_ref(row).combining_at(col).unwrap_or(&[]);
+            (
+                crate::grapheme::joins_cluster(base, marks, c),
+                marks.is_empty(),
+            )
+        };
+        if !joins {
             return None;
         }
-        // Join: ride the side-table (no new cell).
-        self.grid.row_mut(row).push_combining(col, c);
         // Width promotion: a flag's second regional indicator, or a text-base + VS16, grows the
-        // cluster to width 2. `UnicodeWidthStr` gives the cluster width (RI-pair → 2, VS16 → 2). If
-        // the base cell is still narrow, widen it in place.
-        let cluster_w = {
+        // cluster to width 2. `UnicodeWidthStr` over the whole cluster remains the authority for
+        // that; `width_may_change` only decides whether it has to be asked, so a cluster that
+        // keeps growing stops paying for an answer that cannot have moved. Read BEFORE the push,
+        // because `cluster_text` reads the side table this join is about to extend.
+        let cluster_w = if crate::grapheme::width_may_change(c, first_join, base_is_wide) {
+            let mut prev = self.cluster_text(row, col);
             prev.push(c);
             UnicodeWidthStr::width(prev.as_str())
+        } else if base_is_wide {
+            2
+        } else {
+            1
         };
+        // Join: ride the side-table (no new cell).
+        self.grid.row_mut(row).push_combining(col, c);
         // Where the cluster ends up, which is not always where it was joined: a promotion at
         // the last column relocates it to the next row (#303), and the anchor has to follow or
         // it names a column `vacate_for_wrap` just blanked.

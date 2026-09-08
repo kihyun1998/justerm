@@ -29,6 +29,16 @@ the decision has to be made per scalar, with no lookahead, against a cluster tha
   flag / VS16 *sequence* collapses into one cell (`term.rs:91-94`).
 - **The break decision is delegated to `unicode-segmentation`**, the full UAX #29 rule set, rather
   than reimplemented. What is bespoke is the *incremental* framing around it.
+- **Nothing on the join path may be O(the cluster's length)** (#867). The engine holds no break
+  state between prints — a cursor move would corrupt it — so the question is asked against the cell
+  every time, and asking it against the *whole* cluster made a growing cluster quadratic: 90 KB of
+  open ZWJ output cost 26 s inside one `feed()`, on the consumer's thread. Two rules keep it
+  constant, and both are easy to undo by accident. The segmenter is handed a bounded **tail** and
+  widens it only when the UAX #29 rules return `PreContext`; and `UnicodeWidthStr`, which is still
+  the authority on a cluster's width, is consulted only when `width_may_change` says the answer can
+  have moved. **Answering the width outright instead of gating an exact oracle is the trap here** —
+  a four-line shortcut got eight ordinary inputs wrong (`x` + VS16 became a wide cell) and every
+  test in the crate still passed.
 - **Storage is the row's combining map, gated by `COMBINED_PRESENT`.** The primary code point stays
   inline in the cell and the overflow sits beside it — the cell never grows.
 - **Width is still per character** (see [wide glyph](wide-glyph.md)), which is why VS16 and keycap
