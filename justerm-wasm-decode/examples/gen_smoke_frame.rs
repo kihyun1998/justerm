@@ -26,16 +26,6 @@ fn main() {
         cursor_row: 3,
         cursor_col: 7,
         cursor_visible: false,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
         spans: vec![Span {
             line: 0,
             left: 0,
@@ -50,8 +40,7 @@ fn main() {
             links: BTreeMap::new(),
             ucolors: BTreeMap::new(),
         }],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
 
     std::fs::write(&path, encode(&frame)).expect("write golden fixture");

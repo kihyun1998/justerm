@@ -47,22 +47,9 @@ fn main() {
         cols: COLS,
         rows: ROWS,
         kind: FrameKind::Full,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
         spans,
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
 
     let bytes = encode(&frame);
