@@ -969,11 +969,18 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   candidate `TERM`s, zero adoption by any other implementation, and an origin in xterm patch #385
   (2023-10-01) whose stated reason is symmetry with XTPUSHCOLORS rather than an application asking.
   Both stacks and the retained strings are **terminal state, so they die on RIS** — which the
-  wholesale `Term` rebuild gives for free. Say whose rule that is, because it is a **minority
-  position, 1–2**: only alacritty clears (`title_stack = Vec::new()` in its reset), while xterm.js's
-  `reset()` touches nothing but attribute data and xterm's only bulk free is inside `VTDestroy`, i.e.
-  teardown rather than `ESC c`. The two references whose *model* this slice copied are the two that
-  keep the stack. No spec text settles it, so the grounds are justerm's own RIS invariant. Note this is a fifth kind for the RIS table, which sorts fields into
+  wholesale `Term` rebuild gives for free. Say whose rule that is — but say it **per half, because the
+  two have different tallies and this passage used to give them one** (corrected 2026-09-08, #835).
+  For the **stacks** it is a minority position, 1–2: only alacritty clears (`title_stack = Vec::new()`
+  in its reset), while xterm.js's `reset()` touches nothing but attribute data and xterm's only bulk
+  free is inside `VTDestroy`, i.e. teardown rather than `ESC c`. The two references whose *model* this
+  slice copied are the two that keep the stack, and ghostty is not in that count at all — it holds no
+  title stack in `Terminal` to have a position about. For the **retained strings** it is a tie, 2–2:
+  ghostty clears `self.title` *and* `self.pwd` in `fullReset` (`Terminal.zig:4468-4469`), so justerm
+  is not in a minority there. And neither reference that clears **announces** the clearing (2–0), which
+  is why a consumer keeping a stale window title after `ESC c` is not a defect by any available
+  standard — rows in `docs/agents/reference-facts.md`. No spec text settles either half, so the grounds
+  are justerm's own RIS invariant. Note this is a fifth kind for the RIS table, which sorts fields into
   configuration / buffer coordinate / pending obligation / id counter: a retained title is none of
   those, and it dies because the *application* owns it, not the embedder. [#823]
 - **An OSC 8 hyperlink is ambient pen-like state stamped onto cells — not an event, and not closed by
