@@ -2976,7 +2976,22 @@ Whoever enables it writes the sequence directly, against xterm's definition — 
 argued *for* xterm here rather than for divergence.
 
 **The walk's soft-wrap requirement is xterm's too, not an xterm.js import**: its loop gives up on
-`!LineTstWrapped(ld)` (`cursor.c:178`) for plain `?45`, so only `rev2` walks an unwrapped row. **`?1045` (`rev2`) carries the same autowrap requirement** (`cursor.c:124`, `:128`) and
+`!LineTstWrapped(ld)` (`cursor.c:178`) for plain `?45`, so only `rev2` walks an unwrapped row.
+
+**And the walk only *reads* that flag — no reference clears it.** `CursorBack` writes no wrap flag
+anywhere; ghostty reads `prev_row.wrap` and breaks on it (`Terminal.zig:1842-1843`). xterm.js is
+alone in putting it down (`line.isWrapped = false`, `InputHandler.ts:823`), and this engine had
+copied that. Measured cost of the copy, none of it visible from the reference tally: two buffers
+holding identical cells read as different logical lines depending only on how the cursor arrived, a
+reflow preserved the split instead of healing it, and because the clear bypassed `Term::end_wrap`
+its whole damage was `Partial([])` — against `Partial([LineDamage { line: 0, left: 0, right: 2 }])`
+for an `EL 0` on the same row — so a frame-mode consumer was left joined where the engine had split. Removed in #873's follow-up.
+
+**The walk needs `?7h` as well as `?45`, and this engine gated only the spend until #873.** The row
+above already says `rev` is `WRAP_MASK` and that *"the loop's other reverse-wrap arm at `:165`"* is
+dead under `?7l` — the fact was recorded here and the code did not follow it, which is the failure
+mode a facts file is supposed to prevent and did not. A row is only as good as the code that reads
+it. **`?1045` (`rev2`) carries the same autowrap requirement** (`cursor.c:124`, `:128`) and
 differs only in the *walk*; this engine models no `?1045`, so it changes nothing here.
 
 ## What a mode-2027 join costs, and the model nobody else runs (#867, verified 2026-09-08)

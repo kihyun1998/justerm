@@ -152,8 +152,10 @@ pub struct Term {
     /// Reverse wraparound (DEC ?45): default off. When on, a step back at column 0
     /// of a soft-wrapped row moves to the end of the previous row, and a step back
     /// from a parked cursor spends the deferred wrap instead of moving. Both verbs
-    /// take that step — `BS` and `CSI D` alike, through `Term::step_back` (#80, #873);
-    /// soft wraps only.
+    /// take that step — `BS` and `CSI D` alike, through `Term::step_back` (#80, #873).
+    /// Soft wraps only, and **both halves need `?7h` as well as this flag**: xterm reaches
+    /// them through one `rev`, which is `?45 AND ?7h` (`cursor.c:123-127`). The walk leaves
+    /// the wrap link alone — see the per-verb table on [`Term::end_wrap`].
     reverse_wraparound: bool,
     /// Bracketed-paste mode (DEC ?2004). The engine owns the flag; the input
     /// encoder (#11) reads it to decide whether to wrap pasted text in markers.
@@ -3127,14 +3129,27 @@ impl Term {
             self.cursor.col -= 1;
             return;
         }
+        // **The walk needs autowrap too, and for the same reason the spend does.** xterm
+        // reaches both arms through one `rev`, so `:165` is as dead under `?7l` as `:153`
+        // is, and ghostty returns through the plain decrement at `:1766-1769` before it
+        // can reach either. This engine gated only the spend, so `?45h` + `?7l` walked a
+        // row where both references clamp — found while sharing this step with `CSI D`.
         if self.reverse_wraparound
+            && self.autowrap
             && self.cursor.row > self.scroll_top
             && self.cursor.row <= self.scroll_bottom
         {
             let prev = self.cursor.row - 1;
             let last = self.grid.cols() - 1;
             if self.grid.row_ref(prev).is_wrapped() {
-                self.grid.row_mut(prev).set_wrapped(false);
+                // **The wrap link survives the walk.** Undoing the *cursor's* trip across
+                // the boundary does not undo the boundary: the rows still hold one logical
+                // line, and every public reader of that — logical lines, link detection,
+                // command extraction, reflow — asks this flag. Clearing it (xterm.js's
+                // `line.isWrapped = false`) made two buffers with identical visible content
+                // answer differently depending on how the cursor got there, and a resize
+                // kept them apart. xterm writes no wrap flag anywhere in `CursorBack`;
+                // ghostty only *reads* `prev_row.wrap` (`Terminal.zig:1842-1843`).
                 self.cursor.row = prev;
                 self.cursor.col = last;
             }
@@ -4237,6 +4252,18 @@ impl Term {
     /// | `DCH` | **yes** | `screen.c` | `cursorResetWrap()` — *"Our row's soft-wrap is always reset"* |
     /// | `EL 1` (erase left) | no | `ClearLeft`, no clear | no |
     /// | `ICH` | no | no | no |
+    /// | a reverse-wrap walk (`BS` / `CSI D` under `?45`) | **no** (#873) | `CursorBack` writes no wrap flag | only *reads* `prev_row.wrap` (`Terminal.zig:1842-1843`) |
+    ///
+    /// The last row is the one that was wrong. The walk **did** clear the flag — copied from
+    /// xterm.js's `line.isWrapped = false` (`InputHandler.ts:823`), which neither other
+    /// reference does — and it did so by writing the row directly, so it never appeared in
+    /// this table and never took the damage obligation below. Three consequences, all
+    /// measured: two buffers with identical cells read as different logical lines depending
+    /// on how the cursor arrived, a reflow kept them apart instead of healing it, and the
+    /// clear's whole damage was `Partial([])` where `EL 0` through this function reports
+    /// `Partial([LineDamage { line: 0, left: 0, right: 2 }])`, so a frame-mode consumer was
+    /// left joined where the engine had split.
+    /// Undoing the *cursor's* trip across the boundary does not undo the boundary.
     ///
     /// The shape behind the three that do: each destroys content **from the cursor rightward**, so
     /// "this row continues past its last column" can no longer be asserted. Erasing leftward or
