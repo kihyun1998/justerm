@@ -37,10 +37,13 @@ Read out of the source; there is no record to read instead.
   transparent to the shell underneath it.
 - **Origin mode (DECOM) makes addressing relative** to the scroll region's top margin, and clamps to
   it — so the same escape sequence means different absolute rows depending on a mode set earlier.
-- Reverse wraparound (DEC ?45) does **two** things to a backspace, and the second is easy to miss:
-  at column 0 of a soft-wrapped row it moves back to the end of the previous row (BS only, soft wraps
-  only), and at a **parked** cursor it spends the deferred wrap as the first unit of the move, so the
-  cursor does not move at all (#80). The second is gated on `?45` **and** `?7h`, and the trap is that
+- Reverse wraparound (DEC ?45) does **two** things to a step back, and the second is easy to miss:
+  at column 0 of a soft-wrapped row it moves back to the end of the previous row (soft wraps only —
+  which is xterm's rule as well as this engine's, `!LineTstWrapped(ld)` at `cursor.c:178`), and at a
+  **parked** cursor it spends the deferred wrap as the first unit of the move, so the cursor does not
+  move at all (#80). **Both verbs take that step — `BS` and `CSI D`, through `Term::step_back`
+  (#873)**, the second applying it once per unit of its count; it was `BS` only until then, on a
+  comment that recorded an observation about xterm.js rather than a decision. The second is gated on `?45` **and** `?7h`, and the trap is that
   xterm's spend site does not look like it: `cursor.c:153` reads `(rev || rev2) && screen->do_wrap`,
   but `rev` is `((flags & WRAP_MASK) == WRAP_MASK)` with `WRAP_MASK (REVERSEWRAP | WRAPAROUND)`
   (`:123-127`) — the mode name hides an autowrap requirement. ghostty gates earlier and plainly

@@ -43,7 +43,7 @@ fn reverse_wrap_does_not_cross_a_hard_newline() {
 
 /// `CSI D` at column 0 walks back to the previous soft-wrapped row, exactly as BS does
 /// (#873). One step serves both verbs, which is xterm's shape: `CursorBack` is reached
-/// from `CASE_BS` (`charproc.c:3701`) and `CASE_CUB` (`:3931`) alike.
+/// from `CASE_BS` (`charproc.c:3703`) and `CASE_CUB` (`:3933`) alike.
 #[test]
 fn cursor_left_reverse_wraps_to_the_previous_soft_wrapped_row() {
     let mut t = Engine::new(3, 2);
@@ -72,6 +72,24 @@ fn cursor_left_clamps_at_column_zero_by_default() {
         t.grid().cell(1, 0).c(),
         'Y',
         "default: CUB clamps at column 0"
+    );
+}
+
+/// The walk is soft-wraps-only for `CSI D` as well, and this pins it **independently of
+/// the shared step**: `reverse_wrap_does_not_cross_a_hard_newline` is the only other test
+/// that observes the rule, and it drives `BS`. Found by mutating the walk's predicate to
+/// `true` and watching exactly one test redden (#873).
+#[test]
+fn cursor_left_does_not_cross_a_hard_newline() {
+    let mut t = Engine::new(5, 2);
+    t.feed(b"\x1b[?45h");
+    t.feed(b"ab\x1b[2;1H"); // row 0 "ab" is not WRAPLINE; cursor to (1,0)
+    t.feed(b"\x1b[D");
+    t.feed(b"X");
+    assert_eq!(
+        t.grid().cell(1, 0).c(),
+        'X',
+        "CUB clamped: the previous row is not a soft wrap"
     );
 }
 
@@ -223,8 +241,8 @@ fn a_parked_backspace_with_autowrap_off_moves() {
 ///
 /// **Decided by the maintainer on 2026-09-08 against a 2-2 reference split, and theirs to
 /// reverse.** xterm and ghostty route both verbs through one function and so spend on
-/// either — xterm's `CursorBack` is reached from `CASE_BS` (`charproc.c:3701`) and
-/// `CASE_CUB` (`:3931`) alike, both outside any conditional compilation; ghostty's
+/// either — xterm's `CursorBack` is reached from `CASE_BS` (`charproc.c:3703`) and
+/// `CASE_CUB` (`:3933`) alike, both outside any conditional compilation; ghostty's
 /// `backspace` is `cursorLeft(1)` (`Terminal.zig:1696`) and the spend lives in
 /// `cursorLeft` under a *"to match xterm"* comment (`:1774-1777`).
 ///

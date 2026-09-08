@@ -149,9 +149,11 @@ pub struct Term {
     /// a line feed also carriage-returns (`convertEol`). Output-only — the Enter
     /// key still encodes CR, matching xterm.js (#71).
     newline_mode: bool,
-    /// Reverse wraparound (DEC ?45): default off. When on, a *backspace* at
-    /// column 0 of a soft-wrapped row moves back to the end of the previous row
-    /// (BS only, soft wraps only — matches xterm.js) (#80).
+    /// Reverse wraparound (DEC ?45): default off. When on, a step back at column 0
+    /// of a soft-wrapped row moves to the end of the previous row, and a step back
+    /// from a parked cursor spends the deferred wrap instead of moving. Both verbs
+    /// take that step — `BS` and `CSI D` alike, through `Term::step_back` (#80, #873);
+    /// soft wraps only.
     reverse_wraparound: bool,
     /// Bracketed-paste mode (DEC ?2004). The engine owns the flag; the input
     /// encoder (#11) reads it to decide whether to wrap pasted text in markers.
@@ -3080,8 +3082,8 @@ impl Term {
     /// One step back, shared by `BS` and by `CSI D` (#873).
     ///
     /// **Both verbs take this step, and that is the decision rather than a convenience.**
-    /// xterm reaches one `CursorBack` from `CASE_BS` (`charproc.c:3701`) and `CASE_CUB`
-    /// (`:3931`) alike; ghostty's `backspace` is `cursorLeft(1)` (`Terminal.zig:1696`).
+    /// xterm reaches one `CursorBack` from `CASE_BS` (`charproc.c:3703`) and `CASE_CUB`
+    /// (`:3933`) alike; ghostty's `backspace` is `cursorLeft(1)` (`Terminal.zig:1696`).
     /// xterm.js is the one reference that separates them, and does so **on purpose** —
     /// *"Our implementation deviates from xterm on purpose"*, one of whose four bullets is
     /// *"any cursor movement sequence keeps working as expected"* (`InputHandler.ts:810-818`).
