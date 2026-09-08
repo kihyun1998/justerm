@@ -111,11 +111,53 @@ How a version gets there is [release](release.md).
   `justerm = "0.5"` dependants keep compiling *while learning the name changed* — its entire purpose
   is the message, and its fourteen lines of `pub use` are the delivery mechanism.
 
+### The `#[non_exhaustive]` question, for structs (#844)
+
+**A `Default` is the consumer-chosen form of what the attribute imposes, so where a `Default` exists
+or is meaningful, the attribute is declined.** Measured, not argued: with the attribute,
+`Frame { cols, rows, kind, ..Default::default() }` from outside the crate is
+`error[E0639]: cannot create non-exhaustive struct using struct expression` — functional-update
+syntax is banned too. So the attribute does not *add* forward compatibility on top of `Default`; it
+removes the caller's choice of how to take it. That is #843's rule — *an exhaustive type does not
+force anyone; it preserves their option to be forced* — reaching the same answer on a struct, and
+it is the reason #844's premise (*"the trade is genuinely different"*) is right about the mechanism
+and lands on the same verdict anyway.
+
+Three questions, in order, and every published struct falls out of them:
+
+1. **Does anything outside this crate build one?** No public function accepts it and there are zero
+   out-of-crate literal sites → the attribute binds nothing. Most of the surface is here.
+2. **Is there a `Default`, or would one be meaningful?** Yes → `Default`, no attribute. `Frame` and
+   `KeyEvent` already have one; `Span` (15 literal sites), `MarkerPosition` (25) and `MouseEvent`
+   (8) do not, and *that* is the shape of their follow-up rather than the attribute.
+3. **Neither?** Then the attribute is the candidate — and it needs a constructor shipped with it, as
+   `image::Limits` does (`#[non_exhaustive]` + all-pub fields + `Default` + `no_limits()`). **No
+   struct in this crate is in that position today.**
+
+**What the field does, counted rather than recalled** — 942 distinct crates in this project's
+dependency closure: 199 (21%) use the attribute at all; excluding one generated-FFI outlier the
+sites are 74% enum / 20% struct / 6% variant, and only 34% of users ever put it on a struct. The
+ones that do are types the caller never builds by hand — `clap_builder`, `schemars`, `rustix`,
+`libc`, `raw-window-handle`, `hyper`, `tokio`. `syn` states the intent on seven `*Modifiers`
+structs: *"This data structure may grow to accommodate future Rust language changes"*, with the
+in-progress RFCs listed, and three of them have **zero fields** — a growth slot and nothing else.
+The rule in practice is a claim that the growth cause lies outside the author's control, not a
+defensive default.
+
+**Where the per-type answers live, and why not here.** On the types, as doc-comments, the way #843
+recorded the enums — that is the copy that ships to docs.rs, and a roster in this file would be the
+`#552` failure again. `justerm-core/tests/public_struct_reasons.rs` is what keeps them honest: it
+derives the published set from `lib.rs`'s own re-exports and fails on a struct carrying neither the
+attribute nor a recorded reason, so *"nobody looked"* and *"looked and declined"* stop leaving the
+same trace.
+
 ## Code
 
 - `justerm-core/README.md` · `justerm-wasm-decode/README.md` · `justerm-renderer/README.md` ·
   `justerm-web/README.md` · `justerm-facade/README.md`
 - `justerm-wasm-decode/tests/readme_pins.rs` — the constant pin (per-PR)
+- `justerm-core/tests/public_struct_reasons.rs` — every published struct carries the attribute or
+  the reason it does not (#844), over a published set derived from `lib.rs` rather than listed
 - `justerm-wasm-decode/src/lib.rs` — `Flags`/`flags()` (the eleven named bits) and
   `UnderlineStyle`/`underlineStyle()` (the 3-bit field, #831): the names a consumer reads a cell's
   attributes by, guarded by `flags_map_covers_every_declared_cell_flag` and by the exhaustive

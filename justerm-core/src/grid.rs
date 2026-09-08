@@ -100,6 +100,11 @@ fn move_map<V>(map: &mut BTreeMap<usize, V>, src: std::ops::Range<usize>, dst: u
 /// sites are unchanged; the maps are reached through the dedicated methods so the
 /// flag-gate (read iff the cell's `COMBINED_PRESENT` / `LINK_PRESENT` /
 /// `UCOLOR_PRESENT` bit is set) is never bypassed.
+///
+/// **No `#[non_exhaustive]` (#844), and the open question here is not the attribute.** A consumer
+/// can build one — the derived `Default` is a public constructor — but `Row` has no public method
+/// and appears in no public signature, so nothing can be done with the value. What wants deciding
+/// is why it is re-exported at all.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Row {
     cells: Vec<Cell>,
@@ -704,6 +709,10 @@ pub(crate) fn reflow(
 }
 
 /// The current screen: `rows` × `cols` cells.
+///
+/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
+/// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Clone, Debug)]
 pub struct Grid {
     cols: usize,

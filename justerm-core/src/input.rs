@@ -17,6 +17,10 @@ bitflags! {
     /// scheme (the superset): Shift=1, Alt=2, Ctrl=4, Super=8, Hyper=16, Meta=32,
     /// CapsLock=64, NumLock=128. Legacy xterm can only express the first three
     /// plus Meta-at-8, so `csi_param` remaps; kitty uses the bits directly (#23).
+    ///
+    /// **No `#[non_exhaustive]` (#844): the question does not arise for a bitflags set.** New members
+    /// are bits inside the value, not fields, and the type is built through `empty()` / `from_bits`,
+    /// never by struct literal.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct Modifiers: u8 {
         const SHIFT     = 1;
@@ -133,6 +137,10 @@ pub enum KeyAction {
 /// A key event: a key, the modifiers held with it, its press/repeat/release type
 /// (defaults to `Press`), and consumer-supplied extras the kitty protocol's
 /// alternate-keys / associated-text flags report (all `None` for legacy).
+///
+/// **No `#[non_exhaustive]` (#844).** 16 out-of-crate literal sites, and a `Default` already
+/// exists, so `KeyEvent { key, ..Default::default() }` absorbs a new field at the caller's choice
+/// rather than by imposition — the same reading as [`crate::Frame`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyEvent {
     pub key: Key,
@@ -225,6 +233,11 @@ pub enum MouseAction {
 
 /// A mouse event in viewport cell coordinates (0-based — the encoding shifts to
 /// 1-based on the wire).
+///
+/// **No `#[non_exhaustive]` (#844).** 8 out-of-crate literal sites. Its growth cause is outside
+/// this crate — mouse protocols are invented elsewhere, and `MouseEvents` arrived that way — but
+/// the answer is a `Default`, as [`crate::KeyEvent`] already has, rather than an attribute;
+/// recorded as follow-up in `docs/map/territory/published-surface.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MouseEvent {
     /// The button, or `None` for bare motion (no button held).
@@ -264,6 +277,10 @@ bitflags::bitflags! {
     /// the app (a wanted bit set) or keeps it local (selection/scrollback). It is
     /// the single source `encode_mouse`'s restriction shares, so the wire mask and
     /// the encode-time gate cannot drift.
+    ///
+    /// **No `#[non_exhaustive]` (#844): the question does not arise for a bitflags set.** New members
+    /// are bits inside the value, not fields, and the type is built through `empty()` / `from_bits`,
+    /// never by struct literal.
     #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
     pub struct MouseEvents: u8 {
         /// Button press (every protocol except `Off`).

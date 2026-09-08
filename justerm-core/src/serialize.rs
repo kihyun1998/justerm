@@ -119,6 +119,12 @@ pub enum FrameKind {
 /// encodes `cell.c()` and `encode_color(bg)`, which drop `C_COMBINED` and
 /// `LINK_PRESENT` respectively). `decode` re-arms both from these maps' own entries.
 /// A `Span` built by hand for a test owes the same pairing.
+///
+/// **No `#[non_exhaustive]` (#844), on #843's rule rather than on a lack of growth.** It does grow
+/// with the wire — `combining`, `links` and `ucolors` all arrived as new groups — but the attribute
+/// is not what absorbs that. A `Default` would, at the caller's choice, and 15 out-of-crate literal
+/// sites are what it would spare; that is the follow-up recorded in
+/// `docs/map/territory/published-surface.md`, not this attribute.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Span {
     pub line: u16,
@@ -149,6 +155,9 @@ pub struct Span {
 /// Monotonic per engine. The consumer attaches a decoration to the id; the frame
 /// reports where the marker currently sits, and `TermEvent::MarkerDisposed`
 /// signals when its line has left the buffer.
+///
+/// **No `#[non_exhaustive]` (#844).** A `u32` newtype has no second field to gain, so the attribute
+/// would be permanent restriction bought against a change that cannot happen.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct MarkerId(pub u32);
 
@@ -258,6 +267,10 @@ pub enum MarkerKind {
 /// not absence — so the consumer can tell "scrolled away" from "gone"). The kind
 /// carries the OSC 133 command-boundary role + exit code so the consumer can drive
 /// prompt-to-prompt navigation and success/fail signals (#160).
+///
+/// **No `#[non_exhaustive]` (#844).** 25 out-of-crate literal sites and the same reading as
+/// [`crate::Span`]: it rides the wire and can grow, and what would absorb that is a `Default` the
+/// caller opts into, not an attribute imposed on every literal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MarkerPosition {
     pub id: MarkerId,
@@ -271,6 +284,10 @@ pub struct MarkerPosition {
 /// consumer's (theme-agnostic). Coordinates are viewport rows/cols, re-projected
 /// by `frame()` against the scroll offset so the engine stays the single
 /// anchoring authority.
+///
+/// **No `#[non_exhaustive]` (#844).** It grows with the wire like [`crate::Frame`], and like
+/// `Frame` it has a derived `Default`, so a new overlay group reaches an out-of-crate literal
+/// through `..Default::default()`.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Overlay {
     /// The live selection projected onto visible rows (`selection_range`).

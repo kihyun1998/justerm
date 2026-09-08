@@ -50,6 +50,10 @@ use vte::Parser;
 /// `Parser` and `Term` are kept as separate fields because `Parser::advance`
 /// borrows both the parser and the performer mutably at once — a single struct
 /// owning both could not satisfy the borrow checker.
+///
+/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
+/// sites, so the attribute would bind nothing it does not already bind.
 pub struct Engine {
     parser: Parser,
     term: Term,
