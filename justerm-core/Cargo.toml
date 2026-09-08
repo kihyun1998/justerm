@@ -17,6 +17,11 @@ bitflags = "2"
 unicode-segmentation = "1.13"
 regex = "1"
 unicode-width = "0.2"
+# 0.15 publishes nothing about its parser state, which is why the `REP` retention lifecycle is an
+# enumeration of `Perform` callbacks rather than xterm's structural rule -- and why that enumeration
+# is provably short by `State::CsiIgnore` / `State::DcsIgnore` (#866). On a minor bump, re-read the
+# entry in `docs/map/territory/vt-interpretation.md`: if the parser state becomes reachable, the
+# enumeration on `Term::repeat_anchor` can be replaced rather than extended.
 vte = "0.15"
 
 [dev-dependencies]

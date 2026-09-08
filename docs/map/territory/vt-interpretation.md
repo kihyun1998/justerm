@@ -46,6 +46,11 @@ for a terminal engine, that list is half the specification.
   consequence is the *shape* of what is retained: a recorded **position** degrades to
   repeating the genuinely last-printed grapheme, where the cursor-derived guess this
   started with repeated whatever happened to sit in the last column.
+  **The general form is the part that outlives `REP` (#866): where a lifecycle must rest on an
+  enumeration that cannot be completed, prefer state whose stale value is still a true statement
+  about the buffer over state whose stale value is a guess.** A retained *position* degrades to a
+  fact about a cell that is still true; a retained character behind a flag degrades to a
+  fabrication, and the two cost the same to write.
 - **The input space is UTF-8, which puts the 8-bit C1 controls outside it — deliberately, and this
   entry exists because nothing else said so (#847).** A lone `0x80..=0x9F` byte is ill-formed input,
   not a control: `0x9B` opens no CSI, `0x9D` no OSC, `0x90` no DCS, and `0x9C` terminates no string
