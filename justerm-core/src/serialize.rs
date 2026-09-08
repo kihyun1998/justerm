@@ -77,9 +77,15 @@ pub(crate) const MAX_SCROLL_COUNT: isize = i16::MAX as isize;
 /// semver.** A new frame kind is a wire change, so it moves [`WIRE_VERSION`]
 /// (ADR-0008) — which a consumer cannot miss. `#[non_exhaustive]` would only soften
 /// the quieter of the two signals. Left exhaustive on purpose, not by omission.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// **`Default` is `Full` because the wire says so (#844).** The discriminant encodes as `0` and
+/// `Partial` as `1`, and every other field of a defaulted [`Frame`] is its own zero — a default
+/// that disagreed with the wire's zero byte would be two spellings of the same empty frame that
+/// do not round-trip to each other. It is not a claim that `Full` is the more useful kind.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum FrameKind {
     /// Every row is present (resize / alt-screen clear).
+    #[default]
     Full,
     /// Only the listed spans changed since the consumer's ack.
     Partial,
@@ -294,7 +300,25 @@ pub struct Overlay {
 /// once and referenced by [`Span::links`]. Grapheme clusters have **no** table —
 /// since v14 (#621) they are inlined at their column in [`Span::combining`],
 /// because nothing interned them and the table only bought an index to overflow.
-#[derive(Clone, PartialEq, Eq, Debug)]
+/// # `Default`, and why this type has one rather than `#[non_exhaustive]` (#844)
+///
+/// This struct grows for a reason outside any one decision: the VT tail is perpetual (#47) and each
+/// feature that reaches the consumer moves [`WIRE_VERSION`], which has gone v3 → v16. Every such
+/// bump used to edit **every** out-of-crate literal, because none of them could say "and the rest
+/// as usual" — 34 sites across five files, all spelling all 19 fields.
+///
+/// `Default` gives them that sentence. `Frame { cols, rows, kind, ..Default::default() }` names what
+/// a caller means and absorbs the next field silently.
+///
+/// **`#[non_exhaustive]` is deliberately NOT here, and the two do not combine.** Measured: with the
+/// attribute, that same literal is `error[E0639]: cannot create non-exhaustive struct using struct
+/// expression` from outside the crate — functional-update syntax is banned too, leaving only
+/// `let mut f = Frame::default();` plus assignments. So the attribute does not *add* forward
+/// compatibility on top of `Default`; it removes the caller's choice of how to get it. That is the
+/// same trade #843 settled for the enums — *"an exhaustive type does not force anyone; it preserves
+/// their option to be forced"* — and it lands the same way here, with the extra note from
+/// [`FrameKind`] that a wire change already moves `WIRE_VERSION` where a consumer cannot miss it.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Frame {
     pub cols: u16,
     pub rows: u16,

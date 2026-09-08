@@ -21,22 +21,8 @@ fn round_trip_empty_partial_frame() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
-        spans: vec![],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
     let bytes = encode(&frame);
     assert_eq!(decode(&bytes).expect("decode"), frame);
@@ -51,21 +37,7 @@ fn round_trip_overlay_selection_and_match_spans() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
-        spans: vec![],
-        link_table: vec![],
         overlay: Overlay {
             selection: vec![
                 SelectionSpan {
@@ -87,6 +59,7 @@ fn round_trip_overlay_selection_and_match_spans() {
             markers: vec![],
             active_match: vec![],
         },
+        ..Default::default()
     };
     let bytes = encode(&frame);
     assert_eq!(decode(&bytes).expect("decode"), frame);
@@ -103,22 +76,8 @@ fn round_trip_overlay_active_match_spans() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
-        spans: vec![],
-        link_table: vec![],
-        overlay: Overlay::default(),
+        ..Default::default()
     };
     // A wrapped active match: two spans, both also present in the match group.
     let active = vec![
@@ -173,22 +132,8 @@ fn round_trip_mouse_events_mask() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: MouseEvents::empty(),
-        alt_screen: false,
-        scroll: None,
-        spans: vec![],
-        link_table: vec![],
-        overlay: Overlay::default(),
+        ..Default::default()
     };
     frame.mouse_events = MouseEvents::DOWN | MouseEvents::UP | MouseEvents::WHEEL;
     let bytes = encode(&frame);
@@ -204,22 +149,9 @@ fn round_trip_alt_screen_flag() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: MouseEvents::empty(),
         alt_screen: true,
-        scroll: None,
-        spans: vec![],
-        link_table: vec![],
-        overlay: Overlay::default(),
+        ..Default::default()
     };
     let decoded = decode(&encode(&frame)).expect("decode");
     assert!(decoded.alt_screen);
@@ -234,22 +166,8 @@ fn round_trip_overlay_marker_positions() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
-        spans: vec![],
-        link_table: vec![],
-        overlay: Overlay::default(),
+        ..Default::default()
     };
     frame.overlay.markers = vec![
         MarkerPosition {
@@ -277,22 +195,8 @@ fn round_trip_overlay_marker_kinds() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
-        spans: vec![],
-        link_table: vec![],
-        overlay: Overlay::default(),
+        ..Default::default()
     };
     frame.overlay.markers = vec![
         MarkerPosition {
@@ -340,22 +244,8 @@ fn decode_rejects_bad_marker_kind_and_truncated_exit() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
-        spans: vec![],
-        link_table: vec![],
-        overlay: Overlay::default(),
+        ..Default::default()
     };
     frame.overlay.markers = vec![MarkerPosition {
         id: MarkerId(1),
@@ -401,22 +291,10 @@ fn round_trip_scroll_position() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
         display_offset: 7,
         scrollback_len: 250,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
-        spans: vec![],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
     let decoded = decode(&encode(&frame)).expect("decode");
     assert_eq!(decoded.display_offset, 7);
@@ -436,19 +314,7 @@ fn round_trip_cursor_position_and_visibility() {
         cursor_row: 9,
         cursor_col: 19,
         cursor_visible: false,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
-        spans: vec![],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -465,19 +331,7 @@ fn round_trip_span_of_plain_cells() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
         spans: vec![Span {
             line: 3,
             left: 10,
@@ -487,8 +341,7 @@ fn round_trip_span_of_plain_cells() {
             links: BTreeMap::new(),
             ucolors: BTreeMap::new(),
         }],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -507,19 +360,7 @@ fn round_trip_distinct_colour_references() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
         spans: vec![Span {
             line: 0,
             left: 0,
@@ -529,8 +370,7 @@ fn round_trip_distinct_colour_references() {
             links: BTreeMap::new(),
             ucolors: BTreeMap::new(),
         }],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
     let d = decode(&encode(&frame)).expect("decode");
     assert_eq!(d, frame);
@@ -567,19 +407,7 @@ fn round_trip_cell_flags_incl_layout_markers() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
         spans: vec![Span {
             line: 5,
             left: 0,
@@ -589,8 +417,7 @@ fn round_trip_cell_flags_incl_layout_markers() {
             links: BTreeMap::new(),
             ucolors: BTreeMap::new(),
         }],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -613,22 +440,8 @@ fn decode_rejects_superseded_version() {
         cols: 1,
         rows: 1,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
-        spans: vec![],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
     let mut bytes = encode(&frame);
     bytes[2] = 2; // the VERSION byte sits right after the 2-byte magic
@@ -667,19 +480,7 @@ fn round_trip_grapheme_side_table() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
         spans: vec![Span {
             line: 0,
             left: 0,
@@ -691,8 +492,7 @@ fn round_trip_grapheme_side_table() {
             links: BTreeMap::new(),
             ucolors: BTreeMap::new(),
         }],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -713,19 +513,7 @@ fn cell_record_is_fixed_14_bytes() {
         cols: 1,
         rows: 1,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
         spans: vec![Span {
             line: 0,
             left: 0,
@@ -735,8 +523,7 @@ fn cell_record_is_fixed_14_bytes() {
             links: BTreeMap::new(),
             ucolors: BTreeMap::new(),
         }],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
     let one = encode(&span_of(1)).len();
     let two = encode(&span_of(2)).len();
@@ -758,26 +545,13 @@ fn round_trip_scroll_op() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
         scroll: Some(ScrollOp {
             top: 0,
             bottom: 23,
             count: 3,
         }),
-        spans: vec![],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -789,22 +563,8 @@ fn round_trip_full_frame_kind() {
         cols: 40,
         rows: 12,
         kind: FrameKind::Full,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
-        spans: vec![],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -1020,26 +780,13 @@ fn a_scroll_count_at_the_wire_bound_round_trips() {
         cols: 4,
         rows: 40_000,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
         scroll: Some(ScrollOp {
             top: 0,
             bottom: 39_999,
             count: i16::MAX as isize,
         }),
-        spans: vec![],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 
@@ -1234,22 +981,9 @@ fn round_trip_full_frame_with_cells() {
         cols: 3,
         rows: 2,
         kind: FrameKind::Full,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
         spans: vec![row(0), row(1)],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -1262,26 +996,13 @@ fn round_trip_negative_scroll_count() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
         scroll: Some(ScrollOp {
             top: 2,
             bottom: 23,
             count: -4,
         }),
-        spans: vec![],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }

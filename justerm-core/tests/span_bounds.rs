@@ -48,9 +48,7 @@
 //! (255 frames); the random half now lives in `robustness.rs`'s resize lane, which is where
 //! the odd geometry actually comes from.
 
-use justerm_core::{
-    Color, CursorShape, DecodeError, Engine, Frame, FrameKind, ScrollOp, decode, encode,
-};
+use justerm_core::{Color, DecodeError, Engine, Frame, FrameKind, ScrollOp, decode, encode};
 use std::num::NonZeroU32;
 
 /// Header offsets (`serialize.rs`): MAGIC(2) · VERSION(1) · has_scroll(1) · kind(1) ·
@@ -188,26 +186,13 @@ fn frame_with_scroll(top: usize, bottom: usize) -> Frame {
         cols: 8,
         rows: 3,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        marker_count: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
         scroll: Some(ScrollOp {
             top,
             bottom,
             count: 1,
         }),
-        spans: vec![],
-        link_table: vec![],
-        overlay: Default::default(),
+        ..Default::default()
     }
 }
 
