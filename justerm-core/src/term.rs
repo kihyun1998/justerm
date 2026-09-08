@@ -3072,12 +3072,30 @@ impl Term {
         self.cursor.blink = blink;
     }
 
-    /// Backspace (BS, 0x08): move the cursor one column left. With reverse
-    /// wraparound (?45) a backspace at column 0 of a *soft-wrapped* row moves
-    /// back to the last column of the previous row — undoing one autowrap. Only
-    /// soft wraps reverse (the previous row carries `WRAPLINE`); a hard CR/LF
-    /// line does not. BS only (not cursor-left), matching xterm.js (#80).
+    /// Backspace (BS, 0x08): one step back.
     fn backspace(&mut self) {
+        self.step_back();
+    }
+
+    /// One step back, shared by `BS` and by `CSI D` (#873).
+    ///
+    /// **Both verbs take this step, and that is the decision rather than a convenience.**
+    /// xterm reaches one `CursorBack` from `CASE_BS` (`charproc.c:3701`) and `CASE_CUB`
+    /// (`:3931`) alike; ghostty's `backspace` is `cursorLeft(1)` (`Terminal.zig:1696`).
+    /// xterm.js is the one reference that separates them, and does so **on purpose** —
+    /// *"Our implementation deviates from xterm on purpose"*, one of whose four bullets is
+    /// *"any cursor movement sequence keeps working as expected"* (`InputHandler.ts:810-818`).
+    /// The tie was broken for xterm by ADR-0004 and by `XTREVWRAP` being xterm's own
+    /// invention (`ctlseqs.txt:952`), with no DEC text above it to appeal to. Maintainer's
+    /// call, 2026-09-08, and theirs to reverse; the tally and the reach measurement behind
+    /// it are on `tests/reverse_wrap.rs::cursor_left_spends_a_park`.
+    ///
+    /// With reverse wraparound (?45) a step at column 0 of a *soft-wrapped* row moves back
+    /// to the last column of the previous row — undoing one autowrap. Only soft wraps
+    /// reverse (the previous row carries `WRAPLINE`), and that is xterm's rule too rather
+    /// than an xterm.js import: its walk gives up on `!LineTstWrapped(ld)` (`cursor.c:178`).
+    /// A hard CR/LF line does not reverse.
+    fn step_back(&mut self) {
         // A parked cursor is logically one past the column it sits on, so under `?45`
         // the first step back lands *on* that column — which is where it already is.
         // The park is therefore **spent** as the first unit of the move rather than
@@ -4112,7 +4130,24 @@ impl Term {
     }
 
     fn move_back(&mut self, n: usize) {
-        self.cursor.col = self.cursor.col.saturating_sub(n);
+        // Under `?45` this is n applications of the step `BS` takes — xterm's shape
+        // literally, where one `CursorBack` serves both verbs and its loop spends one unit
+        // of the count per step (`cursor.c:160-190`), so `CSI 3 D` from a park moves two
+        // and a walk at column 0 costs one of the three (#873). Off the mode there is
+        // neither a walk nor a spend to distribute, so the whole move is one saturating
+        // subtraction — the same landing without the loop.
+        if self.reverse_wraparound {
+            for _ in 0..n {
+                self.step_back();
+            }
+        } else {
+            self.cursor.col = self.cursor.col.saturating_sub(n);
+        }
+        // Both call sites pass at least 1 — `param_or` maps an explicit `CSI 0 D` to the
+        // default — so the loop always runs and always puts the flag down. Cleared here
+        // anyway rather than relied upon: a zero count must still clear, as every other
+        // positioning verb does, and the loop is the only shape in this file where that
+        // obligation can be skipped by arithmetic.
         self.cursor.pending_wrap = false;
     }
 
