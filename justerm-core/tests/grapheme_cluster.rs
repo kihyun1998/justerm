@@ -234,6 +234,46 @@ fn mode_2027_vs15_narrows_a_default_wide_emoji() {
 }
 
 #[test]
+fn mode_2027_a_variation_selector_on_a_base_that_has_no_variation_moves_nothing() {
+    // The negative control for the two tests above, and the reason it exists: every width test in
+    // this file pins a rule on an input where it FIRES — ▶ for promotion, ⌚ for demotion — and
+    // none on a neighbour where it must NOT. A one-sided oracle cannot fail on a rule that
+    // over-fires, and an O(1) width shortcut that promoted *every* VS16 and demoted *every* VS15
+    // passed all 86 test binaries in this crate (#867).
+    //
+    // U+FE0F/U+FE0E only mean anything on a base that has an emoji variation sequence. `x` has
+    // none, so VS16 must leave the cell narrow; 漢 (U+6F22) has none, so VS15 must leave it wide.
+    // The selector is still stored either way — that is #317 §1, and `accessible_text` shows it.
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?2027h");
+    t.feed("x\u{FE0F}".as_bytes());
+    assert!(
+        !t.grid().cell(0, 0).is_wide(),
+        "VS16 on a non-emoji base must not widen the cell"
+    );
+    assert!(
+        !t.grid().cell(0, 1).is_wide_spacer(),
+        "and writes no spacer"
+    );
+    assert_eq!(t.cursor().col, 1, "so the cursor advances one column");
+    assert_eq!(
+        t.accessible_text().trim_end(),
+        "x\u{FE0F}",
+        "the selector still rides the cluster (#317 §1)"
+    );
+
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?2027h");
+    t.feed("\u{6F22}\u{FE0E}".as_bytes());
+    assert!(
+        t.grid().cell(0, 0).is_wide(),
+        "VS15 on a base with no emoji presentation must not narrow the cell"
+    );
+    assert!(t.grid().cell(0, 1).is_wide_spacer(), "its spacer survives");
+    assert_eq!(t.cursor().col, 2);
+}
+
+#[test]
 fn mode_2027_promotion_repairs_an_orphaned_wide_half_at_col_plus_one() {
     // Regression (Lens-1 breakage 1): promotion overwrites col+1 with a spacer. If a WIDE glyph was
     // standing there (cursor repositioned before the joining scalar arrived), its other half must be

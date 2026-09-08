@@ -1,4 +1,10 @@
-# Reference facts — what alacritty / ghostty / xterm.js actually do
+# Reference facts — what xterm / alacritty / ghostty / xterm.js actually do
+
+> **The corpus is four trees, and xterm is the binding one** (`thegraph.md` § References). This line
+> said *"alacritty / ghostty / xterm.js"* until #867, and a section that generalised to *"no
+> reference"* off three rows was false about the tree the tie-breaker defers to. A tally here is
+> scoped by the corpus that produced it — say which trees a row set covers, and check the pin table
+> before writing "no reference".
 
 A Step 5 lens ② pass kept re-deriving the same handful of facts from scratch. They are
 **stable** — upstream rarely changes what a terminal does when a wide glyph is
@@ -558,7 +564,7 @@ xterm. But copying the rule required copying its premise: xterm's dispose is saf
 nothing is expected to come back. #606 therefore had to **declare** `Terminal.dispose()` end-of-life
 (and make `mount()` throw afterwards) rather than inherit the behaviour and hope. A reference read
 without its enabling condition is how a correct rule lands in a codebase that cannot support it.
-## Per-cell payload length — nobody caps a cluster, the one that can run out *grows*, and a URI is a different answer (#621, verified 2026-07-29)
+## Per-cell payload length — three of four leave a cluster unbounded, the binding one caps it, and a URI is a different answer (#621, verified 2026-07-29; xterm row added #867 2026-09-08)
 
 Added 2026-07-29 while filing #621; **the conclusion corrected the same day** — see the note under the
 table, which is the more useful half of this section. Every row grepped at the pinned SHAs. The
@@ -566,10 +572,15 @@ occasion: justerm's wire writes the grapheme cluster and the OSC 8 URI behind `u
 (`serialize.rs`), and nothing on the producing side bounds either — so `feed()`ing 70000 combining
 marks produces a frame whose own `decode` answers `Err(BadTag)`.
 
-**The question is not "should a terminal cap cluster length".** No reference does, so capping in the
-engine would be justerm drifting alone *and* would discard Unicode material this engine exists to
-carry. The useful split is what happens when the storage cannot take it: two references cannot run
-out, and the one that can **grows until it fits**.
+**Capping cluster length would not be justerm drifting alone — but the reference that caps is the
+one that does not have the feature.** xterm bounds a cell's stored zero-width marks at
+`XtNcombiningChars` (default **2**, hard-clamped to **5**) and silently drops the overflow, and it
+is the tree ADR-0004 makes **binding**. What that does *not* settle is a mode-2027 cluster: xterm
+has no such mode, its storage is reached by a `wcwidth == 0` membership test rather than by UAX #29,
+and it discards `ZWJ` before the test — so a growing cluster is not a thing xterm can be asked
+about. Row 7 states this, and it is the whole reason the tally reads 3 of 4 rather than 4 of 4.
+The remaining split is what the three that *do* accumulate do when the storage cannot take it: two
+cannot run out, and the one that can **grows until it fits**.
 
 **A URI is not the same question and does not share the answer — rows 5-6.** The cluster rows below
 say nothing about OSC 8, and the first version of this section let its title imply they did.
@@ -582,10 +593,14 @@ say nothing about OSC 8, and the first version of this section let its title imp
 | ⚠ **…and that error is a growth signal, not an answer.** The caller catches it in a `while (true)` loop — *"Grow our capacity until we can fit the extra bytes"* — reallocating the page until the payload fits, so the error never reaches a user. Ghostty's answer to "the storage cannot take it" is **make the storage bigger** | ghostty | `terminal/PageList.zig:1871-1886` |
 | ⚠ **A URI *is* capped, by the reference the cluster rows read as uncapped.** The OSC parser builds its payload into a `LimitedStringBuilder(PAYLOAD_LIMIT)`, `PAYLOAD_LIMIT = 10000000` | xterm.js | `common/parser/OscParser.ts:196`, `common/parser/Constants.ts:67` |
 | ⚠ **…and its failure mode is silent whole-sequence discard**, not truncation and not an error: on overflow the builder *clears itself* and reports it, `put` short-circuits, and `end` returns without ever calling the handler — so the hyperlink simply never happens | xterm.js | `common/StringBuilder.ts:52-53`, `common/parser/OscParser.ts:209-221` |
+| ⚠ **The per-cell mark list *is* capped, by the binding tree, and the overflow is dropped in silence.** `XtNcombiningChars` defaults to 2 and is clamped to `[0, 5]`; `combSize` is that value, `for_each_combData` iterates `off < combSize`, and `addXtermCombining` stores into the first empty slot and falls out of the loop having written nothing when there is none — in **both** preprocessor arms. Every line is inside the live `#if OPT_WIDE_CHARS` | xterm | `charproc.c:793`, `charproc.c:11642-11646`, `screen.c:245-249`, `ptyx.h:2024`, `util.c:5568-5575` and `:5612-5617` |
+| ⚠ **…but that cap is on a different object, and a mode-2027 cluster never reaches it.** The gate admitting a scalar to that storage is `c >= 0x300 && wide_chars && CharWidth(c) == 0 && CharacterClass(c) != CNTRL`, and `ZWJ` (U+200D) is in the `CNTRL` range `0x200b..0x200f`, so it is discarded rather than accumulated. xterm implements no mode 2027: it caps a *combining-mark list*, not a UAX #29 cluster | xterm | `charproc.c:3099-3102`, `charclass.c:131` |
 
-The direction that falls out, **for clusters**: 3 of 3 leave the *input* unbounded, and the only one
-with a hard storage limit **grows past it**. justerm's pre-#621 behaviour — encode silently emits a
-length its own decoder rejects — matched none of them, and is the one shape all three avoid.
+The direction that falls out, **for clusters**: of the four pinned trees, 3 leave the *input*
+unbounded and the only one with a hard storage limit **grows past it**; the fourth caps, at 2 by
+default, but caps an object a growing cluster cannot reach in it. justerm's pre-#621 behaviour —
+encode silently emits a length its own decoder rejects — matched none of them, and is the one shape
+all four avoid.
 
 **For URIs the tally is 2:1, not 3:0**, and it does not change #621's direction: 10 000 000 is two
 orders of magnitude past the `u16::MAX` that was actually in question, so "widen the field" is still
@@ -608,6 +623,18 @@ Nobody mis-read a citation this time; the extension happened in the *gap between
 heading, which said "nobody caps it" without naming what "it" was. The lesson is narrower than the
 first correction's and worth keeping separate: **a section's title is cited as if it were a row.**
 Scope the heading to what the rows actually establish.
+
+**Third correction, 2026-09-08 (#867), and the scoping fix above did not prevent it.** Rows 7-8 add
+xterm, which caps — so *"nobody caps a cluster"* and *"No reference does, so capping in the engine
+would be justerm drifting alone"* were both false while they stood, and the second of them was
+load-bearing: it is the sentence that would have talked a reader out of a bound. Nothing mis-read a
+citation and nothing over-extended a heading this time. **The corpus itself was the gap.** This
+file's own first line calls it *"what alacritty / ghostty / xterm.js actually do"* — three trees —
+while `docs/agents/thegraph.md` pins **four** and marks the missing one binding, so any sentence
+here that generalises to *"no reference"* is unsound by construction rather than by accident. The
+lesson is the third distinct one and belongs with the other two: **a tally is scoped by the corpus
+that produced it, and this file's corpus is not the project's.** Before writing "no reference",
+check the pin table, not the rows.
 
 ## Who re-fits after a spacing change (#578, verified 2026-07-29)
 
@@ -2933,3 +2960,33 @@ xterm.js's `backspace` calls `_restrictCursor(cols)` so the park survives into t
 `cursorBackward` clamps to `cols - 1` first (`:889-890`, `:919`) and never spends. justerm spends on
 BS only. **`?1045` (`rev2`) carries the same autowrap requirement** (`cursor.c:124`, `:128`) and
 differs only in the *walk*; this engine models no `?1045`, so it changes nothing here.
+
+## What a mode-2027 join costs, and the model nobody else runs (#867, verified 2026-09-08)
+
+`Term::try_grapheme_join` asked its break question by rebuilding the previous cluster's text and
+re-segmenting it, so the cost was linear in the cluster's length and a cluster that kept growing
+was quadratic overall. The occasion for reading all four trees was deciding whether that shape is
+ours or the field's. It is ours: **no pinned tree runs the reconstruct-from-the-cell model.**
+
+| Fact | Reference | Site |
+|---|---|---|
+| **Same shape, same order — and it is the reference this engine was built to mirror.** `var state: BreakState = .default;` is built *inside* the per-scalar block and every stored codepoint is re-walked before the new one is asked about. What hides it is the per-step cost: `graphemeBreak` is one index into a precomputed table, no allocation | ghostty | `src/terminal/Terminal.zig:1149-1169`, `src/unicode/grapheme.zig:37-46` |
+| **Width is decided per join, not by re-measuring the cluster.** `graphemeWidthEffect(prev, cp)` takes the *previous codepoint* and answers `ignore` / `no_change` / `wide` / `narrow` in constant time, gating both selectors on `prev_props.emoji_vs_base` | ghostty | `src/unicode/grapheme.zig:58-67` |
+| **O(1), by carrying the state forward.** `precedingJoinState` is one packed integer on the parser, threaded through `print` and stored back at the end. No cluster is ever reconstructed | xterm.js | `src/common/InputHandler.ts:541`, `:561-565`, `:665` |
+| ⚠ **…and its invalidation is at *parser-dispatch* granularity, which is not free.** The integer is cleared on every C0 execute and every CSI / ESC / OSC / DCS / APC dispatch — so a scalar arriving after a cursor move starts a fresh cluster. Adopting it here would change segmentation across CUP, which `grapheme_cluster.rs`'s `mode_2027_promotion_repairs_an_orphaned_wide_half_at_col_plus_one` pins the other way | xterm.js | `src/common/parser/EscapeSequenceParser.ts:502`, `:676`, `:690`, `:732`, `:775`, `:810`, `:849`, `:878`, `:902`, `:928` |
+| **No segmentation at all in the print path** — the branch is `c.width() == 0`, and a zero-width scalar is pushed onto the previous cell's `Vec<char>`. There is no cluster question to be slow at | alacritty | `alacritty_terminal/src/term/mod.rs:1069-1085`, `term/cell.rs:164-166` |
+| **O(1) because the list is capped at 5.** See § *Per-cell payload length* — and note it is answering a different question, since xterm implements no mode 2027 and drops `ZWJ` before its combining store | xterm | `charproc.c:11642-11646`, `charproc.c:3099-3102` |
+
+**The tally that matters is not about cost.** Two trees do not segment in the print path and two do;
+of the two that do, **both carry an O(1) break state forward and neither ever reconstructs a
+cluster**. justerm reconstructs because it deliberately keeps the state in the cell — cursor moves
+cannot corrupt what is not carried — and that choice is recorded in `grapheme.rs`'s header and is
+not up for a reference vote. What the corpus settles is narrower and was the actual question: the
+reconstruction is not a cost the field agreed to pay, so **removing it was not a divergence.**
+
+**Measured before drawing any of that** (release, 80x24, mode-OFF control and a drift control in the
+same run, min of three samples per rung; the ladder was re-measured on unmodified `master`, so the
+numbers attribute to the tree rather than to a change). 25 600 `U+1F468 U+200D` pairs cost **77.8 s**
+inside one `feed()`, an exponent of **2.005** fitted over a 64x range of n. Per ADR-0004 the
+tie-break falls to this project's own measurement, and the measurement is what decided it — the
+rows above only established that the field was not already paying it.

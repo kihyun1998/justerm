@@ -331,9 +331,11 @@ under it.
   **The count is bounded twice, and the second bound is the load-bearing one.** A cap at a buffer's
   worth of cells, and a progress guard that ends the loop as soon as an iteration places no new
   cell. The guard is what matters: under mode 2027 a cluster ending in `ZWJ` re-joins the cluster it
-  was read from, so each replay grows one cell instead of writing another, and the join is O(L) in
+  was read from, so each replay grows one cell instead of writing another, and the join *was* O(L) in
   that length — `?2027h`, `U+1F468`, `U+200D`, then the eight bytes `CSI 65535 b` cost **593
-  seconds** before the guard. The cap would not have caught it: at the default 10 000-line
+  seconds** before the guard. [#867] later made the join constant in that length, so the
+  amplification is gone; the guard is not, because it bounds *pointless iterations* rather than the
+  cost of a join. The cap would not have caught it: at the default 10 000-line
   scrollback a buffer's worth of cells exceeds what a `u16` parameter can carry, so it never binds
   there. Both are divergences from all three references, which loop uncapped because each *is* the
   terminal and owns the thread it burns. [#825]
