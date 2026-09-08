@@ -91,11 +91,15 @@ IPC by identity.
 ## Reference behaviour
 
 One axis only —
-[per-cell payload length](../../agents/reference-facts.md#per-cell-payload-length--nobody-caps-a-cluster-the-one-that-can-run-out-grows-and-a-uri-is-a-different-answer-621-verified-2026-07-29):
-no reference caps a grapheme **cluster**, and the one whose storage *can* run out **grows until
-the payload fits** rather than truncating or failing. The **URI** axis is different and was
-originally recorded wrong here: xterm.js *does* cap an OSC payload, at 10 000 000 chars, discarding
-the whole sequence silently. Neither bound is near `u16::MAX`, so #621's direction is unaffected —
+[per-cell payload length](../../agents/reference-facts.md#per-cell-payload-length--three-of-four-leave-a-cluster-unbounded-the-binding-one-caps-it-and-a-uri-is-a-different-answer-621-verified-2026-07-29-xterm-row-added-867-2026-09-08):
+three of the four pinned trees leave a grapheme **cluster** unbounded, and the one whose storage
+*can* run out **grows until the payload fits** rather than truncating or failing. The fourth —
+xterm, the binding one — caps a cell's stored marks at 2 by default and drops the overflow in
+silence, but it has no mode 2027 and discards `ZWJ` before that store, so a growing cluster never
+reaches the cap there. **This sentence said "no reference caps a cluster" until #867**, off a table
+that had no xterm row at all. The **URI** axis is different and was also recorded wrong here
+originally: xterm.js *does* cap an OSC payload, at 10 000 000 chars, discarding
+the whole sequence silently. No bound is near `u16::MAX`, so #621's direction is unaffected —
 but read the correction notes in that section before citing it. Its first version concluded the
 opposite of its own citation, and its second extended a cluster-only finding to URIs without a
 URI-side row.
