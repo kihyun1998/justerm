@@ -312,6 +312,75 @@ fn a_parked_cursor_left_with_autowrap_off_moves() {
     );
 }
 
+/// The walk needs autowrap as well as the mode, exactly as the spend does (#873).
+///
+/// xterm reaches both arms through one `rev`, which is
+/// `(flags & WRAP_MASK) == WRAP_MASK` over `WRAP_MASK (REVERSEWRAP | WRAPAROUND)`
+/// (`cursor.c:123-127`), so the walk at `:165` is dead under `?7l` just as the spend at
+/// `:153` is; ghostty returns through the plain decrement at `Terminal.zig:1766-1769`
+/// before reaching either. This engine gated only the spend, so a park armed under `?7h`
+/// and carried into `?7l` walked a row where both references clamp.
+///
+/// Driven through both verbs, because they share one step and a future change could give
+/// only one of them the gate.
+#[test]
+fn the_reverse_wrap_walk_needs_autowrap_too() {
+    for seq in [&b"\x08"[..], &b"\x1b[D"[..]] {
+        let mut t = Engine::new(3, 2);
+        t.feed(b"\x1b[?45h");
+        t.feed(b"abcd"); // row 0 soft-wraps while ?7h is still on
+        t.feed(b"\x1b[?7l"); // autowrap off — the wrap link itself stays
+        t.feed(b"\x1b[2;1H"); // (1,0), which also clears the park
+        t.feed(seq);
+        assert_eq!(
+            (t.cursor().row, t.cursor().col),
+            (1, 0),
+            "?7l: {seq:?} clamps at column 0 rather than walking"
+        );
+    }
+}
+
+/// A reverse-wrap does not break the wrap link, so the logical line survives it (#873).
+///
+/// **The control is what makes this a defect rather than a preference**: the same visible
+/// content reached *without* a reverse-wrap reads as one logical line, so clearing the
+/// link made two buffers holding identical cells answer differently depending only on how
+/// the cursor arrived — and a reflow to a wider grid kept them apart instead of healing it.
+/// Undoing the cursor's trip across the boundary does not undo the boundary.
+///
+/// xterm writes no wrap flag anywhere in `CursorBack`, and ghostty only *reads*
+/// `prev_row.wrap` (`Terminal.zig:1842-1843`). xterm.js's `line.isWrapped = false`
+/// (`InputHandler.ts:823`) is the outlier this engine had copied.
+#[test]
+fn a_reverse_wrap_keeps_the_two_rows_one_logical_line() {
+    let text = |e: &Engine| {
+        e.viewport_logical_lines()
+            .iter()
+            .map(|l| l.text.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let mut t = Engine::new(3, 3);
+    t.feed(b"\x1b[?45h");
+    t.feed(b"abcd");
+    t.feed(b"\x08\x08"); // to (1,0), then reverse-wrap to (0,2)
+    t.feed(b"X"); // overwrite the cell the walk landed on
+    assert_eq!(text(&t), vec!["abXd".to_string()]);
+
+    // Same cells, reached by plain autowrap. It must read the same, before and after a
+    // reflow that would join the rows if they were ever separate.
+    let mut control = Engine::new(3, 3);
+    control.feed(b"abXd");
+    assert_eq!(
+        text(&control),
+        text(&t),
+        "identical cells, identical reading"
+    );
+    t.resize(6, 3);
+    control.resize(6, 3);
+    assert_eq!(text(&control), text(&t), "and identical through a reflow");
+}
+
 /// Spending the park over a wide glyph leaves the cursor on the pair's **spacer**, not
 /// on its lead (#80).
 ///

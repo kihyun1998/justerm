@@ -43,7 +43,12 @@ Read out of the source; there is no record to read instead.
   **parked** cursor it spends the deferred wrap as the first unit of the move, so the cursor does not
   move at all (#80). **Both verbs take that step — `BS` and `CSI D`, through `Term::step_back`
   (#873)**, the second applying it once per unit of its count; it was `BS` only until then, on a
-  comment that recorded an observation about xterm.js rather than a decision. The second is gated on `?45` **and** `?7h`, and the trap is that
+  comment that recorded an observation about xterm.js rather than a decision.
+  **Both halves are gated on `?45` *and* `?7h`**, which the spend had and the walk did not until
+  #873's follow-up: xterm reaches both arms through one `rev`, so `:165` is as dead under `?7l`
+  as `:153` is. And **the walk leaves the wrap link alone** — it used to clear it, by writing the
+  row directly rather than through `Term::end_wrap`, so it escaped that function's per-verb table
+  *and* its damage obligation; the flag is that table's to decide, not this rule's. The second is gated on `?45` **and** `?7h`, and the trap is that
   xterm's spend site does not look like it: `cursor.c:153` reads `(rev || rev2) && screen->do_wrap`,
   but `rev` is `((flags & WRAP_MASK) == WRAP_MASK)` with `WRAP_MASK (REVERSEWRAP | WRAPAROUND)`
   (`:123-127`) — the mode name hides an autowrap requirement. ghostty gates earlier and plainly
