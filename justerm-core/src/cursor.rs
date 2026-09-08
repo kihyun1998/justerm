@@ -8,6 +8,10 @@ use crate::color::Color;
 /// Modelling it as a "template cell" mirrors Alacritty: a later slice can make
 /// erase (ED/EL) fill cleared cells with `bg` instead of `Default` and that
 /// *is* Background Color Erase (BCE), no structural change. See `term.rs`.
+///
+/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
+/// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Pen {
     pub fg: Color,
@@ -59,6 +63,10 @@ pub enum CursorShape {
 }
 
 /// The input position, its pending-wrap state, and the current pen.
+///
+/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
+/// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Clone, Copy, Debug)]
 pub struct Cursor {
     pub row: usize,

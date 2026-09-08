@@ -47,6 +47,10 @@ mod logical;
 mod tracked;
 
 /// Owns the authoritative screen state and applies VT actions to it.
+///
+/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
+/// sites, so the attribute would bind nothing it does not already bind.
 pub struct Term {
     grid: Grid,
     /// The inactive screen. Swapped with `grid` on alt-screen enter/leave; holds
@@ -549,6 +553,10 @@ pub const DEFAULT_WORD_SEPARATORS: &str = ",│`|:\"' ()[]{}<>\t\u{3000}";
 /// and unlike this type's *shape*, adding a method later is not a breaking change. The
 /// asymmetry decides it: shipping an accessor nobody uses is hard to undo, adding one
 /// when a caller appears is free.
+///
+/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
+/// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Hyperlink {
     uri: std::sync::Arc<str>,
@@ -807,6 +815,9 @@ struct CommandRecord {
 /// It is deliberately **not** a [`MarkerId`]: a marker is a decoration anchor and
 /// rides two frame groups, so every marker a consumer registers is something the
 /// renderer paints. A tracked point is private to whoever asked for it.
+///
+/// **No `#[non_exhaustive]` (#844): the attribute is already implied.** The field is `pub(crate)`,
+/// so no literal is possible outside this crate however many fields it grows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TrackedId(pub(crate) u32);
 
@@ -825,6 +836,10 @@ struct TrackedPoint {
 /// `kind` and `exit` ride here rather than on the frame because they never change
 /// after `push_marker` — re-sending them per frame is the same class of waste as
 /// re-sending the line.
+///
+/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
+/// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkerEntry {
     pub id: MarkerId,
@@ -844,6 +859,10 @@ pub struct MarkerEntry {
 /// each screen — the same reason `markers`/`markers_mut` route by `on_alt`. An
 /// alt-screen switch therefore bumps the epoch even though no line moved: what the
 /// answer *describes* changed.
+///
+/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
+/// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkerIndex {
     pub markers: Vec<MarkerEntry>,
@@ -854,6 +873,10 @@ pub struct MarkerIndex {
 /// One executed shell command recovered from OSC-133 marks (#166), for
 /// screen-reader command navigation. The consumer jumps prompt-to-prompt over
 /// these and announces `command` + a success/fail signal from `exit`.
+///
+/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
+/// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandLine {
     /// The command's jump anchor as a *document* line — the logical-line index of

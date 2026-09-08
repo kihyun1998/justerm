@@ -6,6 +6,10 @@
 //! of this model, moved out of `term.rs` in #601; this module is just the returned shape.
 
 /// One soft-wrap-joined logical line touching the viewport.
+///
+/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
+/// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LogicalLine {
     /// The line text: wrap-joined across soft-wrapped rows, wide-char spacers

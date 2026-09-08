@@ -8,6 +8,10 @@ bitflags::bitflags! {
     /// The high bits are intentionally left free so underline-style + underline
     /// colour and an OSC 8 hyperlink id can be added later without a format
     /// change (see `docs/architecture.md` "Cell").
+    ///
+    /// **No `#[non_exhaustive]` (#844): the question does not arise for a bitflags set.** New members
+    /// are bits inside the value, not fields, and the type is built through `empty()` / `from_bits`,
+    /// never by struct literal.
     #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
     pub struct CellFlags: u16 {
         // --- standard SGR attributes ---
@@ -264,6 +268,10 @@ fn flag_words(f: u32) -> (u32, u32, u32) {
 ///
 /// `Eq` is a derived bitwise compare, which is exact because the packing is
 /// canonical — every logical cell maps to one bit pattern (unused bits stay 0).
+///
+/// **No `#[non_exhaustive]` (#844).** Out-of-crate code builds one through `Cell::default()` rather
+/// than by literal, which is the consumer-chosen form of the same immunity to a new field — #843's
+/// rule (*an exhaustive type preserves the option to be forced*) as it lands on a struct.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Cell {
     content: u32,

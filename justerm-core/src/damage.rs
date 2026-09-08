@@ -2,6 +2,10 @@
 //! See ADR-0003 for the model (incremental bounds, ack-gated reset).
 
 /// The damaged column span of a single line.
+///
+/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
+/// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct LineDamage {
     pub line: usize,
@@ -21,6 +25,9 @@ pub struct LineDamage {
 /// the value stops meaning anything, since every source row is then outside the
 /// region. The cap is applied when the op is *read*, not while it accumulates, so
 /// a region that scrolls far and returns still reports its true small net.
+///
+/// **No `#[non_exhaustive]` (#844).** 7 out-of-crate literal sites. `{top, bottom, count}` is the
+/// whole of a region shift, so nothing outside this crate can add to it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ScrollOp {
     pub top: usize,

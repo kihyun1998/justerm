@@ -56,6 +56,10 @@ pub enum Side {
 /// One highlighted run on a single **viewport** row: columns `left..=right`
 /// (both inclusive). `selection_range` returns one per visible row the selection
 /// touches — the renderer paints these. Off-screen rows are not emitted.
+///
+/// **No `#[non_exhaustive]` (#844).** 57 out-of-crate literal sites, the most of any type here —
+/// and `{row, left, right}` is closed geometry, so there is no growth cause to defend against.
+/// Declining costs nothing that can be measured.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SelectionSpan {
     pub row: usize,
