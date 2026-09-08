@@ -2983,6 +2983,28 @@ impl Term {
     /// reference can be cited here because none of them holds the embedder's
     /// configuration in the object its reset replaces.
     ///
+    /// **That "1–2" is right for the stacks and wrong for the retained strings**, and
+    /// the sentence above ran the two together (corrected 2026-09-08, #835). Ghostty
+    /// drops the title on a reset exactly as this does — `self.title` and `self.pwd`
+    /// are both `clearRetainingCapacity()`d in `fullReset` (`Terminal.zig:4468-4469`)
+    /// — so on the **retained string** the tally is 2–2, not 1–2, and justerm is not
+    /// in a minority. It cannot be counted on the *stack* half at all, because it
+    /// holds no title stack in `Terminal` to have an opinion about; there the 1–2
+    /// stands. The correction matters because "minority position" is a standing
+    /// invitation to revisit, and half of what it was pointing at is a tie.
+    ///
+    /// **Dropping the title is also not announced, and that too matches both
+    /// references that drop it.** A consumer keeps the exited application's window
+    /// title after `ESC c` — the same shape as the palette below, and *worse* on its
+    /// face, since here the engine does hold the string and does discard it, so the
+    /// two sides actually diverge. It is nonetheless not a defect by any available
+    /// standard: alacritty clears `title`/`title_stack` in `reset_state` with no
+    /// event on its proxy, and ghostty's `StreamHandler.fullReset` sends a mouse
+    /// shape, a mode-2031 report and a progress clear — and nothing about the title.
+    /// 2–0 among the references that face the question. Measured on #835 rather than
+    /// assumed; if it is ever revisited, the first thing to re-measure is whether
+    /// dropping at all is right, since xterm and xterm.js simply keep the title.
+    ///
     /// **The palette is deliberately *not* announced here, and the silence is a
     /// decision rather than an omission (#835).** An application that redefined
     /// entries with `OSC 4`, or the foreground/background/cursor with

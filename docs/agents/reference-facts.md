@@ -3131,3 +3131,37 @@ so there is no DEC text about what `RIS` does to one and the precondition is not
 transfer: that was an invented sequence's own meaning, while this is what a *DEC* sequence does to
 state the invented one left behind. Recorded because "xterm does this and we do not" is otherwise
 rediscovered from cold — which is the failure #835 was filed to prevent.
+
+### The sibling question the sweep turned up — the *title* on a reset, and a correction to #823's tally
+
+Same shape as the palette and a **different answer on the first axis**, which is why it is written out
+rather than left to the analogy. Measured 2026-09-08 while sweeping #835's rule back over the corpus.
+
+**Axis 1 — does a reset drop the title? 2–2, not the 1–2 recorded at `Term::full_reset` since #823.**
+
+| Reference | Drops it? | Site |
+|---|---|---|
+| xterm | **no** — `ReallyReset` never touches the title; its only title statement is `screen->title_modes = screen->title_modes0` | `charproc.c:14319-14524` @ `6380a3e` |
+| xterm.js | **no** — `CoreTerminal.reset()` calls five service resets, and `InputHandler.reset()` is two lines of attribute data; `_windowTitle` / `_windowTitleStack` are untouched | `CoreTerminal.ts:270-276`, `InputHandler.ts:3428-3431`, fields `:103`, `:106` @ `699f553` |
+| alacritty | **yes** — `title = None`, `title_stack = Vec::new()` | `mod.rs:1835` @ `852e971` |
+| ghostty | **yes** — `self.title.clearRetainingCapacity()` **and** `self.pwd.clearRetainingCapacity()` | `Terminal.zig:4468-4469` @ `e6e26e1` |
+
+⚠ The doc-comment at `Term::full_reset` called this a *"minority position, 1–2 … only alacritty
+agrees"*. That is right for the **stacks** and wrong for the **retained strings**, and the sentence ran
+the two together. Ghostty cannot be counted on the stack half at all — `grep` for `saved_title` /
+`title_stack` in `src/terminal/` returns nothing, so it holds no stack in `Terminal` to have a position
+about. Corrected in place.
+
+**Axis 2 — does anything *announce* the drop? 2–0 among the two that drop, and both are silent.**
+
+| Reference | Announces? | Site |
+|---|---|---|
+| alacritty | **no** — `reset_state` writes `self.title = None` directly; its only `send_event` there is `Event::CursorBlinkingChange`. The `Event::Title` / `Event::ResetTitle` pair exists but its reset-adjacent call site is `set_options`, a **config** change, not `reset_state` | `mod.rs:1835`, the pair at `:505-507`, `set_title` at `:2221` |
+| ghostty | **no** — `StreamHandler.fullReset` emits a mouse shape, a mode-2031 `color_scheme_report` and a progress clear. Nothing about the title | `src/termio/stream_handler.zig:911-922` |
+
+So a consumer of either keeps the exited application's window title after `ESC c`, exactly as a
+justerm consumer does. **This is the axis worth carrying**: the divergence is sharper here than for the
+palette — the engine *does* hold the string and *does* discard it, so the two sides genuinely disagree
+afterwards, where for the palette there is no engine-side copy to disagree with — and it is still not a
+defect by any available standard. If it is ever revisited, axis 1 is the one to reopen first: two
+references keep the title, and "announce the drop" silently assumes dropping is right.
