@@ -1,7 +1,8 @@
-//! Reverse-wraparound tests (#80, DEC private mode ?45). Verified against
-//! xterm.js `backspace()`: reverse-wrap applies to BACKSPACE only (not cursor-
-//! left), and only undoes a SOFT wrap (the row was an autowrap continuation) —
-//! a hard CR/LF newline does not reverse-wrap.
+//! Reverse-wraparound tests (#80, #873, DEC private mode ?45). The mode applies to
+//! BACKSPACE and to CURSOR-LEFT alike — one step serves both verbs, which is how xterm
+//! and ghostty are built and what #873 decided against xterm.js's deliberate split. It
+//! only undoes a SOFT wrap (the row was an autowrap continuation); a hard CR/LF newline
+//! does not reverse-wrap, in this engine and in xterm (`LineTstWrapped`, `cursor.c:178`).
 
 use justerm_core::Engine;
 
@@ -40,16 +41,69 @@ fn reverse_wrap_does_not_cross_a_hard_newline() {
     assert_eq!(t.grid().cell(1, 0).c(), 'X');
 }
 
+/// `CSI D` at column 0 walks back to the previous soft-wrapped row, exactly as BS does
+/// (#873). One step serves both verbs, which is xterm's shape: `CursorBack` is reached
+/// from `CASE_BS` (`charproc.c:3703`) and `CASE_CUB` (`:3933`) alike.
 #[test]
-fn cursor_left_does_not_reverse_wrap() {
-    // Reverse-wrap is BS only; CSI D at column 0 still clamps.
+fn cursor_left_reverse_wraps_to_the_previous_soft_wrapped_row() {
     let mut t = Engine::new(3, 2);
     t.feed(b"\x1b[?45h");
     t.feed(b"abcd"); // soft wrap; cursor (1,1)
-    t.feed(b"\x1b[2;1H"); // cursor to (1,0)
-    t.feed(b"\x1b[D"); // cursor-left at column 0 — must NOT reverse-wrap
+    t.feed(b"\x1b[2;1H"); // cursor to (1,0) — the CUP also clears the park
+    t.feed(b"\x1b[D"); // cursor-left at column 0 — reverse-wraps
     t.feed(b"Y");
-    assert_eq!(t.grid().cell(1, 0).c(), 'Y');
+    assert_eq!(
+        t.grid().cell(0, 2).c(),
+        'Y',
+        "CUB walked onto the previous row"
+    );
+    assert_eq!(t.grid().cell(1, 0).c(), 'd', "and did not clamp in place");
+}
+
+/// The control for the walk: with `?45` off, `CSI D` at column 0 clamps.
+#[test]
+fn cursor_left_clamps_at_column_zero_by_default() {
+    let mut t = Engine::new(3, 2);
+    t.feed(b"abcd"); // soft wrap, but ?45 is off
+    t.feed(b"\x1b[2;1H");
+    t.feed(b"\x1b[D");
+    t.feed(b"Y");
+    assert_eq!(
+        t.grid().cell(1, 0).c(),
+        'Y',
+        "default: CUB clamps at column 0"
+    );
+}
+
+/// The walk is soft-wraps-only for `CSI D` as well, and this pins it **independently of
+/// the shared step**: `reverse_wrap_does_not_cross_a_hard_newline` is the only other test
+/// that observes the rule, and it drives `BS`. Found by mutating the walk's predicate to
+/// `true` and watching exactly one test redden (#873).
+#[test]
+fn cursor_left_does_not_cross_a_hard_newline() {
+    let mut t = Engine::new(5, 2);
+    t.feed(b"\x1b[?45h");
+    t.feed(b"ab\x1b[2;1H"); // row 0 "ab" is not WRAPLINE; cursor to (1,0)
+    t.feed(b"\x1b[D");
+    t.feed(b"X");
+    assert_eq!(
+        t.grid().cell(1, 0).c(),
+        'X',
+        "CUB clamped: the previous row is not a soft wrap"
+    );
+}
+
+/// The walk costs **one unit of the count**, not the whole sequence: xterm decrements
+/// once per step inside the loop (`cursor.c:186`), so `CSI 2 D` at column 0 lands one
+/// column short of the previous row's end.
+#[test]
+fn cursor_left_keeps_moving_after_it_walks() {
+    let mut t = Engine::new(3, 2);
+    t.feed(b"\x1b[?45h");
+    t.feed(b"abcd");
+    t.feed(b"\x1b[2;1H"); // (1,0)
+    t.feed(b"\x1b[2D");
+    assert_eq!((t.cursor().row, t.cursor().col), (0, 1));
 }
 
 #[test]
@@ -183,23 +237,33 @@ fn a_parked_backspace_with_autowrap_off_moves() {
     );
 }
 
-/// `CSI D` does **not** spend the park, and moves a full column from it (#80).
+/// `CSI D` spends the park as the first unit of its move, exactly as BS does (#873).
 ///
-/// The asymmetry with backspace is deliberate and reference-backed, but until now
-/// nothing could see it: `cursor_left_does_not_reverse_wrap` drives to column 0 with
-/// `CUP` first, which clears the park, so it pins only the row-walk half. Giving
-/// `move_back` the same spend left the entire core suite green.
+/// **Decided by the maintainer on 2026-09-08 against a 2-2 reference split, and theirs to
+/// reverse.** xterm and ghostty route both verbs through one function and so spend on
+/// either — xterm's `CursorBack` is reached from `CASE_BS` (`charproc.c:3703`) and
+/// `CASE_CUB` (`:3933`) alike, both outside any conditional compilation; ghostty's
+/// `backspace` is `cursorLeft(1)` (`Terminal.zig:1696`) and the spend lives in
+/// `cursorLeft` under a *"to match xterm"* comment (`:1774-1777`).
 ///
-/// The split is 2-2 and this engine follows xterm.js by mechanism rather than by
-/// preference: its `backspace` calls `_restrictCursor(cols)` (`InputHandler.ts:806`) so
-/// the park survives into the decrement, while `cursorBackward` clamps to `cols - 1`
-/// first (`:889-890`, `:919`) and therefore never spends. xterm and ghostty route both
-/// verbs through one function and so spend on either — xterm's `CursorBack` is reached
-/// from `CASE_BS` (`charproc.c:3703`) and `CASE_CUB` (`:3933`) alike — so at the parked
-/// column 3 below, xterm's `CSI D` spends the park and stays at 3 where this engine moves to 2.
+/// xterm.js is the one that separates them, and **on purpose rather than by accident of
+/// its clamp order** — which is what the record here said until #873 read it properly.
+/// Its `backspace` carries *"Our implementation deviates from xterm on purpose"* over
+/// four bullets, of which *"any cursor movement sequence keeps working as expected"* is
+/// this axis (`InputHandler.ts:810-818`), and `cursorBackward` is a bare
+/// `_moveCursor(-n, 0)` (`:976-979`). alacritty implements no `?45` at all.
+///
+/// What broke the tie: `XTREVWRAP` is xterm-invented (`ctlseqs.txt:952`) with no DEC text
+/// above it, ADR-0004 makes xterm the tie-breaker for this layer, and reach is ~0 through
+/// terminfo — `?45` appears in neither xterm's `terminfo` nor its `termcap`, and its
+/// `reverseWrap` resource defaults to `False` (`charproc.c:468`). Nothing arrives here
+/// except an application that wrote the sequence against xterm's own definition of it.
+///
+/// The control is the whole test: an unparked cursor at the same coordinate must still
+/// move its full count, or this has simply disabled `CSI D`.
 #[test]
-fn cursor_left_does_not_spend_a_park() {
-    for (seq, want) in [(&b"\x1b[D"[..], 2usize), (&b"\x1b[3D"[..], 0)] {
+fn cursor_left_spends_a_park() {
+    for (seq, want) in [(&b"\x1b[D"[..], 3usize), (&b"\x1b[3D"[..], 1)] {
         let mut t = Engine::new(4, 2);
         t.feed(b"\x1b[?45h");
         t.feed(b"abcd"); // fills row 0, parked at column 3
@@ -208,9 +272,44 @@ fn cursor_left_does_not_spend_a_park() {
         assert_eq!(
             (t.cursor().row, t.cursor().col),
             (0, want),
-            "CUB {seq:?} moves its full count from a parked cursor"
+            "CUB {seq:?} spent the park as its first unit"
+        );
+        assert!(
+            !t.cursor().pending_wrap,
+            "and the park is spent, not still owed"
         );
     }
+
+    // Control: same coordinate, no park. The full count still moves.
+    for (seq, want) in [(&b"\x1b[D"[..], 2usize), (&b"\x1b[3D"[..], 0)] {
+        let mut t = Engine::new(4, 2);
+        t.feed(b"\x1b[?45h");
+        t.feed(b"abc"); // cursor at column 3, unparked
+        assert!(!t.cursor().pending_wrap, "precondition: not parked");
+        t.feed(seq);
+        assert_eq!(
+            (t.cursor().row, t.cursor().col),
+            (0, want),
+            "an unparked CUB {seq:?} moves its full count"
+        );
+    }
+}
+
+/// With autowrap **off** a parked `CSI D` moves, the same 3-0 answer the backspace half
+/// carries (#80) — pinned here so the shared step cannot acquire a different gate for
+/// one of its two callers.
+#[test]
+fn a_parked_cursor_left_with_autowrap_off_moves() {
+    let mut t = Engine::new(3, 2);
+    t.feed(b"\x1b[?7l\x1b[?45h");
+    t.feed(b"abc");
+    assert!(t.cursor().pending_wrap, "precondition: parked under ?7l");
+    t.feed(b"\x1b[D");
+    assert_eq!(
+        (t.cursor().row, t.cursor().col),
+        (0, 1),
+        "?7l: the park is spent by moving"
+    );
 }
 
 /// Spending the park over a wide glyph leaves the cursor on the pair's **spacer**, not

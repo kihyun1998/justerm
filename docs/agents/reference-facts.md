@@ -2916,7 +2916,7 @@ and removed, and the helper is now one mechanism outright: read an unconditional
 step back one. **The half that was borrowed from xterm was borrowed to work around a defect, and it
 left when the defect did** — which is the more useful thing to know than the composite ever was.
 
-## Reverse wraparound, and the mode name that hides an autowrap requirement (#80, verified 2026-09-07)
+## Reverse wraparound, and the mode name that hides an autowrap requirement (#80, #873, verified 2026-09-08)
 
 The rule: with reverse wrap on, a **backspace at a parked cursor spends the deferred wrap as the
 first unit of the move** and therefore does not change the column. Without it a parked and an
@@ -2953,12 +2953,30 @@ is what a row here would have enforced, and there was no row.
 arriving at it, both measured and both answered by moving — armed under `?7l`, and armed under `?7h`
 then carried across a later `?7l`.
 
-**BS versus CUB is 2-2, and this engine follows xterm.js by mechanism.** xterm routes `CASE_BS`
-(`charproc.c:3703`) and `CASE_CUB` (`:3933`) through the same `CursorBack`, so the spend applies to
-cursor-left and to its count; ghostty likewise (`Terminal.zig:1696`, `backspace` → `cursorLeft(1)`).
-xterm.js's `backspace` calls `_restrictCursor(cols)` so the park survives into the decrement, while
-`cursorBackward` clamps to `cols - 1` first (`:889-890`, `:919`) and never spends. justerm spends on
-BS only. **`?1045` (`rev2`) carries the same autowrap requirement** (`cursor.c:124`, `:128`) and
+**BS versus CUB was 2-2, and #873 broke it for xterm — decided 2026-09-08, settled, not open.**
+xterm routes `CASE_BS` (`charproc.c:3703`) and `CASE_CUB` (`:3933`) through the same `CursorBack`,
+both outside any conditional compilation, so the spend applies to cursor-left and to its count;
+ghostty likewise (`Terminal.zig:1696`, `backspace` → `cursorLeft(1)`, the spend at `:1774-1777`).
+
+⚠ **xterm.js separates the two verbs *on purpose*, and this row said "by mechanism" until #873 read
+the comment sitting above the code.** `backspace` carries *"Our implementation deviates from xterm on
+purpose"* over four bullets, of which *"any cursor movement sequence keeps working as expected"* is
+exactly this axis (`InputHandler.ts:810-818`). The clamp order — `_restrictCursor(cols)` at `:806`
+letting the park survive, against `cursorBackward` → `_moveCursor` → `_restrictCursor()` at
+`:889-890`, `:976-979` — is *how* that position is implemented, not why it is held. Reading the call
+graph alone turns a stated position into an accident, which is the same failure as reading `rev`
+without `WRAP_MASK` four paragraphs up.
+
+**justerm now spends and walks on both**, on three grounds: `XTREVWRAP` is xterm's own invention
+(`ctlseqs.txt:952`) with no DEC text above it to appeal to, ADR-0004 makes xterm this layer's
+tie-breaker, and ghostty adopted xterm's shape independently. **Reach, measured for that decision:**
+`?45` appears in neither xterm's `terminfo` nor its `termcap`, so no capability emits it and no
+ncurses application turns it on; the `reverseWrap` X resource defaults to `False` (`charproc.c:468`).
+Whoever enables it writes the sequence directly, against xterm's definition — which is why low reach
+argued *for* xterm here rather than for divergence.
+
+**The walk's soft-wrap requirement is xterm's too, not an xterm.js import**: its loop gives up on
+`!LineTstWrapped(ld)` (`cursor.c:178`) for plain `?45`, so only `rev2` walks an unwrapped row. **`?1045` (`rev2`) carries the same autowrap requirement** (`cursor.c:124`, `:128`) and
 differs only in the *walk*; this engine models no `?1045`, so it changes nothing here.
 
 ## What a mode-2027 join costs, and the model nobody else runs (#867, verified 2026-09-08)

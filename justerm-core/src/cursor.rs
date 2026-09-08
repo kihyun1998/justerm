@@ -108,9 +108,13 @@ pub struct Cursor {
     ///   (#865, #869) before it was found.
     /// - **Consumed**, which is not a clear — the flag is *spent* on work it owed.
     ///   Two sites, and they spend it in opposite directions: `Term::wrapline` performs
-    ///   the deferred wrap and only then puts the flag down, and `Term::backspace`
+    ///   the deferred wrap and only then puts the flag down, and `Term::step_back`
     ///   under `?45` takes the park as the first unit of the move and therefore does
-    ///   **not** decrement the column (#80). A consume site that cleared instead of
+    ///   **not** decrement the column (#80). **`Term::step_back` is reached by two verbs
+    ///   since #873** — `BS` and `CSI D`, the second n times per sequence — so a change
+    ///   to that spend now moves cursor-left as well; that is the whole point of the
+    ///   step being shared, and it is xterm's shape (one `CursorBack` from `CASE_BS`
+    ///   and `CASE_CUB`). A consume site that cleared instead of
     ///   spending would be indistinguishable from a clear on the flag alone — the
     ///   difference shows up only in where the cursor lands, which is why both are
     ///   pinned against an unparked control at the same coordinate.
