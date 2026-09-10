@@ -39,13 +39,32 @@ import type { ClipboardQueryEvent, ClipboardStoreEvent, ClipboardTarget, Termina
  * reading back what the user copied earlier is the sharper of the two risks).
  *
  * Either half may be synchronous or return a promise. **A rejection is a refusal,
- * not a crash**: the controller swallows it. That matters more than it looks —
- * the browser's own `navigator.clipboard.readText()` is permission-gated and
- * generally wants transient user activation, and an `OSC 52` query arrives from
- * the *stream* rather than from a gesture, so rejection is the expected case
- * rather than the exceptional one. xterm.js's addon does not catch it
- * (`ClipboardAddon.ts:44`, a bare `.then`), which is an unhandled rejection in the
- * embedder's page; this deliberately diverges.
+ * not a crash**: the controller swallows it, where xterm.js's addon does not
+ * (`ClipboardAddon.ts:44`, a bare `.then` — an unhandled rejection in the
+ * embedder's page).
+ *
+ * **But rejection is not the shape a browser read actually takes, measured
+ * 2026-09-10** in Chromium over `localhost` (a secure context) with
+ * `navigator.userActivation.isActive === true`:
+ *
+ * | call | outcome |
+ * |---|---|
+ * | `navigator.clipboard.readText()` | **still pending after 2000 ms** — neither resolved nor rejected |
+ * | `navigator.clipboard.writeText()` | resolved |
+ * | `permissions.query({name:"clipboard-read"})` | `"prompt"` |
+ * | `permissions.query({name:"clipboard-write"})` | `"granted"` |
+ *
+ * So a read hangs on the permission prompt rather than failing, and the refusal
+ * reaches the application as silence either way — the same answer by a different
+ * route than the one this was designed against. Two consequences that are not
+ * obvious: {@link ClipboardController.handle}'s promise then never settles (it is
+ * floated, never awaited, in `Terminal`), and a provider that wants a *bounded*
+ * read owes its own timeout. **The widget deliberately does not impose one** — a
+ * deadline is policy, and inventing one here is what this whole module declines
+ * to do.
+ *
+ * Not measured: what a *denied* prompt does, and whether any browser other than
+ * Chromium rejects where this one hangs. Both are gaps, not absences.
  */
 export interface ClipboardProvider {
   /** Put `text` on `target`. An EMPTY `text` is the sequence's clear idiom, not a
@@ -115,8 +134,10 @@ export class ClipboardController {
    * Handle one event off the stream. Events that are not the clipboard pair are
    * ignored, so this can be fed the whole subscription.
    *
-   * **Never rejects.** The returned promise resolves once the provider has
-   * settled, which is what a test awaits; `Terminal` discards it.
+   * **Never rejects, and may never settle.** It resolves once the provider has
+   * settled — but a browser `readText()` was measured *pending indefinitely* on
+   * the permission prompt (see {@link ClipboardProvider}), so `Terminal` floats it
+   * rather than awaiting. Tests await it because their providers settle.
    */
   async handle(event: TermEvent): Promise<void> {
     switch (event.type) {

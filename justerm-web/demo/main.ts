@@ -779,6 +779,19 @@ function emitCwd(): void {
   source.pushEvent({ type: "cwd", cwd: `file://host/home/ki/dir${++cwdN}` });
 }
 
+// #841: the OSC 52 pair rides the SAME event channel. The store's text and the
+// empty target are the bytes tmux 3.2a was measured emitting on the RHEL 9 VM
+// (core #828, `tmux_clipboard.raw`) — core resolves that empty field to
+// "clipboard", so this is what the widget actually receives from a real emitter.
+function emitClipboardStore(): void {
+  source.pushEvent({ type: "clipboardStore", target: "clipboard", text: "HELLOJUSTERM" });
+}
+// BEL, because that is the terminator tmux used. The reply must echo it (#836),
+// which the port below logs so the round trip is observable.
+function emitClipboardQuery(): void {
+  source.pushEvent({ type: "clipboardQuery", target: "clipboard", terminator: "bel" });
+}
+
 const controls = document.createElement("div");
 Object.assign(controls.style, {
   position: "fixed",
@@ -859,6 +872,8 @@ const bgAlphaBtn = demoButton(
 const titleBtn = demoButton("Set title", emitTitle); // #117
 const bellBtn = demoButton("Bell", emitBell); // #117
 const cwdBtn = demoButton("Set cwd", emitCwd); // #117
+const clipStoreBtn = demoButton("Clipboard store", emitClipboardStore); // #841
+const clipQueryBtn = demoButton("Clipboard query", emitClipboardQuery); // #841
 const prevBtn = demoButton("Prev command", navPrevCommand, false);
 const nextBtn = demoButton("Next command", navNextCommand, false);
 const fontBtn = demoButton("Font: 16px", toggleFontSize); // #417: runtime setFontSize
@@ -884,6 +899,8 @@ controls.append(
   titleBtn,
   bellBtn,
   cwdBtn,
+  clipStoreBtn,
+  clipQueryBtn,
   prevBtn,
   nextBtn,
   fontBtn,
@@ -1160,6 +1177,42 @@ term = new Terminal(source, renderer, {
     },
     onBell: () => console.log("[event] bell"),
     onCwd: (uri) => console.log(`[event] cwd ${JSON.stringify(uri)}`),
+  },
+  // #841: OSC 52. A real embedder decides its policy here; the demo honours both
+  // directions against the real browser clipboard so the round trip is drivable.
+  // `readText` is permission-gated and generally wants a user gesture, and an OSC
+  // 52 query arrives from the STREAM — so the reject path is the interesting one
+  // and it is logged rather than swallowed silently.
+  clipboard: {
+    provider: {
+      writeText: async (target, text) => {
+        await navigator.clipboard.writeText(text);
+        console.log(`[clipboard] wrote ${JSON.stringify(text)} to ${target}`);
+      },
+      readText: async (target) => {
+        // Logged at CALL time, not only on the outcome: `readText()` was measured
+        // hanging on the permission prompt (see src/clipboard.ts), so without this
+        // the Clipboard query button looks unwired rather than blocked.
+        console.log(`[clipboard] read requested for ${target}`);
+        try {
+          const text = await navigator.clipboard.readText();
+          console.log(`[clipboard] read ${JSON.stringify(text)} from ${target}`);
+          return text;
+        } catch (e) {
+          console.log(`[clipboard] read DENIED for ${target}: ${String(e)}`);
+          throw e; // the controller turns this into silence — no reply is sent
+        }
+      },
+    },
+    // A real backend calls core `Engine::report_clipboard(target, text, terminator)`
+    // and writes the drained reply to the pty. The demo has no engine, so it logs
+    // the three values that would cross — the terminator being the one #836 added.
+    port: {
+      report: (target, text, terminator) =>
+        console.log(
+          `[clipboard] report ${target} ${JSON.stringify(text)} term=${terminator}`,
+        ),
+    },
   },
 });
 term.mount();

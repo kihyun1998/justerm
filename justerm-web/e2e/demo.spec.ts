@@ -2913,3 +2913,42 @@ test("a selection drag that outlives its element's box requests nothing (#819)",
     side: "right",
   });
 });
+
+// #841 — OSC 52 end to end through the REAL browser clipboard, which is the half no unit
+// test can reach: the widget hands a store to the embedder's provider, and answers a query
+// on the port with the terminator the query carried (#836).
+//
+// The two clicks are ONE round trip on purpose. The store puts the tmux-measured text on
+// the actual system clipboard (`navigator.clipboard.writeText`), and the query reads it back
+// out (`readText`) — so the reported text being that same string is evidence the value went
+// through the platform rather than through a variable in the demo.
+//
+// Permissions are granted explicitly. Ungranted, `readText()` was measured **pending
+// indefinitely** on the prompt rather than rejecting (Chromium, secure context, 2026-09-10),
+// which is silence on the wire — correct behaviour, but it proves nothing about the answer
+// path, so this test buys the prompt away to exercise the half that has assertions.
+test("an OSC 52 store reaches the clipboard and a query is answered with its own terminator (#841)", async ({
+  page,
+}) => {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  const clip: string[] = [];
+  page.on("console", (m) => {
+    const t = m.text();
+    if (t.includes("[clipboard]")) clip.push(t);
+  });
+
+  await page.getByRole("button", { name: "Clipboard store" }).click();
+  await expect
+    .poll(() => clip.join("\n"))
+    .toContain('[clipboard] wrote "HELLOJUSTERM" to clipboard');
+
+  await page.getByRole("button", { name: "Clipboard query" }).click();
+  // The read reached the platform...
+  await expect.poll(() => clip.join("\n")).toContain("[clipboard] read requested for clipboard");
+  // ...and the answer carries all three values back: the target the query named, the text the
+  // OS actually holds, and `bel` — the terminator this query arrived with, NOT the channel's
+  // `st` default. That last one is the whole of #836 crossing the widget seam.
+  await expect
+    .poll(() => clip.join("\n"))
+    .toContain('[clipboard] report clipboard "HELLOJUSTERM" term=bel');
+});
