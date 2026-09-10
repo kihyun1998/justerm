@@ -50,7 +50,22 @@ export interface SearchPort {
    * selection coexists with search navigation. Past the backend's highlight
    * cap, an INDEX designation paints nothing — a capping backend designates by
    * absolute span instead (core `set_active_search_match`, #436), which paints
-   * the active emphasis alone (honestly no plain highlight underneath). */
+   * the active emphasis alone (honestly no plain highlight underneath).
+   *
+   * **Designating a match does not make it copyable, and that is a decision (#438).**
+   * Ctrl+C copies the *selection*, which stays the user's, so nothing copies the
+   * current match unless a consumer adds the action — copy-the-match is consumer
+   * policy (ADR-0017), and no reference offers it off the selection channel on the
+   * search surface. The mechanism needs no new engine API: core's
+   * `viewport_logical_lines` returns each logical line's wrap-joined text with a
+   * per-char viewport `(row, col)` map, and `match_spans` projects a `Match` into
+   * that same space — a backend intersects the two and slices out the match's text,
+   * with core doing the wrap join, the spacer skip and the wide-pair widening. Two
+   * things to carry: it answers while the match is **on screen** (which it is right
+   * after this call scrolls it in, and across either viewport edge since off-screen
+   * wrap context is included) and not once the user has scrolled away; and apply the
+   * same NBSP-to-space normalisation the selection copy does, since it is one copy
+   * policy and not two. */
   showMatch(index: number): Promise<void>;
   /** Designate match `index` as active WITHOUT scrolling — the incremental
    * re-search path (#429): a new hand-over reset the engine's designation, and

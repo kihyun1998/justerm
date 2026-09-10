@@ -46,6 +46,21 @@ concept: which member is active is navigation policy, and navigation is the cons
   put #441's viewport yank back on ordinary typing, because a regex is invalid for as long as it
   takes to type a group's closing paren.
 
+- **Designating a match paints it; it does not make its text available, and that split is a
+  decision (#438).** `selection_text` is bound to the selection state and there is no `Match` → text
+  call, so *copy the current match* is **consumer policy** over a mechanism core already exposes
+  twice: [logical lines](logical-lines.md)' per-char viewport `(row, col)` map beside its wrap-joined
+  text, and `match_spans` projecting a `Match` into that same space — the consumer intersects them.
+  The bound: the answer is **viewport-scoped**, true right after the consumer scrolls the match in
+  and false once the user scrolls away. Adding a core getter instead was measured wrong on three
+  counts — `extract_lines`' trim ends the text at the *range's* end, where a match's `' '` is written
+  content by construction (`search`'s haystack pops the padding before matching, so the
+  [padding invariant](../invariant/only-u0020-can-be-padding.md)'s structural excuse does not apply
+  here); `match_spans`' clamp of a consumer-authored column turns wrong *paint* into wrong
+  **content**; and a copy is **pulled on a user action**, so the in-place-mutation staleness the
+  paint survives by re-search reaches the clipboard unrepaired — #750's discriminator, answered there
+  against late re-reading.
+
 - **It is the fifth overlay group** (wire v12), added after the other four — which is why its
   interaction rules are the least recorded of them.
 
