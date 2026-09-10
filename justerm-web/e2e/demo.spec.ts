@@ -2914,20 +2914,23 @@ test("a selection drag that outlives its element's box requests nothing (#819)",
   });
 });
 
-// #841 — OSC 52 end to end through the REAL browser clipboard, which is the half no unit
-// test can reach: the widget hands a store to the embedder's provider, and answers a query
-// on the port with the terminator the query carried (#836).
+// #841 — OSC 52 through the REAL browser clipboard, which is the half no unit test
+// can reach.
 //
-// The two clicks are ONE round trip on purpose. The store puts the tmux-measured text on
-// the actual system clipboard (`navigator.clipboard.writeText`), and the query reads it back
-// out (`readText`) — so the reported text being that same string is evidence the value went
-// through the platform rather than through a variable in the demo.
+// **The obvious version of this test is self-drawn and was written that way first.**
+// Clicking "Clipboard store" and then reading back the same fixed literal passes even
+// if the store path is entirely dead, because a previous run on the same machine left
+// that string on the clipboard. So the clipboard is first seeded through an
+// INDEPENDENT channel with a unique sentinel — the separation xterm.js's own addon
+// harness uses (`ClipboardAddon.test.ts` seeds via `page.evaluate` before writing the
+// query to the stream) — and the sentinel is asserted back as a negative control. Only
+// then does the store get to change it.
 //
-// Permissions are granted explicitly. Ungranted, `readText()` was measured **pending
-// indefinitely** on the prompt rather than rejecting (Chromium, secure context, 2026-09-10),
-// which is silence on the wire — correct behaviour, but it proves nothing about the answer
-// path, so this test buys the prompt away to exercise the half that has assertions.
-test("an OSC 52 store reaches the clipboard and a query is answered with its own terminator (#841)", async ({
+// **What this test does NOT cover, stated rather than implied**: the query is dispatched
+// from a click handler, so `navigator.clipboard.readText()` runs with transient user
+// activation live. The stream regime — an OSC 52 query arriving with no gesture — is
+// covered by the measurement recorded in `src/clipboard.ts`, not here.
+test("an OSC 52 store reaches the clipboard and a query answers with its own terminator (#841)", async ({
   page,
 }) => {
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
@@ -2937,18 +2940,32 @@ test("an OSC 52 store reaches the clipboard and a query is answered with its own
     if (t.includes("[clipboard]")) clip.push(t);
   });
 
+  // Seed independently of the feature under test, with a value this run owns.
+  const sentinel = `sentinel-${Date.now()}`;
+  await page.evaluate((s) => navigator.clipboard.writeText(s), sentinel);
+
+  // NEGATIVE CONTROL: the query answers the sentinel, so (a) the read path really
+  // reaches the platform and (b) the clipboard provably does NOT already hold the
+  // store's literal — which is what made the first version of this test vacuous.
+  await page.getByRole("button", { name: "Clipboard query" }).click();
+  await expect
+    .poll(() => clip.join("\n"))
+    .toContain(`[clipboard] report clipboard "${sentinel}" term=bel`);
+  expect(clip.join("\n"), "the store's literal must not be there yet").not.toContain(
+    "HELLOJUSTERM",
+  );
+
+  // THE SUBJECT: the store must now change what the platform holds.
   await page.getByRole("button", { name: "Clipboard store" }).click();
   await expect
     .poll(() => clip.join("\n"))
     .toContain('[clipboard] wrote "HELLOJUSTERM" to clipboard');
 
+  // The second query answers the NEW contents — and with `st`, because the demo
+  // alternates the terminator. A controller that hard-coded `bel` passed the first
+  // assertion and fails this one, which is the whole of #836 crossing the seam.
   await page.getByRole("button", { name: "Clipboard query" }).click();
-  // The read reached the platform...
-  await expect.poll(() => clip.join("\n")).toContain("[clipboard] read requested for clipboard");
-  // ...and the answer carries all three values back: the target the query named, the text the
-  // OS actually holds, and `bel` — the terminator this query arrived with, NOT the channel's
-  // `st` default. That last one is the whole of #836 crossing the widget seam.
   await expect
     .poll(() => clip.join("\n"))
-    .toContain('[clipboard] report clipboard "HELLOJUSTERM" term=bel');
+    .toContain('[clipboard] report clipboard "HELLOJUSTERM" term=st');
 });

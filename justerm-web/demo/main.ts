@@ -786,10 +786,13 @@ function emitCwd(): void {
 function emitClipboardStore(): void {
   source.pushEvent({ type: "clipboardStore", target: "clipboard", text: "HELLOJUSTERM" });
 }
-// BEL, because that is the terminator tmux used. The reply must echo it (#836),
-// which the port below logs so the round trip is observable.
+// The terminator ALTERNATES bel/st across clicks. tmux used BEL, but a query button
+// that only ever emits one of the two cannot tell "echoes the terminator" apart from
+// "hard-codes bel" — so the button emits both and the e2e asserts each (#836).
+let queryN = 0;
 function emitClipboardQuery(): void {
-  source.pushEvent({ type: "clipboardQuery", target: "clipboard", terminator: "bel" });
+  const terminator = ++queryN % 2 === 1 ? "bel" : "st";
+  source.pushEvent({ type: "clipboardQuery", target: "clipboard", terminator });
 }
 
 const controls = document.createElement("div");
