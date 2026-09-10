@@ -314,6 +314,9 @@ export class Terminal {
    * canvas can't receive composition events); created on mount w/ options. */
   private textarea: HTMLTextAreaElement | undefined;
   private composition: CompositionController | undefined;
+  /** The OSC 52 router (#841), when the consumer wired one. Held so `dispose()` can
+   * end it — an in-flight clipboard read outlives the event subscription. */
+  private clipboardController: ClipboardController | undefined;
   /** Last cursor cell the textarea was moved to, so it repositions only on a move
    * (not every frame — that would force a layout read+write per output flush). */
   private textareaCell = "";
@@ -389,7 +392,11 @@ export class Terminal {
     const clipboard = this.options?.clipboard;
     const wantsClipboard = clipboard?.provider !== undefined || clipboard?.port !== undefined;
     if ((events || wantsClipboard) && this.source.subscribeEvents) {
+      // Held on `this`, not a local: an in-flight clipboard read is already past the
+      // subscription, so dropping `eventUnsub` cannot stop it landing. `dispose()`
+      // ends the controller, per the map's "a layer ends what it exclusively holds".
       const controller = wantsClipboard ? new ClipboardController(clipboard) : undefined;
+      this.clipboardController = controller;
       this.eventUnsub = this.source.subscribeEvents((e) => {
         // Floating on purpose: `handle` never rejects, and the event channel is
         // fire-and-forget — a clipboard round trip must not stall the stream.
@@ -691,6 +698,12 @@ export class Terminal {
     this.unsubscribe = undefined;
     this.eventUnsub?.();
     this.eventUnsub = undefined;
+    // Unsubscribing is NOT enough: an in-flight clipboard read is already past the
+    // subscription, and was measured pending indefinitely on a browser permission
+    // prompt. Ending the controller latches the landing so a late answer reports
+    // nothing (#841).
+    this.clipboardController?.dispose();
+    this.clipboardController = undefined;
     for (const off of this.detach) off();
     this.detach = [];
     this.scroller = undefined;
