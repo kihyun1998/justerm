@@ -88,13 +88,17 @@ How a version gets there is [release](release.md).
     `src/index.ts`, cast in unchecked, ungated against the wire. `markerKind()` gives it the home;
     the type-level roster gate on the web side is release-gated behind the pin bump, the way
     `underlineStyle`'s own consumer half was (#831 → #862).
-  - **Mouse wanted-events bits — open, and it fits the shape word for word.** `DOWN`/`UP`/`WHEEL`/
-    `DRAG`/`MOVE` ride inside the `mouseWantedEvents` member; the decoder exports the `u8` and no
-    constants for it; the names are hand-declared in `justerm-web/src/input.ts` and published from
-    `src/index.ts`; and the only test over them feeds the object back into itself — the
-    list-checked-against-a-copy-of-itself shape this note already records `flags()`'s guard
-    falling to. Its in-repo precedent is `Flags`, which exists at module scope precisely so nobody
-    hard-codes a bit value. **Recorded, not fixed** — a second value space is not #860's slice.
+  - **Mouse wanted-events bits — decoder half closed by #884.** `DOWN`/`UP`/`WHEEL`/`DRAG`/`MOVE`
+    ride inside the `mouseWantedEvents` member and the decoder exported the `u8` and no constants
+    for it, so the names were hand-declared in `justerm-web/src/input.ts` and published from
+    `src/index.ts`, with the only test over them feeding the object back into itself — the
+    list-checked-against-a-copy-of-itself shape this note records `flags()`'s guard falling to.
+    `mouseEventBits()` gives them a home. **It takes `Flags`'s shape, not `markerKind`'s**, and
+    that is the rule's second half doing work: a mask's members are bits *inside* the value, so no
+    enum can answer "which of five" about a set. Where the value hangs decides *where the names
+    live*; whether it is a set or a choice decides *what shape they take*.
+    The web half — gating `input.ts` against the published constants — waits on the same pin bump
+    as the marker kind's, and both land in one slice.
   - **`cursorShape`'s three names and `kind`'s two** live only in prose, but the roster was never
     copied into a consumer as *values*: `justerm-web` mirrors them as a comment and passes the
     number through. Weaker instance, same class.
@@ -205,12 +209,15 @@ same trace.
 - `justerm-core/tests/public_struct_reasons.rs` — every published struct carries the attribute or
   the reason it does not (#844), over a published set derived from `lib.rs` rather than listed
 - `justerm-wasm-decode/src/lib.rs` — `Flags`/`flags()` (the eleven named bits),
-  `UnderlineStyle`/`underlineStyle()` (the 3-bit field, #831) and `MarkerKind`/`markerKind()` (the
-  `markerPositions` kind lane, #860): the module-scope names a consumer reads a value space by.
+  `UnderlineStyle`/`underlineStyle()` (the 3-bit field, #831), `MarkerKind`/`markerKind()` (the
+  `markerPositions` kind lane, #860) and `MouseEventBits`/`mouseEventBits()` (the
+  `mouseWantedEvents` mask, #884): the module-scope names a consumer reads a value space by.
   Guarded respectively by `flags_map_covers_every_declared_cell_flag`; by `underline_style` taking
-  the core enum, so its `match` is exhaustive over it; and — because a `u32` argument can never be
+  the core enum, so its `match` is exhaustive over it; — because a `u32` argument can never be
   exhaustive over an enum — by `published_kind`, which `flatten` routes the lane through, plus
-  `every_published_kind_is_reachable_through_the_accessor` for the reverse direction
+  `every_published_kind_is_reachable_through_the_accessor` for the reverse direction; and by
+  `mouse_event_bits_covers_every_declared_member`, which asserts against `MouseEvents::all()`
+  rather than against a copy of its own list
 - `justerm-wasm-decode/tests/wire_enum_stays_exhaustive.rs` — the scan that keeps every core enum
   this crate maps onto a published value exhaustive (#843); its own source list is the roster that
   #831 had to widen

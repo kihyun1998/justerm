@@ -661,6 +661,47 @@ pub fn underline_style(flags: u16) -> UnderlineStyle {
     }
 }
 
+/// The `MouseEvents` bit positions, exported so a consumer tests
+/// `frame.mouseWantedEvents & B.wheel` without hard-coding bit values (#884). The values come
+/// straight from Rust `MouseEvents`, so there is no JS mirror to drift. Read once and cache: the
+/// bits never change within a build.
+///
+/// **Named for the bits, not for the mask, because the frame already carries a
+/// `mouseWantedEvents` member.** One is a per-frame *value* — what the running application asked
+/// to be told about — and the other is the vocabulary for reading it; a shared name would leave a
+/// consumer unable to tell `mouseEvents()` from `mouseWantedEvents` at a glance.
+///
+/// This is a mask, so it takes [`Flags`]'s shape rather than [`MarkerKind`]'s: new members are
+/// bits *inside* the value and no enum can answer "which of five" about a set. #860's rule places
+/// it — a value space's names live at module scope — and the shape follows from the value being a
+/// set rather than a choice.
+#[wasm_bindgen]
+pub struct MouseEventBits {
+    /// Button press (every protocol except `Off`).
+    pub down: u8,
+    /// Button release (`?1000`+).
+    pub up: u8,
+    /// Wheel turn (`?1000`+ — X10 excludes it).
+    pub wheel: u8,
+    /// Motion while a button is held — drag (`?1002`+).
+    pub drag: u8,
+    /// Bare motion, no button held (`?1003`).
+    pub r#move: u8,
+}
+
+/// The `MouseEvents` bit constants (see [`MouseEventBits`]).
+#[wasm_bindgen(js_name = mouseEventBits)]
+pub fn mouse_event_bits() -> MouseEventBits {
+    use justerm_core::MouseEvents as M;
+    MouseEventBits {
+        down: M::DOWN.bits(),
+        up: M::UP.bits(),
+        wheel: M::WHEEL.bits(),
+        drag: M::DRAG.bits(),
+        r#move: M::MOVE.bits(),
+    }
+}
+
 /// What a marker means, as the value published beside the lane that carries it (#860, #159).
 ///
 /// **A frame member crosses as a primitive; a value space's names live at module scope.** The kind
@@ -927,6 +968,25 @@ mod tests {
             "`flags()` does not name every declared `CellFlags` member — missing {:#06x}. Add the \
              constant to `Flags` and to `flags()`; a JS consumer has no other way to name it.",
             CellFlags::all().bits() & !exported
+        );
+    }
+
+    /// Every declared `MouseEvents` member is nameable from JS (#884).
+    ///
+    /// The guard is `MouseEvents::all()`, not a copy of the list above it: a bit added upstream
+    /// reddens here rather than going unnamed on npm. Mirrors
+    /// `flags_map_covers_every_declared_cell_flag`, which exists because this package's *other*
+    /// hand-kept bit roster once named nine of eleven and nothing could say so.
+    #[test]
+    fn mouse_event_bits_covers_every_declared_member() {
+        use justerm_core::MouseEvents;
+        let b = mouse_event_bits();
+        let exported = b.down | b.up | b.wheel | b.drag | b.r#move;
+        assert_eq!(
+            exported,
+            MouseEvents::all().bits(),
+            "`mouseEventBits()` does not name every declared `MouseEvents` member — missing              {:#04x}. Add the field to `MouseEventBits` and to `mouse_event_bits()`; a JS consumer              has no other way to name it.",
+            MouseEvents::all().bits() & !exported
         );
     }
 
