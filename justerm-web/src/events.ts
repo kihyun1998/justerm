@@ -1,5 +1,5 @@
 /**
- * Fire-and-forget consumer notifications (#117) — the web side of core's
+ * The web side of core's consumer event channel (#117) —
  * `drain_events()` (`TermEvent`). These are NOT frame state (they never ride the
  * frame wire); the consumer drains them from the engine and delivers them through
  * a side channel ({@link import("./types").FrameSource.subscribeEvents}). The
@@ -37,6 +37,26 @@ export type TermEvent =
  * widget does not make either choice. */
 export type ClipboardTarget = "clipboard" | "primary" | "selection";
 
+/*
+ * **Why the two types above are NOT in `docs/map/territory/published-surface.md`'s
+ * hand-copied-roster list — maintainer's call, 2026-09-10, and theirs to reverse.**
+ *
+ * That note enumerates value spaces this package transcribes from core and
+ * republishes. Both of its existing entries reach this package **through the
+ * decoder's wire lane**, which is what makes `justerm-wasm-decode` their proper
+ * home and their absence from it the defect. `TermEvent` crosses no decoder lane
+ * at all: it arrives on a side channel the *embedder* implements, whose only type
+ * declaration is this package's. So a string union is the right home here and the
+ * class does not apply.
+ *
+ * The gap that survives that reasoning, recorded because it is a different one:
+ * core's `ClipboardTarget` is `#[non_exhaustive]` and names `q` and the cut
+ * buffers as members a later slice may add, while the union above is closed and
+ * {@link import("./clipboard").ClipboardController} passes the target to the
+ * provider unexamined — there is no decline arm. No reachable consequence until
+ * core adds a target, and nothing here gates that day.
+ */
+
 /** The byte an OSC reply must end with — **the one carried back, not a default**
  * (#836). `drain_events` hands over a *batch*, so two queries can be outstanding
  * at once and answered in either order; a remembered terminator cannot say which
@@ -59,9 +79,11 @@ export interface ClipboardStoreEvent {
 /** An application asked what is ON the clipboard (`OSC 52` with a `?` payload).
  * The application is waiting for a reply, so this is the one event on this
  * channel with a response obligation — and **declining to answer is how a read is
- * refused**, which is what all three references do (alacritty and ghostty log and
- * return; xterm.js's addon must be registered with a provider at all). None of
- * them sends a "denied" reply.
+ * refused**, which is what all four references do: alacritty and ghostty log and
+ * return, xterm(C) emits nothing because its whole reply block sits inside the
+ * `AllowWindowOps` branch, and xterm.js has no refusal path short of leaving the
+ * addon unloaded. **None of them sends a "denied" reply** — the tally is checked
+ * at the sources in {@link import("./clipboard").ClipboardProvider}'s module.
  *
  * Named as a pair with {@link ClipboardStoreEvent} rather than mirroring core's
  * `QueryClipboard`: a consumer reads these two together, and `clipboardStore` /

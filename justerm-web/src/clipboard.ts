@@ -49,6 +49,18 @@
  * this package is actually at — carry no asymmetry at all: xterm.js allows both,
  * xterm(C) denies both.
  *
+ * **Focus is deliberately not a gate here — maintainer's call, 2026-09-10, and
+ * theirs to reverse.** alacritty wraps both directions in `if
+ * self.ctx.terminal.is_focused` (`alacritty/src/event.rs:1903`, `:1908` @
+ * `852e971`); ghostty's `clipboardWrite` (`src/Surface.zig:2177`) and its
+ * `clipboard_read` handling (`:1046`) check config only, and xterm.js's addon
+ * checks nothing — so it is **1 of 3**. It was still worth putting, because focus
+ * is a fact only the widget holds and "the embedder's provider decides" cannot be
+ * the whole answer for something the embedder cannot see. The ground for
+ * declining: knowing the focus state and deciding refusals from it are different
+ * acts, and only the first is the widget's. An embedder that wants the rule can
+ * read focus itself and refuse inside its provider.
+ *
  * What IS unanimous, checked at all four, is that **a refusal is silence**:
  * alacritty `debug!("Denied osc52 load"); return` (`term/mod.rs:1727-1730`), ghostty
  * `log.info(...); return` (`src/Surface.zig:5837-5844`), xterm(C) emits nothing

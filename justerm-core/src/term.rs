@@ -1505,9 +1505,14 @@ impl Term {
     /// sequence, resolve `Pc` to a [`ClipboardTarget`], decode `Pd`, and relay.
     /// It never touches a clipboard, never holds one, and carries no allow/deny
     /// knob — under ADR-0017 that gate is the consumer's, and a consumer that
-    /// drops the event has refused the request. alacritty puts the gate here
-    /// (`alacritty_terminal/src/term/mod.rs:1706`) because alacritty is the whole
-    /// terminal; this crate is not.
+    /// drops the event has refused the request. alacritty puts a gate at the
+    /// equivalent site (`alacritty_terminal/src/term/mod.rs:1706`) — **not because
+    /// it is the whole terminal, which is what this comment used to say and is
+    /// not the distinction (#841)**: that gate is in alacritty's *engine* crate
+    /// too, reading a policy the application injects through `Config`
+    /// (`:353`, written at `alacritty/src/config/ui_config.rs:125`). The reason
+    /// this crate has none is that it holds no clipboard at all, so a gate in
+    /// front of a relay refuses nothing a dropped event does not already refuse.
     ///
     /// **An absent target field means the clipboard, and that is a divergence
     /// from the spec taken deliberately.** `ctlseqs.txt:2161` says *"If the
