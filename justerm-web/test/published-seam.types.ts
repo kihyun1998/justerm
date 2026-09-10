@@ -105,6 +105,34 @@ holds<Equal<NotMirrored, never>>(true);
  * bump; at #862's bump it did, before a line of that ticket was written, naming both it and
  * `UnderlineStyle`. They are in the list below because they are now handled — carried by
  * `JustermRenderer` — not because the entry was added to silence the red.
+ *
+ * **What it will name next, and what to do about it (#860 / #884).** `justerm-wasm-decode` has
+ * since gained four module-scope exports that this package has never looked at: `MarkerKind` /
+ * `markerKind` (the `markerPositions` kind lane) and `MouseEventBits` / `mouseEventBits` (the
+ * `mouseWantedEvents` mask). They are deliberately **not** pre-listed above — the value of this
+ * section is the moment it goes red, which is the moment they become reachable, and adding the
+ * entries early deletes exactly that. Three things are recorded here rather than on a ticket,
+ * because this is the one place the person who meets the red is certain to be standing:
+ *
+ * 1. **Nothing is currently wrong, and drifting fails quietly rather than lying.** Measured at
+ *    `24b6773`: `src/markers.ts`'s hand-declared kinds (`0`..`4`) and `src/input.ts`'s hand-
+ *    declared mouse bits (`1 << 0`..`1 << 4`) both agree with `justerm-core`. If a kind is added
+ *    upstream and this package does not learn it, `readMarkers` casts the lane in unchecked and
+ *    `command-announce`'s `m.kind === MarkerKind.CommandFinished` simply does not match — the new
+ *    kind goes unannounced; nothing renders wrong and nothing throws. A *renumbering* would be
+ *    worse, and it is already a `WIRE_VERSION` bump (ADR-0008), a louder gate than anything here.
+ * 2. **The local copies most likely stay, and that is a constraint rather than a preference.**
+ *    Two top-level wasm-bindgen imports race their init and the second fails, so the widget loads
+ *    the decoder with `await import(...)` and #862's acceptance pins *no new static import of
+ *    `justerm-wasm-decode` in `src/`*. `import type` cannot substitute: it cannot carry an enum's
+ *    value side. So what is owed is an *agreement* check, not a replacement.
+ * 3. **Two checks, not one — and this is the easy thing to get wrong.** The
+ *    `(typeof import("justerm-wasm-decode"))["MarkerKind"]` form used by `src/types.ts` compares
+ *    member **names** across the seam and is erased at emit, so `src/` gains no edge. It cannot
+ *    compare **values**: two distinct enum types have no common value type. The value is what
+ *    crosses the wire, so the renumbering case needs a **runtime** assertion — and the test suite
+ *    can hold one, because `published-decode.test.ts` already reaches a live decoder through
+ *    `await import(...)`.
  */
 type ReviewedDecoderExports =
   // Called directly through `typeof import("justerm-wasm-decode")` — no mirror, none needed.
