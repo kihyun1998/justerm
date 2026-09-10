@@ -725,10 +725,20 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   too — its only cap is a 1000-*result* count (`SearchAddon.ts`), and search does a *literal* match (no
   ReDoS). The 2048-char/direction + whitespace-stop cap lives **only in the link provider**
   (`WebLinkProvider.ts::_getWindowedLineStrings`), because *that* path runs a URL **regex** over the
-  assembled text. So the bound belongs with the **regex-runner**, not the buffer walk. In justerm link
-  detection is the consumer's job (ADR-0017), so if the pathological single-multi-KB-line case ever
-  bites, the fix is the **consumer** capping its own regex input — exactly where xterm puts it — not a
-  core cap. Deferred until profiling shows it matters. [#206]
+  assembled text. In justerm link detection is the consumer's job (ADR-0017), so that is where a *regex*
+  window belongs — exactly where xterm puts it.
+  **A regex window is not the same thing as a bound on the walk, which is what this paragraph used to
+  conclude it was** ("the fix is the consumer capping its own regex input — not a core cap"). Capping the
+  regex's input bounds the consumer's own ReDoS surface and nothing else: core has already assembled the
+  giant `String` by the time the consumer sees it, and *that assembly is the measured cost*
+  (`benches/wrap_run.rs`, release — `viewport_logical_lines` 7.3 ms on a one-run 800 KB buffer against
+  17 µs for the same bytes as short lines, ~430×; one Word `selection_begin` 11.7 ms over 801,920 chars).
+  So a bound on the walk, if ever taken, is a window *inside* the core loop whose value the consumer
+  injects (ADR-0017, the shape #545 already used for the word-boundary set) — not a cap a consumer
+  applies to core's output. **`search` is outside it either way:** measured 14.1 ms against 13.9 ms
+  (~1.0×), because it scans the whole buffer whatever the run shape, so a per-run cap buys it nothing.
+  Still deferred, and what defers it is now **reach rather than the numbers** — no shipped consumer calls
+  any of the three surfaces, so the pathological buffer has no route to a user. [#206]
 
 - **Editing CSIs are BCE-filled and region/line-scoped — and must not orphan a wide-char half.**
   ICH (`@`, insert blanks), DCH (`P`, delete chars), ECH (`X`, erase chars) operate *within the
