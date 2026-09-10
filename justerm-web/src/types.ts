@@ -196,11 +196,19 @@ export type Unsubscribe = () => void;
 export interface FrameSource {
   subscribe(listener: (frame: DecodedFrame) => void): Unsubscribe;
   /**
-   * Subscribe to fire-and-forget consumer events (#117) — title/bell/cwd from
-   * core's `drain_events`, delivered OUT-OF-BAND (not on the frame wire). Frame
-   * mode wires this to the backend's event side channel; the in-wasm mode drains
-   * the engine. Optional — a source with no event channel omits it, and the widget
-   * simply never fires the consumer's {@link import("./events").EventHandlers}.
+   * Subscribe to consumer events (#117) from core's `drain_events`, delivered
+   * OUT-OF-BAND (not on the frame wire). Frame mode wires this to the backend's
+   * event side channel; the in-wasm mode drains the engine. Optional — a source
+   * with no event channel omits it, and the widget then wires neither surface
+   * below.
+   *
+   * **One channel, two surfaces (#841).** Everything core queues travels here,
+   * because a backend has one stream to push. Most of it is fire-and-forget
+   * notification (title/bell/cwd) routed to
+   * {@link import("./events").EventHandlers}; the `OSC 52` clipboard pair is not —
+   * the consumer *acts on* it and owes a query a reply — so it is routed to
+   * {@link import("./clipboard").ClipboardController} instead, wired through
+   * {@link import("./terminal").TerminalOptions.clipboard}.
    */
   subscribeEvents?(listener: (event: TermEvent) => void): Unsubscribe;
 }

@@ -223,8 +223,13 @@ pub enum ClipboardTarget {
 /// - **Cost in this workspace: zero.** `cargo test --workspace` (87 suites) and
 ///   `clippy -D warnings` both stay green. A same-crate `match` may still be
 ///   exhaustive, `justerm-wasm-decode` and `justerm-renderer` never name
-///   `TermEvent`, and `justerm-web`'s `events.ts` is a deliberately narrower
-///   union (title / bell / cwd).
+///   `TermEvent`, and `justerm-web`'s `events.ts` mirrors this union by hand
+///   rather than deriving it. **That mirror was narrower than this enum when the
+///   measurement was taken and no longer is in the same way (#841):** it now
+///   carries the `OSC 52` pair as well, and what stayed at title/bell/cwd is its
+///   `EventHandlers` — the *notification* surface, not the channel. The cost
+///   measured here is unaffected, since a hand-written mirror never had a
+///   compiler relationship to this enum to break.
 /// - **The window closes at `1.0.0`.** Adding this is free while the crate is
 ///   `0.x` and is *itself* a breaking change afterwards, while an enum without
 ///   it turns every future variant into a major bump. Conformance here is
@@ -348,8 +353,19 @@ pub enum TermEvent {
     /// prompt, and a consumer that drops this event has refused the copy. The
     /// engine carries no allow/deny knob, which is where it parts company with
     /// alacritty — alacritty gates the same sequence behind a four-state config
-    /// (`alacritty_terminal/src/term/mod.rs:1706`) because alacritty *is* the
-    /// consumer. Under ADR-0017 that gate lives one layer out.
+    /// (`alacritty_terminal/src/term/mod.rs:1706`, `:1727`). Under ADR-0017 that
+    /// gate lives one layer out.
+    ///
+    /// **The reason once given for that was measurably wrong, and is corrected
+    /// here rather than quietly dropped (#841, re-read 2026-09-10).** This said
+    /// *"because alacritty **is** the consumer"*. It is not the distinction:
+    /// alacritty's gate sits inside `alacritty_terminal`, the **engine** crate,
+    /// with the policy *injected across the crate boundary* — `Osc52` is a field
+    /// on that crate's `Config` (`:353`), written by the application at
+    /// `alacritty/src/config/ui_config.rs:125`. That is ADR-0017's own shape, so
+    /// it was never a reason this crate *could not* hold an injected gate. The
+    /// conclusion stands on the ADR alone, and on the fact that an engine which
+    /// touches no clipboard buys nothing by putting a gate in front of a relay.
     ///
     /// **An empty `text` means "clear it".** `ESC ] 52 ; c ; ESC \` carries a
     /// payload that decodes to nothing, and both the spec and xterm end that

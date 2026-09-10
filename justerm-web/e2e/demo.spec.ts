@@ -2913,3 +2913,59 @@ test("a selection drag that outlives its element's box requests nothing (#819)",
     side: "right",
   });
 });
+
+// #841 — OSC 52 through the REAL browser clipboard, which is the half no unit test
+// can reach.
+//
+// **The obvious version of this test is self-drawn and was written that way first.**
+// Clicking "Clipboard store" and then reading back the same fixed literal passes even
+// if the store path is entirely dead, because a previous run on the same machine left
+// that string on the clipboard. So the clipboard is first seeded through an
+// INDEPENDENT channel with a unique sentinel — the separation xterm.js's own addon
+// harness uses (`ClipboardAddon.test.ts` seeds via `page.evaluate` before writing the
+// query to the stream) — and the sentinel is asserted back as a negative control. Only
+// then does the store get to change it.
+//
+// **What this test does NOT cover, stated rather than implied**: the query is dispatched
+// from a click handler, so `navigator.clipboard.readText()` runs with transient user
+// activation live. The stream regime — an OSC 52 query arriving with no gesture — is
+// covered by the measurement recorded in `src/clipboard.ts`, not here.
+test("an OSC 52 store reaches the clipboard and a query answers with its own terminator (#841)", async ({
+  page,
+}) => {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  const clip: string[] = [];
+  page.on("console", (m) => {
+    const t = m.text();
+    if (t.includes("[clipboard]")) clip.push(t);
+  });
+
+  // Seed independently of the feature under test, with a value this run owns.
+  const sentinel = `sentinel-${Date.now()}`;
+  await page.evaluate((s) => navigator.clipboard.writeText(s), sentinel);
+
+  // NEGATIVE CONTROL: the query answers the sentinel, so (a) the read path really
+  // reaches the platform and (b) the clipboard provably does NOT already hold the
+  // store's literal — which is what made the first version of this test vacuous.
+  await page.getByRole("button", { name: "Clipboard query" }).click();
+  await expect
+    .poll(() => clip.join("\n"))
+    .toContain(`[clipboard] report clipboard "${sentinel}" term=bel`);
+  expect(clip.join("\n"), "the store's literal must not be there yet").not.toContain(
+    "HELLOJUSTERM",
+  );
+
+  // THE SUBJECT: the store must now change what the platform holds.
+  await page.getByRole("button", { name: "Clipboard store" }).click();
+  await expect
+    .poll(() => clip.join("\n"))
+    .toContain('[clipboard] wrote "HELLOJUSTERM" to clipboard');
+
+  // The second query answers the NEW contents — and with `st`, because the demo
+  // alternates the terminator. A controller that hard-coded `bel` passed the first
+  // assertion and fails this one, which is the whole of #836 crossing the seam.
+  await page.getByRole("button", { name: "Clipboard query" }).click();
+  await expect
+    .poll(() => clip.join("\n"))
+    .toContain('[clipboard] report clipboard "HELLOJUSTERM" term=st');
+});

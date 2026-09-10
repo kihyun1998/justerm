@@ -474,3 +474,49 @@ fn a_line_wrapped_payload_arrives_contiguous() {
     t.feed(b"\x1b]52;c;aGk =\x07");
     assert_eq!(t.drain_events(), vec![], "a space is not a C0 byte");
 }
+
+/// **Two queries outstanding at once, answered out of order — the case the
+/// round-tripped terminator exists for (#836, pinned by #841).**
+///
+/// `drain_events` hands over a *batch*, so a single `feed` can carry two `OSC 52`
+/// queries with different terminators. That is the whole argument for the engine
+/// carrying the terminator on the event instead of remembering one: a single
+/// remembered scalar would already be wrong here, because the second parse
+/// overwrites it before the first answer is given — no async consumer is needed
+/// for the collision.
+///
+/// The design was correct before this test existed; what was missing was anything
+/// pinning it. The answers are deliberately given in **reverse** order, which is
+/// what a consumer awaiting two platform clipboards may do, so a reply paired by
+/// position rather than by the values handed back would fail here.
+#[test]
+fn two_queries_in_one_batch_each_keep_their_own_terminator() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]52;c;?\x07\x1b]52;p;?\x1b\\");
+
+    let events = t.drain_events();
+    assert_eq!(
+        events,
+        vec![
+            TermEvent::QueryClipboard {
+                target: ClipboardTarget::Clipboard,
+                terminator: Terminator::Bel,
+            },
+            TermEvent::QueryClipboard {
+                target: ClipboardTarget::Primary,
+                terminator: Terminator::St,
+            },
+        ],
+        "both queries survive one drain, each with the byte its own query ended with"
+    );
+
+    // Answered LAST-FIRST, and each reply must still carry its own pair.
+    t.report_clipboard(ClipboardTarget::Primary, "TXT", Terminator::St);
+    t.report_clipboard(ClipboardTarget::Clipboard, "TXT", Terminator::Bel);
+
+    assert_eq!(
+        t.drain_replies(),
+        b"\x1b]52;p;VFhU\x1b\\\x1b]52;c;VFhU\x07".to_vec(),
+        "the ST answer stays ST and the BEL answer stays BEL, in the order they were given"
+    );
+}

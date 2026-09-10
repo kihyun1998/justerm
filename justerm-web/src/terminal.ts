@@ -10,6 +10,7 @@ import {
 } from "./input";
 import { WheelScroller, type ScrollOptions } from "./scroll-control";
 import { CompositionController } from "./composition";
+import { ClipboardController, type ClipboardOptions } from "./clipboard";
 import { dispatchTermEvent, type EventHandlers } from "./events";
 
 /**
@@ -271,6 +272,15 @@ export interface TerminalOptions {
    * above (works on an output-only widget). onLinkActivate stays with the link
    * controller (#113), not this stream. */
   events?: EventHandlers;
+  /** `OSC 52` clipboard requests (#841) — an application asking to write, or read,
+   * the user's clipboard. Rides the same {@link events} subscription, but is not a
+   * notification: the consumer *acts on* it and owes a query a reply.
+   *
+   * **Omit it and the widget does nothing in either direction** — no clipboard is
+   * touched and a query goes unanswered, which is how the sequence is refused.
+   * Supply a {@link import("./clipboard").ClipboardProvider} to honour writes, and
+   * a `port` as well to answer reads. */
+  clipboard?: ClipboardOptions;
 }
 
 /**
@@ -304,6 +314,9 @@ export class Terminal {
    * canvas can't receive composition events); created on mount w/ options. */
   private textarea: HTMLTextAreaElement | undefined;
   private composition: CompositionController | undefined;
+  /** The OSC 52 router (#841), when the consumer wired one. Held so `dispose()` can
+   * end it — an in-flight clipboard read outlives the event subscription. */
+  private clipboardController: ClipboardController | undefined;
   /** Last cursor cell the textarea was moved to, so it repositions only on a move
    * (not every frame — that would force a layout read+write per output flush). */
   private textareaCell = "";
@@ -369,10 +382,27 @@ export class Terminal {
     });
     if (this.options?.element) this.attach(this.options);
     // Consumer events (#117) — independent of the DOM group; wire whenever the
-    // source has an event channel and the consumer supplied handlers.
+    // source has an event channel and the consumer wants something off it.
+    //
+    // ONE subscription for two surfaces (#841): core produces a single event
+    // stream and a backend has a single channel to push it down, so the clipboard
+    // pair arrives here too. `dispatchTermEvent` ignores those and the controller
+    // ignores the notifications; wiring either alone still works.
     const events = this.options?.events;
-    if (events && this.source.subscribeEvents) {
-      this.eventUnsub = this.source.subscribeEvents((e) => dispatchTermEvent(e, events));
+    const clipboard = this.options?.clipboard;
+    const wantsClipboard = clipboard?.provider !== undefined || clipboard?.port !== undefined;
+    if ((events || wantsClipboard) && this.source.subscribeEvents) {
+      // Held on `this`, not a local: an in-flight clipboard read is already past the
+      // subscription, so dropping `eventUnsub` cannot stop it landing. `dispose()`
+      // ends the controller, per the map's "a layer ends what it exclusively holds".
+      const controller = wantsClipboard ? new ClipboardController(clipboard) : undefined;
+      this.clipboardController = controller;
+      this.eventUnsub = this.source.subscribeEvents((e) => {
+        // Floating on purpose: `handle` never rejects, and the event channel is
+        // fire-and-forget — a clipboard round trip must not stall the stream.
+        void controller?.handle(e);
+        if (events) dispatchTermEvent(e, events);
+      });
     }
   }
 
@@ -668,6 +698,12 @@ export class Terminal {
     this.unsubscribe = undefined;
     this.eventUnsub?.();
     this.eventUnsub = undefined;
+    // Unsubscribing is NOT enough: an in-flight clipboard read is already past the
+    // subscription, and was measured pending indefinitely on a browser permission
+    // prompt. Ending the controller latches the landing so a late answer reports
+    // nothing (#841).
+    this.clipboardController?.dispose();
+    this.clipboardController = undefined;
     for (const off of this.detach) off();
     this.detach = [];
     this.scroller = undefined;

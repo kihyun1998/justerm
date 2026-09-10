@@ -86,7 +86,8 @@ const term = new Terminal(source, renderer, {
 });
 ```
 
-`Terminal` takes many more options (scroll, selection, search, links, accessibility) —
+`Terminal` takes many more options (scroll, selection, search, links, accessibility,
+clipboard) —
 each is an injected seam rather than a built-in policy, so the host stays in control of
 transport, clipboard and theme. See the [demo](https://github.com/kihyun1998/justerm/blob/master/justerm-web/demo/main.ts)
 for a fully wired example.
