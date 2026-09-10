@@ -63,18 +63,37 @@ How a version gets there is [release](release.md).
   passed every guard here and still left every consumer shifting by hand, so the style ships as an
   **accessor** rather than a mask (`underlineStyle`). That much is derived: no mask can answer
   "which of six".
-- **Whether that accessor returns a *named* value is a separate choice, and this surface is now
-  split on it (#831).** `UnderlineStyle` is the first core enum to cross as a `#[wasm_bindgen]`
-  enum. Three crossed before it and all three ship as bare numbers with the mapping in prose —
-  `cursorShape` (`-> u8`, "0 = Block, 1 = Underline, 2 = Bar"), `kind` (`FrameKind` → 0/1) and the
-  marker kind (0..4) — each mirrored in `justerm-web/src/types.ts` as a plain `number`. A
-  documented scalar would have answered "which of six" identically, so the enum is *chosen*, not
-  derived, and the three precedents are counter-examples rather than agreement. Recorded here
-  unresolved on purpose: the open question is whether the named form is the direction and the three
-  become debt, or whether `underlineStyle` is the outlier. Nothing on this surface decides it.
-- **What the named form does buy, and this part is mechanical:** the core→binding conversion is an
-  **exhaustive `match`**, so a variant added upstream fails to compile in the binding rather than
-  arriving on npm unnamed. A scalar mapping written as `as u8` would carry no such guarantee.
+- **A frame member crosses as a primitive; a value space's names live at module scope (#860).**
+  This was recorded here as an unresolved 3:1 split — three core enums crossing as bare numbers
+  against `UnderlineStyle`'s named one — and that framing was the mistake. Grouped by *what Rust
+  type the value came from* the surface splits; grouped by **where the value hangs** it does not.
+  Measured on the published `0.17.0` tarball: `DecodedFrame` has **33 members and every one is a
+  primitive** (`number` / `boolean` / a typed array / `string[]`), and module scope holds the named
+  things — `Flags`, `UnderlineStyle`, and the accessors that read a value out of a column. 33 for
+  33, with one gap, which is what this rule is for.
+- **The grouping is derived, not observed.** A frame member cannot take a decoder-version type
+  because `justerm-web/src/types.ts` declares `DecodedFrame` *source-agnostic* on purpose — "a
+  frame may arrive decoded from a backend wire (frame mode) or be produced by an in-wasm engine
+  (future)" — so pinning a member to one decoder's enum contradicts the reason that mirror exists.
+  ADR-0008's adopted Axis-3 shape says the same thing from the other side, listing `cols` / `rows` /
+  `kind` / `scroll` as **scalar getters**. `underlineStyle` reached the widget only because it is a
+  module-scope *function*, never a frame member — the four values were never one axis.
+- **The gap the rule found, and closed:** the marker kind is a value space with no module-scope
+  home, so its roster got copied by hand into `justerm-web/src/markers.ts` and **published from
+  there** — ungated against the wire, and cast in unchecked. `markerKind()` gives it the home
+  (#860); the type-level roster gate on the web side is release-gated behind the pin bump, the way
+  `underlineStyle`'s own consumer half was (#831 → #862).
+- **What the named form buys is a roster that is enumerated rather than restated** — this section's
+  own thesis, one surface up. The prose mapping ships *verbatim* into the published `.d.ts`, where
+  nothing checks it and nothing can rewrite it.
+  **It does not buy the exhaustive `match`.** This note used to say it did (*"a scalar mapping
+  written as `as u8` would carry no such guarantee"*), and #860's body inherited the sentence. No
+  scalar mapping here is written `as u8`: `lib.rs` converts all three with exhaustive `match`es,
+  `justerm-core/src/serialize.rs` converts the same three the same way one crate earlier, and
+  `tests/wire_enum_stays_exhaustive.rs` keeps core's enums exhaustive so those matches cannot stop
+  being total. A variant added upstream was already a compile error under either shape. The
+  retracted argument is left visible rather than deleted: it is the ground three tickets were
+  weighed on.
 - **crates.io rewrites relative links**, resolving them against the crate's README subdirectory —
   so `[x](../CLAUDE.md)` in a crate README does reach the repo root. npm does **not**, and
   `justerm-web@0.7.0` shipped two broken links because of it (#473).
