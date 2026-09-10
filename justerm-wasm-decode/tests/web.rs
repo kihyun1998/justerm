@@ -16,7 +16,7 @@
 use justerm_core::{Cell, CellFlags, Color, Frame, FrameKind, Span, encode_color};
 use justerm_wasm_decode::{
     MarkerKind, UnderlineStyle, build_palette, decode_frame, flags, is_valid_regex, marker_kind,
-    underline_style, wire_version,
+    mouse_event_bits, underline_style, wire_version,
 };
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::*;
@@ -126,6 +126,25 @@ fn mouse_wanted_events_crosses_the_boundary() {
     let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
     assert_eq!(df.mouse_wanted_events(), frame.mouse_events.bits());
     assert!(df.mouse_wanted_events() & MouseEvents::WHEEL.bits() != 0); // wheel routes to app
+
+    // #884 — the same question asked the way a consumer can ask it. The two assertions above
+    // reach into `justerm_core` for the bit, which is a route no JS consumer has; this one goes
+    // through the published names. Kept alongside rather than replacing them: the core-side pair
+    // pins the crossing to core's value, this pins the vocabulary a consumer reads it with, and
+    // a bit that moved in only one of the two places would redden exactly one of them.
+    let b = mouse_event_bits();
+    assert_ne!(df.mouse_wanted_events() & b.wheel, 0, "wheel routes to app");
+    assert_ne!(df.mouse_wanted_events() & b.down, 0);
+    assert_eq!(
+        df.mouse_wanted_events() & b.drag,
+        0,
+        "drag was not requested"
+    );
+    assert_eq!(
+        df.mouse_wanted_events() & b.r#move,
+        0,
+        "bare motion was not requested"
+    );
 }
 
 #[wasm_bindgen_test]
