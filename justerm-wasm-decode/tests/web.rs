@@ -15,8 +15,8 @@
 
 use justerm_core::{Cell, CellFlags, Color, Frame, FrameKind, Span, encode_color};
 use justerm_wasm_decode::{
-    UnderlineStyle, build_palette, decode_frame, flags, is_valid_regex, underline_style,
-    wire_version,
+    MarkerKind, UnderlineStyle, build_palette, decode_frame, flags, is_valid_regex, marker_kind,
+    underline_style, wire_version,
 };
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::*;
@@ -497,6 +497,62 @@ fn marker_position_view_crosses_the_boundary() {
     assert_eq!(m.get_index(7), 4); // kind = CommandFinished
     assert_eq!(m.get_index(8), 1); // exitPresent = 1
     assert_eq!(m.get_index(9), (-1i32) as u32); // exitBits: -1 reinterpreted
+}
+
+// #860: the marker kind crosses the boundary as a NAME, read off the `markerPositions` lane with
+// no access to the engine. `marker_position_view_crosses_the_boundary` above asserts the same
+// lanes as *numbers* and is not made redundant by this: it pins what the wire carries, this pins
+// what a consumer can call the value.
+//
+// What it does NOT catch, stated because the sentence inherited from the underline sibling
+// claimed otherwise: a **renumbered discriminant** is invisible here, because this compares names
+// and `marker_kind`'s arms move with the enum. `the_published_marker_discriminants_are_the_lane`
+// is what pins the numbers, against literals rather than against the enum. What this one adds
+// over its host sibling is the crossing itself — the lane arrives through `js_sys` off real wasm
+// memory rather than out of a `Vec`.
+#[wasm_bindgen_test]
+fn marker_kind_crosses_the_boundary_by_name() {
+    use justerm_core::{MarkerId, MarkerKind as CoreKind, MarkerPosition};
+    const ALL: [CoreKind; 5] = [
+        CoreKind::Plain,
+        CoreKind::PromptStart,
+        CoreKind::CommandStart,
+        CoreKind::OutputStart,
+        CoreKind::CommandFinished(Some(0)),
+    ];
+    let mut frame = sample_frame();
+    frame.overlay.markers = ALL
+        .iter()
+        .enumerate()
+        .map(|(i, &kind)| MarkerPosition {
+            id: MarkerId(i as u32),
+            row: i,
+            kind,
+        })
+        .collect();
+    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+
+    let m = df.marker_positions();
+    // The window this test walks must exist: every assertion below rides a stride-5 walk, and an
+    // empty directory would pass all of them without observing anything.
+    assert_eq!(m.length(), (ALL.len() * 5) as u32);
+
+    let read: Vec<Option<MarkerKind>> = (0..ALL.len())
+        .map(|i| marker_kind(m.get_index((i * 5 + 2) as u32)))
+        .collect();
+    assert_eq!(
+        read,
+        vec![
+            Some(MarkerKind::Plain),
+            Some(MarkerKind::PromptStart),
+            Some(MarkerKind::CommandStart),
+            Some(MarkerKind::OutputStart),
+            Some(MarkerKind::CommandFinished),
+        ]
+    );
+
+    // An id no kind owns has no name on the far side either — the `undefined` a JS consumer sees.
+    assert_eq!(marker_kind(64), None);
 }
 
 // `marker_lines_view_crosses_the_boundary` lived here until v16 removed the group and
