@@ -10,6 +10,7 @@ import {
 } from "./input";
 import { WheelScroller, type ScrollOptions } from "./scroll-control";
 import { CompositionController } from "./composition";
+import { ClipboardController, type ClipboardOptions } from "./clipboard";
 import { dispatchTermEvent, type EventHandlers } from "./events";
 
 /**
@@ -271,6 +272,15 @@ export interface TerminalOptions {
    * above (works on an output-only widget). onLinkActivate stays with the link
    * controller (#113), not this stream. */
   events?: EventHandlers;
+  /** `OSC 52` clipboard requests (#841) — an application asking to write, or read,
+   * the user's clipboard. Rides the same {@link events} subscription, but is not a
+   * notification: the consumer *acts on* it and owes a query a reply.
+   *
+   * **Omit it and the widget does nothing in either direction** — no clipboard is
+   * touched and a query goes unanswered, which is how the sequence is refused.
+   * Supply a {@link import("./clipboard").ClipboardProvider} to honour writes, and
+   * a `port` as well to answer reads. */
+  clipboard?: ClipboardOptions;
 }
 
 /**
@@ -369,10 +379,23 @@ export class Terminal {
     });
     if (this.options?.element) this.attach(this.options);
     // Consumer events (#117) — independent of the DOM group; wire whenever the
-    // source has an event channel and the consumer supplied handlers.
+    // source has an event channel and the consumer wants something off it.
+    //
+    // ONE subscription for two surfaces (#841): core produces a single event
+    // stream and a backend has a single channel to push it down, so the clipboard
+    // pair arrives here too. `dispatchTermEvent` ignores those and the controller
+    // ignores the notifications; wiring either alone still works.
     const events = this.options?.events;
-    if (events && this.source.subscribeEvents) {
-      this.eventUnsub = this.source.subscribeEvents((e) => dispatchTermEvent(e, events));
+    const clipboard = this.options?.clipboard;
+    const wantsClipboard = clipboard?.provider !== undefined || clipboard?.port !== undefined;
+    if ((events || wantsClipboard) && this.source.subscribeEvents) {
+      const controller = wantsClipboard ? new ClipboardController(clipboard) : undefined;
+      this.eventUnsub = this.source.subscribeEvents((e) => {
+        // Floating on purpose: `handle` never rejects, and the event channel is
+        // fire-and-forget — a clipboard round trip must not stall the stream.
+        void controller?.handle(e);
+        if (events) dispatchTermEvent(e, events);
+      });
     }
   }
 
