@@ -671,9 +671,9 @@ pub fn underline_style(flags: u16) -> UnderlineStyle {
 /// [`underline_style`] are the same shape one value over, reading a style out of `flags`.
 ///
 /// Mirrors `justerm_core::MarkerKind`, whose `CommandFinished` carries an `Option<i32>` this enum
-/// does not: the exit code has its own two lanes (`exitPresent`, `exitBits` — see
-/// [`MARKER_STRIDE`]) and always did. This names the *kind*, which is the part that was a bare
-/// number with a roster in prose.
+/// does not: the exit code has its own two lanes of the 5-lane record (`exitPresent`, `exitBits`)
+/// and always did. This names the *kind*, which is the part that was a bare number with a roster
+/// in prose.
 ///
 /// The discriminants are the wire's, and adding one moves `WIRE_VERSION` (ADR-0008) — a louder
 /// gate than semver, which is why `justerm_core::MarkerKind` stays exhaustive (#843).
