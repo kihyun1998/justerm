@@ -70,10 +70,18 @@ nothing about it appears in the frame.
   one*. The engine's half is the sequence: recognise it, decode the base64, relay
   `ClipboardStore { target, text }`, and answer a `QueryClipboard` only when the consumer calls
   `report_clipboard`. **Dropping the event is how a consumer refuses**, which is why there is no
-  allow/deny knob here and why alacritty's four-state `osc52` config has no counterpart — alacritty
-  is the consumer. The security property falls out of the same split rather than being added to it:
-  the engine holds no clipboard, so a query it is never asked to answer discloses nothing, and a
-  *read* is refusable independently of a *write*.
+  allow/deny knob here. The security property falls out of the same split rather than being added
+  to it: the engine holds no clipboard, so a query it is never asked to answer discloses nothing,
+  and a *read* is refusable independently of a *write*.
+  **The reason attached to that used to be wrong, and the correction is worth keeping (#841,
+  measured 2026-09-10).** This entry read *"alacritty's four-state `osc52` config has no
+  counterpart — alacritty is the consumer"*. Re-opened at the pin, alacritty gates the sequence
+  **inside its engine crate** (`alacritty_terminal/src/term/mod.rs:1706`, `:1727`) with the policy
+  *injected across the crate boundary* — `Osc52` is a field on `alacritty_terminal`'s `Config`
+  (`:353`), written by the app at `alacritty/src/config/ui_config.rs:125`. That is ADR-0017's own
+  shape, not a luxury bought by being the whole terminal, so it was never a reason we *could not*
+  do the same. The conclusion is unchanged and rests on the ADR alone: policy is the consumer's,
+  and an engine that touches no clipboard buys nothing by holding a gate in front of a relay.
 - **A `report_*` takes back what it needs rather than the engine remembering it.**
   `report_clipboard(target, text, terminator)` follows `report_palette_color(index, spec,
   terminator)`: the consumer names the target it is answering about. alacritty is the alternative and
@@ -121,10 +129,18 @@ nothing about it appears in the frame.
 - `justerm-core/src/lib.rs` — `Engine::drain_events`, `Engine::drain_replies`
 - `justerm-core/src/base64.rs` — the RFC 4648 transform `OSC 52` needs in both directions, kept in
   the engine because it is mechanism and kept out of the dependency list because it is small
-- `justerm-web/src/events.ts` — the widget's **deliberately narrower** mirror: title, bell and cwd
-  only. Its own module note draws the line, and the clipboard events fall on the far side of it
-  (the consumer *acts on* them, it is not merely notified), so a new event here does not
-  automatically owe a row there
+- `justerm-web/src/events.ts` — the widget's mirror of this channel. **The narrowing moved in
+  #841, and where it moved to is the point**: the `TermEvent` *union* now carries the `OSC 52`
+  pair too, because a backend has one stream to push down. What stayed at title/bell/cwd is
+  `EventHandlers`, the *notification* surface — so a new event here still does not automatically
+  owe a callback; it owes a decision about which of the two surfaces it belongs on
+- `justerm-web/src/clipboard.ts` — the `OSC 52` consumer half (#841). `ClipboardController` takes
+  the pair off that same subscription, routes it to an embedder-injected `ClipboardProvider`, and
+  answers a query on a `ClipboardPort`. The widget holds no clipboard and no policy: with no
+  provider it does nothing in either direction. **The first request→answer seam in that package**
+  — its six existing ports are one-way commands, and core's other four `Query…` events are still
+  unwired. It also **ends what it holds**: an in-flight read is already past the subscription, so
+  `Terminal.dispose()` calls `ClipboardController.dispose()` to latch the landing
 
 ## Reference behaviour
 
