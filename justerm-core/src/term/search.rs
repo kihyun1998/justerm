@@ -32,6 +32,14 @@ impl Term {
     /// every non-overlapping match top-to-bottom in absolute coordinates. Matches
     /// cross soft-wrapped rows (one logical line) and skip wide-char spacers.
     /// Smart-case: a query with no uppercase matches case-insensitively.
+    ///
+    /// **This is not a place to bound the soft-wrap run.** It joins runs the way
+    /// [`Term::viewport_logical_lines`] does and shares that walk's unboundedness, but not
+    /// its cost: measured at 14.1 ms against 13.9 ms (~1.0×) between a buffer that is one
+    /// giant run and the same bytes as short lines, because it scans everything either way
+    /// — the run is one big allocation instead of many small ones, same total work. A
+    /// per-run cap here buys nothing, and xterm's search walk is uncapped for the same
+    /// reason (its 2048/direction cap is in the link provider, which runs a regex). #206.
     pub fn search(&self, query: &str) -> Vec<Match> {
         self.search_with(query, SearchOptions::default())
     }

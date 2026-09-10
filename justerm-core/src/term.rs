@@ -1400,7 +1400,14 @@ impl Term {
     ///
     /// A consequence worth knowing before you narrow the set: this predicate is the only
     /// thing bounding the walk, so a set that omits the separators actually present in
-    /// the buffer makes one double-click walk the whole soft-wrap run (see #206).
+    /// the buffer makes one double-click walk the whole soft-wrap run — measured at 11.7 ms
+    /// (release) selecting 801,920 chars (#206, closed with the reach at zero).
+    ///
+    /// If a length bound is ever wanted, **it is a field beside this one, not an argument**:
+    /// `word_start` / `word_end` are `pub(super)`, reached through
+    /// [`Term::selection_begin`], so there is no call site for a consumer to inject into.
+    /// This setter is the shape it would take (#545's, injected policy over a core
+    /// mechanism, ADR-0017).
     pub fn set_word_separators(&mut self, separators: &str) {
         let mut set: String = separators.to_owned();
         if !set.contains(' ') {

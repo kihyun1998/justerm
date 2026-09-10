@@ -737,8 +737,10 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   injects (ADR-0017, the shape #545 already used for the word-boundary set) — not a cap a consumer
   applies to core's output. **`search` is outside it either way:** measured 14.1 ms against 13.9 ms
   (~1.0×), because it scans the whole buffer whatever the run shape, so a per-run cap buys it nothing.
-  Still deferred, and what defers it is now **reach rather than the numbers** — no shipped consumer calls
-  any of the three surfaces, so the pathological buffer has no route to a user. [#206]
+  **#206 is closed** (2026-09-11), and what closed it is **reach rather than the numbers** — no shipped
+  consumer calls any of the three surfaces, so the pathological buffer has no route to a user, and an
+  open ticket nothing can add to fires no more than a closed one. Each of the three carries what a bound
+  would cost in its own doc-comment; `benches/wrap_run.rs` re-measures. Reopen when a consumer calls one.
 
 - **Editing CSIs are BCE-filled and region/line-scoped — and must not orphan a wide-char half.**
   ICH (`@`, insert blanks), DCH (`P`, delete chars), ECH (`X`, erase chars) operate *within the

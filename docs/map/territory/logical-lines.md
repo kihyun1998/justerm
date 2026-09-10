@@ -113,6 +113,11 @@ recorded SHA; a paraphrase drops the pin).
   run-join **loop** did not move and is still written out three times — `term/logical.rs`,
   `term/search.rs`, and the `word_start`/`word_end` pair. And search is not a cap site at all: it
   measures ~1.0× between a one-run and a many-lines buffer of the same size, because it scans
-  everything either way. Tracked: #206.
+  everything either way. **Closed as #206** (2026-09-11) with the reach measured at zero — nothing
+  outside this crate's tests and benches calls any of the three. What a bound would cost now lives at
+  the three sites themselves rather than in the ticket: the sibling-not-a-parameter API shape and the
+  `O(scrollback)` figure on `viewport_logical_lines`, the trim premise a mid-run cut breaks at that
+  function's trim, the ~1.0× measurement on `search`, and the field-not-an-argument note on
+  `set_word_separators`. `benches/wrap_run.rs` re-measures on demand.
 - **`accessible_text` vs `viewport_logical_lines` overlap is unstated** — one is whole-buffer, one is
   viewport-plus-context, and no artifact says which a consumer should reach for.

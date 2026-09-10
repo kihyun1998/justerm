@@ -28,6 +28,22 @@ impl Term {
     /// per-char map to its viewport `(row, col)`. Wide-char spacers are skipped
     /// and trailing blanks trimmed (so the text is 1:1 with `cells`). Empty rows
     /// are dropped. The cell-aware assembly the consumer can't do in frame mode.
+    ///
+    /// **The run walk is unbounded on purpose** (`docs/architecture.md`), and this is the
+    /// one of the three walks where that costs anything: normally `O(viewport)`, but on a
+    /// buffer whose whole scrollback is one soft-wrapped run it is `O(scrollback)` —
+    /// measured at 7.3 ms against 17 µs for the same bytes as short lines. If a bound is
+    /// ever wanted, two things are already decided and neither is obvious from here:
+    ///
+    /// - **It is a sibling, not a parameter.** Adding `max_run: Option<usize>` to this
+    ///   signature is a breaking change; the crate's idiom for exactly this is
+    ///   [`Term::search`] / [`Term::search_with`], and #844 pinned the growth rule on the
+    ///   options struct (*"a new option lands through `..Default::default()`"*). So a
+    ///   `viewport_logical_lines_with` is additive — meaning 1.0.0 does not gate it.
+    /// - **The hard part is the trim, not the counter** — see the trim below.
+    ///
+    /// Closed as #206 with the reach measured at zero: nothing outside this crate's tests
+    /// and benches calls this today. `benches/wrap_run.rs` re-measures on demand.
     pub fn viewport_logical_lines(&self) -> Vec<LogicalLine> {
         let rows = self.grid.rows();
         let total = self.scrollback.len() + rows;
@@ -79,6 +95,13 @@ impl Term {
             }
             // Trim trailing blanks (only the last row can have them), keeping
             // `text` and `cells` in lockstep.
+            //
+            // "Only the last row can have them" is a premise about where the loop above
+            // stopped, and it is what a run-length bound (#206) would break: a window that
+            // cuts mid-run ends the text at a row that is *not* the logical end, where the
+            // padding this trims is not padding. The rule it would then be applying to
+            // written content is `only-U+0020-can-be-padding` (#685), so a bound has to
+            // re-answer that at the cut point rather than reuse this line.
             let trimmed = text.trim_end_matches(' ');
             map.truncate(trimmed.chars().count());
             text.truncate(trimmed.len());
