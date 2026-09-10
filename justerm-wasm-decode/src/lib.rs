@@ -115,7 +115,7 @@ struct Flat {
 pub const OVERLAY_STRIDE: usize = 3;
 
 /// u32s per marker in the `marker_positions` directory: `id`, `row`, `kind`
-/// (name it with [`marker_kind`] rather than copying a roster — #860), `exitPresent`
+/// (name it with `markerKind()` rather than copying a roster — #860), `exitPresent`
 /// (1 if the finished command reported an exit code), `exitBits` (the exit as raw
 /// u32 — reinterpret as i32 on the JS side, `bits | 0`). Non-`CommandFinished`
 /// markers carry `exitPresent = 0` (#159).
@@ -229,16 +229,24 @@ fn flatten(frame: &Frame) -> Flat {
             .markers
             .iter()
             .flat_map(|m| {
-                let (kind, present, exit) = match m.kind {
-                    justerm_core::MarkerKind::Plain => (0, 0, 0),
-                    justerm_core::MarkerKind::PromptStart => (1, 0, 0),
-                    justerm_core::MarkerKind::CommandStart => (2, 0, 0),
-                    justerm_core::MarkerKind::OutputStart => (3, 0, 0),
+                // Exhaustive over core with no `_`, so a kind that grows an exit lane cannot
+                // silently inherit "no exit". The kind lane itself is `published_kind`'s.
+                let (present, exit) = match m.kind {
+                    justerm_core::MarkerKind::Plain
+                    | justerm_core::MarkerKind::PromptStart
+                    | justerm_core::MarkerKind::CommandStart
+                    | justerm_core::MarkerKind::OutputStart => (0, 0),
                     justerm_core::MarkerKind::CommandFinished(e) => {
-                        (4, e.is_some() as u32, e.unwrap_or(0) as u32)
+                        (e.is_some() as u32, e.unwrap_or(0) as u32)
                     }
                 };
-                [m.id.0, m.row as u32, kind, present, exit]
+                [
+                    m.id.0,
+                    m.row as u32,
+                    published_kind(m.kind) as u32,
+                    present,
+                    exit,
+                ]
             })
             .collect(),
     }
@@ -519,8 +527,8 @@ impl DecodedFrame {
 
     /// Decoration markers visible in this viewport (#118/#159), `MARKER_STRIDE`
     /// u32s per marker (`id`, `row`, `kind`, `exitPresent`, `exitBits` — see
-    /// [`MARKER_STRIDE`]). Read the `kind` lane through [`marker_kind`], which
-    /// names it (#860). An off-screen marker is absent (still alive); disposal
+    /// [`MARKER_STRIDE`]). Name the `kind` lane with `markerKind()` rather than
+    /// copying a roster (#860). An off-screen marker is absent (still alive); disposal
     /// arrives out-of-band via the backend's `MarkerDisposed` event, so absence
     /// here is "scrolled away", not "gone".
     #[wasm_bindgen(getter, js_name = markerPositions)]
@@ -687,18 +695,41 @@ pub enum MarkerKind {
 
 /// The kind carried by one marker's `kind` lane (#860).
 ///
-/// Pass the third `u32` of a marker's [`MARKER_STRIDE`] record straight from
-/// [`DecodedFrame::marker_positions`], so a consumer reads a name where it used to copy a roster
-/// out of a doc-comment.
+/// Pass the third `u32` of each 5-lane record in `markerPositions`, so a consumer reads a name
+/// where it used to copy a roster out of a doc-comment.
 ///
 /// **Partial, where [`underline_style`] is total, and the difference is the input rather than a
 /// second opinion.** Three bits hold eight representable values and the engine already defines
 /// what the two spare ones mean, so naming them restates a normalisation that exists. This lane is
-/// a whole `u32` and nothing defines what `5` means — a total answer would have to invent one,
-/// which is exactly what `underline_style` documents itself as refusing. `None` therefore means
-/// *no kind owns this id*, the same answer `justerm-renderer`'s `shape_from_id` gives to the same
-/// question. Every value this decoder itself writes is nameable; a `None` says the lane did not
-/// come from here.
+/// a whole `u32` and nothing defines what an id outside the roster means — a total answer would
+/// have to invent one, which is exactly what `underline_style` documents itself as refusing.
+/// `None` therefore means *no kind owns this id*, the same answer `justerm-renderer`'s
+/// `shape_from_id` gives to the same question.
+///
+/// **Every value this decoder writes is nameable, and that is held rather than asserted:**
+/// `flatten` derives the lane from [`published_kind`], whose `match` is exhaustive over the core
+/// enum, and `every_published_kind_is_reachable_through_the_accessor` requires every published
+/// member to round-trip through here. A `None` therefore says the lane did not come from this
+/// decoder.
+/// The published name for a core kind — **the crate's only roster of the two** (#860).
+///
+/// Exhaustive over `justerm_core::MarkerKind` with no `_` arm, which is the whole point: a kind
+/// added upstream is a compile error *here*, so it cannot reach the wire, or npm, without being
+/// given a published name. [`underline_style`] gets that guarantee for free because it takes the
+/// core enum as its argument; [`marker_kind`] structurally cannot, because its argument is a lane
+/// out of a typed array and a `u32` match can never be exhaustive over an enum. This is where the
+/// guarantee lives instead, and `flatten` routes the kind lane through it so the **shipped** path,
+/// not merely a test, is what fails to compile.
+fn published_kind(kind: justerm_core::MarkerKind) -> MarkerKind {
+    match kind {
+        justerm_core::MarkerKind::Plain => MarkerKind::Plain,
+        justerm_core::MarkerKind::PromptStart => MarkerKind::PromptStart,
+        justerm_core::MarkerKind::CommandStart => MarkerKind::CommandStart,
+        justerm_core::MarkerKind::OutputStart => MarkerKind::OutputStart,
+        justerm_core::MarkerKind::CommandFinished(_) => MarkerKind::CommandFinished,
+    }
+}
+
 #[wasm_bindgen(js_name = markerKind)]
 pub fn marker_kind(kind: u32) -> Option<MarkerKind> {
     Some(match kind {
@@ -1563,12 +1594,20 @@ mod tests {
     #[test]
     fn the_published_marker_discriminants_are_the_lane() {
         use justerm_core::{MarkerId, MarkerKind as CoreKind, MarkerPosition};
-        for (core, published) in [
-            (CoreKind::Plain, MarkerKind::Plain),
-            (CoreKind::PromptStart, MarkerKind::PromptStart),
-            (CoreKind::CommandStart, MarkerKind::CommandStart),
-            (CoreKind::OutputStart, MarkerKind::OutputStart),
-            (CoreKind::CommandFinished(None), MarkerKind::CommandFinished),
+        // `wire` is written out here rather than read off the enum on purpose: once `flatten`
+        // derives the lane from the discriminant, comparing the lane against that same
+        // discriminant moves both sides together and pins nothing. These five numbers are the
+        // ones `MARKER_STRIDE`'s doc publishes and `justerm-core/src/serialize.rs` encodes.
+        for (core, published, wire) in [
+            (CoreKind::Plain, MarkerKind::Plain, 0u32),
+            (CoreKind::PromptStart, MarkerKind::PromptStart, 1),
+            (CoreKind::CommandStart, MarkerKind::CommandStart, 2),
+            (CoreKind::OutputStart, MarkerKind::OutputStart, 3),
+            (
+                CoreKind::CommandFinished(None),
+                MarkerKind::CommandFinished,
+                4,
+            ),
         ] {
             let mut frame = partial(80, 24, vec![ascii_span(0, 0, "x")]);
             frame.overlay.markers = vec![MarkerPosition {
@@ -1579,8 +1618,12 @@ mod tests {
             let native = justerm_core::decode(&justerm_core::encode(&frame)).expect("decode");
             let lane = flatten(&native).marker_positions[2];
             assert_eq!(
-                lane, published as u32,
-                "{core:?} rides as {lane} on the wire and is published as {}",
+                lane, wire,
+                "{core:?} rides as {lane}, and the wire says {wire}"
+            );
+            assert_eq!(
+                published as u32, wire,
+                "{core:?} is published as {} and rides as {wire}",
                 published as u32
             );
         }
@@ -1594,10 +1637,46 @@ mod tests {
     /// is a `u32` and nothing anywhere says what `5` means, so a total answer would have to invent
     /// one — the thing `underline_style`'s own doc-comment refuses. `justerm-renderer`'s
     /// `shape_from_id` answers the same question the same way for the same reason.
+    ///
+    /// The probes deliberately avoid the **next free discriminant**: a sixth kind would take `5`,
+    /// and a test sitting there would then assert that the new kind has no name — reddening for
+    /// the wrong reason, or worse, being "fixed" by widening `marker_kind` instead of naming it.
     #[test]
     fn an_id_no_kind_owns_has_no_name() {
-        assert_eq!(marker_kind(5), None);
+        assert_eq!(marker_kind(64), None);
         assert_eq!(marker_kind(u32::MAX), None);
+    }
+
+    /// Every published kind can be named back out of a lane (#860).
+    ///
+    /// The other direction of `published_kind`'s guarantee, and the half a `u32` match cannot
+    /// give itself. The inner `match` is exhaustive over the **published** enum with no `_`: a
+    /// member added to the enum is a compile error here until it is given an arm, which is the
+    /// prompt to add it to the array above — and the assertion then fails until `marker_kind` can
+    /// name it. Together the two make "every value this decoder writes is nameable" a property
+    /// rather than a sentence.
+    #[test]
+    fn every_published_kind_is_reachable_through_the_accessor() {
+        for k in [
+            MarkerKind::Plain,
+            MarkerKind::PromptStart,
+            MarkerKind::CommandStart,
+            MarkerKind::OutputStart,
+            MarkerKind::CommandFinished,
+        ] {
+            match k {
+                MarkerKind::Plain
+                | MarkerKind::PromptStart
+                | MarkerKind::CommandStart
+                | MarkerKind::OutputStart
+                | MarkerKind::CommandFinished => {}
+            }
+            assert_eq!(
+                marker_kind(k as u32),
+                Some(k),
+                "{k:?} is published but `marker_kind` cannot name it"
+            );
+        }
     }
 
     #[test]

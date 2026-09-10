@@ -130,8 +130,13 @@ const EXPECTED: &[&str] = &[
 /// exactly the vacuous state this control exists to report.
 ///
 /// Anchoring rather than demanding the crate-qualified form is what keeps it uniform: `FrameKind`
-/// and `MarkerKind` are matched unqualified here (they are imported), so a `justerm_core::` needle
-/// would report those two as missing and fail the control for the wrong reason.
+/// is matched unqualified here (it is imported), so a `justerm_core::` needle would report it as
+/// missing and fail the control for the wrong reason. The two forms coexist on purpose — #860
+/// dropped `MarkerKind` from that import and qualified its arms, because the binding now declares
+/// a published enum of the same name, and a needle demanding either form would break on one of
+/// them. That collision is now **two** names, not one: `UnderlineStyle` (#831) and `MarkerKind`
+/// (#860) are each declared on both sides of the boundary, so for both of them the left-anchoring
+/// is what keeps a right-hand-side occurrence from satisfying the control on its own.
 fn matched_in_encoder(name: &str) -> bool {
     let needle = format!("{name}::");
     ENCODER

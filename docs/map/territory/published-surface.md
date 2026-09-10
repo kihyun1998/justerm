@@ -70,7 +70,10 @@ How a version gets there is [release](release.md).
   Measured on the published `0.17.0` tarball: `DecodedFrame` has **33 members and every one is a
   primitive** (`number` / `boolean` / a typed array / `string[]`), and module scope holds the named
   things — `Flags`, `UnderlineStyle`, and the accessors that read a value out of a column. 33 for
-  33, with one gap, which is what this rule is for.
+  33 — **but that count settles the first clause only**, and saying it settles both was this
+  note's own error before the completeness pass caught it. Every frame member *is* a primitive;
+  whether every value **space** has a module-scope home is a second question with a second answer,
+  below.
 - **The grouping is derived, not observed.** A frame member cannot take a decoder-version type
   because `justerm-web/src/types.ts` declares `DecodedFrame` *source-agnostic* on purpose — "a
   frame may arrive decoded from a backend wire (frame mode) or be produced by an in-wasm engine
@@ -78,11 +81,23 @@ How a version gets there is [release](release.md).
   ADR-0008's adopted Axis-3 shape says the same thing from the other side, listing `cols` / `rows` /
   `kind` / `scroll` as **scalar getters**. `underlineStyle` reached the widget only because it is a
   module-scope *function*, never a frame member — the four values were never one axis.
-- **The gap the rule found, and closed:** the marker kind is a value space with no module-scope
-  home, so its roster got copied by hand into `justerm-web/src/markers.ts` and **published from
-  there** — ungated against the wire, and cast in unchecked. `markerKind()` gives it the home
-  (#860); the type-level roster gate on the web side is release-gated behind the pin bump, the way
-  `underlineStyle`'s own consumer half was (#831 → #862).
+- **Clause 2, enumerated — two value spaces had no module-scope home, and only one is closed.**
+  The shape to look for is not "a bare number" but the three-part one: *no decoder export, roster
+  hand-copied into a consumer, and published from there.*
+  - **Marker kind — closed by #860.** Copied into `justerm-web/src/markers.ts`, published from
+    `src/index.ts`, cast in unchecked, ungated against the wire. `markerKind()` gives it the home;
+    the type-level roster gate on the web side is release-gated behind the pin bump, the way
+    `underlineStyle`'s own consumer half was (#831 → #862).
+  - **Mouse wanted-events bits — open, and it fits the shape word for word.** `DOWN`/`UP`/`WHEEL`/
+    `DRAG`/`MOVE` ride inside the `mouseWantedEvents` member; the decoder exports the `u8` and no
+    constants for it; the names are hand-declared in `justerm-web/src/input.ts` and published from
+    `src/index.ts`; and the only test over them feeds the object back into itself — the
+    list-checked-against-a-copy-of-itself shape this note already records `flags()`'s guard
+    falling to. Its in-repo precedent is `Flags`, which exists at module scope precisely so nobody
+    hard-codes a bit value. **Recorded, not fixed** — a second value space is not #860's slice.
+  - **`cursorShape`'s three names and `kind`'s two** live only in prose, but the roster was never
+    copied into a consumer as *values*: `justerm-web` mirrors them as a comment and passes the
+    number through. Weaker instance, same class.
 - **What the named form buys is a roster that is enumerated rather than restated** — this section's
   own thesis, one surface up. The prose mapping ships *verbatim* into the published `.d.ts`, where
   nothing checks it and nothing can rewrite it.
@@ -94,6 +109,18 @@ How a version gets there is [release](release.md).
   being total. A variant added upstream was already a compile error under either shape. The
   retracted argument is left visible rather than deleted: it is the ground three tickets were
   weighed on.
+  **Two neighbouring copies are *true* and were deliberately not edited**, which is the harder half
+  of a retraction: [pen](pen.md)'s link to this note, and `underline_style`'s own doc-comment, each
+  say the binding mirrors the core enum through an exhaustive `match`. That is a fact about the
+  conversion and neither claims the *naming* bought it — so the sweep's answer here is "these
+  stand", recorded so the next sweep does not spend the question again.
+- **#860's second false premise, measured and recorded for the same reason.** Its body also says a
+  numeric enum is *"a soft break for TypeScript consumers (assignable outward, not inward)"*.
+  Measured on tsc 5.9.3 against `justerm-web`'s real call patterns — `f.kind === 0`, a write into a
+  `Uint32Array`, `f.cursorShape ?? 0`, and a plain-object `{ kind: 0 }` fixture — **all pass**, with
+  `{ kind: 7 }` reddening as the positive control. Inward works for a member literal, and a widened
+  `number` flows in **silently**, so the enum does not gate that direction either. The cost is not
+  the reason to prefer or avoid a name here; the roster is.
 - **crates.io rewrites relative links**, resolving them against the crate's README subdirectory —
   so `[x](../CLAUDE.md)` in a crate README does reach the repo root. npm does **not**, and
   `justerm-web@0.7.0` shipped two broken links because of it (#473).
@@ -177,10 +204,13 @@ same trace.
 - `justerm-wasm-decode/tests/readme_pins.rs` — the constant pin (per-PR)
 - `justerm-core/tests/public_struct_reasons.rs` — every published struct carries the attribute or
   the reason it does not (#844), over a published set derived from `lib.rs` rather than listed
-- `justerm-wasm-decode/src/lib.rs` — `Flags`/`flags()` (the eleven named bits) and
-  `UnderlineStyle`/`underlineStyle()` (the 3-bit field, #831): the names a consumer reads a cell's
-  attributes by, guarded by `flags_map_covers_every_declared_cell_flag` and by the exhaustive
-  `match` in `underline_style`
+- `justerm-wasm-decode/src/lib.rs` — `Flags`/`flags()` (the eleven named bits),
+  `UnderlineStyle`/`underlineStyle()` (the 3-bit field, #831) and `MarkerKind`/`markerKind()` (the
+  `markerPositions` kind lane, #860): the module-scope names a consumer reads a value space by.
+  Guarded respectively by `flags_map_covers_every_declared_cell_flag`; by `underline_style` taking
+  the core enum, so its `match` is exhaustive over it; and — because a `u32` argument can never be
+  exhaustive over an enum — by `published_kind`, which `flatten` routes the lane through, plus
+  `every_published_kind_is_reachable_through_the_accessor` for the reverse direction
 - `justerm-wasm-decode/tests/wire_enum_stays_exhaustive.rs` — the scan that keeps every core enum
   this crate maps onto a published value exhaustive (#843); its own source list is the roster that
   #831 had to widen

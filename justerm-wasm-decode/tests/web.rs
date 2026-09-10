@@ -502,9 +502,14 @@ fn marker_position_view_crosses_the_boundary() {
 // #860: the marker kind crosses the boundary as a NAME, read off the `markerPositions` lane with
 // no access to the engine. `marker_position_view_crosses_the_boundary` above asserts the same
 // lanes as *numbers* and is not made redundant by this: it pins what the wire carries, this pins
-// what a consumer can call the value, and a renumbering has to move both. Every kind is asserted
-// rather than a sample, for the reason the underline test gives — the bindgen enum is generated
-// code, and a shifted discriminant moves all of them at once.
+// what a consumer can call the value.
+//
+// What it does NOT catch, stated because the sentence inherited from the underline sibling
+// claimed otherwise: a **renumbered discriminant** is invisible here, because this compares names
+// and `marker_kind`'s arms move with the enum. `the_published_marker_discriminants_are_the_lane`
+// is what pins the numbers, against literals rather than against the enum. What this one adds
+// over its host sibling is the crossing itself — the lane arrives through `js_sys` off real wasm
+// memory rather than out of a `Vec`.
 #[wasm_bindgen_test]
 fn marker_kind_crosses_the_boundary_by_name() {
     use justerm_core::{MarkerId, MarkerKind as CoreKind, MarkerPosition};
@@ -547,7 +552,7 @@ fn marker_kind_crosses_the_boundary_by_name() {
     );
 
     // An id no kind owns has no name on the far side either — the `undefined` a JS consumer sees.
-    assert_eq!(marker_kind(5), None);
+    assert_eq!(marker_kind(64), None);
 }
 
 // `marker_lines_view_crosses_the_boundary` lived here until v16 removed the group and
