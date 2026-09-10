@@ -153,8 +153,18 @@ for a terminal engine, that list is half the specification.
   `CSI > $ c` DA2, which is what alacritty does and the other three references do not); and the
   remaining members are silent by construction, so their count is a measurement rather than a
   reading — across this repo's captures `CSI > m` (XTMODKEYS) occurs 7 times and `CSI > q`
-  (XTVERSION) **zero**, which inverts the order the reference trees suggest. Rows in
+  (XTVERSION) **once**, which still inverts the order the reference trees suggest. Rows in
   [`reference-facts.md`](../../agents/reference-facts.md). The unrouted rest is #47 tail.
+  **The `> q` figure was `zero` here until 2026-09-11 and the corpus had contained one since
+  2026-09-02** (#842's `tmux_clipboard.raw`); a fresh tmux attach recorded on the 11th emits it too,
+  so tmux asks unconditionally. Two things follow for anyone quoting a count out of this corpus.
+  It is only true of one revision of the corpus — re-measure rather than cite. And it is a **floor**,
+  because the corpus is *open-loop*: every capture is recorded under `script(1)`, which copies bytes
+  and answers nothing, so nothing an application sends only *after* a reply can appear in it. That is
+  visible in the corpus rather than assumed — answering DA2 is measured (`term.rs`, the DA2 block) to
+  make vim ask ten `DCS + q` XTGETTCAP questions, and `DCS + q` occurs **zero** times across all 19
+  fixtures, four of which ask DA2. Closing that loop needs a capture harness that feeds
+  `drain_replies()` back into the pty, which does not exist.
 - **An OSC payload arrives unbounded, and a handler that builds anything from one bounds it
   itself (#828).** Measured with a throwaway probe rather than read off the crate: `vte` is built
   with its default features, so its OSC accumulator is a `Vec<u8>` and **not** the

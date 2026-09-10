@@ -5729,11 +5729,26 @@ impl Perform for Term {
         //
         // It is one route out of ten `>` finals xterm routes, and the choice is
         // reach, not completeness: across this repo's capture corpus `CSI > c`
-        // occurs 3 times and XTMODKEYS `CSI > m` 7 — the latter is the highest-
+        // occurs 4 times and XTMODKEYS `CSI > m` 7 — the latter is the highest-
         // reach `>` sequence justerm does not route, and it keeps falling
         // through here exactly as before, tracked with the rest of the tail in
-        // #47. (XTVERSION `CSI > q`, which reads like the obvious neighbour,
-        // occurs **zero** times.)
+        // #47. XTVERSION `CSI > q` occurs **once**, in `tmux_clipboard.raw`.
+        //
+        // Both numbers moved after this paragraph was written, and the second one
+        // changed sign: it said `> q` occurred *zero* times, which was true on
+        // 2026-09-01 and false on 2026-09-02, when #842 checked in a tmux capture
+        // that contains one (re-measured 2026-09-11, and a fresh tmux attach
+        // recorded the same day emits it too — tmux asks unconditionally). A count
+        // taken from a corpus is only ever true of one revision of it.
+        //
+        // And it is a floor rather than a measurement of reach, because **this
+        // corpus is open-loop**: every capture is recorded under `script(1)`, which
+        // copies bytes and answers nothing, so no sequence an application only sends
+        // *after* a reply can appear in it. The signature is in the corpus already —
+        // the paragraph above measured that answering DA2 makes vim ask ten
+        // `DCS + q` XTGETTCAP questions, and `DCS + q` occurs **zero** times across
+        // all 19 fixtures, four of which ask DA2. So a `> q` count of one is what
+        // survives a recording that never let anything be gated on an answer.
         //
         // The match is on the whole slice rather than `.first()`, so
         // `CSI > $ c` is not DA2. That is 3-1: xterm drops it
