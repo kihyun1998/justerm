@@ -3165,3 +3165,29 @@ palette — the engine *does* hold the string and *does* discard it, so the two 
 afterwards, where for the palette there is no engine-side copy to disagree with — and it is still not a
 defect by any available standard. If it is ever revisited, axis 1 is the one to reopen first: two
 references keep the title, and "announce the drop" silently assumes dropping is right.
+
+## modifyOtherKeys — which level breaks the control aliases, and the predicate that would break plain typing (#890, verified 2026-09-11)
+
+The mode `vim` asks for at startup (`CSI > 4 ; 2 m`) and clears on exit (`CSI > 4 ; m`).
+
+| Fact | Reference | Site |
+|---|---|---|
+| The final carries **four** resources, not one: `modifyKeyboard` 0, `modifyCursorKeys` 1, `modifyFunctionKeys` 2, `modifyOtherKeys` 4 — one `case` each off the same `CSI > Pp ; Pv m` | xterm | `charproc.c:2405-2420` |
+| The levels are `mokNone` 0, `mokUser` 1, `mokProgram` **2**, `mokExtended` 3 — so a bool for "level 2" is a choice about *which* of four to implement, not the whole space | xterm | `ptyx.h:3374-3379` |
+| **Level 2 is what separates `Ctrl+I` from `Tab`**: at 0 and 1 `allowedCharModifiers` *strips* the Control modifier from a key already associated with control (*"If modifyOtherKeys is off or medium (0 or 1), moderate its effects by excluding the common cases for modifiers"*), which is what sends it down the ordinary C0 path | xterm | `input.c:577-599` |
+| The emitted shape is `CSI 27 ; <mods> ; <code> ~`, with `CSI <code> ; <mods> u` as the alternative its `formatOtherKeys` resource selects | xterm | `input.c:760-782` (`modifyOtherKey`) |
+| The gate is `IsControlInput` — *any* keysym in `0x40..=0x7f`, which includes every capital letter | xterm | `input.c:272-274` |
+| **A soft reset clears it too**: `CASE_DECSTR` → `VTReset(xw, False, False)` → `ReallyReset`, whose `xw->keyboard.modify_now = xw->keyboard.modify_1st` sits **outside** that function's `full` gate | xterm | `charproc.c:6147-6149`; the restore inside `ReallyReset` |
+| Models **only level 2**, as a bool on the terminal's flags (global, not per-screen, unlike its kitty stack); anything that is not the numeric-other-keys form sets it `false` | ghostty | `terminal/Terminal.zig:103`, `terminal/stream_terminal.zig:282-288` |
+| Places it **inside** its `legacy` encoder rather than beside kitty, and says why: traditional encoding + modifyOtherKeys + fixterms *"are all meant to be extensions that do not change any existing behavior and therefore safe to combine"* | ghostty | `input/key_encode.zig:321-329` |
+| Inherits xterm's `0x40..=0x7f` clause verbatim in `should_modify`, and is saved from capturing plain capitals by its **consumed-mods** pass rather than by the predicate | ghostty | `input/key_encode.zig:447-464` |
+| Does **not** resolve `Ctrl+I` through this mode at all: `ctrlSeq` returns the C0 byte first, and the awkward letters reach **fixterms** instead — `Ctrl+I` → `CSI 105;5u`, `Ctrl+M` → `CSI 109;5u`, `Ctrl+[` → `CSI 91;5u`, none of them gated on a request | ghostty | `input/key_encode.zig:380-397`, tests *"legacy: fixterm awkward letters"* |
+| Its own modifyOtherKeys expectations are `Ctrl+Shift+H` → `CSI 27;6;72~` and `Alt+8` → `CSI 27;3;56~` | ghostty | `input/key_encode.zig`, tests at `:2150`, `:2178` |
+| **Neither implements it at all** — both negotiate the kitty keyboard protocol instead (a `CSI 27` hit in xterm.js is kitty's keycode for Escape, not this mode) | alacritty, xterm.js | no `modifyOtherKeys` / `modify_other` match in either tree |
+
+**The split that matters for justerm**: 2 of 4 implement the mode, and the two that do disagree
+about which keys it captures. The gate justerm ships is xterm's *other* two clauses — a non-Shift
+modifier, or Shift with space — because justerm's consumer hands over the produced character **and**
+the modifiers it saw, so `Char('A') + SHIFT` arrives intact and xterm's `0x40..=0x7f` clause would
+turn every capital into an escape sequence. Measured both directions: that clause also *under*-reaches,
+dropping `Alt+8` (`0x38`), which both references do emit.

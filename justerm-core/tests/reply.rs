@@ -192,15 +192,16 @@ fn da1_still_replies_exactly_as_before() {
 fn an_unrelated_prefixed_sequence_stays_silent_and_leaves_the_screen_alone() {
     let mut t = Engine::new(80, 24);
     t.feed(b"ab");
-    // XTMODKEYS first: it is the highest-reach `>` sequence justerm does not
-    // route — 7 occurrences across this repo's captures against DA2's 3 — so it
-    // is the one a widened prefix match would break in practice. XTVERSION and
-    // tertiary DA follow; all three are #47 tail material.
-    t.feed(b"\x1b[>4;2m"); // XTMODKEYS, what vim emits at startup
-    t.feed(b"\x1b[>4;m"); // and at exit
-    t.feed(b"\x1b[>q"); // XTVERSION
+    // XTMODKEYS used to lead this list as the highest-reach `>` sequence justerm
+    // did not route; #890 routes it, so it has moved to `modify_other_keys.rs` and
+    // XTVERSION is the highest-reach one left. **It would not have failed here when
+    // that landed**, and that is the part worth keeping: this test asserts replies
+    // and the grid, and XTMODKEYS changes neither — it moves key-encoding state. A
+    // sequence being in this list is not evidence that this list can see it.
+    t.feed(b"\x1b[>q"); // XTVERSION, 1 occurrence (`tmux_clipboard.raw`)
     t.feed(b"\x1b[=c"); // tertiary DA
     t.feed(b"\x1b[>5n");
+    t.feed(b"\x1b[>1;2m"); // XTMODKEYS aimed at a resource we do not route
     assert_eq!(t.drain_replies(), Vec::<u8>::new());
     let grid = t.grid();
     let row: String = (0..grid.cols()).map(|c| grid.row(0)[c].c()).collect();

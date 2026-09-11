@@ -28,6 +28,16 @@ Nothing governs the encoding itself.
   reporting, bracketed paste — an application turns them on by *printing*, and the same keystroke
   therefore encodes differently depending on what was printed earlier. This is the sharpest instance
   of `architecture.md`'s "input encoding is mode-gated" entry.
+- **A mode can rewrite legacy from the inside, and modifyOtherKeys is the one that does** (#890).
+  `CSI > 4 ; 2 m` makes a modified character encode as `CSI 27 ; <1+mods> ; <codepoint> ~`, which
+  is how `Ctrl+I` stops being `Tab`. It sits *after* the kitty check and *inside* the legacy arm,
+  the placement ghostty states a reason for: traditional encoding, modifyOtherKeys and fixterms
+  are extensions that do not change existing behaviour, so they combine. **The gate on which keys
+  qualify is this territory's sharpest divergence and it is forced by the seam above**: because the
+  widget normalises a DOM event into a produced *character* plus the modifiers it saw, a capital
+  arrives as `Char('A') + SHIFT` — where a keysym-based terminal has already spent the Shift. So
+  xterm's own `0x40..=0x7f` clause, which both it and ghostty use, would turn every capital into an
+  escape sequence here. Rows in [`reference-facts.md`](../../agents/reference-facts.md).
 - **This is the legacy xterm baseline** — the common 90% every TUI speaks. The kitty keyboard
   protocol (`CSI u` plus a negotiated progressive-flag stack) is a **stateful superset**, deliberately
   deferred, and it rewrites only what legacy cannot express.
@@ -73,7 +83,9 @@ Nothing governs the encoding itself.
 
 ## Reference behaviour
 
-**None** in `docs/agents/reference-facts.md`. The encoders are described as the legacy xterm
+**One section** in `docs/agents/reference-facts.md` — modifyOtherKeys (#890), which is also the
+first time this territory's encoders were read against the trees rather than described. Everything
+else is still unpinned: the encoders are described as the legacy xterm
 baseline, and the IME delete case cites xterm's `C0.DEL` in a comment — an implementation claim about
 a named reference with no pinned row, in the area where a wrong byte is invisible until an
 application misbehaves.

@@ -5755,15 +5755,16 @@ impl Perform for Term {
         //
         // `>` reaches us as an *intermediate*, so DA2 was not "unhandled" but
         // unreachable: the catch-all below returns before the final is ever
-        // examined. This opens exactly one route through it — the `>` prefix
-        // alone, with the `c` final.
+        // examined. This opened exactly one route through it — the `>` prefix
+        // alone, with the `c` final. **A second one is open now**: the `m`
+        // final, for XTMODKEYS (#890), in the block immediately below this one.
         //
         // It is one route out of ten `>` finals xterm routes, and the choice is
         // reach, not completeness: across this repo's capture corpus `CSI > c`
         // occurs 4 times and XTMODKEYS `CSI > m` 7 — the latter is the highest-
-        // reach `>` sequence justerm does not route, and it keeps falling
-        // through here exactly as before, tracked with the rest of the tail in
-        // #47. XTVERSION `CSI > q` occurs **once**, in `tmux_clipboard.raw`.
+        // reach `>` sequence justerm did not route, which is why it was the
+        // next one taken (#890) rather than a later one — it no longer falls
+        // through here. XTVERSION `CSI > q` occurs **once**, in `tmux_clipboard.raw`.
         //
         // Both numbers moved after this paragraph was written, and the second one
         // changed sign: it said `> q` occurred *zero* times, which was true on

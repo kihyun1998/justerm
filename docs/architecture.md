@@ -886,6 +886,18 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   (d) **Bracketed paste (`?2004`)**: wrap pasted text in `CSI 200~`…`CSI 201~` so the app never
   mistakes paste content for typed control sequences (a real injection-safety boundary, not cosmetic).
   (e) **Backspace is DEL (`0x7f`), not BS (`0x08`)** — the standard PC-keyboard convention apps assume.
+  (f) **modifyOtherKeys (XTMODKEYS `CSI > 4 ; Pv m`, #890)**: `Pv >= 2` makes a *modified*
+  character encode as `CSI 27 ; <1+mods> ; <codepoint> ~` instead of its ordinary form, which is
+  what separates `Ctrl+I` from `Tab`, `Ctrl+[` from `Esc` and `Ctrl+M` from `Enter` — `vim` asks
+  for it at startup and clears it (`Pv` omitted) on exit. It lives *inside* the legacy encoder,
+  after the kitty check, because it is an extension to legacy rather than a competitor to it.
+  Both resets clear it, DECSTR included (xterm restores its keyboard resources outside
+  `ReallyReset`'s `full` gate). **Which keys qualify diverges from xterm deliberately**: its own
+  gate admits any codepoint in `0x40..=0x7f`, which is safe there only because a keysym has
+  already spent Shift producing the character — justerm is handed the character *and* the
+  modifiers, so that clause would turn every capital letter into an escape sequence. The gate is
+  a non-Shift modifier, or Shift with space. Only `Pp = 4` of xterm's four modify-resources is
+  routed; the rest occur zero times in the capture corpus and stay with #47.
   The kitty keyboard protocol (`CSI u` + a negotiated progressive-flag stack + key-release events) is a
   *stateful* superset deferred to #23; legacy here is a pure event→bytes function. (`?1016` SGR-pixel
   mouse — once mistakenly called out-of-bounds — is in scope: the consumer supplies the pixels, the
