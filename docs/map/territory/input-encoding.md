@@ -28,9 +28,39 @@ Nothing governs the encoding itself.
   reporting, bracketed paste — an application turns them on by *printing*, and the same keystroke
   therefore encodes differently depending on what was printed earlier. This is the sharpest instance
   of `architecture.md`'s "input encoding is mode-gated" entry.
-- **This is the legacy xterm baseline** — the common 90% every TUI speaks. The kitty keyboard
-  protocol (`CSI u` plus a negotiated progressive-flag stack) is a **stateful superset**, deliberately
-  deferred, and it rewrites only what legacy cannot express.
+- **A mode can rewrite legacy from the inside, and modifyOtherKeys is the one that does** (#890).
+  `CSI > 4 ; 2 m` makes a modified character — and a modified `Tab` / `Enter` / `Escape` /
+  `Backspace`, whose bare forms are C0 controls — encode as `CSI 27 ; <1+mods> ; <codepoint> ~`, which
+  is how `Ctrl+I` stops being `Tab`. It sits *after* the kitty check and *inside* the legacy arm,
+  the placement ghostty states a reason for: traditional encoding, modifyOtherKeys and fixterms
+  are extensions that do not change existing behaviour, so they combine. **The gate on which keys
+  qualify is this territory's sharpest divergence and it is forced by the seam above**: because the
+  widget normalises a DOM event into a produced *character* plus the modifiers it saw, a capital
+  arrives as `Char('A') + SHIFT` — where a keysym-based terminal has already spent the Shift. So
+  xterm's own `0x40..=0x7f` clause, which both it and ghostty use, would turn every capital into an
+  escape sequence here. Rows in [`reference-facts.md`](../../agents/reference-facts.md).
+  **And the gate asks that of the *parameter*, not of the raw bits**, which is the whole of
+  it: `csi_param` drops Super / Hyper / CapsLock / NumLock, so a gate on the bitflags admits
+  a chord it cannot then describe — `Shift+Super+A` passed and came out as
+  `CSI 27;2;65~`, byte-identical to what a bare `Shift+A` would have to mean. Reachable
+  through the widget, which maps `metaKey` to `SUPER` unconditionally: every macOS
+  `Cmd+Shift+<letter>` while the mode is on. The reference masks first for the same reason.
+- **Two values in that encoding are ours, not the reference's, and both read as arbitrary at
+  the call site.** The shape is `CSI 27 ; <mods> ; <code> ~` and **not** the
+  `CSI <code> ; <mods> u` form the reference offers as its alternative — that one is
+  byte-for-byte what this engine's *kitty* path already produces, and two protocols a
+  consumer negotiates separately must not be indistinguishable on the wire. And a modified
+  `Backspace` carries code **127**, not the `8` a keysym-based terminal would send, because
+  `127` is the byte this encoder gives a bare Backspace (the PC-keyboard convention) —
+  the two have to agree about which key they are naming. ghostty's table spells the same.
+- **This is the legacy xterm baseline** — the common 90% every TUI speaks — with **two**
+  negotiated extensions on it, which behave differently and are asked in a fixed order. The
+  kitty keyboard protocol (`CSI u` plus a progressive-flag stack, #23) is a **stateful
+  superset**: it *replaces* the legacy form for what legacy cannot express, and it is asked
+  first. `modifyOtherKeys` (#890) is not a superset — it rewrites one case *inside* legacy,
+  and is asked after. (This bullet said the kitty half was *"deliberately deferred"* until
+  2026-09-11, some two months after #23 shipped it; the same sentence survived a second time
+  under `## Known holes`, which is what a claim held in two places does.)
 - **The web half normalises, it does not encode.** Its intent types mirror `input.rs` as a contract;
   the protocol bytes are the backend's job. A consumer that encoded in the browser would have to
   replicate the mode tracking, which it cannot see.
@@ -73,7 +103,9 @@ Nothing governs the encoding itself.
 
 ## Reference behaviour
 
-**None** in `docs/agents/reference-facts.md`. The encoders are described as the legacy xterm
+**One section** in `docs/agents/reference-facts.md` — modifyOtherKeys (#890), which is also the
+first time this territory's encoders were read against the trees rather than described. Everything
+else is still unpinned: the encoders are described as the legacy xterm
 baseline, and the IME delete case cites xterm's `C0.DEL` in a comment — an implementation claim about
 a named reference with no pinned row, in the area where a wrong byte is invisible until an
 application misbehaves.
@@ -110,9 +142,13 @@ application misbehaves.
 
 - **Zero governing records for the encoding**, in a territory where being wrong produces a
   misbehaving application rather than an error.
-- **The kitty keyboard protocol is deferred, not decided.** `architecture.md` describes it as a
-  negotiated flag stack that rewrites only what legacy cannot express — a design sketch with no
-  record and no issue-level commitment.
+- ~~**The kitty keyboard protocol is deferred, not decided.**~~ — **closed by #23, and this line
+  outlived it by a long way.** The flag stack, the push/pop/set forms, the query reply and the
+  `CSI u` encoding all ship (`input.rs::kitty_encode`, `tests/kitty.rs`); what the bullet described
+  as *"a design sketch with no record and no issue-level commitment"* has been running code for
+  long enough that #890 measured against it. The hole it was pointing at is real and narrower:
+  there is still **no decision record** for the encoding, which is the first bullet in this
+  section, not a second one.
 - **Two mode sets have to agree across a crate boundary.** The web mirrors `input.rs`'s intent types
   by hand, the same ungated mirroring `types.ts` does for the frame.
 - ~~**In-progress IME composition is not rendered inline in the grid**~~ — **closed by #249**

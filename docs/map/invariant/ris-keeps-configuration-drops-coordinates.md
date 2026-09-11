@@ -108,8 +108,14 @@ arrived, as a gap rather than as a bug.
 
 The concrete near-term candidates are configuration, i.e. on the surviving side and easy to miss:
 
-- a cap for the unbounded buffer walks (#206), if it is ever made settable rather than a constant
+- ~~a cap for the unbounded buffer walks (#206)~~ — **#206 is closed** (reach measured at zero;
+  the reasoning moved to the three walks' own doc-comments). Still the right *shape* of candidate
+  if a bound is ever taken, and the note at `set_word_separators` says a bound there would be a
+  field beside it — i.e. exactly this table's question
 - any further policy injected under ADR-0017 the way #545 injected the first one
+- **`modify_other_keys_2` was the fifth row** (#890), and it is on the *dying* side: it answers the
+  question at its definition site and needs no copy-back, because it is terminal state an
+  application set by printing rather than configuration an embedder chose
 
 When adding one, answer the table's question in the field's own doc-comment, and if the answer is
 "configuration", add the copy-back line **and a behavioural test** — asserting the field's value

@@ -1,0 +1,357 @@
+//! XTMODKEYS / modifyOtherKeys (#890): the mode an application asks for with
+//! `CSI > 4 ; Pv m`, and what a key encodes once it has.
+//!
+//! Driven the way `kitty.rs` drives its protocol — `feed(enable)` → `encode_key` —
+//! because that is the only seam a consumer has: the mode is learned from the
+//! *output* stream and spends itself on the *input* one.
+
+use justerm_core::{Engine, Key, KeyAction, KeyEvent, Modifiers};
+
+fn press(k: Key, mods: Modifiers) -> KeyEvent {
+    KeyEvent {
+        key: k,
+        mods,
+        action: KeyAction::Press,
+        ..Default::default()
+    }
+}
+
+fn enc(t: &Engine, k: Key, mods: Modifiers) -> Vec<u8> {
+    t.encode_key(press(k, mods))
+        .expect("every probe key encodes")
+}
+
+/// The collision the mode exists to break: `Ctrl+I` and `Tab` are both `0x09`
+/// until the application asks for them to be told apart.
+#[test]
+fn ctrl_i_stops_being_tab_once_the_application_asks() {
+    let mut t = Engine::new(80, 24);
+    assert_eq!(enc(&t, Key::Char('i'), Modifiers::CTRL), b"\t");
+
+    t.feed(b"\x1b[>4;2m"); // XTMODKEYS, exactly what vim emits at startup
+
+    // `CSI 27 ; <1+mods> ; <codepoint> ~` — xterm's own shape (`input.c:760-782`,
+    // the `formatOtherKeys` = 0 arm). Ctrl alone is bitmask 4, so the parameter
+    // is 5; `i` is 105.
+    assert_eq!(enc(&t, Key::Char('i'), Modifiers::CTRL), b"\x1b[27;5;105~");
+    // Tab is untouched — it is not an "other" key, and the point of the mode is
+    // that the two stop being the same bytes.
+    assert_eq!(enc(&t, Key::Tab, Modifiers::empty()), b"\t");
+}
+
+/// vim clears the mode on exit, and the clear is the more common half: `CSI > 4 ; m`
+/// outnumbers `CSI > 4 ; 2 m` in this repo's captures (4 against 3). A mode that
+/// cannot be turned off would leave every later application reading bytes it never
+/// asked for.
+#[test]
+fn an_omitted_value_turns_it_back_off() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(enc(&t, Key::Char('i'), Modifiers::CTRL), b"\x1b[27;5;105~");
+
+    t.feed(b"\x1b[>4;m"); // what vim emits at exit
+
+    assert_eq!(enc(&t, Key::Char('i'), Modifiers::CTRL), b"\t");
+}
+
+/// The other two collisions the mode is for.
+#[test]
+fn the_other_two_control_aliases_separate_as_well() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(enc(&t, Key::Char('['), Modifiers::CTRL), b"\x1b[27;5;91~");
+    assert_eq!(enc(&t, Key::Char('m'), Modifiers::CTRL), b"\x1b[27;5;109~");
+    // ...while the keys they used to be indistinguishable from keep their bytes.
+    assert_eq!(enc(&t, Key::Escape, Modifiers::empty()), b"\x1b");
+    assert_eq!(enc(&t, Key::Enter, Modifiers::empty()), b"\r");
+}
+
+/// The hazard the gate is written around: xterm's own predicate admits any codepoint
+/// in `0x40..=0x7f`, which is every capital letter. xterm is safe because shift is
+/// spent producing the character; justerm is handed both, so the predicate had to be
+/// narrowed or ordinary typing would turn into escape sequences.
+#[test]
+fn ordinary_typing_is_untouched_while_the_mode_is_on() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(enc(&t, Key::Char('a'), Modifiers::empty()), b"a");
+    assert_eq!(enc(&t, Key::Char('A'), Modifiers::SHIFT), b"A");
+    assert_eq!(enc(&t, Key::Char('Z'), Modifiers::SHIFT), b"Z");
+    assert_eq!(enc(&t, Key::Char('@'), Modifiers::SHIFT), b"@");
+}
+
+/// Level 2 is what vim asks for and what the collision needs: `ModifyOtherKeys`
+/// refuses a control-associated key at level 1 when the state is exactly Control or
+/// exactly Shift (`input.c:686-691`) and admits it unconditionally at level 2
+/// (`:725-727`). Level 3 is a strict superset of 2, so it is honoured rather than read
+/// as off — only 2's behaviour is implemented, and an application that asked for more
+/// must not silently get none.
+#[test]
+fn the_level_decides_and_only_two_or_more_enables() {
+    for (seq, enabled) in [
+        (&b"\x1b[>4;0m"[..], false),
+        (b"\x1b[>4;1m", false),
+        (b"\x1b[>4;2m", true),
+        (b"\x1b[>4;3m", true),
+    ] {
+        let mut t = Engine::new(80, 24);
+        t.feed(seq);
+        let got = enc(&t, Key::Char('i'), Modifiers::CTRL);
+        assert_eq!(
+            got == b"\x1b[27;5;105~",
+            enabled,
+            "{:?} should {} enable it, got {:?}",
+            String::from_utf8_lossy(seq),
+            if enabled { "" } else { "not" },
+            String::from_utf8_lossy(&got)
+        );
+    }
+}
+
+/// The final carries four of xterm's resources and only one of them is routed. A
+/// request aimed at modifyCursorKeys must not switch on modifyOtherKeys.
+#[test]
+fn a_request_aimed_at_another_resource_changes_nothing() {
+    let mut t = Engine::new(80, 24);
+    for seq in [&b"\x1b[>0;2m"[..], b"\x1b[>1;2m", b"\x1b[>2;2m", b"\x1b[>m"] {
+        t.feed(seq);
+        assert_eq!(
+            enc(&t, Key::Char('i'), Modifiers::CTRL),
+            b"\t",
+            "{:?} must not enable modifyOtherKeys",
+            String::from_utf8_lossy(seq)
+        );
+    }
+}
+
+/// Nothing changes for an application that never asked — the whole mode is opt-in,
+/// and this is the assertion that would notice it leaking into the default path.
+#[test]
+fn the_default_encoding_is_untouched() {
+    let t = Engine::new(80, 24);
+    assert_eq!(enc(&t, Key::Char('i'), Modifiers::CTRL), b"\t");
+    assert_eq!(enc(&t, Key::Char('a'), Modifiers::CTRL), b"\x01");
+    assert_eq!(enc(&t, Key::Char('a'), Modifiers::ALT), b"\x1ba");
+}
+
+/// kitty is checked first and stays first: an application that negotiated the newer
+/// protocol gets it, even if an earlier one left modifyOtherKeys on.
+#[test]
+fn kitty_still_wins_when_both_are_on() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    t.feed(b"\x1b[>1u"); // kitty: disambiguate
+    assert_eq!(enc(&t, Key::Char('i'), Modifiers::CTRL), b"\x1b[105;5u");
+}
+
+/// Both resets clear it, and DECSTR is xterm's answer rather than a convenience: the
+/// line restoring its keyboard resources sits outside `ReallyReset`'s `full` gate.
+#[test]
+fn both_resets_clear_the_mode() {
+    for reset in [&b"\x1bc"[..], b"\x1b[!p"] {
+        let mut t = Engine::new(80, 24);
+        t.feed(b"\x1b[>4;2m");
+        assert_eq!(enc(&t, Key::Char('i'), Modifiers::CTRL), b"\x1b[27;5;105~");
+        t.feed(reset);
+        assert_eq!(
+            enc(&t, Key::Char('i'), Modifiers::CTRL),
+            b"\t",
+            "{:?} must clear the mode",
+            String::from_utf8_lossy(reset)
+        );
+    }
+}
+
+/// A modified character that is not a control alias also goes through, which is what
+/// makes this a general mechanism rather than a three-key patch. Both values are
+/// ghostty's own test expectations (`key_encode.zig`), so agreement is checkable
+/// rather than asserted.
+#[test]
+fn a_modified_character_that_is_not_a_control_alias_goes_through_too() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(
+        enc(&t, Key::Char('H'), Modifiers::CTRL | Modifiers::SHIFT),
+        b"\x1b[27;6;72~"
+    );
+    assert_eq!(enc(&t, Key::Char('8'), Modifiers::ALT), b"\x1b[27;3;56~");
+}
+
+/// A real `vim` session, not a sequence typed into a test. The synthetic cases above
+/// assert what the engine does with bytes *I* wrote; this one asserts that the bytes a
+/// real editor emitted on a real PTY reach the same state — the gap those two leave is
+/// where a mis-parsed parameter, or a form no literal in this file happens to use, would
+/// hide.
+///
+/// **The capture contains the whole round trip, and asserting only its end state would
+/// have asserted the wrong half.** `vim_redraw.raw` enables at byte 17 and clears twice
+/// near the end (2943, 3035), because the recording runs until vim exits — so a test
+/// that fed the file and checked the mode was *on* failed against a correct engine. What
+/// the material actually proves is both transitions, which is what is pinned here.
+#[test]
+fn a_recorded_vim_session_drives_the_mode_on_and_back_off() {
+    const VIM: &[u8] = include_bytes!("fixtures/vim_redraw.raw");
+    // The material has to be there, or this test passes by describing nothing (#554).
+    let on_at = VIM
+        .windows(7)
+        .position(|w| w == b"[>4;2m")
+        .expect("the capture must contain the request this test is about");
+    assert!(
+        VIM[on_at + 7..].windows(6).any(|w| w == b"[>4;m"),
+        "and the clear that follows it"
+    );
+
+    let mut t = Engine::new(80, 24);
+    t.feed(&VIM[..on_at + 7]);
+    assert_eq!(
+        enc(&t, Key::Char('i'), Modifiers::CTRL),
+        b"[27;5;105~",
+        "vim's own startup request must engage the mode"
+    );
+
+    t.feed(&VIM[on_at + 7..]);
+    assert_eq!(
+        enc(&t, Key::Char('i'), Modifiers::CTRL),
+        b"	",
+        "and its exit must put the keyboard back"
+    );
+}
+
+/// The gate asks its question of the **parameter**, not of the raw modifier bits, and
+/// the difference is a defect rather than a nicety. `csi_param` drops Super / Hyper /
+/// CapsLock / NumLock — none has a legacy form — so a gate on the bits admits a chord it
+/// cannot then describe: `Shift+Super+A` qualified and came out as `CSI 27;2;65~`, which
+/// is what a bare `Shift+A` would have to mean. The bytes did not just over-fire, they
+/// misreported the modifier.
+///
+/// Reachable rather than theoretical: `justerm-web` maps `metaKey` to `SUPER`
+/// unconditionally, so this is every macOS `Cmd+Shift+<letter>` while vim has the mode on.
+#[test]
+fn a_modifier_the_parameter_cannot_express_does_not_qualify() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    for mods in [
+        Modifiers::SUPER,
+        Modifiers::HYPER,
+        Modifiers::CAPS_LOCK,
+        Modifiers::NUM_LOCK,
+    ] {
+        assert_eq!(enc(&t, Key::Char('a'), mods), b"a", "{mods:?} alone");
+        assert_eq!(
+            enc(&t, Key::Char('A'), mods | Modifiers::SHIFT),
+            b"A",
+            "{mods:?} with shift must stay an ordinary capital"
+        );
+    }
+    // ...and one that *is* expressible still goes through, so the assertion above is not
+    // passing because the whole path is off.
+    assert_eq!(
+        enc(&t, Key::Char('A'), Modifiers::SUPER | Modifiers::CTRL),
+        b"\x1b[27;5;65~"
+    );
+}
+
+/// The one Shift-only chord the reference admits (`state == ShiftMask && keysym == ' '`,
+/// `input.c:728-729`) — and the equality is the point: a second latch alongside Shift is
+/// not that state. Without this case the two-clause gate is indistinguishable from a
+/// one-clause "any non-Shift modifier" gate, which is the shape somebody would naturally
+/// simplify it to.
+#[test]
+fn shift_and_space_is_the_only_shift_only_chord_that_qualifies() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(enc(&t, Key::Char(' '), Modifiers::SHIFT), b"\x1b[27;2;32~");
+    assert_eq!(enc(&t, Key::Char(' '), Modifiers::empty()), b" ");
+    assert_eq!(
+        enc(&t, Key::Char(' '), Modifiers::SHIFT | Modifiers::CAPS_LOCK),
+        b" ",
+        "`state == ShiftMask` is an equality, not a containment"
+    );
+}
+
+/// The modifier parameter is the **legacy** one (`1 + shift1|alt2|ctrl4|meta8`), not the
+/// kitty one, which uses the raw bit values and would put Meta at 33. Nothing else in
+/// this file separates the two: they agree across Shift / Alt / Ctrl, so every other case
+/// here passes under either.
+#[test]
+fn the_parameter_is_the_legacy_one_not_kittys() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(enc(&t, Key::Char('a'), Modifiers::META), b"\x1b[27;9;97~");
+}
+
+/// The other half of the disambiguation: a *named* key whose bare form is a C0 control
+/// is indistinguishable from its modified form for exactly the same reason `Ctrl+I` was.
+/// The reference admits Tab, Enter and Escape on any expressible modifier
+/// (`input.c:720-724`), and ghostty's table spells the identical bytes.
+#[test]
+fn a_modified_control_alias_key_separates_from_its_bare_form() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(enc(&t, Key::Tab, Modifiers::CTRL), b"\x1b[27;5;9~");
+    assert_eq!(enc(&t, Key::Enter, Modifiers::CTRL), b"\x1b[27;5;13~");
+    assert_eq!(enc(&t, Key::Escape, Modifiers::CTRL), b"\x1b[27;5;27~");
+    assert_eq!(enc(&t, Key::Enter, Modifiers::ALT), b"\x1b[27;3;13~");
+    // ...and the bare keys they were colliding with keep their bytes.
+    assert_eq!(enc(&t, Key::Tab, Modifiers::empty()), b"\t");
+    assert_eq!(enc(&t, Key::Enter, Modifiers::empty()), b"\r");
+    assert_eq!(enc(&t, Key::Escape, Modifiers::empty()), b"\x1b");
+}
+
+/// `Shift+Tab` is the exception, and it is the reference's own: a shifted Tab is a
+/// different keysym there (`XK_ISO_Left_Tab`) and needs a **non-Shift** modifier to
+/// qualify (`input.c:715-718`), so back-tab keeps the sequence every application already
+/// knows. Without this case the Tab arm reads as "any modifier" and back-tab breaks.
+#[test]
+fn shift_tab_alone_keeps_back_tab_but_ctrl_shift_tab_does_not() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(enc(&t, Key::Tab, Modifiers::SHIFT), b"\x1b[Z");
+    assert_eq!(
+        enc(&t, Key::Tab, Modifiers::CTRL | Modifiers::SHIFT),
+        b"\x1b[27;6;9~"
+    );
+}
+
+/// Backspace qualifies on a modifier that is **not** Control (`input.c:706-710`, *"strip
+/// ControlMask as per IsBackarrowToggle"*), so `Ctrl+Backspace` keeps its legacy byte.
+/// The codepoint is `127` because that is what a bare Backspace sends here (the
+/// PC-keyboard convention); ghostty's table spells the same value.
+#[test]
+fn backspace_qualifies_on_a_modifier_that_is_not_control() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(enc(&t, Key::Backspace, Modifiers::ALT), b"\x1b[27;3;127~");
+    assert_eq!(
+        enc(&t, Key::Backspace, Modifiers::CTRL | Modifiers::SHIFT),
+        b"\x1b[27;6;127~"
+    );
+    assert_eq!(enc(&t, Key::Backspace, Modifiers::CTRL), b"\x7f");
+    assert_eq!(enc(&t, Key::Backspace, Modifiers::empty()), b"\x7f");
+}
+
+/// Every other named key already has an unambiguous modified form, so the mechanism has
+/// nothing to resolve for them and must leave them alone. `Delete` is the one the two
+/// references disagree about: xterm routes it, ghostty keeps `CSI 3 ; <mods> ~`, and
+/// xterm's own emission would reuse Backspace's codepoint.
+#[test]
+fn the_keys_that_are_already_unambiguous_are_left_alone() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(enc(&t, Key::Delete, Modifiers::CTRL), b"\x1b[3;5~");
+    assert_eq!(enc(&t, Key::Up, Modifiers::CTRL), b"\x1b[1;5A");
+    assert_eq!(enc(&t, Key::Home, Modifiers::SHIFT), b"\x1b[1;2H");
+    assert_eq!(enc(&t, Key::F(1), Modifiers::CTRL), b"\x1b[1;5P");
+    assert_eq!(enc(&t, Key::PageUp, Modifiers::ALT), b"\x1b[5;3~");
+}
+
+/// ...and none of it happens to an application that did not ask.
+#[test]
+fn a_named_key_is_untouched_while_the_mode_is_off() {
+    let t = Engine::new(80, 24);
+    assert_eq!(enc(&t, Key::Tab, Modifiers::CTRL), b"\t");
+    assert_eq!(enc(&t, Key::Enter, Modifiers::CTRL), b"\r");
+    assert_eq!(enc(&t, Key::Escape, Modifiers::CTRL), b"\x1b");
+    assert_eq!(enc(&t, Key::Backspace, Modifiers::ALT), b"\x7f");
+    assert_eq!(enc(&t, Key::Tab, Modifiers::SHIFT), b"\x1b[Z");
+}

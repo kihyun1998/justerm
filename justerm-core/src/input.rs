@@ -3,12 +3,12 @@
 //! The inverse of `feed` — a key/mouse/paste/focus event becomes the byte
 //! sequence a TUI app reads on its stdin, decided by the DEC modes the engine
 //! tracks from the *output* stream (DECCKM, mouse tracking/encoding, focus,
-//! bracketed paste). The engine owns the modes; these functions are pure
-//! (event + modes → bytes), so the consumer's I/O stays its own concern.
+//! bracketed paste, modifyOtherKeys). The engine owns the modes; these functions
+//! are pure (event + modes → bytes), so the consumer's I/O stays its own concern.
 //!
-//! This is the **legacy xterm** baseline (the common-90% every TUI speaks). The
-//! kitty keyboard protocol (`CSI u` + a negotiated progressive-flag stack) is a
-//! stateful superset deferred to #23.
+//! This is the **legacy xterm** baseline (the common-90% every TUI speaks) plus two
+//! negotiated extensions, kitty (#23) and `modifyOtherKeys` (#890). They are asked in
+//! a fixed order and that order is deliberate — `docs/map/territory/input-encoding.md`.
 
 use bitflags::bitflags;
 
@@ -345,14 +345,16 @@ const ESC: u8 = 0x1b;
 /// Bit 0 of the kitty progressive-enhancement flags: disambiguate escape codes.
 const KITTY_DISAMBIGUATE: u8 = 0b1;
 
-/// Encode a key event to bytes, given whether DECCKM (application cursor keys)
-/// is active and the kitty keyboard-protocol flags. Returns `None` only for keys
-/// with no defined encoding.
+/// Encode a key event to bytes, given the four pieces of mode state that decide it:
+/// DECCKM (application cursor keys), application keypad, the kitty keyboard-protocol
+/// flags, and `modifyOtherKeys` level 2. Returns `None` only for keys with no defined
+/// encoding. The order the last two are asked in is load-bearing — `docs/map/territory/input-encoding.md`.
 pub fn encode_key(
     ev: &KeyEvent,
     app_cursor: bool,
     app_keypad: bool,
     kitty_flags: u8,
+    modify_other_keys_2: bool,
 ) -> Option<Vec<u8>> {
     // Under the kitty protocol, events legacy cannot express (a modifier on a
     // text key, a release/repeat) take the `CSI unicode ; mods : event u` form;
@@ -360,6 +362,10 @@ pub fn encode_key(
     if kitty_flags != 0
         && let Some(bytes) = kitty_encode(ev, kitty_flags)
     {
+        return Some(bytes);
+    }
+    // Deliberately *after* kitty and inside legacy, not beside it (#890).
+    if modify_other_keys_2 && let Some(bytes) = modify_other_key(ev.key, ev.mods) {
         return Some(bytes);
     }
     match ev.key {
@@ -544,6 +550,64 @@ fn kitty_seq(number: u32, modified: Option<u8>, event: Option<u8>, terminator: u
     let mut v = s.into_bytes();
     v.push(terminator);
     v
+}
+
+/// A modified character under `modifyOtherKeys` level 2 (#890): `CSI 27 ; <1+mods> ;
+/// <codepoint> ~`. `None` leaves the key to the ordinary legacy encoding.
+///
+/// Three things here are deliberate and none is obvious from the code: the emitted shape
+/// is not the `u` form the reference also offers, one of its three qualifying clauses is
+/// dropped, and named keys are in scope while `Delete` is not. All three, with what they
+/// were measured against, are in `docs/map/territory/input-encoding.md` and
+/// `docs/agents/reference-facts.md` (#890).
+fn modify_other_key(key: Key, mods: Modifiers) -> Option<Vec<u8>> {
+    let code = match key {
+        Key::Char(c) => {
+            char_qualifies(c, mods)?;
+            c as u32
+        }
+        // Tab / Enter / Escape: any expressible modifier (`input.c:720-724`).
+        Key::Tab => {
+            // Shift alone is excluded on purpose, so back-tab keeps `CSI Z` (`:715-718`).
+            mods.difference(Modifiers::SHIFT).csi_param()?;
+            9
+        }
+        Key::Enter => {
+            mods.csi_param()?;
+            13
+        }
+        Key::Escape => {
+            mods.csi_param()?;
+            27
+        }
+        // Backspace: a modifier that is **not** Control, so `Ctrl+Backspace` keeps its
+        // legacy byte (`input.c:706-710`). `127` rather than `8` is deliberate — note.
+        Key::Backspace => {
+            mods.difference(Modifiers::CTRL).csi_param()?;
+            127
+        }
+        // **`Delete` and every other named key are deliberately out**, not forgotten — they
+        // already have an unambiguous modified form. Grounds in the note; the references
+        // disagree here.
+        _ => return None,
+    };
+    let param = mods.csi_param()?;
+    Some(format!("\x1b[27;{};{}~", param, code).into_bytes())
+}
+
+/// Whether a *character* key qualifies under level 2.
+///
+/// **Ask the question of the parameter, not of the raw bits** — a gate on the bitflags
+/// admits a chord `csi_param` cannot then describe. Why that is a defect rather than a
+/// nicety, and the modifier it was reached through, are in
+/// `docs/map/territory/input-encoding.md`.
+fn char_qualifies(c: char, mods: Modifiers) -> Option<()> {
+    if mods.difference(Modifiers::SHIFT).csi_param().is_none()
+        && !(mods == Modifiers::SHIFT && c == ' ')
+    {
+        return None;
+    }
+    Some(())
 }
 
 /// A printable character with modifiers. Ctrl folds an ASCII letter to its

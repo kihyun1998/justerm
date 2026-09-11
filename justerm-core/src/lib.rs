@@ -160,10 +160,16 @@ impl Engine {
         self.term.bracketed_paste()
     }
 
-    /// Encode a key event to the bytes an application expects, honouring the
-    /// engine's cursor-key mode (DECCKM). The inverse of [`Engine::feed`] — the
-    /// consumer hands a decoded key event and writes the bytes to its PTY.
-    /// Returns `None` for a key with no defined encoding.
+    /// Encode a key event to the bytes an application expects. The inverse of
+    /// [`Engine::feed`] — the consumer hands a decoded key event and writes the bytes
+    /// to its PTY. Returns `None` for a key with no defined encoding.
+    ///
+    /// **The same key encodes differently at different moments**, because four modes the
+    /// engine learned from the *output* stream decide it: application cursor keys
+    /// (DECCKM), application keypad, the kitty keyboard protocol's flag stack, and
+    /// `modifyOtherKeys` level 2 — the last of which is why `Ctrl+I` may arrive as `0x09`
+    /// or as `CSI 27;5;105~` depending on what the application printed earlier. A
+    /// consumer that caches an encoding across a `feed` is caching a mode it cannot see.
     pub fn encode_key(&self, ev: KeyEvent) -> Option<Vec<u8>> {
         self.term.encode_key(ev)
     }

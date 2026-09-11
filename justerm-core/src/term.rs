@@ -274,6 +274,17 @@ pub struct Term {
     /// Saved `kitty_flags` for the protocol's push/pop stack (`CSI > u` pushes,
     /// `CSI < u` pops). Capped depth — overflow drops the oldest entry.
     kitty_stack: Vec<u8>,
+    /// xterm's `modifyOtherKeys` at level 2 or above, asked for with
+    /// `CSI > 4 ; Pv m` (XTMODKEYS) and what `vim` turns on at startup (#890).
+    /// `encode_key` consults it *after* `kitty_flags`, because it belongs to the
+    /// legacy encoding rather than competing with the newer protocol.
+    ///
+    /// **Both resets clear it**, RIS by the wholesale rebuild in [`Self::full_reset`] and
+    /// DECSTR by a line of its own in [`Self::soft_reset`]. Which it is, and why the answer
+    /// is the reference's rather than a convenience, is in
+    /// `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md`, whose table this
+    /// field is the fifth row of.
+    modify_other_keys_2: bool,
     /// Consumer events (title / bell / cwd) accumulated since the last
     /// `drain_events` (#12). Pull, not push — see `event.rs`.
     events: Vec<TermEvent>,
@@ -1000,6 +1011,7 @@ impl Term {
             focus_events: false,
             kitty_flags: 0,
             kitty_stack: Vec::new(),
+            modify_other_keys_2: false,
             events: Vec::new(),
             replies: Vec::new(),
             current_link: None,
@@ -2400,14 +2412,17 @@ impl Term {
 
     // ---- input encoding (#11) ------------------------------------------------
 
-    /// Encode a key event to bytes using the active cursor-key mode (DECCKM)
-    /// and the kitty keyboard-protocol flags (`encode_key` consults both).
+    /// Encode a key event to bytes using every mode that decides one: the active
+    /// cursor-key mode (DECCKM), application keypad, the kitty keyboard-protocol
+    /// flags and `modifyOtherKeys` level 2 (#890). `encode_key` consults all four,
+    /// and asks kitty first.
     pub fn encode_key(&self, ev: KeyEvent) -> Option<Vec<u8>> {
         encode_key(
             &ev,
             self.app_cursor_keys,
             self.application_keypad,
             self.kitty_flags,
+            self.modify_other_keys_2,
         )
     }
 
@@ -3125,6 +3140,7 @@ impl Term {
         self.origin_mode = false;
         self.app_cursor_keys = false;
         self.bracketed_paste = false;
+        self.modify_other_keys_2 = false; // xterm clears the modify resources on DECSTR too (#890)
         self.grapheme_clustering = false; // ?2027 back to the wcwidth-compat default (#295)
         self.autowrap = true; // xterm default is ON (not the VT100 "off")
         self.insert_mode = false;
@@ -5731,15 +5747,16 @@ impl Perform for Term {
         //
         // `>` reaches us as an *intermediate*, so DA2 was not "unhandled" but
         // unreachable: the catch-all below returns before the final is ever
-        // examined. This opens exactly one route through it — the `>` prefix
-        // alone, with the `c` final.
+        // examined. This opened exactly one route through it — the `>` prefix
+        // alone, with the `c` final. **A second one is open now**: the `m`
+        // final, for XTMODKEYS (#890), in the block immediately below this one.
         //
         // It is one route out of ten `>` finals xterm routes, and the choice is
         // reach, not completeness: across this repo's capture corpus `CSI > c`
         // occurs 4 times and XTMODKEYS `CSI > m` 7 — the latter is the highest-
-        // reach `>` sequence justerm does not route, and it keeps falling
-        // through here exactly as before, tracked with the rest of the tail in
-        // #47. XTVERSION `CSI > q` occurs **once**, in `tmux_clipboard.raw`.
+        // reach `>` sequence justerm did not route, which is why it was the
+        // next one taken (#890) rather than a later one — it no longer falls
+        // through here. XTVERSION `CSI > q` occurs **once**, in `tmux_clipboard.raw`.
         //
         // Both numbers moved after this paragraph was written, and the second one
         // changed sign: it said `> q` occurred *zero* times, which was true on
@@ -5779,6 +5796,23 @@ impl Perform for Term {
                     format!("\x1b[>{DA2_TERMINAL_TYPE};{DA2_VERSION};{DA2_ROM_CARTRIDGE}c")
                         .as_bytes(),
                 );
+            }
+            return;
+        }
+        // XTMODKEYS (`CSI > Pp ; Pv m`) — the second route through the `>` guard, and
+        // the highest-reach one: 7 occurrences across this repo's captures against
+        // DA2's 4, all of them `Pp = 4` (modifyOtherKeys). `vim` sets it at startup
+        // and clears it on exit, and the clear is the more frequent of the two.
+        //
+        // **Only `Pp = 4` is routed**, of the eight resources xterm keys off this one final;
+        // `CSI > m` is deliberately not honoured, because an omitted `Pp` is measurably
+        // indistinguishable from one aimed at another resource. **`Pv >= 2`, not `== 2`**:
+        // level 2 is what separates `Ctrl+I` from `Tab`, and 3 asks for more than 2 rather
+        // than for nothing. Both, with the reference sites, are in
+        // `docs/agents/reference-facts.md` (#890).
+        if intermediates == [b'>'] && action == 'm' {
+            if param_or(params, 0, 0) == 4 {
+                self.modify_other_keys_2 = param_or(params, 1, 0) >= 2;
             }
             return;
         }

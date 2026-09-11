@@ -886,6 +886,29 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   (d) **Bracketed paste (`?2004`)**: wrap pasted text in `CSI 200~`…`CSI 201~` so the app never
   mistakes paste content for typed control sequences (a real injection-safety boundary, not cosmetic).
   (e) **Backspace is DEL (`0x7f`), not BS (`0x08`)** — the standard PC-keyboard convention apps assume.
+  (f) **modifyOtherKeys (XTMODKEYS `CSI > 4 ; Pv m`, #890)**: `Pv >= 2` makes a *modified*
+  character encode as `CSI 27 ; <1+mods> ; <codepoint> ~` instead of its ordinary form, which is
+  what separates `Ctrl+I` from `Tab`, `Ctrl+[` from `Esc` and `Ctrl+M` from `Enter` — `vim` asks
+  for it at startup and clears it (`Pv` omitted) on exit. It lives *inside* the legacy encoder,
+  after the kitty check, because it is an extension to legacy rather than a competitor to it.
+  Both resets clear it, DECSTR included (xterm restores its keyboard resources outside
+  `ReallyReset`'s `full` gate). **Which keys qualify diverges from xterm deliberately**: its own
+  gate admits any codepoint in `0x40..=0x7f`, which is safe there only because a keysym has
+  already spent Shift producing the character — justerm is handed the character *and* the
+  modifiers, so that clause would turn every capital letter into an escape sequence. The gate is
+  a non-Shift modifier, or Shift with space — and the gate asks that of the *parameter*, not of
+  the raw modifier bits, or a chord holding one of the four modifiers `csi_param` cannot express
+  (Super / Hyper / CapsLock / NumLock) is admitted and then described as Shift alone. Only
+  `Pp = 4` of xterm's **eight** modify-resources is routed; the rest occur zero times in the
+  capture corpus and stay with #47. **A named key whose bare form is a C0 control is in it too**:
+  `Ctrl+Tab` — `CSI 27;5;9~`, `Ctrl+Enter` — `27;5;13~`, `Ctrl+Escape` — `27;5;27~`, and
+  Backspace on a modifier that is **not** Control — `27;3;127~`. Two exceptions are the
+  reference's own and both are load-bearing: plain `Shift+Tab` keeps `CSI Z` (a shifted Tab is a
+  different keysym there and needs a non-Shift modifier), and plain `Ctrl+Backspace` keeps its
+  legacy byte. Every other named key is **out**, because it already has an unambiguous modified
+  form (`CSI 1;5A`, `CSI 3;5~`) and this mechanism exists to resolve ambiguity, not to restate it
+  — which is also where the two references part company, xterm routing `Delete` onto
+  Backspace's own codepoint and ghostty declining to.
   The kitty keyboard protocol (`CSI u` + a negotiated progressive-flag stack + key-release events) is a
   *stateful* superset deferred to #23; legacy here is a pure event→bytes function. (`?1016` SGR-pixel
   mouse — once mistakenly called out-of-bounds — is in scope: the consumer supplies the pixels, the
