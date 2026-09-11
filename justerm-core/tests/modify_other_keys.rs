@@ -215,3 +215,66 @@ fn a_recorded_vim_session_drives_the_mode_on_and_back_off() {
         "and its exit must put the keyboard back"
     );
 }
+
+/// The gate asks its question of the **parameter**, not of the raw modifier bits, and
+/// the difference is a defect rather than a nicety. `csi_param` drops Super / Hyper /
+/// CapsLock / NumLock — none has a legacy form — so a gate on the bits admits a chord it
+/// cannot then describe: `Shift+Super+A` qualified and came out as `CSI 27;2;65~`, which
+/// is what a bare `Shift+A` would have to mean. The bytes did not just over-fire, they
+/// misreported the modifier.
+///
+/// Reachable rather than theoretical: `justerm-web` maps `metaKey` to `SUPER`
+/// unconditionally, so this is every macOS `Cmd+Shift+<letter>` while vim has the mode on.
+#[test]
+fn a_modifier_the_parameter_cannot_express_does_not_qualify() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    for mods in [
+        Modifiers::SUPER,
+        Modifiers::HYPER,
+        Modifiers::CAPS_LOCK,
+        Modifiers::NUM_LOCK,
+    ] {
+        assert_eq!(enc(&t, Key::Char('a'), mods), b"a", "{mods:?} alone");
+        assert_eq!(
+            enc(&t, Key::Char('A'), mods | Modifiers::SHIFT),
+            b"A",
+            "{mods:?} with shift must stay an ordinary capital"
+        );
+    }
+    // ...and one that *is* expressible still goes through, so the assertion above is not
+    // passing because the whole path is off.
+    assert_eq!(
+        enc(&t, Key::Char('A'), Modifiers::SUPER | Modifiers::CTRL),
+        b"\x1b[27;5;65~"
+    );
+}
+
+/// The one Shift-only chord the reference admits (`state == ShiftMask && keysym == ' '`,
+/// `input.c:728-729`) — and the equality is the point: a second latch alongside Shift is
+/// not that state. Without this case the two-clause gate is indistinguishable from a
+/// one-clause "any non-Shift modifier" gate, which is the shape somebody would naturally
+/// simplify it to.
+#[test]
+fn shift_and_space_is_the_only_shift_only_chord_that_qualifies() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(enc(&t, Key::Char(' '), Modifiers::SHIFT), b"\x1b[27;2;32~");
+    assert_eq!(enc(&t, Key::Char(' '), Modifiers::empty()), b" ");
+    assert_eq!(
+        enc(&t, Key::Char(' '), Modifiers::SHIFT | Modifiers::CAPS_LOCK),
+        b" ",
+        "`state == ShiftMask` is an equality, not a containment"
+    );
+}
+
+/// The modifier parameter is the **legacy** one (`1 + shift1|alt2|ctrl4|meta8`), not the
+/// kitty one, which uses the raw bit values and would put Meta at 33. Nothing else in
+/// this file separates the two: they agree across Shift / Alt / Ctrl, so every other case
+/// here passes under either.
+#[test]
+fn the_parameter_is_the_legacy_one_not_kittys() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(enc(&t, Key::Char('a'), Modifiers::META), b"\x1b[27;9;97~");
+}

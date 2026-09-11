@@ -567,22 +567,45 @@ fn kitty_seq(number: u32, modified: Option<u8>, event: Option<u8>, terminator: u
 /// the shape [`kitty_encode`] already produces, and two protocols that a consumer
 /// negotiates separately should not be indistinguishable on the wire.
 ///
-/// **Which keys qualify is where this departs from both references, and it is forced.**
-/// xterm's gate is `IsControlInput` — *any* codepoint in `0x40..=0x7f`
-/// (`input.c:272-274`) — which on its own would capture a plain `Shift+A`, since `A`
-/// is `0x41`. xterm survives that because a keysym carries its layout: shift is already
-/// spent producing `A`, so by the time this runs the modifier is gone. ghostty inherits
-/// the same clause (`key_encode.zig`, `should_modify`) and is saved the same way, by its
-/// consumed-mods pass. **justerm has neither**: a consumer hands us the character it
-/// produced *and* the modifiers it saw, so `Char('A') + SHIFT` is an ordinary capital
-/// and reaches here intact. Copying the clause would turn every capital letter into an
-/// escape sequence. So the gate here is the *other* two arms of the same predicate — a
-/// modifier that is not Shift, or Shift with the one character xterm still admits —
-/// which decides every case in ghostty's own tests identically (`Ctrl+Shift+H` →
-/// `CSI 27;6;72~`, `Alt+8` → `CSI 27;3;56~`) while leaving plain typing alone.
+/// **Which keys qualify is where this departs, and it is one clause out of three.**
+/// The reference's level-2 arm (`input.c:725-732`) is exactly: `IsControlInput` — any
+/// codepoint in `0x40..=0x7f` (`:272-274`) — *or* `state == ShiftMask && keysym == ' '`
+/// *or* a non-Shift modifier. **The first is dropped here and the other two are kept.**
+///
+/// The reason is the seam above this crate, not a judgement about the protocol. `0x41`
+/// is `A`, so that clause captures every capital letter; a keysym-based terminal is
+/// unharmed because Shift has already been spent producing the `A` and its consumer
+/// never reports it, while justerm's consumer hands over the produced character **and**
+/// the modifiers it saw, so `Char('A') + SHIFT` arrives intact. Keeping the clause would
+/// turn ordinary typing into escape sequences.
+///
+/// **Do not repair this by citing ghostty's consumed-mods pass** — an earlier version of
+/// this comment did, and it is false: `should_modify` reads `event.mods.binding()`, not
+/// the effective mods, and ghostty's own test *"ctrl+shift+char with modify other state 2
+/// and consumed mods"* passes `consumed_mods = shift` and still expects `CSI 27;6;72~`.
+/// It inherits the clause and the consequence with it. The divergence here is justerm's,
+/// on justerm's grounds.
+///
+/// Measured in both directions before it was taken: the dropped clause also *under*-reaches,
+/// since `Alt+8` (`0x38`) is outside `0x40..=0x7f` and both references still emit it — which
+/// the third clause covers. `Ctrl+Shift+H` → `CSI 27;6;72~` and `Alt+8` → `CSI 27;3;56~`,
+/// ghostty's own expectations, come out identical here.
 fn modify_other_key(c: char, mods: Modifiers) -> Option<Vec<u8>> {
-    let non_shift = mods.difference(Modifiers::SHIFT);
-    if non_shift.is_empty() && !(mods.contains(Modifiers::SHIFT) && c == ' ') {
+    // **Ask the question of the parameter, not of the raw bits.** `csi_param` drops
+    // Super / Hyper / CapsLock / NumLock — they have no legacy form — so a gate that
+    // tests the bitflags admits a chord the parameter then cannot describe: `Shift+Super+A`
+    // passed, and was emitted as `CSI 27;2;65~`, which is byte-identical to what a bare
+    // `Shift+A` would have to mean. That is the exact failure this predicate's narrow
+    // shape exists to prevent, reached through a modifier its reasoning had not
+    // considered, and it is reachable today — `justerm-web` maps `metaKey` to `SUPER`
+    // unconditionally, so every macOS `Cmd+Shift+<letter>` hits it while vim has the mode
+    // on. Masking first is also what the reference does: its non-Shift clause is
+    // `computeMaskedModifier(xw, state, ShiftMask)` (`input.c:730`), which is
+    // `xtermStateToParam(Masked(state, ShiftMask))` (`:520-521`) — strip Shift, convert to
+    // the parameter, test *that*.
+    if mods.difference(Modifiers::SHIFT).csi_param().is_none()
+        && !(mods == Modifiers::SHIFT && c == ' ')
+    {
         return None;
     }
     let param = mods.csi_param()?;
