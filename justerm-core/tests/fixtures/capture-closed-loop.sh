@@ -19,9 +19,9 @@
 #
 # -- and `DCS + q` occurs ZERO times across every open-loop fixture, four of which ask DA2.
 #
-# WHY THE REPLIES COME FROM THE ENGINE AND NOT FROM A TABLE: three of the six replies
-# justerm queues are state-dependent -- DSR 6n is the cursor position, DECRQM is whichever
-# of 27 mode flags was asked, and the kitty query is the flag stack. vim's two DSR 6n are
+# WHY THE REPLIES COME FROM THE ENGINE AND NOT FROM A TABLE: three of the seven replies
+# justerm queues itself are state-dependent -- DSR 6n is the cursor position, DECRQM is
+# whichever of 27 mode flags was asked, and the kitty query is the flag stack. vim's two DSR 6n are
 # not incidental: it prints U+25BD at a known cell and asks where the cursor ended up
 # (ambiguous width), then throws an unknown DCS and an unknown CSI and asks again (parser
 # conformance). A harness answering a fixed `1;1R` does not merely give a wrong number --
@@ -65,9 +65,12 @@
 # is the residual nondeterminism, the reply-gated conversation is not, and the gate cannot tell
 # the two apart -- which is the right way round for it to be wrong.
 #
-# Do NOT try to suppress the ruler with `--cmd "set noruler"`: measured, it changes nothing at
-# all, because `defaults.vim` loads after `--cmd` and turns it back on. It looks like a fix and
-# is a no-op, which is worse than leaving it alone.
+# Do NOT try to suppress the ruler with `--cmd "set noruler"`: measured over six runs, the
+# output is byte-identical with and without it -- a fix-shaped no-op, which is worse than
+# leaving it alone. *Why* it is a no-op is NOT established: something later in startup puts
+# the option back, and `defaults.vim` is the obvious suspect rather than a verified one. The
+# measurement is the part to trust here; the sibling comment about `-u NONE` above is there
+# because that one's obvious suspect turned out to be the wrong mechanism.
 #
 # WHERE TO RUN: the Linux VM, for consistency with every other capture here. It needs
 # python3 (stdlib `pty` only) and vim; it does NOT need Rust -- see the build line below.
