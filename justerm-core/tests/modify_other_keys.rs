@@ -279,3 +279,79 @@ fn the_parameter_is_the_legacy_one_not_kittys() {
     t.feed(b"\x1b[>4;2m");
     assert_eq!(enc(&t, Key::Char('a'), Modifiers::META), b"\x1b[27;9;97~");
 }
+
+/// The other half of the disambiguation: a *named* key whose bare form is a C0 control
+/// is indistinguishable from its modified form for exactly the same reason `Ctrl+I` was.
+/// The reference admits Tab, Enter and Escape on any expressible modifier
+/// (`input.c:720-724`), and ghostty's table spells the identical bytes.
+#[test]
+fn a_modified_control_alias_key_separates_from_its_bare_form() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(enc(&t, Key::Tab, Modifiers::CTRL), b"\x1b[27;5;9~");
+    assert_eq!(enc(&t, Key::Enter, Modifiers::CTRL), b"\x1b[27;5;13~");
+    assert_eq!(enc(&t, Key::Escape, Modifiers::CTRL), b"\x1b[27;5;27~");
+    assert_eq!(enc(&t, Key::Enter, Modifiers::ALT), b"\x1b[27;3;13~");
+    // ...and the bare keys they were colliding with keep their bytes.
+    assert_eq!(enc(&t, Key::Tab, Modifiers::empty()), b"\t");
+    assert_eq!(enc(&t, Key::Enter, Modifiers::empty()), b"\r");
+    assert_eq!(enc(&t, Key::Escape, Modifiers::empty()), b"\x1b");
+}
+
+/// `Shift+Tab` is the exception, and it is the reference's own: a shifted Tab is a
+/// different keysym there (`XK_ISO_Left_Tab`) and needs a **non-Shift** modifier to
+/// qualify (`input.c:715-718`), so back-tab keeps the sequence every application already
+/// knows. Without this case the Tab arm reads as "any modifier" and back-tab breaks.
+#[test]
+fn shift_tab_alone_keeps_back_tab_but_ctrl_shift_tab_does_not() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(enc(&t, Key::Tab, Modifiers::SHIFT), b"\x1b[Z");
+    assert_eq!(
+        enc(&t, Key::Tab, Modifiers::CTRL | Modifiers::SHIFT),
+        b"\x1b[27;6;9~"
+    );
+}
+
+/// Backspace qualifies on a modifier that is **not** Control (`input.c:706-710`, *"strip
+/// ControlMask as per IsBackarrowToggle"*), so `Ctrl+Backspace` keeps its legacy byte.
+/// The codepoint is `127` because that is what a bare Backspace sends here (the
+/// PC-keyboard convention); ghostty's table spells the same value.
+#[test]
+fn backspace_qualifies_on_a_modifier_that_is_not_control() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(enc(&t, Key::Backspace, Modifiers::ALT), b"\x1b[27;3;127~");
+    assert_eq!(
+        enc(&t, Key::Backspace, Modifiers::CTRL | Modifiers::SHIFT),
+        b"\x1b[27;6;127~"
+    );
+    assert_eq!(enc(&t, Key::Backspace, Modifiers::CTRL), b"\x7f");
+    assert_eq!(enc(&t, Key::Backspace, Modifiers::empty()), b"\x7f");
+}
+
+/// Every other named key already has an unambiguous modified form, so the mechanism has
+/// nothing to resolve for them and must leave them alone. `Delete` is the one the two
+/// references disagree about: xterm routes it, ghostty keeps `CSI 3 ; <mods> ~`, and
+/// xterm's own emission would reuse Backspace's codepoint.
+#[test]
+fn the_keys_that_are_already_unambiguous_are_left_alone() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>4;2m");
+    assert_eq!(enc(&t, Key::Delete, Modifiers::CTRL), b"\x1b[3;5~");
+    assert_eq!(enc(&t, Key::Up, Modifiers::CTRL), b"\x1b[1;5A");
+    assert_eq!(enc(&t, Key::Home, Modifiers::SHIFT), b"\x1b[1;2H");
+    assert_eq!(enc(&t, Key::F(1), Modifiers::CTRL), b"\x1b[1;5P");
+    assert_eq!(enc(&t, Key::PageUp, Modifiers::ALT), b"\x1b[5;3~");
+}
+
+/// ...and none of it happens to an application that did not ask.
+#[test]
+fn a_named_key_is_untouched_while_the_mode_is_off() {
+    let t = Engine::new(80, 24);
+    assert_eq!(enc(&t, Key::Tab, Modifiers::CTRL), b"\t");
+    assert_eq!(enc(&t, Key::Enter, Modifiers::CTRL), b"\r");
+    assert_eq!(enc(&t, Key::Escape, Modifiers::CTRL), b"\x1b");
+    assert_eq!(enc(&t, Key::Backspace, Modifiers::ALT), b"\x7f");
+    assert_eq!(enc(&t, Key::Tab, Modifiers::SHIFT), b"\x1b[Z");
+}

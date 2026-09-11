@@ -375,10 +375,7 @@ pub fn encode_key(
     // modifyOtherKeys sits *inside* legacy rather than beside kitty (#890): it is an
     // extension to the legacy encoding that changes nothing unless an application asks,
     // which is also how ghostty places it (`key_encode.zig`, inside its `legacy`).
-    if modify_other_keys_2
-        && let Key::Char(c) = ev.key
-        && let Some(bytes) = modify_other_key(c, ev.mods)
-    {
+    if modify_other_keys_2 && let Some(bytes) = modify_other_key(ev.key, ev.mods) {
         return Some(bytes);
     }
     match ev.key {
@@ -608,26 +605,77 @@ fn kitty_seq(number: u32, modified: Option<u8>, event: Option<u8>, terminator: u
 /// since `Alt+8` (`0x38`) is outside `0x40..=0x7f` and both references still emit it — which
 /// the third clause covers. `Ctrl+Shift+H` → `CSI 27;6;72~` and `Alt+8` → `CSI 27;3;56~`,
 /// ghostty's own expectations, come out identical here.
-fn modify_other_key(c: char, mods: Modifiers) -> Option<Vec<u8>> {
-    // **Ask the question of the parameter, not of the raw bits.** `csi_param` drops
-    // Super / Hyper / CapsLock / NumLock — they have no legacy form — so a gate that
-    // tests the bitflags admits a chord the parameter then cannot describe: `Shift+Super+A`
-    // passed, and was emitted as `CSI 27;2;65~`, which is byte-identical to what a bare
-    // `Shift+A` would have to mean. That is the exact failure this predicate's narrow
-    // shape exists to prevent, reached through a modifier its reasoning had not
-    // considered, and it is reachable today — `justerm-web` maps `metaKey` to `SUPER`
-    // unconditionally, so every macOS `Cmd+Shift+<letter>` hits it while vim has the mode
-    // on. Masking first is also what the reference does: its non-Shift clause is
-    // `computeMaskedModifier(xw, state, ShiftMask)` (`input.c:730`), which is
-    // `xtermStateToParam(Masked(state, ShiftMask))` (`:520-521`) — strip Shift, convert to
-    // the parameter, test *that*.
+fn modify_other_key(key: Key, mods: Modifiers) -> Option<Vec<u8>> {
+    let code = match key {
+        Key::Char(c) => {
+            char_qualifies(c, mods)?;
+            c as u32
+        }
+        // The three whose unmodified byte is a C0 control, and whose whole reason to be
+        // here is that a modified one is otherwise indistinguishable from the bare key.
+        // The reference admits them on *any* expressible modifier (`modify_parm != 0`,
+        // `input.c:720-724`).
+        Key::Tab => {
+            // ...except Shift alone. A shifted Tab is a different keysym there
+            // (`XK_ISO_Left_Tab`) and needs a **non-Shift** modifier to qualify
+            // (`input.c:715-718`), so plain `Shift+Tab` keeps `CSI Z` — and
+            // `Ctrl+Shift+Tab` does not.
+            mods.difference(Modifiers::SHIFT).csi_param()?;
+            9
+        }
+        Key::Enter => {
+            mods.csi_param()?;
+            13
+        }
+        Key::Escape => {
+            mods.csi_param()?;
+            27
+        }
+        // Backspace qualifies on a modifier that is **not** Control (`input.c:706-710`,
+        // *"strip ControlMask as per IsBackarrowToggle"*), so `Ctrl+Backspace` keeps its
+        // legacy byte while `Alt+Backspace` and `Ctrl+Shift+Backspace` do not. The code is
+        // `127` rather than `8` because that is the byte this encoder sends for a bare
+        // Backspace (the PC-keyboard convention), and the two must agree about which key
+        // they are naming; ghostty's table spells the same value.
+        Key::Backspace => {
+            mods.difference(Modifiers::CTRL).csi_param()?;
+            127
+        }
+        // **`Delete` is deliberately not here**, and the two references part company on it:
+        // xterm routes it (`input.c:711-713`) where ghostty keeps the conventional
+        // `CSI 3 ; <mods> ~`. Two things decide it for justerm, and neither is the
+        // head-count. A modified Delete is *already* unambiguous — `CSI 3;5~` is nothing
+        // else's bytes — so this mechanism has no ambiguity to resolve there. And xterm's
+        // own emission would be `CSI 27;5;127~`, the same codepoint it gives Backspace,
+        // which is a collision rather than a disambiguation. Every other named key
+        // (arrows, Home/End, function keys) is out for the first reason alone.
+        _ => return None,
+    };
+    let param = mods.csi_param()?;
+    Some(format!("\x1b[27;{};{}~", param, code).into_bytes())
+}
+
+/// Whether a *character* key qualifies under level 2.
+///
+/// **Ask the question of the parameter, not of the raw bits.** `csi_param` drops
+// Super / Hyper / CapsLock / NumLock — they have no legacy form — so a gate that
+// tests the bitflags admits a chord the parameter then cannot describe: `Shift+Super+A`
+// passed, and was emitted as `CSI 27;2;65~`, which is byte-identical to what a bare
+// `Shift+A` would have to mean. That is the exact failure this predicate's narrow
+// shape exists to prevent, reached through a modifier its reasoning had not
+// considered, and it is reachable today — `justerm-web` maps `metaKey` to `SUPER`
+// unconditionally, so every macOS `Cmd+Shift+<letter>` hits it while vim has the mode
+// on. Masking first is also what the reference does: its non-Shift clause is
+// `computeMaskedModifier(xw, state, ShiftMask)` (`input.c:730`), which is
+// `xtermStateToParam(Masked(state, ShiftMask))` (`:520-521`) — strip Shift, convert to
+// the parameter, test *that*.
+fn char_qualifies(c: char, mods: Modifiers) -> Option<()> {
     if mods.difference(Modifiers::SHIFT).csi_param().is_none()
         && !(mods == Modifiers::SHIFT && c == ' ')
     {
         return None;
     }
-    let param = mods.csi_param()?;
-    Some(format!("\x1b[27;{};{}~", param, c as u32).into_bytes())
+    Some(())
 }
 
 fn encode_char(c: char, mods: Modifiers) -> Vec<u8> {
