@@ -55,6 +55,18 @@
 # and answered whenever it noticed, and its light-background arm did NOT reproduce. The design
 # here is the fix for that, not a precaution against a hypothetical.
 #
+# A REFUSAL HERE USUALLY MEANS "RUN IT AGAIN", AND THAT IS NOT A CLIMBDOWN. Measured over eight
+# run-sets (24 recordings) on 2026-09-11: seven sets agreed 3/3 at 4951 bytes and one did not,
+# and the odd recording out differed from its two siblings ONLY in how many times vim redrew its
+# ruler on row 24 (plus 11 `CSI 1;1H`) -- 174 bytes of idle repaint. Every count this fixture
+# exists for was identical in all three: DA2 1, DSR 6n 2, XTGETTCAP 10. So vim's repaint cadence
+# is the residual nondeterminism, the reply-gated conversation is not, and the gate cannot tell
+# the two apart -- which is the right way round for it to be wrong.
+#
+# Do NOT try to suppress the ruler with `--cmd "set noruler"`: measured, it changes nothing at
+# all, because `defaults.vim` loads after `--cmd` and turns it back on. It looks like a fix and
+# is a no-op, which is worse than leaving it alone.
+#
 # WHERE TO RUN: the Linux VM, for consistency with every other capture here. It needs
 # python3 (stdlib `pty` only) and vim; it does NOT need Rust -- see the build line below.
 #

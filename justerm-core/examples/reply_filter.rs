@@ -78,7 +78,34 @@ fn answer_events(engine: &mut Engine, fg: &str, bg: &str) {
             // A clipboard read is refused, and a refusal is silence (#841). Answering would put
             // this machine's clipboard into a checked-in fixture.
             TermEvent::QueryClipboard { .. } => {}
-            _ => {}
+
+            // Everything a consumer acts on rather than answers. Spelled out so the arm below
+            // means one thing only.
+            TermEvent::Title(_)
+            | TermEvent::Bell
+            | TermEvent::Cwd(_)
+            | TermEvent::ColumnMode { .. }
+            | TermEvent::SetPaletteColor { .. }
+            | TermEvent::SetForeground(_)
+            | TermEvent::SetBackground(_)
+            | TermEvent::ResetPaletteColor(_)
+            | TermEvent::SetCursorColor(_)
+            | TermEvent::ResetCursorColor
+            | TermEvent::ResetForeground
+            | TermEvent::ResetBackground
+            | TermEvent::ClipboardStore { .. }
+            | TermEvent::MarkerDisposed { .. }
+            | TermEvent::MarkerCreated { .. } => {}
+
+            // `TermEvent` is `#[non_exhaustive]`, so this arm is required and an exhaustive
+            // match cannot be written from outside the crate — the compiler will not announce a
+            // new variant here. With the other twenty named above, reaching this means a variant
+            // was added after this file was written, and if it is a *query* the capture will
+            // record justerm as silent about something it in fact answers. Loud, because the
+            // failure this whole fixture exists to prevent is an absence read as data.
+            other => {
+                eprintln!("reply_filter: unhandled TermEvent, capture may be wrong: {other:?}")
+            }
         }
     }
 }
