@@ -9,6 +9,16 @@
 //! These tests pin what the closed loop bought and what it did not. The pairing is the
 //! evidence: the same sequence is counted here **and** across the open-loop captures, because
 //! a count of ten means nothing without the zero beside it.
+//!
+//! **What `vim_closed_loop.raw` was recorded against**, because the bytes are a function of it
+//! and not of vim alone. RHEL 9.2, vim 8.2 (patches 1-2637), `TERM=xterm-256color`, 80x24,
+//! `vim -X -i NONE`, no `COLORTERM`. The engine answered DA1 / DA2 / DSR / DECRQM / the kitty
+//! query itself; the **consumer policy** in `examples/reply_filter` answered the rest —
+//! foreground `rgb:c7c7/c7c7/c7c7`, background `rgb:0000/0000/0000` (so vim reads the scheme as
+//! dark), palette queries the same flat spec, and an OSC 52 clipboard read refused in silence.
+//! A different policy is a different recording: handing vim a white background instead flips
+//! its own `&background` to `light`. Re-record with `fixtures/capture-closed-loop.sh`, which
+//! will not emit a capture that does not reproduce three times.
 
 use justerm_core::{Engine, TermEvent};
 
@@ -29,7 +39,10 @@ const OPEN_LOOP: &[(&str, &[u8])] = &[
 ];
 
 fn count(haystack: &[u8], needle: &[u8]) -> usize {
-    haystack.windows(needle.len()).filter(|w| *w == needle).count()
+    haystack
+        .windows(needle.len())
+        .filter(|w| *w == needle)
+        .count()
 }
 
 /// The ten terminfo capabilities vim asks for once its DA2 question is answered, in the order

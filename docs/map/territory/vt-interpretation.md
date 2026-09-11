@@ -163,12 +163,26 @@ for a terminal engine, that list is half the specification.
   2026-09-02** (#842's `tmux_clipboard.raw`); a fresh tmux attach recorded on the 11th emits it too,
   so tmux asks unconditionally. Two things follow for anyone quoting a count out of this corpus.
   It is only true of one revision of the corpus — re-measure rather than cite. And it is a **floor**,
-  because the corpus is *open-loop*: every capture is recorded under `script(1)`, which copies bytes
-  and answers nothing, so nothing an application sends only *after* a reply can appear in it. That is
+  because all but one capture is *open-loop*: recorded under `script(1)`, which copies bytes and
+  answers nothing, so nothing an application sends only *after* a reply can appear in it. That is
   visible in the corpus rather than assumed — answering DA2 is measured (`term.rs`, the DA2 block) to
-  make vim ask ten `DCS + q` XTGETTCAP questions, and `DCS + q` occurs **zero** times across all 19
-  fixtures, four of which ask DA2. Closing that loop needs a capture harness that feeds
-  `drain_replies()` back into the pty, which does not exist.
+  make vim ask ten `DCS + q` XTGETTCAP questions, and `DCS + q` occurs **zero** times across every
+  open-loop fixture, four of which ask DA2.
+- **One capture is closed-loop, and two things about building it had to be measured rather than
+  reasoned (#891).** `vim_closed_loop.raw` holds all ten, recorded through `examples/reply_filter`
+  — this engine plus a consumer policy — by `fixtures/capture-closed-loop.sh`.
+  **`drain_replies()` is not the mechanism on its own**, which is what #891's own body proposed: it
+  answers DA1, DA2, DSR, DECRQM and the kitty query, while the four colour/clipboard query families
+  reach a *consumer* as a `TermEvent` (ADR-0017) — so a harness that forwarded only replies leaves
+  two families silent that vim actually asks. **And the answers must be the engine's rather than a
+  table**, because three of the six are state-dependent: vim's two `DSR 6n` are probes, printing
+  U+25BD at a known cell and reading the cursor column back to learn the ambiguous width, so a fixed
+  `1;1R` plays a terminal that drew nothing and the recording is then of a conversation with
+  something else. The price is that the bytes are a function of *our* policy too — measured, a white
+  background instead of a black one flips vim's own `&background` — so the capture names the policy
+  it was recorded under, and the script refuses to emit one that does not reproduce three times.
+  That gate is not decorative: with reply delay injected it comes back 3274 / 3195 / 4961 bytes and
+  refuses.
 - **An OSC payload arrives unbounded, and a handler that builds anything from one bounds it
   itself (#828).** Measured with a throwaway probe rather than read off the crate: `vte` is built
   with its default features, so its OSC accumulator is a `Vec<u8>` and **not** the

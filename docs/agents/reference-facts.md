@@ -2328,9 +2328,12 @@ three.
 The first two were open when #832 wrote them and are settled by #836: justerm now echoes, on all
 five OSC reply paths (`OSC 4`/`10`/`11`/`12`/`52`), so it has left the xterm.js row.
 
-**Two measurements worth not repeating.** Every OSC in **all 19** checked-in `.raw` fixtures is
-BEL-terminated — 0 ST — across `nvim`, `vim`, `tmux`, `ls` and the kitty and OSC 133 captures, so no
-real application this project has recorded has ever asked with ST. And `vte` ends an OSC on **three**
+**Two measurements worth not repeating.** Every OSC in **all 20** checked-in `.raw` fixtures is
+BEL-terminated — 0 ST, 87 BEL — across `nvim`, `vim`, `tmux`, `ls` and the kitty and OSC 133
+captures, so no real application this project has recorded has ever asked with ST. Re-measured
+2026-09-11 when #891 added the first **closed-loop** capture, on the reasoning that a query an
+application only sends once it is being answered could have arrived differently: it did not —
+`vim_closed_loop.raw` contributes 2 BEL and 0 ST like every other vim recording. And `vte` ends an OSC on **three**
 byte classes, not two: `BEL`, the cancel pair `CAN`/`SUB`, and a bare `ESC` opening the next sequence
 (`vte-0.15.0/src/lib.rs:411`, `:415`, `:420`; the BEL test is `:587`). Only the first is reported as
 bell-terminated, so a cancelled query still reaches the consumer and is answered ST — which is what

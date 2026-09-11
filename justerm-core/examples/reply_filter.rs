@@ -63,7 +63,9 @@ fn answer_events(engine: &mut Engine, fg: &str, bg: &str) {
         match ev {
             TermEvent::QueryForeground { terminator } => engine.report_foreground(fg, terminator),
             TermEvent::QueryBackground { terminator } => engine.report_background(bg, terminator),
-            TermEvent::QueryCursorColor { terminator } => engine.report_cursor_color(fg, terminator),
+            TermEvent::QueryCursorColor { terminator } => {
+                engine.report_cursor_color(fg, terminator)
+            }
             TermEvent::QueryPaletteColor { index, terminator } => {
                 // One flat spec for every index: this harness has no palette, and a consumer
                 // that had one would answer from it. What matters for a capture is that the

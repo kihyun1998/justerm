@@ -40,12 +40,20 @@
 # `&background` from `dark` to `light`. It is passed as arguments below, and named in the
 # fixture's doc comment, so the choice is visible rather than compiled in.
 #
-# THE REPRODUCIBILITY GATE IS NOT OPTIONAL. A fixture that cannot be re-recorded byte for
-# byte is not evidence of anything, and a closed loop does NOT guarantee it: measured on
-# this VM, the black-background arm came back byte-identical 3/3 while the white-background
-# arm did not (2837 vs 2691 bytes, CPR 5 vs 3). Nothing in a single recording tells you
-# which of the two you are in, so this script records three times and refuses to emit a
-# capture unless all three agree.
+# THE REPRODUCIBILITY GATE IS NOT OPTIONAL, and it is not decorative either. A fixture that
+# cannot be re-recorded byte for byte is not evidence of anything, and a closed loop is where
+# that stops being free: the stream now depends on our answers and on when they arrive.
+#
+# What buys it back is the SYNCHRONOUS FRAMING below -- vim blocks on the answer, so the
+# recording is insensitive to how long the reply took. Measured here, by injecting a random
+# delay in front of every reply: up to 250 ms of jitter leaves all three runs byte-identical,
+# and at up to 3 s they come back 3274 / 3195 / 4961 bytes and this script refuses to emit a
+# fixture. That refusal is the gate's positive control -- without it "3/3 identical" would
+# only ever have meant "nothing has gone wrong yet".
+#
+# The earlier throwaway had no framing: it matched queries with regexes over a sliding window
+# and answered whenever it noticed, and its light-background arm did NOT reproduce. The design
+# here is the fix for that, not a precaution against a hypothetical.
 #
 # WHERE TO RUN: the Linux VM, for consistency with every other capture here. It needs
 # python3 (stdlib `pty` only) and vim; it does NOT need Rust -- see the build line below.

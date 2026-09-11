@@ -5614,7 +5614,9 @@ impl Perform for Term {
     /// A DCS is terminated: not a print, so the repeat is disarmed (#825). This method
     /// exists for that alone — the payload is otherwise unhandled — and it is reachable
     /// in ordinary use: since #824 answered DA2, `vim` follows up with XTGETTCAP
-    /// (`DCS + q <hex> ST`) queries this engine does not answer.
+    /// (`DCS + q <hex> ST`) queries this engine does not answer. Both halves of that
+    /// are pinned on recorded bytes rather than asserted — `tests/closed_loop_capture.rs`
+    /// (#891).
     ///
     /// The end of the DCS and not its start, which is both xterm's rule (its gate fires
     /// when the parser returns to the ground state) and the only half that can be shown
@@ -5765,14 +5767,15 @@ impl Perform for Term {
         // recorded the same day emits it too — tmux asks unconditionally). A count
         // taken from a corpus is only ever true of one revision of it.
         //
-        // And it is a floor rather than a measurement of reach, because **this
-        // corpus is open-loop**: every capture is recorded under `script(1)`, which
-        // copies bytes and answers nothing, so no sequence an application only sends
-        // *after* a reply can appear in it. The signature is in the corpus already —
-        // the paragraph above measured that answering DA2 makes vim ask ten
-        // `DCS + q` XTGETTCAP questions, and `DCS + q` occurs **zero** times across
-        // all 19 fixtures, four of which ask DA2. So a `> q` count of one is what
-        // survives a recording that never let anything be gated on an answer.
+        // And it is a floor rather than a measurement of reach, because all but one
+        // capture is **open-loop** — recorded under `script(1)`, which answers
+        // nothing, so no sequence an application only sends *after* a reply can
+        // appear in it. The signature is in the corpus: answering DA2 makes vim ask
+        // ten `DCS + q` XTGETTCAP questions, and `DCS + q` occurs **zero** times
+        // across every open-loop fixture, four of which ask DA2. The exception is
+        // `vim_closed_loop.raw`, which holds all ten (#891) — what it cost to record
+        // one, and why its bytes are a function of a consumer policy as well as of
+        // vim, is in `docs/map/territory/vt-interpretation.md`.
         //
         // The match is on the whole slice rather than `.first()`, so
         // `CSI > $ c` is not DA2. That is 3-1: xterm drops it
