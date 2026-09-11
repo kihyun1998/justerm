@@ -123,9 +123,13 @@ application misbehaves.
 
 - **Zero governing records for the encoding**, in a territory where being wrong produces a
   misbehaving application rather than an error.
-- **The kitty keyboard protocol is deferred, not decided.** `architecture.md` describes it as a
-  negotiated flag stack that rewrites only what legacy cannot express — a design sketch with no
-  record and no issue-level commitment.
+- ~~**The kitty keyboard protocol is deferred, not decided.**~~ — **closed by #23, and this line
+  outlived it by a long way.** The flag stack, the push/pop/set forms, the query reply and the
+  `CSI u` encoding all ship (`input.rs::kitty_encode`, `tests/kitty.rs`); what the bullet described
+  as *"a design sketch with no record and no issue-level commitment"* has been running code for
+  long enough that #890 measured against it. The hole it was pointing at is real and narrower:
+  there is still **no decision record** for the encoding, which is the first bullet in this
+  section, not a second one.
 - **Two mode sets have to agree across a crate boundary.** The web mirrors `input.rs`'s intent types
   by hand, the same ungated mirroring `types.ts` does for the frame.
 - ~~**In-progress IME composition is not rendered inline in the grid**~~ — **closed by #249**
