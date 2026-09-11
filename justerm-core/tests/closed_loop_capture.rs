@@ -6,26 +6,47 @@
 //! through `examples/reply_filter`, which is this engine plus a consumer policy, so it is the
 //! first fixture here that can contain that class at all.
 //!
-//! These tests pin what the closed loop bought and what it did not. The pairing is the
-//! evidence: the same sequence is counted here **and** across the open-loop captures, because
-//! a count of ten means nothing without the zero beside it.
+//! **What it was recorded against**, because the bytes are a function of it and not of vim
+//! alone. RHEL 9.2, vim 8.2 (patches 1-2637), `TERM=xterm-256color`, 80x24, `vim -X -i NONE`,
+//! no `COLORTERM`. The engine answered DA1 / DA2 / DSR / DECRQM / the kitty query itself; the
+//! **consumer policy** in `examples/reply_filter` answered the six query families that reach a
+//! consumer (ADR-0017) — foreground `rgb:c7c7/c7c7/c7c7`, background `rgb:0000/0000/0000` (so
+//! vim reads the scheme as dark), palette queries the same flat spec, an OSC 52 clipboard read
+//! refused in silence. Of those six only OSC 10 and OSC 11 are actually exercised by this
+//! recording; the other four arms are present and unreached. A different policy is a different
+//! recording: a white background flips vim's own `&background` to `light`. Re-record with
+//! `fixtures/capture-closed-loop.sh`, which refuses a capture that does not reproduce three
+//! times **and** refuses one that reproduces while holding none of the material.
 //!
-//! **What `vim_closed_loop.raw` was recorded against**, because the bytes are a function of it
-//! and not of vim alone. RHEL 9.2, vim 8.2 (patches 1-2637), `TERM=xterm-256color`, 80x24,
-//! `vim -X -i NONE`, no `COLORTERM`. The engine answered DA1 / DA2 / DSR / DECRQM / the kitty
-//! query itself; the **consumer policy** in `examples/reply_filter` answered the rest —
-//! foreground `rgb:c7c7/c7c7/c7c7`, background `rgb:0000/0000/0000` (so vim reads the scheme as
-//! dark), palette queries the same flat spec, and an OSC 52 clipboard read refused in silence.
-//! A different policy is a different recording: handing vim a white background instead flips
-//! its own `&background` to `light`. Re-record with `fixtures/capture-closed-loop.sh`, which
-//! will not emit a capture that does not reproduce three times.
+//! ## What these assertions can and cannot observe
+//!
+//! Stated because a capture that cannot fail reads as coverage while proving nothing.
+//!
+//! - **`the_ten_xtgettcap_questions…` constructs no `Engine`.** It is a guard on the *corpus*,
+//!   not on the code: no change under `src/` can redden it. What it catches is a capture being
+//!   added to `OPEN_LOOP` that is not in fact open-loop, and a `.raw` being edited.
+//! - **Nothing here records what the harness replied.** The fixture is the pty's *output* only,
+//!   so these tests observe *this engine's* answers during replay — which are a function of the
+//!   recorded bytes. They cannot prove the original recording was made against a live engine
+//!   rather than a fixed table. That claim rests on the capture script, not on this file.
+//! - **The four `Engine` tests do observe code**: the DA2 reply and its version arithmetic,
+//!   cursor tracking through DSR 6n, that no DCS reply is queued, and that a colour query
+//!   routes to an event instead of being answered in the engine.
 
 use justerm_core::{Engine, TermEvent};
 
 const CLOSED_LOOP: &[u8] = include_bytes!("fixtures/vim_closed_loop.raw");
 
-/// Every `.raw` recorded with no reply channel. Kept as a list rather than a glob so that a
-/// capture added later is a deliberate entry here and not a silent change of the control.
+/// Every `.raw` that asks DA2 with no reply channel — the complete control, not a sample.
+/// Kept as a list rather than a glob so a capture added later is a deliberate entry here and
+/// not a silent change of the control.
+///
+/// `vim_redraw` is recorded `vim -u NONE -N` (`fixtures/capture-dogfood.sh`). `-u NONE` alone
+/// would be a confound, because it implies 'compatible' and a compatible vim does not probe the
+/// terminal at all — but `-N` puts that back, measured: with the loop closed that exact flag set
+/// still yields all ten. Its zero is the open loop's doing. `tmux_clipboard` is here because it
+/// is the only non-vim member, so the control is about terminals that answer rather than about
+/// one application's defaults.
 const OPEN_LOOP: &[(&str, &[u8])] = &[
     ("vim_redraw", include_bytes!("fixtures/vim_redraw.raw")),
     (
@@ -36,7 +57,20 @@ const OPEN_LOOP: &[(&str, &[u8])] = &[
         "alt_resize_vim.pre",
         include_bytes!("fixtures/alt_resize_vim.pre.raw"),
     ),
+    (
+        "tmux_clipboard",
+        include_bytes!("fixtures/tmux_clipboard.raw"),
+    ),
 ];
+
+/// The `Pv` field this capture's DA2 reply carries (#824). Deliberately a third, independent
+/// copy of the arithmetic rather than a shared helper — what these files are for is disagreeing
+/// with the engine, and a derivation imported from it could not.
+fn da2_version() -> u32 {
+    let v = env!("CARGO_PKG_VERSION").split(['-', '+']).next().unwrap();
+    let mut p = v.split('.').map(|c| c.parse::<u32>().unwrap_or(0));
+    p.next().unwrap_or(0) * 10_000 + p.next().unwrap_or(0) * 100 + p.next().unwrap_or(0)
+}
 
 fn count(haystack: &[u8], needle: &[u8]) -> usize {
     haystack
@@ -45,9 +79,10 @@ fn count(haystack: &[u8], needle: &[u8]) -> usize {
         .count()
 }
 
-/// The ten terminfo capabilities vim asks for once its DA2 question is answered, in the order
-/// `#824` measured them. Held as names rather than as a count so a partial burst names which
-/// half arrived.
+/// The terminfo capabilities the stream asks for, decoded from hex, **deduplicated and sorted**.
+/// Which set arrives is stable; the order and the multiplicity are not — `term.rs`'s DA2 block
+/// measured one arm sending each capability once where another sent it twice — so pinning those
+/// would be a stronger claim than this project's own measurement supports.
 fn xtgettcap_names(stream: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -58,9 +93,7 @@ fn xtgettcap_names(stream: &[u8]) -> Vec<String> {
             while j < stream.len() && stream[j].is_ascii_hexdigit() {
                 j += 1;
             }
-            let hex = std::str::from_utf8(&stream[start..j]).unwrap_or("");
-            let name: String = hex
-                .as_bytes()
+            let name: String = stream[start..j]
                 .chunks(2)
                 .filter_map(|p| u8::from_str_radix(std::str::from_utf8(p).ok()?, 16).ok())
                 .map(|b| b as char)
@@ -71,17 +104,19 @@ fn xtgettcap_names(stream: &[u8]) -> Vec<String> {
             i += 1;
         }
     }
+    out.sort();
+    out.dedup();
     out
 }
 
 /// The whole issue in one assertion. The absence alone would not be evidence — a sequence can
 /// be missing because nothing sends it — so the phenomenon is shown present on one side and
-/// absent on the other, with the instrument the only thing that changed.
+/// absent on the other, with the reply channel the only thing that changed.
 #[test]
 fn the_ten_xtgettcap_questions_appear_only_once_the_loop_is_closed() {
     assert_eq!(
         xtgettcap_names(CLOSED_LOOP),
-        vec!["Co", "ku", "kd", "kr", "kl", "#2", "#4", "%i", "*7", "k1"],
+        vec!["#2", "#4", "%i", "*7", "Co", "k1", "kd", "kl", "kr", "ku"],
     );
     for (name, stream) in OPEN_LOOP {
         assert_eq!(
@@ -90,7 +125,7 @@ fn the_ten_xtgettcap_questions_appear_only_once_the_loop_is_closed() {
             "{name} is an open-loop capture and must not contain XTGETTCAP",
         );
         // The control: these captures *do* ask the question that gates the burst. They are
-        // silent because nobody answered, not because vim never asked.
+        // silent because nobody answered, not because nobody asked.
         assert!(
             count(stream, b"\x1b[>c") > 0,
             "{name} must still ask DA2, or it is not the control this test needs",
@@ -98,37 +133,40 @@ fn the_ten_xtgettcap_questions_appear_only_once_the_loop_is_closed() {
     }
 }
 
-/// The reply that gated them, produced by replaying the capture through the engine. This is
-/// what makes the fixture a recording of a conversation with *justerm* rather than with some
-/// terminal: feeding it back produces the same answer it was recorded against.
+/// The reply that gated them, produced by replaying the capture through the engine.
 #[test]
 fn replaying_it_produces_the_da2_answer_that_gated_the_burst() {
     let mut engine = Engine::new(80, 24);
     engine.feed(CLOSED_LOOP);
     let replies = engine.drain_replies();
-    assert!(
-        count(&replies, b"\x1b[>1;1700;0c") == 1,
-        "expected exactly one DA2 answer, got {:?}",
+    let expected = format!("\x1b[>1;{};0c", da2_version());
+    assert_eq!(
+        count(&replies, expected.as_bytes()),
+        1,
+        "expected exactly one DA2 answer {expected:?}, got {:?}",
         String::from_utf8_lossy(&replies),
     );
 }
 
-/// The half a fixed reply table cannot do. vim asks twice from two different cells — it prints
-/// a glyph and asks where the cursor ended up — so two identical answers would be a terminal
-/// that drew nothing.
+/// The half a fixed reply table could not have produced. vim prints U+25BD at row 2 column 1
+/// and asks where the cursor ended up — `2;2R` says the glyph took **one** cell, which is the
+/// ambiguous-width answer it is actually after. Then it throws an unknown DCS and an unknown
+/// CSI at row 3 column 1 and asks again; `3;1R` says both were consumed as sequences rather
+/// than printed as text. Two identical answers would be a terminal that drew nothing.
 #[test]
-fn the_two_cursor_reports_differ_because_the_position_does() {
+fn the_two_cursor_reports_answer_vims_two_probes() {
     let mut engine = Engine::new(80, 24);
     engine.feed(CLOSED_LOOP);
     let replies = engine.drain_replies();
-    let reports: Vec<&[u8]> = replies
+    let reports: Vec<Vec<u8>> = replies
         .split(|b| *b == 0x1b)
         .filter(|s| s.starts_with(b"[") && s.ends_with(b"R"))
+        .map(|s| s.to_vec())
         .collect();
-    assert_eq!(reports.len(), 2, "vim asks DSR 6n twice in this capture");
-    assert_ne!(
-        reports[0], reports[1],
-        "both cursor reports came back identical, which is the fixed-table failure",
+    assert_eq!(
+        reports,
+        vec![b"[2;2R".to_vec(), b"[3;1R".to_vec()],
+        "the cursor reports are the probe answers, not just two different strings",
     );
 }
 
@@ -147,9 +185,8 @@ fn the_engine_still_answers_none_of_the_ten() {
     );
 }
 
-/// The colour queries are the consumer's, and the capture encodes the answer it was recorded
-/// with. Replaying reproduces the *questions* as events; the answers are policy and are not
-/// the engine's to reproduce (ADR-0017).
+/// The colour queries are the consumer's. Replaying reproduces the *questions* as events; the
+/// answers are policy and are not the engine's to reproduce (ADR-0017).
 #[test]
 fn the_colour_queries_arrive_as_events_for_a_consumer_to_answer() {
     let mut engine = Engine::new(80, 24);

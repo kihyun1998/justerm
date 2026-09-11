@@ -152,7 +152,7 @@ for a terminal engine, that list is half the specification.
   *above* the catch-all, keyed on the pair rather than on the prefix alone (a `.first()` match makes
   `CSI > $ c` DA2, which is what alacritty does and the other three references do not); and the
   remaining members are silent by construction, so their count is a measurement rather than a
-  reading — across this repo's captures `CSI > m` (XTMODKEYS) occurs 7 times and `CSI > q`
+  reading — across this repo's captures `CSI > m` (XTMODKEYS) occurs 10 times and `CSI > q`
   (XTVERSION) **once**, which still inverts the order the reference trees suggest. Rows in
   [`reference-facts.md`](../../agents/reference-facts.md). That count is what decided the order
   they were taken in: XTMODKEYS was the next one routed (#890) precisely because it was the
@@ -163,18 +163,21 @@ for a terminal engine, that list is half the specification.
   2026-09-02** (#842's `tmux_clipboard.raw`); a fresh tmux attach recorded on the 11th emits it too,
   so tmux asks unconditionally. Two things follow for anyone quoting a count out of this corpus.
   It is only true of one revision of the corpus — re-measure rather than cite. And it is a **floor**,
-  because all but one capture is *open-loop*: recorded under `script(1)`, which copies bytes and
-  answers nothing, so nothing an application sends only *after* a reply can appear in it. That is
+  because all but one capture is *open-loop*: recorded under `script(1)` or a bare `expect`
+  (`less_softwrap` and both `alt_resize_*` are the second kind), both of which copy bytes and
+  answer nothing, so nothing an application sends only *after* a reply can appear in it. That is
   visible in the corpus rather than assumed — answering DA2 is measured (`term.rs`, the DA2 block) to
   make vim ask ten `DCS + q` XTGETTCAP questions, and `DCS + q` occurs **zero** times across every
   open-loop fixture, four of which ask DA2.
 - **One capture is closed-loop, and two things about building it had to be measured rather than
   reasoned (#891).** `vim_closed_loop.raw` holds all ten, recorded through `examples/reply_filter`
   — this engine plus a consumer policy — by `fixtures/capture-closed-loop.sh`.
-  **`drain_replies()` is not the mechanism on its own**, which is what #891's own body proposed: it
-  answers DA1, DA2, DSR, DECRQM and the kitty query, while the four colour/clipboard query families
-  reach a *consumer* as a `TermEvent` (ADR-0017) — so a harness that forwarded only replies leaves
-  two families silent that vim actually asks. **And the answers must be the engine's rather than a
+  **`drain_replies()` is not the mechanism on its own**, which is what #891's own body proposed. It
+  answers **seven** paths — DA1, DA2, DSR 6n, DSR 5n, DECRQM, the kitty flags query and the VT52
+  DECID `ESC Z` — while **six** query families reach a *consumer* as a `TermEvent` and are answered
+  by policy (ADR-0017): OSC 10, OSC 11, OSC 4, OSC 12, OSC 52 and the colour-scheme query, which are
+  exactly the six `pub fn report_*` on the engine. A harness forwarding only replies leaves all six
+  silent, and vim asks two of them in this very capture. **And the answers must be the engine's rather than a
   table**, because three of the six are state-dependent: vim's two `DSR 6n` are probes, printing
   U+25BD at a known cell and reading the cursor column back to learn the ambiguous width, so a fixed
   `1;1R` plays a terminal that drew nothing and the recording is then of a conversation with

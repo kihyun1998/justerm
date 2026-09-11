@@ -458,7 +458,9 @@ fn no_frame_this_engine_produces_is_rejected_by_its_own_decoder() {
         }
     }
     // A floor, not the count: the corpus grows as captures are recorded, and a test that
-    // pins the exact number breaks on the addition rather than on the defect. 255 today.
+    // pins the exact number breaks on the addition rather than on the defect. 321 today —
+    // it read 255 until #891's closed-loop capture was added, which is the shape this floor
+    // is for.
     assert!(frames >= 250, "only {frames} frames checked");
 }
 

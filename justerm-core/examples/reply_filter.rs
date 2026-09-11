@@ -30,6 +30,17 @@ fn main() {
     let fg = args[2].clone();
     let bg = args[3].clone();
 
+    // Validated here rather than tolerated at query time. A spec the policy cannot read would
+    // still be handed to the application verbatim over OSC 11, and then *classified* by the
+    // fallback below — so `#ffffff` would give vim a white background and tell it the scheme is
+    // dark, silently, inside a checked-in fixture. Refuse to record rather than record that.
+    for (what, spec) in [("foreground", &fg), ("background", &bg)] {
+        if mean_channel(spec).is_none() {
+            eprintln!("reply_filter: {what} spec {spec:?} is not `rgb:RRRR/GGGG/BBBB`");
+            std::process::exit(2);
+        }
+    }
+
     let mut engine = Engine::new(cols, rows);
     let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
@@ -110,19 +121,25 @@ fn answer_events(engine: &mut Engine, fg: &str, bg: &str) {
     }
 }
 
-/// `rgb:RRRR/GGGG/BBBB` — dark when the channels average below half of full scale. Each channel
-/// is scaled by its own digit count, so `rgb:00/00/00` and `rgb:0000/0000/0000` agree.
-fn is_dark(spec: &str) -> bool {
-    let body = spec.strip_prefix("rgb:").unwrap_or(spec);
+/// The mean channel of `rgb:RRRR/GGGG/BBBB` as a fraction of full scale, or `None` if any part
+/// of it does not parse. Each channel is scaled by its own digit count, so `rgb:00/00/00` and
+/// `rgb:0000/0000/0000` agree. **Every** channel has to read — a partial parse would average
+/// the ones it happened to understand and look like an answer.
+fn mean_channel(spec: &str) -> Option<f64> {
+    let body = spec.strip_prefix("rgb:")?;
     let mut sum = 0.0f64;
     let mut n = 0.0f64;
     for part in body.split('/') {
-        let Ok(v) = u32::from_str_radix(part, 16) else {
-            continue;
-        };
-        let full = 16f64.powi(part.len() as i32) - 1.0;
+        let v = u32::from_str_radix(part, 16).ok()?;
+        let full = 16f64.powi(i32::try_from(part.len()).ok()?) - 1.0;
         sum += f64::from(v) / full;
         n += 1.0;
     }
-    n == 0.0 || sum / n < 0.5
+    (n > 0.0).then(|| sum / n)
+}
+
+/// Dark when the channels average below half of full scale. `main` has already refused any
+/// spec this cannot read, so the `unwrap_or` is unreachable rather than a policy.
+fn is_dark(spec: &str) -> bool {
+    mean_channel(spec).unwrap_or(0.0) < 0.5
 }
