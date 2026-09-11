@@ -353,12 +353,22 @@ pub fn encode_key(
     app_cursor: bool,
     app_keypad: bool,
     kitty_flags: u8,
+    modify_other_keys_2: bool,
 ) -> Option<Vec<u8>> {
     // Under the kitty protocol, events legacy cannot express (a modifier on a
     // text key, a release/repeat) take the `CSI unicode ; mods : event u` form;
     // everything else falls through to legacy (#23).
     if kitty_flags != 0
         && let Some(bytes) = kitty_encode(ev, kitty_flags)
+    {
+        return Some(bytes);
+    }
+    // modifyOtherKeys sits *inside* legacy rather than beside kitty (#890): it is an
+    // extension to the legacy encoding that changes nothing unless an application asks,
+    // which is also how ghostty places it (`key_encode.zig`, inside its `legacy`).
+    if modify_other_keys_2
+        && let Key::Char(c) = ev.key
+        && let Some(bytes) = modify_other_key(c, ev.mods)
     {
         return Some(bytes);
     }
@@ -548,6 +558,37 @@ fn kitty_seq(number: u32, modified: Option<u8>, event: Option<u8>, terminator: u
 
 /// A printable character with modifiers. Ctrl folds an ASCII letter to its
 /// control code; Alt (meta-sends-escape) prefixes ESC.
+/// A modified character under `modifyOtherKeys` level 2 (#890): `CSI 27 ; <1+mods> ;
+/// <codepoint> ~`. `None` leaves the key to the ordinary legacy encoding.
+///
+/// The shape is xterm's own — `modifyOtherKey` (`input.c:760-782`) emits this when
+/// its `formatOtherKeys` resource is 0, its default, and the `CSI <code> ; <mods> u`
+/// alternative it offers at 1 is **deliberately not** what we emit: that is byte-for-byte
+/// the shape [`kitty_encode`] already produces, and two protocols that a consumer
+/// negotiates separately should not be indistinguishable on the wire.
+///
+/// **Which keys qualify is where this departs from both references, and it is forced.**
+/// xterm's gate is `IsControlInput` — *any* codepoint in `0x40..=0x7f`
+/// (`input.c:272-274`) — which on its own would capture a plain `Shift+A`, since `A`
+/// is `0x41`. xterm survives that because a keysym carries its layout: shift is already
+/// spent producing `A`, so by the time this runs the modifier is gone. ghostty inherits
+/// the same clause (`key_encode.zig`, `should_modify`) and is saved the same way, by its
+/// consumed-mods pass. **justerm has neither**: a consumer hands us the character it
+/// produced *and* the modifiers it saw, so `Char('A') + SHIFT` is an ordinary capital
+/// and reaches here intact. Copying the clause would turn every capital letter into an
+/// escape sequence. So the gate here is the *other* two arms of the same predicate — a
+/// modifier that is not Shift, or Shift with the one character xterm still admits —
+/// which decides every case in ghostty's own tests identically (`Ctrl+Shift+H` →
+/// `CSI 27;6;72~`, `Alt+8` → `CSI 27;3;56~`) while leaving plain typing alone.
+fn modify_other_key(c: char, mods: Modifiers) -> Option<Vec<u8>> {
+    let non_shift = mods.difference(Modifiers::SHIFT);
+    if non_shift.is_empty() && !(mods.contains(Modifiers::SHIFT) && c == ' ') {
+        return None;
+    }
+    let param = mods.csi_param()?;
+    Some(format!("\x1b[27;{};{}~", param, c as u32).into_bytes())
+}
+
 fn encode_char(c: char, mods: Modifiers) -> Vec<u8> {
     let mut out = Vec::new();
     if mods.contains(Modifiers::ALT) {
