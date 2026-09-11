@@ -900,9 +900,15 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   the raw modifier bits, or a chord holding one of the four modifiers `csi_param` cannot express
   (Super / Hyper / CapsLock / NumLock) is admitted and then described as Shift alone. Only
   `Pp = 4` of xterm's **eight** modify-resources is routed; the rest occur zero times in the
-  capture corpus and stay with #47. **Only a `Char` key is in the mechanism**: `Ctrl+Tab`,
-  `Ctrl+Enter`, `Ctrl+Escape` and `Alt+Backspace` keep their legacy bytes, where xterm modifies all
-  four at this level — a recorded limit, not a decision, on #890.
+  capture corpus and stay with #47. **A named key whose bare form is a C0 control is in it too**:
+  `Ctrl+Tab` — `CSI 27;5;9~`, `Ctrl+Enter` — `27;5;13~`, `Ctrl+Escape` — `27;5;27~`, and
+  Backspace on a modifier that is **not** Control — `27;3;127~`. Two exceptions are the
+  reference's own and both are load-bearing: plain `Shift+Tab` keeps `CSI Z` (a shifted Tab is a
+  different keysym there and needs a non-Shift modifier), and plain `Ctrl+Backspace` keeps its
+  legacy byte. Every other named key is **out**, because it already has an unambiguous modified
+  form (`CSI 1;5A`, `CSI 3;5~`) and this mechanism exists to resolve ambiguity, not to restate it
+  — which is also where the two references part company, xterm routing `Delete` onto
+  Backspace's own codepoint and ghostty declining to.
   The kitty keyboard protocol (`CSI u` + a negotiated progressive-flag stack + key-release events) is a
   *stateful* superset deferred to #23; legacy here is a pure event→bytes function. (`?1016` SGR-pixel
   mouse — once mistakenly called out-of-bounds — is in scope: the consumer supplies the pixels, the

@@ -3200,3 +3200,20 @@ The level-1/2 split was attributed to `allowedCharModifiers`, whose Control stri
 passes the mode **off**; and the resource count was taken from a line range that begins inside the
 fourth `case`. The conclusions built on them all survived — which is the other half of the lesson:
 a wrong mechanism can support a right answer for a long time.
+
+**Named keys, added 2026-09-11 after the first pass scoped the mechanism to characters.** The
+question that reopened it was not *"does xterm route Tab"* but *"how does each implementation send a
+modified `Tab` at all"*, and the answers do not line up with the mode:
+
+| Fact | Reference | Site |
+|---|---|---|
+| At level 2, `Tab` / `Return` / `Escape` qualify on **any expressible modifier** (`result = (modify_parm != 0)`); `BackSpace` qualifies on a modifier that is **not** Control (*"strip ControlMask as per IsBackarrowToggle"*); a shifted Tab arrives as `XK_ISO_Left_Tab` and needs a **non-Shift** modifier, so plain back-tab is not modified; `Delete` qualifies on any | xterm | `input.c:704-724` |
+| Sends `CSI 27;5;9~` for `Ctrl+Tab` with **no condition on the mode at all** — the mode is used the other way round, to switch a few entries *back* to legacy (`Shift+Tab` → `CSI Z` at `.set`, `CSI 27;2;9~` at `.set_other`). The `.escape` table carries no mode condition on any entry | ghostty | `input/function_keys.zig`, `.tab` / `.enter` / `.escape` / `.backspace` tables |
+| The two agree on the **bytes** (`CSI 27;5;9~`, `27;5;13~`, `27;5;27~`, `27;N;127~`) while disagreeing on the gating, and on `Delete`: ghostty keeps the conventional `CSI 3 ; <mods> ~` where xterm would emit `CSI 27;5;127~` — Backspace's own codepoint | xterm, ghostty | as above |
+| **Neither disambiguates a modified `Tab` in legacy at all** — the named-key path returns `None` unless the kitty protocol is negotiated (alacritty), and `case 9` handles only Shift before falling to `C0.HT` (xterm.js). Both do it through kitty instead: `Ctrl+Tab` → `CSI 9;5u` | alacritty, xterm.js | `alacritty/src/input/keyboard.rs:588-604`; `xterm.js: src/common/input/Keyboard.ts:91-99` |
+
+**What this settled for justerm**: the engine already emitted `CSI 9;5u` / `13;5u` / `27;5u` / `127;5u`
+for those four under kitty (measured, byte-identical to alacritty and xterm.js), so scoping this mode
+to characters left one terminal answering *yes* to one negotiated protocol and *no* to the other for
+the same keystroke. The bytes were taken from xterm and ghostty's agreement; the **gating** follows
+xterm, because ghostty's unconditional form changes bytes for an application that never asked.

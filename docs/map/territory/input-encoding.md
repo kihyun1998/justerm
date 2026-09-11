@@ -29,7 +29,8 @@ Nothing governs the encoding itself.
   therefore encodes differently depending on what was printed earlier. This is the sharpest instance
   of `architecture.md`'s "input encoding is mode-gated" entry.
 - **A mode can rewrite legacy from the inside, and modifyOtherKeys is the one that does** (#890).
-  `CSI > 4 ; 2 m` makes a modified character encode as `CSI 27 ; <1+mods> ; <codepoint> ~`, which
+  `CSI > 4 ; 2 m` makes a modified character — and a modified `Tab` / `Enter` / `Escape` /
+  `Backspace`, whose bare forms are C0 controls — encode as `CSI 27 ; <1+mods> ; <codepoint> ~`, which
   is how `Ctrl+I` stops being `Tab`. It sits *after* the kitty check and *inside* the legacy arm,
   the placement ghostty states a reason for: traditional encoding, modifyOtherKeys and fixterms
   are extensions that do not change existing behaviour, so they combine. **The gate on which keys

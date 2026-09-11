@@ -592,14 +592,22 @@ fn kitty_seq(number: u32, modified: Option<u8>, event: Option<u8>, terminator: u
 /// It inherits the clause and the consequence with it. The divergence here is justerm's,
 /// on justerm's grounds.
 ///
-/// **A named key is out of the mechanism, and that is a limit rather than a decision.** This
-/// is reached only for [`Key::Char`], so with the mode on `Ctrl+Tab` is still `0x09`, `Ctrl+Enter`
-/// still `0x0d`, `Ctrl+Escape` still `0x1b` and `Alt+Backspace` still `0x7f`. The reference routes
-/// all of them at this level — `case XK_Escape: case XK_Return: case XK_Tab: result = (modify_parm
-/// != 0)` (`input.c:720-724`), with `XK_BackSpace` on a non-Control modifier (`:707-710`) — so an
-/// application that turned the mode on to bind `<C-CR>` or `<C-Tab>` still cannot see them. Note
-/// that plain `Shift+Tab` staying `CSI Z` **is** correct and agrees (`:715-718`). Tracked on #890
-/// rather than fixed here, because it widens what the mode covers rather than correcting it.
+/// **A named key whose bare form is a C0 control is in the mechanism too**, and the arms above
+/// are the reference's own (`input.c:704-724`). This paragraph said the opposite for one
+/// revision — that the mechanism was `Char`-only and the gap was a recorded limit — and what
+/// changed the answer was reading how the *other* implementations send a modified `Tab` at all:
+/// alacritty and xterm.js never do it through this mode, they do it through the kitty protocol,
+/// and **this engine already did that** (`Ctrl+Tab` — `CSI 9;5u`, byte-identical to both). So
+/// the gap was not "a feature nobody has", it was the same terminal answering *yes* down one
+/// negotiated protocol and *no* down the other for the same keystroke.
+///
+/// **ghostty's polarity is the opposite of this one and is worth knowing before changing it.**
+/// Its table sends `CSI 27;5;9~` for `Ctrl+Tab` with **no** condition on the mode
+/// (`function_keys.zig`, the `.tab` / `.enter` / `.escape` entries), and uses the mode only to
+/// switch a handful of entries *back* to legacy. That was not followed: emitting it unasked
+/// changes bytes for an application that never negotiated, which is what this crate's legacy
+/// baseline promises not to do. The bytes themselves agree with xterm's, which is what makes
+/// the value here uncontroversial even though the gating is not.
 ///
 /// Measured in both directions before it was taken: the dropped clause also *under*-reaches,
 /// since `Alt+8` (`0x38`) is outside `0x40..=0x7f` and both references still emit it — which
