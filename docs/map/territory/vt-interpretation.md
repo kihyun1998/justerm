@@ -148,13 +148,17 @@ for a terminal engine, that list is half the specification.
   `csi_dispatch` returns early on any intermediate it does not name. So a sequence in that family is
   not "missing from the `match`" — the `match` is never reached, and adding an arm for its final
   does nothing. DA2 (`CSI > c`) sat there from the beginning; the kitty `u` path had already opened
-  one such pair, and DA2 is the second. Two consequences worth carrying: the fix is always a guard
+  one such pair, DA2 is the second, and **XTMODKEYS (`CSI > m`) is the third since #890**. Two consequences worth carrying: the fix is always a guard
   *above* the catch-all, keyed on the pair rather than on the prefix alone (a `.first()` match makes
   `CSI > $ c` DA2, which is what alacritty does and the other three references do not); and the
   remaining members are silent by construction, so their count is a measurement rather than a
   reading — across this repo's captures `CSI > m` (XTMODKEYS) occurs 7 times and `CSI > q`
   (XTVERSION) **once**, which still inverts the order the reference trees suggest. Rows in
-  [`reference-facts.md`](../../agents/reference-facts.md). The unrouted rest is #47 tail.
+  [`reference-facts.md`](../../agents/reference-facts.md). That count is what decided the order
+  they were taken in: XTMODKEYS was the next one routed (#890) precisely because it was the
+  highest, so **it is no longer in the tail** and `CSI > q` now leads what is. The unrouted rest
+  is #47 tail. A count here is a claim about the corpus at one revision of it, and the
+  paragraph below is what that costs when it is not re-measured.
   **The `> q` figure was `zero` here until 2026-09-11 and the corpus had contained one since
   2026-09-02** (#842's `tmux_clipboard.raw`); a fresh tmux attach recorded on the 11th emits it too,
   so tmux asks unconditionally. Two things follow for anyone quoting a count out of this corpus.

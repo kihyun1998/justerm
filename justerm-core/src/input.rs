@@ -3,12 +3,15 @@
 //! The inverse of `feed` — a key/mouse/paste/focus event becomes the byte
 //! sequence a TUI app reads on its stdin, decided by the DEC modes the engine
 //! tracks from the *output* stream (DECCKM, mouse tracking/encoding, focus,
-//! bracketed paste). The engine owns the modes; these functions are pure
-//! (event + modes → bytes), so the consumer's I/O stays its own concern.
+//! bracketed paste, modifyOtherKeys). The engine owns the modes; these functions
+//! are pure (event + modes → bytes), so the consumer's I/O stays its own concern.
 //!
-//! This is the **legacy xterm** baseline (the common-90% every TUI speaks). The
-//! kitty keyboard protocol (`CSI u` + a negotiated progressive-flag stack) is a
-//! stateful superset deferred to #23.
+//! This is the **legacy xterm** baseline (the common-90% every TUI speaks), and it
+//! now has two extensions rather than one. The kitty keyboard protocol (`CSI u` + a
+//! negotiated progressive-flag stack, #23) is a stateful superset that *replaces*
+//! the legacy form for what legacy cannot express. `modifyOtherKeys` (#890) is not
+//! a superset: it is negotiated too, but it rewrites one case *inside* legacy and is
+//! checked after kitty, never instead of it.
 
 use bitflags::bitflags;
 
@@ -345,9 +348,15 @@ const ESC: u8 = 0x1b;
 /// Bit 0 of the kitty progressive-enhancement flags: disambiguate escape codes.
 const KITTY_DISAMBIGUATE: u8 = 0b1;
 
-/// Encode a key event to bytes, given whether DECCKM (application cursor keys)
-/// is active and the kitty keyboard-protocol flags. Returns `None` only for keys
-/// with no defined encoding.
+/// Encode a key event to bytes, given the four pieces of mode state that decide it:
+/// DECCKM (application cursor keys), application keypad, the kitty keyboard-protocol
+/// flags, and `modifyOtherKeys` level 2. Returns `None` only for keys with no defined
+/// encoding.
+///
+/// The order between the last two is load-bearing and not alphabetical: kitty is asked
+/// first and wins outright, because an application that negotiated the newer protocol
+/// asked for its form specifically. `modifyOtherKeys` is then an extension *within* the
+/// legacy arm (#890).
 pub fn encode_key(
     ev: &KeyEvent,
     app_cursor: bool,
@@ -585,6 +594,15 @@ fn kitty_seq(number: u32, modified: Option<u8>, event: Option<u8>, terminator: u
 /// and consumed mods"* passes `consumed_mods = shift` and still expects `CSI 27;6;72~`.
 /// It inherits the clause and the consequence with it. The divergence here is justerm's,
 /// on justerm's grounds.
+///
+/// **A named key is out of the mechanism, and that is a limit rather than a decision.** This
+/// is reached only for [`Key::Char`], so with the mode on `Ctrl+Tab` is still `0x09`, `Ctrl+Enter`
+/// still `0x0d`, `Ctrl+Escape` still `0x1b` and `Alt+Backspace` still `0x7f`. The reference routes
+/// all of them at this level — `case XK_Escape: case XK_Return: case XK_Tab: result = (modify_parm
+/// != 0)` (`input.c:720-724`), with `XK_BackSpace` on a non-Control modifier (`:707-710`) — so an
+/// application that turned the mode on to bind `<C-CR>` or `<C-Tab>` still cannot see them. Note
+/// that plain `Shift+Tab` staying `CSI Z` **is** correct and agrees (`:715-718`). Tracked on #890
+/// rather than fixed here, because it widens what the mode covers rather than correcting it.
 ///
 /// Measured in both directions before it was taken: the dropped clause also *under*-reaches,
 /// since `Alt+8` (`0x38`) is outside `0x40..=0x7f` and both references still emit it — which

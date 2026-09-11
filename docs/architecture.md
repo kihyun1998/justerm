@@ -896,8 +896,13 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   gate admits any codepoint in `0x40..=0x7f`, which is safe there only because a keysym has
   already spent Shift producing the character — justerm is handed the character *and* the
   modifiers, so that clause would turn every capital letter into an escape sequence. The gate is
-  a non-Shift modifier, or Shift with space. Only `Pp = 4` of xterm's four modify-resources is
-  routed; the rest occur zero times in the capture corpus and stay with #47.
+  a non-Shift modifier, or Shift with space — and the gate asks that of the *parameter*, not of
+  the raw modifier bits, or a chord holding one of the four modifiers `csi_param` cannot express
+  (Super / Hyper / CapsLock / NumLock) is admitted and then described as Shift alone. Only
+  `Pp = 4` of xterm's **eight** modify-resources is routed; the rest occur zero times in the
+  capture corpus and stay with #47. **Only a `Char` key is in the mechanism**: `Ctrl+Tab`,
+  `Ctrl+Enter`, `Ctrl+Escape` and `Alt+Backspace` keep their legacy bytes, where xterm modifies all
+  four at this level — a recorded limit, not a decision, on #890.
   The kitty keyboard protocol (`CSI u` + a negotiated progressive-flag stack + key-release events) is a
   *stateful* superset deferred to #23; legacy here is a pure event→bytes function. (`?1016` SGR-pixel
   mouse — once mistakenly called out-of-bounds — is in scope: the consumer supplies the pixels, the

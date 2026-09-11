@@ -80,11 +80,12 @@ fn ordinary_typing_is_untouched_while_the_mode_is_on() {
     assert_eq!(enc(&t, Key::Char('@'), Modifiers::SHIFT), b"@");
 }
 
-/// Level 2 is what vim asks for and what the collision needs: at 0 and 1 xterm strips
-/// the Control modifier from a key already associated with control, sending it down
-/// the C0 path. Level 3 asks for *more* than 2, so it is honoured rather than read as
-/// off — only 2's behaviour is implemented, and an application that wanted more must
-/// not silently get none.
+/// Level 2 is what vim asks for and what the collision needs: `ModifyOtherKeys`
+/// refuses a control-associated key at level 1 when the state is exactly Control or
+/// exactly Shift (`input.c:686-691`) and admits it unconditionally at level 2
+/// (`:725-727`). Level 3 is a strict superset of 2, so it is honoured rather than read
+/// as off — only 2's behaviour is implemented, and an application that asked for more
+/// must not silently get none.
 #[test]
 fn the_level_decides_and_only_two_or_more_enables() {
     for (seq, enabled) in [

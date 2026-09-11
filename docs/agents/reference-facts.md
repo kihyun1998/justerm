@@ -3172,18 +3172,18 @@ The mode `vim` asks for at startup (`CSI > 4 ; 2 m`) and clears on exit (`CSI > 
 
 | Fact | Reference | Site |
 |---|---|---|
-| The final carries **four** resources, not one: `modifyKeyboard` 0, `modifyCursorKeys` 1, `modifyFunctionKeys` 2, `modifyOtherKeys` 4 — one `case` each off the same `CSI > Pp ; Pv m` | xterm | `charproc.c:2405-2420` |
+| The final carries **eight** resources, one `case` each: `modifyKeyboard` 0, `modifyCursorKeys` 1, `modifyFunctionKeys` 2, `modifyKeypadKeys` 3, `modifyOtherKeys` 4, `modifyStringKeys` 5, `modifyModifierKeys` 6, `modifySpecialKeys` 7 | xterm | `ptyx.h:3382-3391`, `charproc.c:2394-2421` |
 | The levels are `mokNone` 0, `mokUser` 1, `mokProgram` **2**, `mokExtended` 3 — so a bool for "level 2" is a choice about *which* of four to implement, not the whole space | xterm | `ptyx.h:3374-3379` |
-| **Level 2 is what separates `Ctrl+I` from `Tab`**: at 0 and 1 `allowedCharModifiers` *strips* the Control modifier from a key already associated with control (*"If modifyOtherKeys is off or medium (0 or 1), moderate its effects by excluding the common cases for modifiers"*), which is what sends it down the ordinary C0 path | xterm | `input.c:577-599` |
+| **Level 2 is what separates `Ctrl+I` from `Tab`**, and the mechanism is a per-level `switch` inside `ModifyOtherKeys`: a control-associated key gets `result = False` at level 1 when the state is exactly Control or exactly Shift, and `result = True` unconditionally at level 2 | xterm | `input.c:686-691` (level 1), `:725-727` (level 2) |
 | The emitted shape is `CSI 27 ; <mods> ; <code> ~`, with `CSI <code> ; <mods> u` as the alternative its `formatOtherKeys` resource selects | xterm | `input.c:760-782` (`modifyOtherKey`) |
-| The gate is `IsControlInput` — *any* keysym in `0x40..=0x7f`, which includes every capital letter | xterm | `input.c:272-274` |
+| The level-2 arm is exactly three clauses: `IsControlInput` (*any* keysym in `0x40..=0x7f`, `:272-274`, which includes every capital letter), **or** `state == ShiftMask && keysym == ' '`, **or** `computeMaskedModifier(state, ShiftMask)` — that last one masks Shift off and converts to the CSI parameter *before* testing, i.e. the question is asked of the parameter, not of the raw state | xterm | `input.c:725-732`, `:520-521` |
 | **A soft reset clears it too**: `CASE_DECSTR` → `VTReset(xw, False, False)` → `ReallyReset`, whose `xw->keyboard.modify_now = xw->keyboard.modify_1st` sits **outside** that function's `full` gate | xterm | `charproc.c:6147-6149`; the restore inside `ReallyReset` |
 | Models **only level 2**, as a bool on the terminal's flags (global, not per-screen, unlike its kitty stack); anything that is not the numeric-other-keys form sets it `false` | ghostty | `terminal/Terminal.zig:103`, `terminal/stream_terminal.zig:282-288` |
 | Places it **inside** its `legacy` encoder rather than beside kitty, and says why: traditional encoding + modifyOtherKeys + fixterms *"are all meant to be extensions that do not change any existing behavior and therefore safe to combine"* | ghostty | `input/key_encode.zig:321-329` |
-| Inherits xterm's `0x40..=0x7f` clause verbatim in `should_modify`, and is saved from capturing plain capitals by its **consumed-mods** pass rather than by the predicate | ghostty | `input/key_encode.zig:447-464` |
-| Does **not** resolve `Ctrl+I` through this mode at all: `ctrlSeq` returns the C0 byte first, and the awkward letters reach **fixterms** instead — `Ctrl+I` → `CSI 105;5u`, `Ctrl+M` → `CSI 109;5u`, `Ctrl+[` → `CSI 91;5u`, none of them gated on a request | ghostty | `input/key_encode.zig:380-397`, tests *"legacy: fixterm awkward letters"* |
+| Inherits xterm's `0x40..=0x7f` clause verbatim in `should_modify` and is **not** saved from it: the predicate reads `event.mods.binding()`, not the effective mods, and its own test *"ctrl+shift+char with modify other state 2 and consumed mods"* passes `consumed_mods = shift` and still expects `CSI 27;6;72~`. So a bare `Shift+A` satisfies the clause there too | ghostty | `input/key_encode.zig:431`, `:449`, test at `:2160` |
+| Resolves `Ctrl+I` through this mode **when it is on**, and through fixterms when it is not. `ctrlSeq` has `'i'`, `'m'` and `'['` commented out on purpose (*"These are processed as CSI u"*, `:819-826`), so they never short-circuit to C0; with the mode on they meet the modifyOtherKeys block first and emit `CSI 27;...~`, and with it off they fall through to fixterms — `Ctrl+I` → `CSI 105;5u`. The *"fixterm awkward letters"* test passes `.{}`, i.e. the mode **off**, which is what makes it a test of the ungated path rather than of this mode | ghostty | `input/key_encode.zig:819-826`, `:416`, `:449`, `:470`; tests at `:2147`, `:2205` |
 | Its own modifyOtherKeys expectations are `Ctrl+Shift+H` → `CSI 27;6;72~` and `Alt+8` → `CSI 27;3;56~` | ghostty | `input/key_encode.zig`, tests at `:2150`, `:2178` |
-| **Neither implements it at all** — both negotiate the kitty keyboard protocol instead (a `CSI 27` hit in xterm.js is kitty's keycode for Escape, not this mode) | alacritty, xterm.js | no `modifyOtherKeys` / `modify_other` match in either tree |
+| **Neither implements it at all** — both negotiate the kitty keyboard protocol instead (a `CSI 27` hit in xterm.js is kitty's keycode for Escape, not this mode). xterm.js registers `>`-prefixed CSI handlers for `c`, `q` and `u` only, and carries an explicitly **skipped** test for this sequence; alacritty's `Handler` has `set_keyboard_mode` / `push_keyboard_mode` and no modify-keys method at all | alacritty, xterm.js | `xterm.js: src/common/InputHandler.ts:233,246,261`, `test/playwright/InputHandler.test.ts:1401`; `alacritty_terminal/src/term/mod.rs` |
 
 **The split that matters for justerm**: 2 of 4 implement the mode, and the two that do disagree
 about which keys it captures. The gate justerm ships is xterm's *other* two clauses — a non-Shift
@@ -3191,3 +3191,12 @@ modifier, or Shift with space — because justerm's consumer hands over the prod
 the modifiers it saw, so `Char('A') + SHIFT` arrives intact and xterm's `0x40..=0x7f` clause would
 turn every capital into an escape sequence. Measured both directions: that clause also *under*-reaches,
 dropping `Alt+8` (`0x38`), which both references do emit.
+
+**Three of these rows were wrong when first written (2026-09-11) and are corrected above, by a
+refuting pass on the same day.** Recorded rather than silently rewritten, because the shape of the
+errors is the reusable part: each was a real line of reference source read one function too early.
+The level-1/2 split was attributed to `allowedCharModifiers`, whose Control strip is gated on level
+**0** alone; the ghostty row said it does not resolve `Ctrl+I` through this mode, from a test that
+passes the mode **off**; and the resource count was taken from a line range that begins inside the
+fourth `case`. The conclusions built on them all survived — which is the other half of the lesson:
+a wrong mechanism can support a right answer for a long time.
