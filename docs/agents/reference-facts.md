@@ -3173,6 +3173,7 @@ The mode `vim` asks for at startup (`CSI > 4 ; 2 m`) and clears on exit (`CSI > 
 | Fact | Reference | Site |
 |---|---|---|
 | The final carries **eight** resources, one `case` each: `modifyKeyboard` 0, `modifyCursorKeys` 1, `modifyFunctionKeys` 2, `modifyKeypadKeys` 3, `modifyOtherKeys` 4, `modifyStringKeys` 5, `modifyModifierKeys` 6, `modifySpecialKeys` 7 | xterm | `ptyx.h:3382-3391`, `charproc.c:2394-2421` |
+| `CSI > m` with no `Pp` is **not** "reset every resource": it restores resources **1..5** to their *initial* values (`DEFAULT` with `enabled`), not to 0, and not all eight | xterm | `charproc.c:6352-6355` |
 | The levels are `mokNone` 0, `mokUser` 1, `mokProgram` **2**, `mokExtended` 3 — so a bool for "level 2" is a choice about *which* of four to implement, not the whole space | xterm | `ptyx.h:3374-3379` |
 | **Level 2 is what separates `Ctrl+I` from `Tab`**, and the mechanism is a per-level `switch` inside `ModifyOtherKeys`: a control-associated key gets `result = False` at level 1 when the state is exactly Control or exactly Shift, and `result = True` unconditionally at level 2 | xterm | `input.c:686-691` (level 1), `:725-727` (level 2) |
 | The emitted shape is `CSI 27 ; <mods> ; <code> ~`, with `CSI <code> ; <mods> u` as the alternative its `formatOtherKeys` resource selects | xterm | `input.c:760-782` (`modifyOtherKey`) |

@@ -6,12 +6,9 @@
 //! bracketed paste, modifyOtherKeys). The engine owns the modes; these functions
 //! are pure (event + modes → bytes), so the consumer's I/O stays its own concern.
 //!
-//! This is the **legacy xterm** baseline (the common-90% every TUI speaks), and it
-//! now has two extensions rather than one. The kitty keyboard protocol (`CSI u` + a
-//! negotiated progressive-flag stack, #23) is a stateful superset that *replaces*
-//! the legacy form for what legacy cannot express. `modifyOtherKeys` (#890) is not
-//! a superset: it is negotiated too, but it rewrites one case *inside* legacy and is
-//! checked after kitty, never instead of it.
+//! This is the **legacy xterm** baseline (the common-90% every TUI speaks) plus two
+//! negotiated extensions, kitty (#23) and `modifyOtherKeys` (#890). They are asked in
+//! a fixed order and that order is deliberate — `docs/map/territory/input-encoding.md`.
 
 use bitflags::bitflags;
 
@@ -351,12 +348,7 @@ const KITTY_DISAMBIGUATE: u8 = 0b1;
 /// Encode a key event to bytes, given the four pieces of mode state that decide it:
 /// DECCKM (application cursor keys), application keypad, the kitty keyboard-protocol
 /// flags, and `modifyOtherKeys` level 2. Returns `None` only for keys with no defined
-/// encoding.
-///
-/// The order between the last two is load-bearing and not alphabetical: kitty is asked
-/// first and wins outright, because an application that negotiated the newer protocol
-/// asked for its form specifically. `modifyOtherKeys` is then an extension *within* the
-/// legacy arm (#890).
+/// encoding. The order the last two are asked in is load-bearing — `docs/map/territory/input-encoding.md`.
 pub fn encode_key(
     ev: &KeyEvent,
     app_cursor: bool,
@@ -372,9 +364,7 @@ pub fn encode_key(
     {
         return Some(bytes);
     }
-    // modifyOtherKeys sits *inside* legacy rather than beside kitty (#890): it is an
-    // extension to the legacy encoding that changes nothing unless an application asks,
-    // which is also how ghostty places it (`key_encode.zig`, inside its `legacy`).
+    // Deliberately *after* kitty and inside legacy, not beside it (#890).
     if modify_other_keys_2 && let Some(bytes) = modify_other_key(ev.key, ev.mods) {
         return Some(bytes);
     }
@@ -562,72 +552,23 @@ fn kitty_seq(number: u32, modified: Option<u8>, event: Option<u8>, terminator: u
     v
 }
 
-/// A printable character with modifiers. Ctrl folds an ASCII letter to its
-/// control code; Alt (meta-sends-escape) prefixes ESC.
 /// A modified character under `modifyOtherKeys` level 2 (#890): `CSI 27 ; <1+mods> ;
 /// <codepoint> ~`. `None` leaves the key to the ordinary legacy encoding.
 ///
-/// The shape is xterm's own — `modifyOtherKey` (`input.c:760-782`) emits this when
-/// its `formatOtherKeys` resource is 0, its default, and the `CSI <code> ; <mods> u`
-/// alternative it offers at 1 is **deliberately not** what we emit: that is byte-for-byte
-/// the shape [`kitty_encode`] already produces, and two protocols that a consumer
-/// negotiates separately should not be indistinguishable on the wire.
-///
-/// **Which keys qualify is where this departs, and it is one clause out of three.**
-/// The reference's level-2 arm (`input.c:725-732`) is exactly: `IsControlInput` — any
-/// codepoint in `0x40..=0x7f` (`:272-274`) — *or* `state == ShiftMask && keysym == ' '`
-/// *or* a non-Shift modifier. **The first is dropped here and the other two are kept.**
-///
-/// The reason is the seam above this crate, not a judgement about the protocol. `0x41`
-/// is `A`, so that clause captures every capital letter; a keysym-based terminal is
-/// unharmed because Shift has already been spent producing the `A` and its consumer
-/// never reports it, while justerm's consumer hands over the produced character **and**
-/// the modifiers it saw, so `Char('A') + SHIFT` arrives intact. Keeping the clause would
-/// turn ordinary typing into escape sequences.
-///
-/// **Do not repair this by citing ghostty's consumed-mods pass** — an earlier version of
-/// this comment did, and it is false: `should_modify` reads `event.mods.binding()`, not
-/// the effective mods, and ghostty's own test *"ctrl+shift+char with modify other state 2
-/// and consumed mods"* passes `consumed_mods = shift` and still expects `CSI 27;6;72~`.
-/// It inherits the clause and the consequence with it. The divergence here is justerm's,
-/// on justerm's grounds.
-///
-/// **A named key whose bare form is a C0 control is in the mechanism too**, and the arms above
-/// are the reference's own (`input.c:704-724`). This paragraph said the opposite for one
-/// revision — that the mechanism was `Char`-only and the gap was a recorded limit — and what
-/// changed the answer was reading how the *other* implementations send a modified `Tab` at all:
-/// alacritty and xterm.js never do it through this mode, they do it through the kitty protocol,
-/// and **this engine already did that** (`Ctrl+Tab` — `CSI 9;5u`, byte-identical to both). So
-/// the gap was not "a feature nobody has", it was the same terminal answering *yes* down one
-/// negotiated protocol and *no* down the other for the same keystroke.
-///
-/// **ghostty's polarity is the opposite of this one and is worth knowing before changing it.**
-/// Its table sends `CSI 27;5;9~` for `Ctrl+Tab` with **no** condition on the mode
-/// (`function_keys.zig`, the `.tab` / `.enter` / `.escape` entries), and uses the mode only to
-/// switch a handful of entries *back* to legacy. That was not followed: emitting it unasked
-/// changes bytes for an application that never negotiated, which is what this crate's legacy
-/// baseline promises not to do. The bytes themselves agree with xterm's, which is what makes
-/// the value here uncontroversial even though the gating is not.
-///
-/// Measured in both directions before it was taken: the dropped clause also *under*-reaches,
-/// since `Alt+8` (`0x38`) is outside `0x40..=0x7f` and both references still emit it — which
-/// the third clause covers. `Ctrl+Shift+H` → `CSI 27;6;72~` and `Alt+8` → `CSI 27;3;56~`,
-/// ghostty's own expectations, come out identical here.
+/// Three things here are deliberate and none is obvious from the code: the emitted shape
+/// is not the `u` form the reference also offers, one of its three qualifying clauses is
+/// dropped, and named keys are in scope while `Delete` is not. All three, with what they
+/// were measured against, are in `docs/map/territory/input-encoding.md` and
+/// `docs/agents/reference-facts.md` (#890).
 fn modify_other_key(key: Key, mods: Modifiers) -> Option<Vec<u8>> {
     let code = match key {
         Key::Char(c) => {
             char_qualifies(c, mods)?;
             c as u32
         }
-        // The three whose unmodified byte is a C0 control, and whose whole reason to be
-        // here is that a modified one is otherwise indistinguishable from the bare key.
-        // The reference admits them on *any* expressible modifier (`modify_parm != 0`,
-        // `input.c:720-724`).
+        // Tab / Enter / Escape: any expressible modifier (`input.c:720-724`).
         Key::Tab => {
-            // ...except Shift alone. A shifted Tab is a different keysym there
-            // (`XK_ISO_Left_Tab`) and needs a **non-Shift** modifier to qualify
-            // (`input.c:715-718`), so plain `Shift+Tab` keeps `CSI Z` — and
-            // `Ctrl+Shift+Tab` does not.
+            // Shift alone is excluded on purpose, so back-tab keeps `CSI Z` (`:715-718`).
             mods.difference(Modifiers::SHIFT).csi_param()?;
             9
         }
@@ -639,24 +580,15 @@ fn modify_other_key(key: Key, mods: Modifiers) -> Option<Vec<u8>> {
             mods.csi_param()?;
             27
         }
-        // Backspace qualifies on a modifier that is **not** Control (`input.c:706-710`,
-        // *"strip ControlMask as per IsBackarrowToggle"*), so `Ctrl+Backspace` keeps its
-        // legacy byte while `Alt+Backspace` and `Ctrl+Shift+Backspace` do not. The code is
-        // `127` rather than `8` because that is the byte this encoder sends for a bare
-        // Backspace (the PC-keyboard convention), and the two must agree about which key
-        // they are naming; ghostty's table spells the same value.
+        // Backspace: a modifier that is **not** Control, so `Ctrl+Backspace` keeps its
+        // legacy byte (`input.c:706-710`). `127` rather than `8` is deliberate — note.
         Key::Backspace => {
             mods.difference(Modifiers::CTRL).csi_param()?;
             127
         }
-        // **`Delete` is deliberately not here**, and the two references part company on it:
-        // xterm routes it (`input.c:711-713`) where ghostty keeps the conventional
-        // `CSI 3 ; <mods> ~`. Two things decide it for justerm, and neither is the
-        // head-count. A modified Delete is *already* unambiguous — `CSI 3;5~` is nothing
-        // else's bytes — so this mechanism has no ambiguity to resolve there. And xterm's
-        // own emission would be `CSI 27;5;127~`, the same codepoint it gives Backspace,
-        // which is a collision rather than a disambiguation. Every other named key
-        // (arrows, Home/End, function keys) is out for the first reason alone.
+        // **`Delete` and every other named key are deliberately out**, not forgotten — they
+        // already have an unambiguous modified form. Grounds in the note; the references
+        // disagree here.
         _ => return None,
     };
     let param = mods.csi_param()?;
@@ -665,18 +597,10 @@ fn modify_other_key(key: Key, mods: Modifiers) -> Option<Vec<u8>> {
 
 /// Whether a *character* key qualifies under level 2.
 ///
-/// **Ask the question of the parameter, not of the raw bits.** `csi_param` drops
-// Super / Hyper / CapsLock / NumLock — they have no legacy form — so a gate that
-// tests the bitflags admits a chord the parameter then cannot describe: `Shift+Super+A`
-// passed, and was emitted as `CSI 27;2;65~`, which is byte-identical to what a bare
-// `Shift+A` would have to mean. That is the exact failure this predicate's narrow
-// shape exists to prevent, reached through a modifier its reasoning had not
-// considered, and it is reachable today — `justerm-web` maps `metaKey` to `SUPER`
-// unconditionally, so every macOS `Cmd+Shift+<letter>` hits it while vim has the mode
-// on. Masking first is also what the reference does: its non-Shift clause is
-// `computeMaskedModifier(xw, state, ShiftMask)` (`input.c:730`), which is
-// `xtermStateToParam(Masked(state, ShiftMask))` (`:520-521`) — strip Shift, convert to
-// the parameter, test *that*.
+/// **Ask the question of the parameter, not of the raw bits** — a gate on the bitflags
+/// admits a chord `csi_param` cannot then describe. Why that is a defect rather than a
+/// nicety, and the modifier it was reached through, are in
+/// `docs/map/territory/input-encoding.md`.
 fn char_qualifies(c: char, mods: Modifiers) -> Option<()> {
     if mods.difference(Modifiers::SHIFT).csi_param().is_none()
         && !(mods == Modifiers::SHIFT && c == ' ')
@@ -686,6 +610,8 @@ fn char_qualifies(c: char, mods: Modifiers) -> Option<()> {
     Some(())
 }
 
+/// A printable character with modifiers. Ctrl folds an ASCII letter to its
+/// control code; Alt (meta-sends-escape) prefixes ESC.
 fn encode_char(c: char, mods: Modifiers) -> Vec<u8> {
     let mut out = Vec::new();
     if mods.contains(Modifiers::ALT) {

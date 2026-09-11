@@ -279,21 +279,11 @@ pub struct Term {
     /// `encode_key` consults it *after* `kitty_flags`, because it belongs to the
     /// legacy encoding rather than competing with the newer protocol.
     ///
-    /// **RIS: dies** — [`Self::full_reset`] rebuilds `Term` wholesale and copies
-    /// back only the handful of fields named there, so this one returns to `false`
-    /// with no line of its own. That is the right answer rather than a convenience:
-    /// this is terminal state an *application* set by printing, not consumer
-    /// configuration like the word-boundary set, so an application printing `reset`
-    /// is entitled to clear it. (The question is asked here because
-    /// `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md` requires
-    /// every new `Term` field to answer it at its definition site, whichever way.)
-    /// **DECSTR: dies too**, and that one is xterm's answer rather than a guess.
-    /// `CASE_DECSTR` calls `VTReset(xw, False, False)` (`charproc.c:6147-6149`),
-    /// which is `ReallyReset(full = False)` — and the line restoring the keyboard
-    /// resources, `xw->keyboard.modify_now = xw->keyboard.modify_1st`, sits
-    /// **outside** that function's `full` gate, so a soft reset clears it exactly
-    /// as a hard one does. [`Self::soft_reset`] names its fields one at a time, so
-    /// this one is named there.
+    /// **Both resets clear it**, RIS by the wholesale rebuild in [`Self::full_reset`] and
+    /// DECSTR by a line of its own in [`Self::soft_reset`]. Which it is, and why the answer
+    /// is the reference's rather than a convenience, is in
+    /// `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md`, whose table this
+    /// field is the fifth row of.
     modify_other_keys_2: bool,
     /// Consumer events (title / bell / cwd) accumulated since the last
     /// `drain_events` (#12). Pull, not push — see `event.rs`.
@@ -5814,34 +5804,12 @@ impl Perform for Term {
         // DA2's 4, all of them `Pp = 4` (modifyOtherKeys). `vim` sets it at startup
         // and clears it on exit, and the clear is the more frequent of the two.
         //
-        // **Only `Pp = 4` is routed.** xterm keys **eight** resources off this one
-        // final, not four: `modifyKeyboard` 0, `modifyCursorKeys` 1,
-        // `modifyFunctionKeys` 2, `modifyKeypadKeys` 3, `modifyOtherKeys` 4,
-        // `modifyStringKeys` 5, `modifyModifierKeys` 6, `modifySpecialKeys` 7
-        // (`ptyx.h:3382-3391`, one `case` each in `charproc.c:2394-2421`). The other
-        // seven occur zero times in this repo's captures, so routing them would be a
-        // claim with nothing behind it. `CSI > m` is deliberately not that claim
-        // either — and it is *not* "reset everything": xterm restores resources
-        // **1..5** to their initial values (`charproc.c:6352-6355`, `DEFAULT` with
-        // `enabled`), not 0, and not all eight. Measured, an omitted `Pp` arrives as
-        // `[[0]]`, the same params a `CSI > 0 m` produces, so honouring it would mean
-        // acting on a form we cannot tell apart from one aimed at another resource.
-        //
-        // **`Pv >= 2`, not `Pv == 2`.** xterm's levels are 0 none, 1 user-friendly,
-        // 2 program-friendly, 3 extended (`ptyx.h:3374-3379`), and the level a key
-        // like `Ctrl+I` needs is 2. **What separates 1 from 2 is not
-        // `allowedCharModifiers`**, which an earlier version of this comment said:
-        // that function's Control strip is gated on `== mokNone`, level 0 alone
-        // (`input.c:585-586`). The levels part company inside `ModifyOtherKeys`,
-        // whose per-level `switch` gives a control-associated key `result = False`
-        // at level 1 when the state is exactly Control or exactly Shift
-        // (`input.c:686-691`) and an unconditional `result = True` at level 2
-        // (`input.c:725-727`) — which is what sends `Ctrl+I` down the C0 path at
-        // one level and not the other.
-        // Only level 2 is implemented, so 3 is honoured as 2 rather than as off —
-        // an application asking for *more* disambiguation must not silently get
-        // none. An omitted `Pv` arrives as `0` and so turns it off, which is both
-        // what vim's exit sequence means and what xterm does with it.
+        // **Only `Pp = 4` is routed**, of the eight resources xterm keys off this one final;
+        // `CSI > m` is deliberately not honoured, because an omitted `Pp` is measurably
+        // indistinguishable from one aimed at another resource. **`Pv >= 2`, not `== 2`**:
+        // level 2 is what separates `Ctrl+I` from `Tab`, and 3 asks for more than 2 rather
+        // than for nothing. Both, with the reference sites, are in
+        // `docs/agents/reference-facts.md` (#890).
         if intermediates == [b'>'] && action == 'm' {
             if param_or(params, 0, 0) == 4 {
                 self.modify_other_keys_2 = param_or(params, 1, 0) >= 2;

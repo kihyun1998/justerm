@@ -39,9 +39,28 @@ Nothing governs the encoding itself.
   arrives as `Char('A') + SHIFT` — where a keysym-based terminal has already spent the Shift. So
   xterm's own `0x40..=0x7f` clause, which both it and ghostty use, would turn every capital into an
   escape sequence here. Rows in [`reference-facts.md`](../../agents/reference-facts.md).
-- **This is the legacy xterm baseline** — the common 90% every TUI speaks. The kitty keyboard
-  protocol (`CSI u` plus a negotiated progressive-flag stack) is a **stateful superset**, deliberately
-  deferred, and it rewrites only what legacy cannot express.
+  **And the gate asks that of the *parameter*, not of the raw bits**, which is the whole of
+  it: `csi_param` drops Super / Hyper / CapsLock / NumLock, so a gate on the bitflags admits
+  a chord it cannot then describe — `Shift+Super+A` passed and came out as
+  `CSI 27;2;65~`, byte-identical to what a bare `Shift+A` would have to mean. Reachable
+  through the widget, which maps `metaKey` to `SUPER` unconditionally: every macOS
+  `Cmd+Shift+<letter>` while the mode is on. The reference masks first for the same reason.
+- **Two values in that encoding are ours, not the reference's, and both read as arbitrary at
+  the call site.** The shape is `CSI 27 ; <mods> ; <code> ~` and **not** the
+  `CSI <code> ; <mods> u` form the reference offers as its alternative — that one is
+  byte-for-byte what this engine's *kitty* path already produces, and two protocols a
+  consumer negotiates separately must not be indistinguishable on the wire. And a modified
+  `Backspace` carries code **127**, not the `8` a keysym-based terminal would send, because
+  `127` is the byte this encoder gives a bare Backspace (the PC-keyboard convention) —
+  the two have to agree about which key they are naming. ghostty's table spells the same.
+- **This is the legacy xterm baseline** — the common 90% every TUI speaks — with **two**
+  negotiated extensions on it, which behave differently and are asked in a fixed order. The
+  kitty keyboard protocol (`CSI u` plus a progressive-flag stack, #23) is a **stateful
+  superset**: it *replaces* the legacy form for what legacy cannot express, and it is asked
+  first. `modifyOtherKeys` (#890) is not a superset — it rewrites one case *inside* legacy,
+  and is asked after. (This bullet said the kitty half was *"deliberately deferred"* until
+  2026-09-11, some two months after #23 shipped it; the same sentence survived a second time
+  under `## Known holes`, which is what a claim held in two places does.)
 - **The web half normalises, it does not encode.** Its intent types mirror `input.rs` as a contract;
   the protocol bytes are the backend's job. A consumer that encoded in the browser would have to
   replicate the mode tracking, which it cannot see.
