@@ -175,3 +175,43 @@ fn a_modified_character_that_is_not_a_control_alias_goes_through_too() {
     );
     assert_eq!(enc(&t, Key::Char('8'), Modifiers::ALT), b"\x1b[27;3;56~");
 }
+
+/// A real `vim` session, not a sequence typed into a test. The synthetic cases above
+/// assert what the engine does with bytes *I* wrote; this one asserts that the bytes a
+/// real editor emitted on a real PTY reach the same state — the gap those two leave is
+/// where a mis-parsed parameter, or a form no literal in this file happens to use, would
+/// hide.
+///
+/// **The capture contains the whole round trip, and asserting only its end state would
+/// have asserted the wrong half.** `vim_redraw.raw` enables at byte 17 and clears twice
+/// near the end (2943, 3035), because the recording runs until vim exits — so a test
+/// that fed the file and checked the mode was *on* failed against a correct engine. What
+/// the material actually proves is both transitions, which is what is pinned here.
+#[test]
+fn a_recorded_vim_session_drives_the_mode_on_and_back_off() {
+    const VIM: &[u8] = include_bytes!("fixtures/vim_redraw.raw");
+    // The material has to be there, or this test passes by describing nothing (#554).
+    let on_at = VIM
+        .windows(7)
+        .position(|w| w == b"[>4;2m")
+        .expect("the capture must contain the request this test is about");
+    assert!(
+        VIM[on_at + 7..].windows(6).any(|w| w == b"[>4;m"),
+        "and the clear that follows it"
+    );
+
+    let mut t = Engine::new(80, 24);
+    t.feed(&VIM[..on_at + 7]);
+    assert_eq!(
+        enc(&t, Key::Char('i'), Modifiers::CTRL),
+        b"[27;5;105~",
+        "vim's own startup request must engage the mode"
+    );
+
+    t.feed(&VIM[on_at + 7..]);
+    assert_eq!(
+        enc(&t, Key::Char('i'), Modifiers::CTRL),
+        b"	",
+        "and its exit must put the keyboard back"
+    );
+}
