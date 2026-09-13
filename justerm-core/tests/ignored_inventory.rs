@@ -33,8 +33,8 @@
 //!   to an unmodified key — the probe's second mistake.
 //! - **Kinds are bracketed by this file's own scanner**, not by `vte`. A mis-bracketed token
 //!   corrupts its neighbours when removed and manufactures a false effect, so
-//!   [`the_scanner_brackets_every_capture_exactly`] holds it to reassembling each stream byte for
-//!   byte with every ESC inside a token.
+//!   [`the_scanner_brackets_every_capture_exactly`] holds every ESC to exactly one token, and no
+//!   token to an ESC past its own opening and closing.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -536,21 +536,21 @@ fn the_scanner_brackets_every_capture_exactly() {
                     c.name
                 );
             }
-            // Removing every token and then every non-token byte must leave nothing, and the two
-            // halves must reassemble the stream: tokens are exact slices, not re-encodings.
-            let mut rebuilt = Vec::with_capacity(part.len());
-            let mut last = 0;
+            // The failure that coverage cannot see: a token that runs long and swallows the next
+            // sequence still covers every ESC. A token holds an ESC only where it opens, and a
+            // string sequence also where its ST closes it.
             for t in &toks {
-                rebuilt.extend_from_slice(&part[last..t.start]);
-                rebuilt.extend_from_slice(&part[t.start..t.end]);
-                last = t.end;
+                let body = &part[t.start + 1..t.end];
+                let st = body.ends_with(b"\x1b\\") as usize * 2;
+                assert!(
+                    !body[..body.len() - st].contains(&0x1b),
+                    "{}: token {:?} at {}..{} swallowed another sequence",
+                    c.name,
+                    t.kind,
+                    t.start,
+                    t.end
+                );
             }
-            rebuilt.extend_from_slice(&part[last..]);
-            assert_eq!(
-                rebuilt, part,
-                "{}: tokens do not reassemble the stream",
-                c.name
-            );
         }
     }
 }
