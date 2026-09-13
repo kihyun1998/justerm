@@ -1,0 +1,12 @@
+# less_softwrap 80x24 bytes=2971 kinds=11
+C0 0x08                x8     text
+C0 0x0a                x58    frame text modes
+C0 0x0d                x66    frame text modes
+CSI ?1h                x1     -
+CSI ?1l                x1     keys
+CSI H                  x26    frame text modes
+CSI K                  x12    frame text
+CSI m                  x2     -
+ESC =                  x1     -
+ESC >                  x1     keys
+ESC M                  x24    frame text

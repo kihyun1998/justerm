@@ -1,0 +1,21 @@
+# htop 80x24 bytes=4026 kinds=20
+C0 0x0d                x3     frame text
+CSI 22t                x1     -
+CSI 4l                 x1     -
+CSI ?1006;1000h        x1     -
+CSI ?1006;1000l        x1     frame mouse
+CSI ?1049h             x1     frame
+CSI ?12l               x1     -
+CSI ?1h                x1     keys
+CSI ?25h               x1     frame
+CSI ?25l               x1     -
+CSI ?7h                x1     -
+CSI H                  x57    frame text
+CSI J                  x2     frame text
+CSI K                  x3     frame
+CSI X                  x4     frame text
+CSI d                  x3     frame text
+CSI m                  x364   frame
+CSI r                  x1     -
+ESC (B                 x136   -
+ESC =                  x1     keys

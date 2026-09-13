@@ -1,0 +1,35 @@
+# neovim_kitty 80x24 bytes=1182 kinds=34
+C0 0x08                x6     frame text
+C0 0x0a                x29    frame text
+C0 0x0d                x32    frame text
+CSI  q                 x6     -
+CSI 22t                x2     -
+CSI <u                 x1     keys
+CSI >1u                x1     -
+CSI ?1002h             x2     -
+CSI ?1002l             x2     frame mouse
+CSI ?1006h             x2     -
+CSI ?1006l             x2     -
+CSI ?1049h             x1     frame
+CSI ?1h                x1     -
+CSI ?1l                x1     keys
+CSI ?2004h             x1     paste
+CSI ?25h               x6     frame
+CSI ?25l               x5     -
+CSI ?u                 x1     replies
+CSI C                  x2     frame text
+CSI D                  x1     frame text
+CSI H                  x23    frame text
+CSI J                  x2     -
+CSI K                  x27    -
+CSI L                  x2     frame text
+CSI M                  x1     frame text
+CSI X                  x4     frame text
+CSI c                  x1     replies
+CSI m                  x22    frame
+CSI r                  x6     frame text
+ESC (B                 x18    -
+ESC =                  x1     -
+ESC >                  x1     keys
+OSC 11                 x1     events
+OSC 112                x6     events

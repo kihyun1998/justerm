@@ -1,0 +1,10 @@
+# osc133_clear 40x10 bytes=643 kinds=9
+C0 0x08                x4     -
+C0 0x0a                x13    frame text events marks
+C0 0x0d                x24    frame text events modes marks
+CSI ?2004h             x5     -
+CSI ?2004l             x5     paste
+CSI H                  x1     frame text events modes marks
+CSI J                  x2     frame text events marks
+CSI K                  x4     -
+OSC 133                x31    frame events marks

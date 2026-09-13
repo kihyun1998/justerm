@@ -1,0 +1,25 @@
+# alt_resize_vim 80x24 bytes=4326 kinds=24
+C0 0x0a                x3     frame text
+C0 0x0d                x3     frame text
+CSI %m                 x1     -
+CSI 22t                x3     -
+CSI 6n                 x2     replies
+CSI >4m                x1     keys
+CSI >c                 x1     replies
+CSI ?1004h             x1     focus
+CSI ?1049h             x1     frame text modes
+CSI ?12h               x1     -
+CSI ?12l               x1     frame
+CSI ?1h                x1     keys
+CSI ?2004h             x1     paste
+CSI ?25h               x4     frame
+CSI ?25l               x4     -
+CSI H                  x84    frame text replies
+CSI J                  x2     frame text
+CSI K                  x5     -
+CSI m                  x29    frame
+CSI r                  x1     -
+DCS zz                 x1     -
+ESC =                  x1     keys
+OSC 10                 x1     events
+OSC 11                 x1     events

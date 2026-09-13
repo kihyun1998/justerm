@@ -1,0 +1,25 @@
+# cursor_color_nvim 80x24 bytes=374 kinds=24
+C0 0x0a                x24    frame
+CSI  q                 x2     -
+CSI 22t                x2     -
+CSI ?1002h             x1     -
+CSI ?1002l             x1     frame mouse
+CSI ?1006h             x1     -
+CSI ?1006l             x1     -
+CSI ?1049h             x1     frame
+CSI ?1h                x1     -
+CSI ?1l                x1     keys
+CSI ?2004h             x1     paste
+CSI ?25h               x3     frame
+CSI ?25l               x2     -
+CSI ?u                 x1     replies
+CSI H                  x2     frame
+CSI J                  x3     -
+CSI K                  x23    -
+CSI c                  x1     replies
+CSI m                  x2     -
+ESC (B                 x2     -
+ESC =                  x1     -
+ESC >                  x1     keys
+OSC 11                 x1     events
+OSC 12                 x2     -

@@ -1,0 +1,9 @@
+# softwrap_wide 80x24 bytes=617 kinds=8
+C0 0x0a                x12    frame text
+C0 0x0d                x12    frame text
+CSI @                  x1     frame text
+CSI H                  x8     frame text
+CSI J                  x1     -
+CSI K                  x1     frame text
+CSI M                  x1     frame text
+CSI P                  x1     frame text

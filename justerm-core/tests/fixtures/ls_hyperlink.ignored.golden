@@ -1,0 +1,4 @@
+# ls_hyperlink 80x24 bytes=762 kinds=3
+C0 0x0a                x9     frame text attrs
+C0 0x0d                x9     frame text attrs
+OSC 8                  x16    frame attrs
