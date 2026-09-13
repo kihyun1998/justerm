@@ -18,6 +18,16 @@
 
 use justerm_core::Engine;
 
+/// Recorded on the RHEL VM under a bare `expect`, one session each, with the pty narrowed from 80 to
+/// 40 columns (24 rows) mid-session and the log split at exactly that `SIGWINCH` — so `pre` is
+/// everything before the resize and `post` is the application's response to it (`f9756c2`).
+///
+/// **There is no `capture-*.sh` for these four**, and what that costs is specific: the `htop` and
+/// `vim` flags and the dwell either side of the resize were never written down, so neither pair can
+/// be re-recorded to the byte. One thing is recoverable from the bytes rather than the history —
+/// `alt_resize_vim.pre` asks DA2, and a vim in *compatible* mode probes the terminal not at all
+/// (measured in #891), so this vim was nocompatible. That is what lets it stand as an open-loop
+/// control in `closed_loop_capture.rs`.
 const HTOP_PRE: &[u8] = include_bytes!("fixtures/alt_resize_htop.pre.raw");
 const HTOP_POST: &[u8] = include_bytes!("fixtures/alt_resize_htop.post.raw");
 const VIM_PRE: &[u8] = include_bytes!("fixtures/alt_resize_vim.pre.raw");

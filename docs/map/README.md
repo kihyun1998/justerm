@@ -81,6 +81,7 @@ owns no detail of its own.
   [caret drawing](territory/caret-drawing.md) ·
   [CI & supply chain](territory/ci-and-supply-chain.md) ·
   [caret report](territory/caret-report.md) ·
+  [capture corpus](territory/capture-corpus.md) ·
   [cell compositing](territory/cell-compositing.md) ·
   [cell geometry](territory/cell-geometry.md) ·
   [cursor position](territory/cursor-position.md) ·

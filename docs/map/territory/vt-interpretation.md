@@ -152,7 +152,7 @@ for a terminal engine, that list is half the specification.
   *above* the catch-all, keyed on the pair rather than on the prefix alone (a `.first()` match makes
   `CSI > $ c` DA2, which is what alacritty does and the other three references do not); and the
   remaining members are silent by construction, so their count is a measurement rather than a
-  reading — across this repo's captures `CSI > m` (XTMODKEYS) occurs 7 times and `CSI > q`
+  reading — across this repo's captures `CSI > m` (XTMODKEYS) occurs 10 times and `CSI > q`
   (XTVERSION) **once**, which still inverts the order the reference trees suggest. Rows in
   [`reference-facts.md`](../../agents/reference-facts.md). That count is what decided the order
   they were taken in: XTMODKEYS was the next one routed (#890) precisely because it was the
@@ -163,12 +163,16 @@ for a terminal engine, that list is half the specification.
   2026-09-02** (#842's `tmux_clipboard.raw`); a fresh tmux attach recorded on the 11th emits it too,
   so tmux asks unconditionally. Two things follow for anyone quoting a count out of this corpus.
   It is only true of one revision of the corpus — re-measure rather than cite. And it is a **floor**,
-  because the corpus is *open-loop*: every capture is recorded under `script(1)`, which copies bytes
-  and answers nothing, so nothing an application sends only *after* a reply can appear in it. That is
+  because all but one capture is *open-loop*: recorded under `script(1)` or a bare `expect`
+  (`less_softwrap` and both `alt_resize_*` are the second kind), both of which copy bytes and
+  answer nothing, so nothing an application sends only *after* a reply can appear in it. That is
   visible in the corpus rather than assumed — answering DA2 is measured (`term.rs`, the DA2 block) to
-  make vim ask ten `DCS + q` XTGETTCAP questions, and `DCS + q` occurs **zero** times across all 19
-  fixtures, four of which ask DA2. Closing that loop needs a capture harness that feeds
-  `drain_replies()` back into the pty, which does not exist.
+  make vim ask ten `DCS + q` XTGETTCAP questions, and `DCS + q` occurs **zero** times across every
+  open-loop fixture, four of which ask DA2.
+- **One capture is closed-loop** (#891) — `vim_closed_loop.raw` holds all ten. How it was recorded,
+  why the replies had to be the engine's, and why its bytes encode a consumer policy are
+  [the capture corpus](capture-corpus.md)'s, not this territory's: this one only needs to know that
+  a count from the other captures is still a floor.
 - **An OSC payload arrives unbounded, and a handler that builds anything from one bounds it
   itself (#828).** Measured with a throwaway probe rather than read off the crate: `vte` is built
   with its default features, so its OSC accumulator is a `Vec<u8>` and **not** the

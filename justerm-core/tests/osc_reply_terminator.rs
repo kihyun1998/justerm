@@ -85,8 +85,9 @@ const FAMILIES: &[(&str, &str)] = &[
 
 /// A `BEL`-terminated query is answered `BEL`-terminated, for **all five** reply
 /// paths — the headline case, and the one every real capture in this repo
-/// exercises. Measured over all 19 `.raw` fixtures: every OSC in every one of them
-/// is BEL-terminated, none ST.
+/// exercises. Measured over all 20 `.raw` fixtures — 87 BEL, 0 ST — including the
+/// closed-loop one (#891), where a query is asked by an application that is being
+/// answered and still arrives BEL-terminated.
 #[test]
 fn a_bel_query_is_answered_bel_in_every_family() {
     for (query, body) in FAMILIES {

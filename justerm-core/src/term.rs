@@ -5614,7 +5614,9 @@ impl Perform for Term {
     /// A DCS is terminated: not a print, so the repeat is disarmed (#825). This method
     /// exists for that alone — the payload is otherwise unhandled — and it is reachable
     /// in ordinary use: since #824 answered DA2, `vim` follows up with XTGETTCAP
-    /// (`DCS + q <hex> ST`) queries this engine does not answer.
+    /// (`DCS + q <hex> ST`) queries this engine does not answer. Both halves of that
+    /// are pinned on recorded bytes rather than asserted — `tests/closed_loop_capture.rs`
+    /// (#891).
     ///
     /// The end of the DCS and not its start, which is both xterm's rule (its gate fires
     /// when the parser returns to the ground state) and the only half that can be shown
@@ -5753,9 +5755,11 @@ impl Perform for Term {
         //
         // It is one route out of ten `>` finals xterm routes, and the choice is
         // reach, not completeness: across this repo's capture corpus `CSI > c`
-        // occurs 4 times and XTMODKEYS `CSI > m` 7 — the latter is the highest-
-        // reach `>` sequence justerm did not route, which is why it was the
-        // next one taken (#890) rather than a later one — it no longer falls
+        // occurs 5 times and XTMODKEYS `CSI > m` 10 (re-measured 2026-09-11 after
+        // #891 added a twentieth fixture; they read 4 and 7 when #890 chose on
+        // them, and the order the choice turned on is unchanged) — the latter is
+        // the highest-reach `>` sequence justerm did not route, which is why it
+        // was the next one taken (#890) rather than a later one — it no longer falls
         // through here. XTVERSION `CSI > q` occurs **once**, in `tmux_clipboard.raw`.
         //
         // Both numbers moved after this paragraph was written, and the second one
@@ -5765,14 +5769,15 @@ impl Perform for Term {
         // recorded the same day emits it too — tmux asks unconditionally). A count
         // taken from a corpus is only ever true of one revision of it.
         //
-        // And it is a floor rather than a measurement of reach, because **this
-        // corpus is open-loop**: every capture is recorded under `script(1)`, which
-        // copies bytes and answers nothing, so no sequence an application only sends
-        // *after* a reply can appear in it. The signature is in the corpus already —
-        // the paragraph above measured that answering DA2 makes vim ask ten
-        // `DCS + q` XTGETTCAP questions, and `DCS + q` occurs **zero** times across
-        // all 19 fixtures, four of which ask DA2. So a `> q` count of one is what
-        // survives a recording that never let anything be gated on an answer.
+        // And it is a floor rather than a measurement of reach, because all but one
+        // capture is **open-loop** — recorded under `script(1)` or a bare `expect`,
+        // both of which answer nothing, so no sequence an application only sends *after* a reply can
+        // appear in it. The signature is in the corpus: answering DA2 makes vim ask
+        // ten `DCS + q` XTGETTCAP questions, and `DCS + q` occurs **zero** times
+        // across every open-loop fixture, four of which ask DA2. The exception is
+        // `vim_closed_loop.raw`, which holds all ten (#891) — what it cost to record
+        // one, and why its bytes are a function of a consumer policy as well as of
+        // vim, is in `docs/map/territory/vt-interpretation.md`.
         //
         // The match is on the whole slice rather than `.first()`, so
         // `CSI > $ c` is not DA2. That is 3-1: xterm drops it
@@ -5800,8 +5805,8 @@ impl Perform for Term {
             return;
         }
         // XTMODKEYS (`CSI > Pp ; Pv m`) — the second route through the `>` guard, and
-        // the highest-reach one: 7 occurrences across this repo's captures against
-        // DA2's 4, all of them `Pp = 4` (modifyOtherKeys). `vim` sets it at startup
+        // the highest-reach one: 10 occurrences across this repo's captures against
+        // DA2's 5, all of them `Pp = 4` (modifyOtherKeys). `vim` sets it at startup
         // and clears it on exit, and the clear is the more frequent of the two.
         //
         // **Only `Pp = 4` is routed**, of the eight resources xterm keys off this one final;
