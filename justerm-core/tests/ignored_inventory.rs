@@ -513,6 +513,25 @@ fn every_surface_sees_an_effect_somewhere_in_the_corpus() {
     );
 }
 
+/// The corpus holds no OSC closed by ST — every one ends in BEL — so the guard below cannot see
+/// that branch go wrong. The bounds here are read off the bytes, not off the scanner.
+#[test]
+fn the_scanner_closes_a_string_at_either_terminator() {
+    // ESC ] 0 ; t BEL | ESC ] 2 ; u ESC \ | ESC P + q 6 b 7 5 ESC \ | ESC [ H
+    let b = b"\x1b]0;t\x07\x1b]2;u\x1b\\\x1bP+q6b75\x1b\\\x1b[H";
+    let got: Vec<(usize, usize, String)> = scan(b)
+        .into_iter()
+        .map(|t| (t.start, t.end, t.kind))
+        .collect();
+    let want = [
+        (0, 6, "OSC 0"),
+        (6, 13, "OSC 2"),
+        (13, 23, "DCS +q"),
+        (23, 26, "CSI H"),
+    ];
+    assert_eq!(got, want.map(|(s, e, k)| (s, e, k.to_string())).to_vec());
+}
+
 #[test]
 fn the_scanner_brackets_every_capture_exactly() {
     for c in CAPTURES {
