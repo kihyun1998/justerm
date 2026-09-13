@@ -3221,3 +3221,22 @@ for those four under kitty (measured, byte-identical to alacritty and xterm.js),
 to characters left one terminal answering *yes* to one negotiated protocol and *no* to the other for
 the same keystroke. The bytes were taken from xterm and ghostty's agreement; the **gating** follows
 xterm, because ghostty's unconditional form changes bytes for an application that never asked.
+
+## How a recorded stream is taken, and what its replay can see of the reply half (#891, verified 2026-09-14)
+
+Read because justerm's first closed-loop capture raised the question of whether any reference records
+the *conversation* rather than the output. Two of the pinned trees keep recorded material; neither
+keeps the replies.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **alacritty's ref recordings are closed-loop by construction.** The file is tapped inside the live terminal's own PTY read, so every query in it was answered — by alacritty — while it was being recorded | alacritty | `alacritty_terminal/src/event_loop.rs:221-222` (the file), `:266` and `:281` (both `pty_read` calls hand it the tap), `:150` (the write) |
+| …and **the replay drops that half on the floor.** `ref_test` feeds the recording to a `Term` built with `Mock`, whose `send_event` is empty, while every reply leaves the terminal as `Event::PtyWrite` — so a replay neither produces nor checks an answer. What it compares is the grid alone, against `grid.json` beside `size.json` and `config.json` | alacritty | `alacritty_terminal/tests/ref.rs:94-98` (`Mock`), `:100-116` (the replay), `:118-135` (grid-only comparison); `PtyWrite` at `alacritty_terminal/src/term/mod.rs:1262`, `:1268`, `:1284`, `:1337` |
+| **xterm.js's fixtures are input streams with a hand-pasted expected screen.** `.in` files are played into a real xterm at 80x25 by `run_tests.py`, and the `.text` oracle is that window's contents copied by hand — nothing about the reply channel is recorded or asserted | xterm.js | `test/fixtures/escape_sequence_files/NOTES:1-10`, runner `run_tests.py`; replay and its skip list at `src/browser/Terminal2.test.ts:17-26` (76 `.in` streams) |
+
+**What this settled for justerm**: nothing about *whether* to close the loop — no reference argues it,
+and a reference cannot erect the claim. It recorded that justerm's closed-loop capture is not a new
+*kind* of material (alacritty's recordings are the same kind) and that its replay test asserting the
+reply half (`justerm-core/tests/closed_loop_capture.rs`) observes something neither reference's replay
+does. ghostty is not in the table: no recorded-stream fixture was found in its pinned `src/`, and that
+search was narrow enough that the absence is `UNADJUDICATED`, not a fact.

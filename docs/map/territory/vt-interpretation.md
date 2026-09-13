@@ -169,23 +169,10 @@ for a terminal engine, that list is half the specification.
   visible in the corpus rather than assumed — answering DA2 is measured (`term.rs`, the DA2 block) to
   make vim ask ten `DCS + q` XTGETTCAP questions, and `DCS + q` occurs **zero** times across every
   open-loop fixture, four of which ask DA2.
-- **One capture is closed-loop, and two things about building it had to be measured rather than
-  reasoned (#891).** `vim_closed_loop.raw` holds all ten, recorded through `examples/reply_filter`
-  — this engine plus a consumer policy — by `fixtures/capture-closed-loop.sh`.
-  **`drain_replies()` is not the mechanism on its own**, which is what #891's own body proposed. It
-  answers **seven** paths — DA1, DA2, DSR 6n, DSR 5n, DECRQM, the kitty flags query and the VT52
-  DECID `ESC Z` — while **six** query families reach a *consumer* as a `TermEvent` and are answered
-  by policy (ADR-0017): OSC 10, OSC 11, OSC 4, OSC 12, OSC 52 and the colour-scheme query, which are
-  exactly the six `pub fn report_*` on the engine. A harness forwarding only replies leaves all six
-  silent, and vim asks two of them in this very capture. **And the answers must be the engine's rather than a
-  table**, because three of the six are state-dependent: vim's two `DSR 6n` are probes, printing
-  U+25BD at a known cell and reading the cursor column back to learn the ambiguous width, so a fixed
-  `1;1R` plays a terminal that drew nothing and the recording is then of a conversation with
-  something else. The price is that the bytes are a function of *our* policy too — measured, a white
-  background instead of a black one flips vim's own `&background` — so the capture names the policy
-  it was recorded under, and the script refuses to emit one that does not reproduce three times.
-  That gate is not decorative: with reply delay injected it comes back 3274 / 3195 / 4961 bytes and
-  refuses.
+- **One capture is closed-loop** (#891) — `vim_closed_loop.raw` holds all ten. How it was recorded,
+  why the replies had to be the engine's, and why its bytes encode a consumer policy are
+  [the capture corpus](capture-corpus.md)'s, not this territory's: this one only needs to know that
+  a count from the other captures is still a floor.
 - **An OSC payload arrives unbounded, and a handler that builds anything from one bounds it
   itself (#828).** Measured with a throwaway probe rather than read off the crate: `vte` is built
   with its default features, so its OSC accumulator is a `Vec<u8>` and **not** the
