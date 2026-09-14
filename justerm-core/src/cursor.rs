@@ -121,8 +121,9 @@ pub struct Cursor {
     /// - **Translated** by `Term::resize`: where a reflow leaves the cursor off the
     ///   last column the logical position becomes representable, so the flag is
     ///   dropped and `col` takes it instead. Neither an arm nor a clear.
-    /// - **Cleared** by the positioning verbs, `HT` excepted — checked verb by verb
-    ///   against the references and recorded in
+    /// - **Cleared** by the positioning verbs. The exception is `HT`, and `CHT` which
+    ///   repeats it: with no stop to move to they leave it armed (#848, #898). Checked
+    ///   verb by verb against the references and recorded in
     ///   `docs/agents/reference-facts.md`, not inferred.
     /// - **Restored** by `Term::restore_cursor` and by leaving the alt screen, each
     ///   of which then calls `Term::settle_restored_wrap`: a restored park that is

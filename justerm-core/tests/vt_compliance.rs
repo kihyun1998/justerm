@@ -408,6 +408,62 @@ fn back_tab_on_a_full_row_prints_where_it_landed_not_on_the_next_row() {
     assert_eq!(term.cursor().row, 0);
 }
 
+/// CHT (CSI Ps I) advances to the next tab stop (#898).
+#[test]
+fn forward_tab_lands_on_the_next_stop() {
+    let mut term = Engine::new(40, 1);
+    term.feed(b"\x1b[1;3H"); // column 2
+    term.feed(b"\x1b[I");
+
+    assert_eq!(term.cursor().col, 8);
+}
+
+/// The count repeats the walk — `n` stops, not `n * 8` columns — so an uneven
+/// stop set by HTS is counted as a stop.
+#[test]
+fn forward_tab_count_repeats_the_walk() {
+    let mut term = Engine::new(40, 1);
+    term.feed(b"\x1b[1;4H\x1bH\r"); // extra stop at column 3; back to column one
+    term.feed(b"\x1b[2I");
+
+    assert_eq!(term.cursor().col, 8); // 0 → 3 → 8, where arithmetic says 16
+}
+
+/// An absent and an explicit zero count both move one stop.
+#[test]
+fn forward_tab_absent_and_zero_counts_both_move_one_stop() {
+    for seq in [&b"\x1b[I"[..], &b"\x1b[0I"[..]] {
+        let mut term = Engine::new(40, 1);
+        term.feed(b"\x1b[1;10H"); // column 9
+        term.feed(seq);
+
+        assert_eq!(term.cursor().col, 16, "{seq:?}");
+    }
+}
+
+/// A count past the last stop lands on the last column, as HT does.
+#[test]
+fn forward_tab_with_a_huge_count_lands_on_the_last_column() {
+    let mut term = Engine::new(20, 1);
+    term.feed(b"\x1b[65535I");
+
+    assert_eq!(term.cursor().col, 19);
+}
+
+/// On a full row CHT finds no stop to move to, so it leaves the deferred wrap
+/// armed as HT does (#848): the next character wraps instead of overwriting the
+/// last column.
+#[test]
+fn forward_tab_on_a_full_row_keeps_the_deferred_wrap() {
+    let mut term = Engine::new(9, 2);
+    term.feed(b"123456789"); // fills row 0, arming the deferred wrap
+
+    term.feed(b"\x1b[3IX");
+
+    assert_eq!(row(&term, 0), "123456789");
+    assert_eq!(row(&term, 1), "X        ");
+}
+
 /// `CSI ? Z` and `CSI > Z` are *unreachable*, not unhandled: a private prefix
 /// arrives as an intermediate and `csi_dispatch` returns above the `match`, so
 /// adding a `'Z'` arm did nothing for them (#824's rule).
@@ -625,6 +681,209 @@ fn decom_set_homes_to_region_unset_does_not_move() {
     term.feed(b"\x1b[2;3H"); // move within the region → grid (3, 2)
     term.feed(b"\x1b[?6l"); // DECOM unset → cursor must NOT move
     assert_eq!((term.cursor().row, term.cursor().col), (3, 2));
+}
+
+// ===========================================================================
+// Relative vertical motion against the scroll region (CUU / CUD, #898)
+// ===========================================================================
+
+/// CUU from inside the region stops at the top margin, not the screen top.
+#[test]
+fn cursor_up_inside_the_region_stops_at_the_top_margin() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[5;4H"); // grid (4, 3)
+    term.feed(b"\x1b[9A");
+
+    assert_eq!((term.cursor().row, term.cursor().col), (2, 3));
+}
+
+/// CUU from *below* the region stops at the top margin too: the clamp keys on
+/// the cursor being at or below the top margin, not on it being inside.
+#[test]
+fn cursor_up_from_below_the_region_stops_at_the_top_margin() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[8;1H"); // grid row 7, below the bottom margin
+    term.feed(b"\x1b[9A");
+
+    assert_eq!(term.cursor().row, 2);
+}
+
+/// CUU from above the region is bounded only by the screen top.
+#[test]
+fn cursor_up_from_above_the_region_reaches_the_screen_top() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[2;1H"); // grid row 1, above the top margin
+    term.feed(b"\x1b[9A");
+
+    assert_eq!(term.cursor().row, 0);
+}
+
+/// CUD from inside the region stops at the bottom margin, not the screen bottom.
+#[test]
+fn cursor_down_inside_the_region_stops_at_the_bottom_margin() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[4;4H"); // grid (3, 3)
+    term.feed(b"\x1b[9B");
+
+    assert_eq!((term.cursor().row, term.cursor().col), (5, 3));
+}
+
+/// CUD from *above* the region stops at the bottom margin too.
+#[test]
+fn cursor_down_from_above_the_region_stops_at_the_bottom_margin() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[1;1H"); // grid row 0, above the top margin
+    term.feed(b"\x1b[9B");
+
+    assert_eq!(term.cursor().row, 5);
+}
+
+/// CUD from below the region is bounded only by the screen bottom.
+#[test]
+fn cursor_down_from_below_the_region_reaches_the_screen_bottom() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[7;1H"); // grid row 6, below the bottom margin
+    term.feed(b"\x1b[9B");
+
+    assert_eq!(term.cursor().row, 7);
+}
+
+/// VPR (`CSI e`) positions a row the way CUP does rather than moving like CUD,
+/// so without origin mode a scroll region does not stop it.
+#[test]
+fn vertical_position_relative_passes_the_bottom_margin_without_origin_mode() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[4;4H"); // grid (3, 3)
+    term.feed(b"\x1b[9e");
+
+    assert_eq!((term.cursor().row, term.cursor().col), (7, 3));
+}
+
+/// Under origin mode VPR is bounded by the bottom margin, as CUP is. The count of
+/// one lands short of the margin, so an offset added twice would show (grid row 5).
+#[test]
+fn vertical_position_relative_under_origin_mode_stops_at_the_bottom_margin() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[?6h"); // DECOM → home to the region top, grid (2, 0)
+    term.feed(b"\x1b[1;4H"); // region row 1 → grid (2, 3)
+
+    term.feed(b"\x1b[1e");
+    assert_eq!((term.cursor().row, term.cursor().col), (3, 3));
+
+    term.feed(b"\x1b[9e");
+    assert_eq!((term.cursor().row, term.cursor().col), (5, 3));
+}
+
+/// A cursor already on a margin is inside the region for the clamp: CUU from the
+/// top margin and CUD from the bottom margin do not move.
+#[test]
+fn cursor_up_and_down_from_a_margin_stay_on_it() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+
+    term.feed(b"\x1b[3;1H\x1b[A"); // on the top margin
+    assert_eq!(term.cursor().row, 2);
+
+    term.feed(b"\x1b[6;1H\x1b[B"); // on the bottom margin
+    assert_eq!(term.cursor().row, 5);
+}
+
+// ===========================================================================
+// Next / preceding line (CNL `CSI E` / CPL `CSI F`, #898)
+// ===========================================================================
+
+/// CNL moves down `Ps` rows and to column one.
+#[test]
+fn cursor_next_line_moves_down_to_column_one() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;5Hxy"); // grid (2, 6)
+    term.feed(b"\x1b[2E");
+
+    assert_eq!((term.cursor().row, term.cursor().col), (4, 0));
+}
+
+/// CPL moves up `Ps` rows and to column one.
+#[test]
+fn cursor_preceding_line_moves_up_to_column_one() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[5;5Hxy"); // grid (4, 6)
+    term.feed(b"\x1b[2F");
+
+    assert_eq!((term.cursor().row, term.cursor().col), (2, 0));
+}
+
+/// An absent and an explicit zero count both move one row.
+#[test]
+fn next_and_preceding_line_absent_and_zero_counts_both_move_one_row() {
+    for (seq, row) in [
+        (&b"\x1b[E"[..], 4),
+        (&b"\x1b[0E"[..], 4),
+        (&b"\x1b[F"[..], 2),
+        (&b"\x1b[0F"[..], 2),
+    ] {
+        let mut term = Engine::new(10, 8);
+        term.feed(b"\x1b[4;5H"); // grid (3, 4)
+        term.feed(seq);
+
+        assert_eq!((term.cursor().row, term.cursor().col), (row, 0), "{seq:?}");
+    }
+}
+
+/// A count past the screen edge stops on the edge row and does not scroll.
+#[test]
+fn next_and_preceding_line_stop_at_the_screen_edge_without_scrolling() {
+    let mut term = Engine::new(10, 4);
+    term.feed(b"top\x1b[4;1Hbottom");
+
+    term.feed(b"\x1b[99E");
+    assert_eq!((term.cursor().row, term.cursor().col), (3, 0));
+
+    term.feed(b"\x1b[99F");
+    assert_eq!((term.cursor().row, term.cursor().col), (0, 0));
+
+    assert_eq!(row(&term, 0), "top       ");
+    assert_eq!(row(&term, 3), "bottom    ");
+}
+
+/// Inside a scroll region CNL and CPL stop at the margins, as CUD and CUU do.
+#[test]
+fn next_and_preceding_line_stop_at_the_region_margins() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[4;5H"); // grid (3, 4)
+
+    term.feed(b"\x1b[9E");
+    assert_eq!((term.cursor().row, term.cursor().col), (5, 0));
+
+    term.feed(b"\x1b[9F");
+    assert_eq!((term.cursor().row, term.cursor().col), (2, 0));
+}
+
+/// From a parked cursor, the character after CNL lands at column one of the row
+/// CNL chose — not one row further, as it would if the deferred wrap survived.
+///
+/// The count is two so the three outcomes land on three rows: row 1 is the wrap
+/// alone (CNL ignored), row 2 is CNL, row 3 is CNL with the park still armed.
+#[test]
+fn next_line_from_a_parked_cursor_prints_where_it_landed() {
+    let mut term = Engine::new(3, 5);
+    term.feed(b"abc"); // fills row 0, arming the deferred wrap
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\x1b[2EX");
+
+    assert_eq!(row(&term, 1), "   ");
+    assert_eq!(row(&term, 2), "X  ");
+    assert_eq!(row(&term, 3), "   ");
+    assert_eq!((term.cursor().row, term.cursor().col), (2, 1));
 }
 
 // ===========================================================================

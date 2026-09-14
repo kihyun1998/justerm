@@ -2646,7 +2646,7 @@ the four rewrites the table anyway. On a **column** change all four differ.
 | It never truncates, so a stop outside a narrowed width survives and revives on re-widening — the same end state as xterm, reached by a different mechanism | xterm.js | `src/common/buffer/Buffer.ts:38` (the sparse map) |
 | The table is width-independent — a 1024-bit array rather than a per-column vector, so no resize can reach it. `screen.c` mentions it zero times, and `TabReset` is called only from `VTRealize` and the RIS path | xterm | `ptyx.h:3609-3615`; `charproc.c:12688`, `:14410` |
 | ⚠ **The nearest normative statement is an absence, and it is worth more than the head count.** `set_column_mode` (DECCOLM — a *spec-defined* column change) sits under a *"DEC 070, pp 5-71 to 5-72"* citation and does exactly three things: `xterm_ResetDouble`, `resetMargins`, `CursorSet(0,0)`. The margins and the cursor are in the enumeration; **tab stops are not** | xterm (spec-adjacent) | `charproc.c:7446` (the citation), `:7457-7465` (the body) |
-| An application that wants the default ladder back **asks for it** — DECST8C, `CSI ? 5 W`, *"Reset tab stops to start with column 9, every 8 columns"*. The terminal does not infer the request from a geometry change. justerm implements neither DECST8C nor CHT | xterm (spec) | `ctlseqs.txt:750`; implementation at `charproc.c:5883` |
+| An application that wants the default ladder back **asks for it** — DECST8C, `CSI ? 5 W`, *"Reset tab stops to start with column 9, every 8 columns"*. The terminal does not infer the request from a geometry change. justerm implements DECST8C not at all, and CHT only since #898 | xterm (spec) | `ctlseqs.txt:750`; implementation at `charproc.c:5883` |
 
 **Both tallies, because either alone misleads.** *Rows-only*: 4/4 never **discard** a stop, 3/4 do
 not touch the table at all, and xterm.js mutates it. *Column change*: **four references, four
@@ -3248,3 +3248,38 @@ and a reference cannot erect the claim. It recorded that justerm's closed-loop c
 reply half (`justerm-core/tests/closed_loop_capture.rs`) observes something neither reference's replay
 does. ghostty is not in the table: no recorded-stream fixture was found in its pinned `src/`, and that
 search was narrow enough that the absence is `UNADJUDICATED`, not a fact.
+
+## Relative vertical motion against the margins, and the two verbs composed from it (#898, verified 2026-09-14)
+
+Three questions: where CUU / CUD stop inside a scroll region, whether CNL / CPL are those verbs plus a
+carriage return, and how CHT spends its count. Four trees, every row re-opened at the pin.
+
+| Fact | Reference | Site |
+|---|---|---|
+| CUU stops at the **top margin** when the cursor is at or below it, at row 0 otherwise — `min = cur_row < top_marg ? 0 : top_marg`. CUD mirrors it on the bottom margin. So a cursor *below* the region moving up crosses the bottom margin and stops at the top one | xterm | `cursor.c:271` (up), `cursor.c:251` (down) @ `6380a3e` |
+| The same two-branch clamp, keyed on `diffToTop >= 0` / `diffToBottom >= 0` | xterm.js | `src/common/InputHandler.ts:930` (up), `:948` (down) @ `699f553` |
+| The same two-branch clamp, keyed on `cursor.y >= scrolling_region.top` / `<= bottom` | ghostty | `src/terminal/Terminal.zig:1703` (up), `:1721` (down) @ `e6e26e1` |
+| ⚠ **The outlier: no margin clamp.** `move_up` / `move_down` compute an absolute line and call `goto`, which clamps to the screen — or, under DECOM, *adds* `scroll_region.start` to a line that is already absolute. Read `goto`, not the verb | alacritty | `alacritty_terminal/src/term/mod.rs:1215` (the verb), `:1156` (`goto`) @ `852e971` |
+| VT52 `ESC A` / `ESC B` route to the ANSI `CASE_CUU` / `CASE_CUD`, so they take the same clamp | xterm | `VTPrsTbl.c:9650` @ `6380a3e` |
+| CNL / CPL = `CursorDown` / `CursorUp` then `CarriageReturn`, count floored at 1 | xterm | `cursor.c:527` @ `6380a3e` |
+| CNL / CPL = `cursorDown` / `cursorUp` then `x = 0` | xterm.js | `src/common/InputHandler.ts:989` @ `699f553` |
+| CNL / CPL = `cursor_down` / `cursor_up` then `carriage_return` | ghostty | `src/terminal/stream.zig:1223` @ `e6e26e1` |
+| CNL / CPL = `goto(line ± n, 0)` — the same missing margin clamp as its CUU / CUD | alacritty | `alacritty_terminal/src/term/mod.rs:1349` @ `852e971` |
+| ⚠ **VPR is a positioning verb, not a CUD — read the case, not the parser table.** `CASE_VPR` is `CursorSet(CursorRow + n, col)`, bounded by `max_row`, or by `bot_marg` under ORIGIN; `CursorRow` subtracts `top_marg` under ORIGIN and `CursorSet` adds it back | xterm | `charproc.c:3958` (the case), `cursor.c:68` (`CursorSet`), `cursor.c:564` (`CursorRow`) @ `6380a3e` |
+| VPR = `_moveCursor(0, n)`, which is screen-clamped without DECOM. Under DECOM `_setCursor` adds `scrollTop` to a row that is already absolute | xterm.js | `src/common/InputHandler.ts:1080` (VPR), `:916` (`_moveCursor`) @ `699f553` |
+| VPR = `setCursorPos(y + 1 + n, x + 1)`, the CUP entry point, fed an absolute row | ghostty | `src/terminal/stream_terminal.zig:222` @ `e6e26e1` |
+| VPR shares CUD's handler — `('B', []) \| ('e', [])` → `move_down` — and so its screen-bounded `goto` | alacritty (`vte` 0.15.0) | `src/ansi.rs:1561` |
+| CHT repeats `TabToNextStop` while it returns *moved* — `cur_col > saved_column` | xterm | `charproc.c:3754` (loop), `tabs.c:158` (the return) @ `6380a3e` |
+| CHT repeats `horizontalTab` and breaks when `cursor.x` did not change — the same shape as its CBT | ghostty | `src/terminal/stream_terminal.zig:585` @ `e6e26e1` |
+| CHT returns early at `x >= cols` (the parked state), else repeats `nextStop()` | xterm.js | `src/common/InputHandler.ts:1125` @ `699f553` |
+| CHT breaks at the last column and otherwise walks to the next stop; it writes no `input_needs_wrap` — unobservable, since only a parked cursor carries the flag and that one breaks first | alacritty | `alacritty_terminal/src/term/mod.rs:1592` @ `852e971` |
+
+**The tally.** CUU / CUD margins: 3-1, alacritty the outlier. justerm was on alacritty's side with no
+record choosing it (`docs/map/territory/cursor-position.md` listed clamping under *zero governing
+records*). VPR without DECOM: 4/4 screen-bounded, so a region does not stop it; under DECOM only
+xterm's arithmetic is origin-relative, and the other three add the offset to an absolute row. CNL /
+CPL as each tree's own CUD / CUU plus a return to column one: 4/4 — alacritty's
+`goto` is the same computation its CUU / CUD make, so it differs only by inheriting their missing
+clamp. CHT spending the count as repeated walks: 4/4. CHT from a parked cursor keeps the park: 4/4 —
+where `HT` splits 3-1 (#848), alacritty's CHT breaks at the last column instead of consuming the wrap
+as its `put_tab` does.

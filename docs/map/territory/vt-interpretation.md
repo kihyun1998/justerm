@@ -205,11 +205,13 @@ for a terminal engine, that list is half the specification.
   is two verbs' problem rather than one, because `CBT` walks the same table backwards. The two walks
   are written as mirrors for exactly that reason: a count repeats the *walk*, so the directions
   cannot disagree about where a stop is, and `HT` followed by the same number of `CBT` returns to
-  where it started. One thing they deliberately do **not** mirror is the deferred wrap — see
+  where it started. `CHT` (#898) is `HT` counted, so it adds no third walk. One thing they
+  deliberately do **not** mirror is the deferred wrap — see
   [cursor position](cursor-position.md), where justerm turns out to be the outlier against all four
   references.
 - **The scroll region redefines what "scroll" means.** DECSTBM changes which rows `IND` / `RI` /
-  `LF` move and which leave the screen, so nearly every vertical-motion verb reads it.
+  `LF` move and which leave the screen, so nearly every vertical-motion verb reads it — since #898
+  the relative moves too, by the rule in [cursor position](cursor-position.md).
 - **RIS and DECSTR are two reset strengths** and the split is itself hidden state — what each does
   *not* clear is the part that matters. **Neither says anything about the palette, and the silence is
   a decision (#835).** An application can redefine the ANSI table with `OSC 4`, or the
@@ -242,7 +244,8 @@ for a terminal engine, that list is half the specification.
 ## Code
 
 - `justerm-core/src/term.rs` — the `Perform` implementation and every verb: `print`, `execute`,
-  `csi_dispatch`, `esc_dispatch`, `osc_dispatch`, `unhook`, `put_tab` / `put_back_tab`, and the
+  `csi_dispatch`, `esc_dispatch`, `osc_dispatch`, `unhook`, `put_tab` / `put_back_tab` /
+  `put_forward_tabs`, and the
   mode flags they read. `place_grapheme` is the print path below the charset translation, which
   `repeat_last` re-enters; `repeat_anchor` carries the census that keeps the two in step
 - `justerm-core/src/lib.rs` — `Engine::feed`, which is only `parser.advance(&mut term, bytes)`; the

@@ -46,6 +46,21 @@ fn vt52_cursor_down_right_left() {
     assert_eq!((t.cursor().row, t.cursor().col), (6, 5));
 }
 
+/// VT52 `ESC A` / `ESC B` are CUU / CUD by one, so they stop at the scroll
+/// region's margins as the ANSI verbs do — xterm routes both dialects to the same
+/// `CASE_CUU` / `CASE_CUD` (`VTPrsTbl.c:9650`) (#898).
+#[test]
+fn vt52_cursor_up_and_down_stop_at_the_region_margins() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[3;4r"); // region grid rows 2..=3 (homes the cursor)
+    t.feed(b"\x1b[3;1H"); // grid row 2, on the top margin
+    t.feed(b"\x1b[?2l"); // enter VT52
+    t.feed(b"\x1bA");
+    assert_eq!(t.cursor().row, 2, "ESC A must not pass the top margin");
+    t.feed(b"\x1bB\x1bB");
+    assert_eq!(t.cursor().row, 3, "ESC B must not pass the bottom margin");
+}
+
 /// VT52 `ESC H` homes the cursor to (0, 0). (In ANSI `ESC H` is HTS — set tab
 /// stop — so the mode branch must pick the VT52 meaning.)
 #[test]

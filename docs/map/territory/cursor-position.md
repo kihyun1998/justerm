@@ -30,6 +30,16 @@ Read out of the source; there is no record to read instead.
   last column leaves the cursor where it is and defers the wrap to the *next* print. **Eager wrapping
   here is the classic off-by-one that shifts every subsequent line**, which is why the flag exists at
   all rather than the cursor simply advancing.
+- **Relative vertical motion stops at a scroll margin from its inner side** (#898): `move_up` stops
+  at the top margin when the cursor is at or below it, `move_down` at the bottom margin when it is at
+  or above it, and each is bounded only by the screen edge from the other side — so a cursor below
+  the region moving up crosses the bottom margin and stops at the top one. CUU, CUD, VT52
+  `ESC A` / `ESC B`, and CNL / CPL all go through these two. **VPR does not**: it is a positioning
+  verb sharing `goto`'s row bounds (`Term::addressable_rows`), and routing it through `move_down`
+  is what #898 first got wrong. It was screen-bounded until #898, with
+  no record choosing that; the rule is **derived** — ADR-0004's spec-over-omission tie-break applied
+  to the tally linked under *Reference behaviour* — while putting the change into #898 rather than a
+  slice of its own was the **maintainer's scope call** (2026-09-14), made on that tally.
 - **Position is clamped on set**, to `rows-1` / `cols-1` — so an out-of-range addressing sequence
   yields a degenerate position rather than a panic or an out-of-bounds write.
 - **Two cursors exist.** `cursor` and `saved_cursor`, the latter written on alt-screen enter
@@ -95,6 +105,10 @@ pinned tree — the single most consequential positional rule here.
   local — *a flag outliving `?7l` contradicts the site that wrote it* — and that site is what
   changed.
 
+- [Relative vertical motion against the margins, and the two verbs composed from it](../../agents/reference-facts.md#relative-vertical-motion-against-the-margins-and-the-two-verbs-composed-from-it-898-verified-2026-09-14)
+  — **where CUU / CUD stop inside a region**, measured across all four by #898. 3-1 for the margin
+  clamp, alacritty the outlier, and justerm was on alacritty's side until that change.
+
 How it survives a resize remains unpinned.
 
 ## Cross-cutting invariants
@@ -116,7 +130,8 @@ How it survives a resize remains unpinned.
 
 - **Zero governing records**, for rules whose failure mode is a silently shifted screen. Narrowed
   by #848 but not closed: the deferred wrap now has a stated lifecycle, clamping and the
-  alt-screen save/restore pairing still have nothing.
+  alt-screen save/restore pairing still have nothing. #898 measured the relative-motion half of
+  clamping (the margin stops above) but wrote no record — it is a derivation, not a choice.
 - ~~**The deferred-wrap rule survives only as a field comment.**~~ **Closed by #848 — the field
   comment is now the owner rather than a remnant**, and it states the rule the 22 cursor-movers are
   measured against. What the hole predicted had already happened three times over: `put_tab` cleared
@@ -126,3 +141,7 @@ How it survives a resize remains unpinned.
   comment carries the grep that produced the census.
 - **DECOM's interaction with the clamp is unspecified** in any artifact: origin mode clamps to the
   region, `set_point` clamps to the screen, and no document states which applies when both do.
+  One instance measured by #898's refuter pass and left alone: under DECOM, DECRC restores a row
+  clamped only to the screen (`Term::restore_cursor`), where xterm routes it through `CursorSet` and
+  caps it at the bottom margin (`cursor.c:484-490` @ `6380a3e`); ghostty and alacritty clamp to the
+  screen as justerm does. Every relative move afterwards then starts from a different row.

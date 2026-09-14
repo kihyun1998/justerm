@@ -3298,6 +3298,21 @@ impl Term {
         }
     }
 
+    /// CHT (CSI Ps I): [`Term::put_tab`] repeated `n` times, stopping at the first
+    /// one that does not move — so the deferred-wrap rule is `put_tab`'s, and the
+    /// work is bounded by the row rather than by the parameter (#898). The break
+    /// is defensive only: a `put_tab` that did not move will not move on a repeat,
+    /// so removing it changes no outcome and no test can redden it.
+    fn put_forward_tabs(&mut self, n: usize) {
+        for _ in 0..n {
+            let col = self.cursor.col;
+            self.put_tab();
+            if self.cursor.col == col {
+                break;
+            }
+        }
+    }
+
     /// CBT (CSI Ps Z): step back `n` tab stops, or to column one if fewer
     /// remain.
     ///
@@ -3370,11 +3385,10 @@ impl Term {
     /// The unanimity is over that population and not over every writer of
     /// `cursor.col`. `linefeed_inner` and `reverse_index` do **not** clear it,
     /// which is a separate and unsettled question — justerm is the outlier 3-1
-    /// there — and deliberately outside this change. Nor is `put_tab` a clean
-    /// precedent: at the right edge of a full row it clears the flag *without
-    /// moving*, so the next character overwrites the last column instead of
-    /// wrapping, which all four references avoid. The rule is sound where the
-    /// verb actually moves the cursor, and CBT always does. See
+    /// there — and deliberately outside this change. `put_tab` is in that
+    /// population only where it moves: at the right edge of a full row it finds
+    /// no stop and leaves the flag armed (#848), which is the same rule — clear
+    /// where the verb moves the cursor — and CBT always moves. See
     /// `docs/agents/reference-facts.md`.
     ///
     /// **What the divergence actually costs, stated as behaviour rather than as
@@ -4229,15 +4243,29 @@ impl Term {
         (nr, 0)
     }
 
-    // ---- cursor movement (CSI A/B/C/D/G/d/H/f) -------------------------------
+    // ---- cursor movement (CSI A/B/C/D/E/F/G/d/e/H/f) -------------------------
 
+    /// Up `n` rows — CUU, and through it VT52 `ESC A` and CPL — stopping at the top
+    /// margin when the cursor is at or below it and at the screen top otherwise.
     fn move_up(&mut self, n: usize) {
-        self.cursor.row = self.cursor.row.saturating_sub(n);
+        let floor = if self.cursor.row >= self.scroll_top {
+            self.scroll_top
+        } else {
+            0
+        };
+        self.cursor.row = self.cursor.row.saturating_sub(n).max(floor);
         self.cursor.pending_wrap = false;
     }
 
+    /// Down `n` rows — CUD, and through it VT52 `ESC B` and CNL — stopping at the
+    /// bottom margin when the cursor is at or above it and at the screen bottom otherwise.
     fn move_down(&mut self, n: usize) {
-        self.cursor.row = (self.cursor.row + n).min(self.grid.rows() - 1);
+        let ceiling = if self.cursor.row <= self.scroll_bottom {
+            self.scroll_bottom
+        } else {
+            self.grid.rows() - 1
+        };
+        self.cursor.row = (self.cursor.row + n).min(ceiling);
         self.cursor.pending_wrap = false;
     }
 
@@ -4279,15 +4307,28 @@ impl Term {
     }
 
     fn goto(&mut self, row: usize, col: usize) {
-        // Origin mode addresses rows relative to the scroll region's top margin
-        // and clamps to its bottom; otherwise rows are absolute to the screen.
-        let (offset, max_row) = if self.origin_mode {
+        let (offset, max_row) = self.addressable_rows();
+        self.cursor.row = (row + offset).min(max_row);
+        self.cursor.col = col.min(self.grid.cols() - 1);
+        self.cursor.pending_wrap = false;
+    }
+
+    /// The row addressing origin and the last addressable row. Origin mode
+    /// addresses rows relative to the scroll region's top margin and clamps to its
+    /// bottom; otherwise rows are absolute to the screen.
+    fn addressable_rows(&self) -> (usize, usize) {
+        if self.origin_mode {
             (self.scroll_top, self.scroll_bottom)
         } else {
             (0, self.grid.rows() - 1)
-        };
-        self.cursor.row = (row + offset).min(max_row);
-        self.cursor.col = col.min(self.grid.cols() - 1);
+        }
+    }
+
+    /// VPR (CSI Ps e): the current row plus `n`, positioned as CUP positions a row
+    /// — bounded by the last addressable row, not by the scroll margin CUD stops at.
+    fn vertical_position_relative(&mut self, n: usize) {
+        let (_, max_row) = self.addressable_rows();
+        self.cursor.row = (self.cursor.row + n).min(max_row);
         self.cursor.pending_wrap = false;
     }
 
@@ -5832,12 +5873,24 @@ impl Perform for Term {
         }
         match action {
             'A' => self.move_up(param_or(params, 0, 1) as usize),
-            'B' | 'e' => self.move_down(param_or(params, 0, 1) as usize),
+            'B' => self.move_down(param_or(params, 0, 1) as usize),
+            'e' => self.vertical_position_relative(param_or(params, 0, 1) as usize),
+            // CNL / CPL (CSI Ps E / F): CUD / CUU, then CR (#898).
+            'E' => {
+                self.move_down(param_or(params, 0, 1) as usize);
+                self.carriage_return();
+            }
+            'F' => {
+                self.move_up(param_or(params, 0, 1) as usize);
+                self.carriage_return();
+            }
             'C' | 'a' => self.move_forward(param_or(params, 0, 1) as usize),
             'D' => self.move_back(param_or(params, 0, 1) as usize),
             // CBT (CSI Ps Z): back-tab, the mirror of HT over the tab-stop
             // table. Cursor motion only — it writes no cell (#826).
             'Z' => self.put_back_tab(param_or(params, 0, 1) as usize),
+            // CHT (CSI Ps I): forward tab, the counted HT (#898).
+            'I' => self.put_forward_tabs(param_or(params, 0, 1) as usize),
             // REP (CSI Ps b): repeat the preceding grapheme. `param_or` folds an
             // absent parameter and an explicit zero to one, as everywhere else here.
             'b' => {

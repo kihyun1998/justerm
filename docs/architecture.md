@@ -529,14 +529,21 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   again — so `tabs.len()` is the widest this terminal has been and the invariant the two walks
   need is `len() >= cols`, not equality. A rows-only resize therefore changes nothing here, and
   neither does a consumer re-asserting its current size. **RIS still rebuilds**, because the table
-  is state the *application* wrote and `ESC c` is what resets the terminal. `CHT` (CSI Ps I), the
-  forward counterpart of CBT, is still unimplemented and stays in #47. [#8]
+  is state the *application* wrote and `ESC c` is what resets the terminal. **CHT (CSI Ps I) is HT
+  repeated `Ps` times**, stopping at the first repeat that does not move, so it inherits HT's
+  right-edge rule (a parked cursor with no stop to reach stays parked) (#898). [#8]
 - **Scroll region (DECSTBM) redefines what "scroll" means.** top/bottom margins (0-based,
   inclusive) stored as state; a line-feed at the *bottom margin* scrolls only rows `[top..=bottom]`,
   leaving rows outside fixed — `linefeed` must consult the margins, not the screen edge. DECSTBM
   homes the cursor (absolute (0,0); origin-relative under DECOM, a later slice), ignores an invalid
   region (top ≥ bottom), and defaults to the full screen. A line-feed below the region just
-  descends; no scroll happens outside it. [#8]
+  descends; no scroll happens outside it. [#8] **Relative vertical motion stops at the margins
+  without scrolling**: CUU (and VT52 `ESC A`) stops at the top margin when the cursor is at or below
+  it, CUD (and VT52 `ESC B`) at the bottom margin when the cursor is at or above it; from the
+  other side each is bounded only by the screen edge. **CNL / CPL (CSI Ps E / F) are CUD / CUU
+  followed by a carriage return**, so they take the same stops. **VPR (CSI Ps e) is not a CUD**: it
+  positions a row as CUP does, so it is bounded by the screen, or by the bottom margin under DECOM,
+  and a region alone does not stop it. [#898]
 - **IND / RI (ESC D / ESC M) scroll at the margins.** IND moves the cursor down — at the bottom
   margin it scrolls the region up (a line-feed without the carriage return). RI moves up — at the
   *top* margin it scrolls the region *down* (a blank line appears at the top, the bottom region line
