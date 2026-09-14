@@ -141,3 +141,7 @@ How it survives a resize remains unpinned.
   comment carries the grep that produced the census.
 - **DECOM's interaction with the clamp is unspecified** in any artifact: origin mode clamps to the
   region, `set_point` clamps to the screen, and no document states which applies when both do.
+  One instance measured by #898's refuter pass and left alone: under DECOM, DECRC restores a row
+  clamped only to the screen (`Term::restore_cursor`), where xterm routes it through `CursorSet` and
+  caps it at the bottom margin (`cursor.c:484-490` @ `6380a3e`); ghostty and alacritty clamp to the
+  screen as justerm does. Every relative move afterwards then starts from a different row.
