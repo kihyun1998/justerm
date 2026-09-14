@@ -182,8 +182,12 @@ territories.
   alt capture, the `23t` title pops in four of them, and `OSC 112` in `cursor_color_nvim`. The
   whole-stream capture tests that consume those files still pin them.
 - **Interaction state is never seeded before a replay.** No selection, tracked point, marker or
-  search highlight exists, so a stream verb's fixups to that state read `-`. `alt_selection_resize.rs`
-  replays captures with a selection seeded, and the inventory does not.
+  search highlight exists, so a stream verb's fixups to that state read `-`. What else covers it on
+  real captures is narrower than it looks: `alt_selection_resize.rs` seeds a selection across the
+  `alt_resize_*` resizes, and `selection_column_bound.rs` / `match_span_column_bound.rs` pin column
+  bounds. Whether scroll, erase and line insert/delete carry a seeded anchor correctly through a real
+  stream is pinned nowhere. Seeding was left out of #895 by the maintainer as a separate property
+  needing its own placement decisions; whether to take it up was not decided.
 - **The scanner diverges from a real parser where the corpus does not reach.** It takes any byte as a
   CSI final (so a C0 inside a CSI would end it), does not abort on CAN or SUB, and does not recognise
   8-bit C1 or an OSC closed by ST in the corpus. Measured over the cut corpus: none of these occur, and
