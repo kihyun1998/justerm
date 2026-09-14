@@ -3265,6 +3265,10 @@ carriage return, and how CHT spends its count. Four trees, every row re-opened a
 | CNL / CPL = `cursorDown` / `cursorUp` then `x = 0` | xterm.js | `src/common/InputHandler.ts:989` @ `699f553` |
 | CNL / CPL = `cursor_down` / `cursor_up` then `carriage_return` | ghostty | `src/terminal/stream.zig:1223` @ `e6e26e1` |
 | CNL / CPL = `goto(line ± n, 0)` — the same missing margin clamp as its CUU / CUD | alacritty | `alacritty_terminal/src/term/mod.rs:1349` @ `852e971` |
+| ⚠ **VPR is a positioning verb, not a CUD — read the case, not the parser table.** `CASE_VPR` is `CursorSet(CursorRow + n, col)`, bounded by `max_row`, or by `bot_marg` under ORIGIN; `CursorRow` subtracts `top_marg` under ORIGIN and `CursorSet` adds it back | xterm | `charproc.c:3958` (the case), `cursor.c:68` (`CursorSet`), `cursor.c:564` (`CursorRow`) @ `6380a3e` |
+| VPR = `_moveCursor(0, n)`, which is screen-clamped without DECOM. Under DECOM `_setCursor` adds `scrollTop` to a row that is already absolute | xterm.js | `src/common/InputHandler.ts:1080` (VPR), `:916` (`_moveCursor`) @ `699f553` |
+| VPR = `setCursorPos(y + 1 + n, x + 1)`, the CUP entry point, fed an absolute row | ghostty | `src/terminal/stream_terminal.zig:222` @ `e6e26e1` |
+| VPR shares CUD's handler — `('B', []) \| ('e', [])` → `move_down` — and so its screen-bounded `goto` | alacritty (`vte` 0.15.0) | `src/ansi.rs:1561` |
 | CHT repeats `TabToNextStop` while it returns *moved* — `cur_col > saved_column` | xterm | `charproc.c:3754` (loop), `tabs.c:158` (the return) @ `6380a3e` |
 | CHT repeats `horizontalTab` and breaks when `cursor.x` did not change — the same shape as its CBT | ghostty | `src/terminal/stream_terminal.zig:585` @ `e6e26e1` |
 | CHT returns early at `x >= cols` (the parked state), else repeats `nextStop()` | xterm.js | `src/common/InputHandler.ts:1125` @ `699f553` |
@@ -3272,7 +3276,9 @@ carriage return, and how CHT spends its count. Four trees, every row re-opened a
 
 **The tally.** CUU / CUD margins: 3-1, alacritty the outlier. justerm was on alacritty's side with no
 record choosing it (`docs/map/territory/cursor-position.md` listed clamping under *zero governing
-records*). CNL / CPL as each tree's own CUD / CUU plus a return to column one: 4/4 — alacritty's
+records*). VPR without DECOM: 4/4 screen-bounded, so a region does not stop it; under DECOM only
+xterm's arithmetic is origin-relative, and the other three add the offset to an absolute row. CNL /
+CPL as each tree's own CUD / CUU plus a return to column one: 4/4 — alacritty's
 `goto` is the same computation its CUU / CUD make, so it differs only by inheriting their missing
 clamp. CHT spending the count as repeated walks: 4/4. CHT from a parked cursor keeps the park: 4/4 —
 where `HT` splits 3-1 (#848), alacritty's CHT breaks at the last column instead of consuming the wrap
