@@ -1,9 +1,16 @@
-# neovim_kitty 80x24 bytes=1182 kinds=34
+# neovim_kitty 80x24 bytes=1182 kinds=40
 C0 0x08                x6     frame text
 C0 0x0a                x29    frame text
 C0 0x0d                x32    frame text
-CSI  q                 x6     -
-CSI 22t                x2     -
+CSI 0;1;7m             x6     frame
+CSI 0;1m               x3     frame
+CSI 103m               x1     frame
+CSI 2 q                x6     -
+CSI 22;0;0t            x1     -
+CSI 22;0t              x1     -
+CSI 2J                 x2     -
+CSI 30m                x1     frame
+CSI 94m                x2     frame
 CSI <u                 x1     keys
 CSI >1u                x1     -
 CSI ?1002h             x2     -
@@ -20,13 +27,12 @@ CSI ?u                 x1     replies
 CSI C                  x2     frame text
 CSI D                  x1     frame text
 CSI H                  x23    frame text
-CSI J                  x2     -
 CSI K                  x27    -
 CSI L                  x2     frame text
 CSI M                  x1     frame text
 CSI X                  x4     frame text
 CSI c                  x1     replies
-CSI m                  x22    frame
+CSI m                  x9     frame
 CSI r                  x6     frame text
 ESC (B                 x18    -
 ESC =                  x1     -

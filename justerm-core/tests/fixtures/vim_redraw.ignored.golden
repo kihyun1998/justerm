@@ -1,12 +1,22 @@
-# vim_redraw 80x24 bytes=3041 kinds=32
+# vim_redraw 80x24 bytes=3041 kinds=41
 C0 0x08                x2     -
 C0 0x0a                x7     frame text
 C0 0x0d                x13    frame text
-CSI %m                 x1     -
-CSI 22t                x3     events
-CSI 23t                x2     events
+CSI 0%m                x1     -
+CSI 1m                 x3     -
+CSI 22;0;0t            x1     -
+CSI 22;1t              x1     -
+CSI 22;2t              x1     -
+CSI 23;1t              x1     -
+CSI 23;2t              x1     events
+CSI 23m                x1     -
+CSI 27m                x1     -
+CSI 29m                x1     -
+CSI 2J                 x1     -
 CSI 6n                 x2     replies
-CSI >4m                x3     -
+CSI 94m                x2     frame
+CSI >4;2m              x1     -
+CSI >4;m               x2     keys
 CSI >c                 x1     replies
 CSI ?1004h             x1     -
 CSI ?1004l             x1     focus
@@ -21,10 +31,9 @@ CSI ?25h               x11    frame
 CSI ?25l               x11    -
 CSI C                  x1     -
 CSI H                  x61    frame text replies
-CSI J                  x1     -
 CSI K                  x10    frame text
 CSI L                  x2     frame text
-CSI m                  x14    frame
+CSI m                  x6     frame
 CSI r                  x7     frame text
 DCS zz                 x1     -
 ESC =                  x1     -

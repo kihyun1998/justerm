@@ -1,11 +1,21 @@
-# vim_title_stack 80x24 bytes=2477 kinds=31
+# vim_title_stack 80x24 bytes=2477 kinds=40
 C0 0x0a                x3     frame text
 C0 0x0d                x5     frame text
-CSI %m                 x1     -
-CSI 22t                x5     events
-CSI 23t                x4     events
+CSI 0%m                x1     -
+CSI 1m                 x1     -
+CSI 22;0;0t            x1     -
+CSI 22;1t              x2     -
+CSI 22;2t              x2     events
+CSI 23;1t              x2     -
+CSI 23;2t              x2     events
+CSI 23m                x1     -
+CSI 27m                x1     -
+CSI 29m                x1     -
+CSI 2J                 x1     -
 CSI 6n                 x2     replies
-CSI >4m                x3     -
+CSI 94m                x1     frame
+CSI >4;2m              x1     -
+CSI >4;m               x2     keys
 CSI >c                 x1     replies
 CSI ?1004h             x1     -
 CSI ?1004l             x1     focus
@@ -20,9 +30,8 @@ CSI ?25h               x4     frame
 CSI ?25l               x4     -
 CSI C                  x3     -
 CSI H                  x41    frame text replies
-CSI J                  x1     -
 CSI K                  x4     frame text
-CSI m                  x8     frame
+CSI m                  x3     frame
 CSI r                  x1     -
 DCS zz                 x1     -
 ESC =                  x1     -

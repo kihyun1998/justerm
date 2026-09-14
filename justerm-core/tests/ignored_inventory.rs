@@ -9,19 +9,16 @@
 //!
 //! ## What a verdict means, and what it does not
 //!
-//! `-` means *the state at the end of this stream is identical without that kind*. It does not
-//! mean the engine ignores it. State that is set and never exercised later reads `-` while fully
-//! handled: a DECSC with no DECRC, an HTS with no HT, a designated charset nothing prints through,
-//! an SGR a later full clear paints over. Tab stops, the saved cursor, the charsets and the scroll
-//! region have no getter at all and are only visible through a later effect. Why the end state
-//! and not the trajectory is in `docs/map/territory/capture-corpus.md`.
+//! `-` means *the state at the end of this stream is identical without that kind*, not that the
+//! engine ignores it: state set and never exercised afterwards reads `-` while handled. What that
+//! leaves unseen, and why the end state was chosen, is in `docs/map/territory/capture-corpus.md`.
 //!
 //! ## What the surfaces can and cannot observe
 //!
-//! The surface list is hand-kept, so a mode added to the engine and left out of [`surfaces`]
-//! reads `-` for ever. That is what
-//! [`every_surface_sees_an_effect_somewhere_in_the_corpus`] exists for: a surface that no kind in
-//! the whole corpus moves is a broken instrument, not a quiet engine.
+//! [`every_surface_sees_an_effect_somewhere_in_the_corpus`] fails on a **listed** surface that no
+//! kind in the corpus moves — a broken instrument, not a quiet engine. It cannot notice a getter
+//! that was never listed in [`surfaces`]: a mode whose only reader is missing from that list reads
+//! `-` everywhere, and nothing here says so.
 //!
 //! - **An alt-screen capture is cut at its first `CSI ? 1049 l`**, as `vttest.rs`'s capture tests
 //!   do. An application tears the alt buffer down before it exits, so the state at EOF holds none
@@ -119,12 +116,6 @@ const CAPTURES: &[Capture] = &[
     capture!("written_space", 80, 24, None, ["written_space"], None),
 ];
 
-/// Every surface a consumer can read, by name. Order is the golden's column order.
-const SURFACES: &[&str] = &[
-    "frame", "text", "attrs", "events", "replies", "keys", "paste", "mouse", "focus", "modes",
-    "marks",
-];
-
 // ---------------------------------------------------------------------------------------------
 // Scanner
 
@@ -135,11 +126,14 @@ struct Tok {
     kind: String,
 }
 
-/// Brackets whole sequences so removing one leaves valid bytes on both sides. A parameter stays
-/// in the kind where it names a function rather than a quantity: all of a mode set/reset (`?1h`
-/// and `?1049h` share nothing), and the first of XTWINOPS `t`, DSR `n`, DECRQM `$p` and any `>`
-/// sequence (`22t` pushes a title, `23t` pops one). Every other CSI drops its digits, so
-/// `CSI 1;2H` and `CSI H` are one kind.
+/// CSI finals whose parameters are quantities — a position, a count, a margin. Their kind drops
+/// the digits, so `CSI 1;2H` and `CSI H` are one kind.
+const QUANTITY_FINALS: &[u8] = b"HfABCDEFGdea`rSTLM@PXbIZ";
+
+/// Brackets whole sequences so removing one leaves valid bytes on both sides. Outside
+/// [`QUANTITY_FINALS`] a CSI keeps its whole parameter string in the kind, because there the
+/// parameters select the function: `?1h` and `?1049h`, `7m` and `58:5:1m`, `J` and `3J`,
+/// `>4;2m` and `>4;m` each share nothing but a final byte.
 fn scan(b: &[u8]) -> Vec<Tok> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -161,27 +155,14 @@ fn scan(b: &[u8]) -> Vec<Tok> {
                         let fin = b[i];
                         i += 1;
                         let params = &b[ps..i - 1];
-                        let symbols: String = params
-                            .iter()
-                            .filter(|c| !c.is_ascii_digit() && **c != b';' && **c != b':')
-                            .map(|c| *c as char)
-                            .collect();
-                        let first: String = params
-                            .iter()
-                            .skip_while(|c| !c.is_ascii_digit())
-                            .take_while(|c| c.is_ascii_digit())
-                            .map(|c| *c as char)
-                            .collect();
-                        let shown = if fin == b'h' || fin == b'l' {
-                            params.iter().map(|c| *c as char).collect()
-                        } else if matches!(fin, b't' | b'n')
-                            || params.first() == Some(&b'>')
-                            || params.last() == Some(&b'$') && fin == b'p'
-                        {
-                            format!("{}{first}", symbols.trim_end_matches('$'))
-                                + if symbols.ends_with('$') { "$" } else { "" }
+                        let shown: String = if QUANTITY_FINALS.contains(&fin) {
+                            params
+                                .iter()
+                                .filter(|c| !c.is_ascii_digit() && **c != b';' && **c != b':')
+                                .map(|c| *c as char)
+                                .collect()
                         } else {
-                            symbols
+                            params.iter().map(|c| *c as char).collect()
                         };
                         out.push(Tok {
                             start,
@@ -275,7 +256,7 @@ fn scan(b: &[u8]) -> Vec<Tok> {
 // ---------------------------------------------------------------------------------------------
 // Replay
 
-/// The cut applied to a single-part capture: everything before the first alt-screen teardown.
+/// Everything before the first alt-screen teardown, applied to every part of a capture.
 fn cut(bytes: &[u8]) -> &[u8] {
     match bytes.windows(8).position(|w| w == b"\x1b[?1049l") {
         Some(p) => &bytes[..p],
@@ -287,7 +268,7 @@ fn parts_of(c: &Capture) -> Vec<&'static [u8]> {
     c.parts.iter().map(|p| cut(p)).collect()
 }
 
-fn key(key: Key, mods: Modifiers) -> KeyEvent {
+fn press(key: Key, mods: Modifiers) -> KeyEvent {
     KeyEvent {
         key,
         mods,
@@ -295,8 +276,9 @@ fn key(key: Key, mods: Modifiers) -> KeyEvent {
     }
 }
 
-/// Every consumer-observable surface after replaying `parts`, one string per [`SURFACES`] entry.
-fn surfaces(c: &Capture, parts: &[Vec<u8>]) -> Vec<String> {
+/// Every consumer-observable surface after replaying `parts`, each with the name the golden
+/// spells it by. The name travels with its value, so neither can be added without the other.
+fn surfaces(c: &Capture, parts: &[Vec<u8>]) -> Vec<(&'static str, String)> {
     let mut e = match c.scrollback {
         Some(sb) => Engine::with_scrollback(c.cols, c.rows, sb),
         None => Engine::new(c.cols, c.rows),
@@ -309,11 +291,11 @@ fn surfaces(c: &Capture, parts: &[Vec<u8>]) -> Vec<String> {
         }
         e.feed(p);
     }
-    let (cols, rows) = c
-        .resize
-        .filter(|_| parts.len() > 1)
-        .unwrap_or((c.cols, c.rows));
+    let (cols, rows) = (e.grid().cols(), e.grid().rows());
 
+    // Acked first, so the frame carries no scroll op accumulated over the replay: that op is
+    // the stream's history, and the verdict is about where it ended.
+    e.reset_damage();
     e.mark_fully_damaged();
     let frame = justerm_core::encode(&e.frame());
 
@@ -345,7 +327,7 @@ fn surfaces(c: &Capture, parts: &[Vec<u8>]) -> Vec<String> {
         (Key::Keypad(KeypadKey::Digit(5)), Modifiers::empty()),
     ]
     .into_iter()
-    .map(|(k, m)| format!("{:?}", e.encode_key(key(k, m))))
+    .map(|(k, m)| format!("{:?}", e.encode_key(press(k, m))))
     .collect();
 
     let mouse: Vec<String> = [
@@ -389,24 +371,60 @@ fn surfaces(c: &Capture, parts: &[Vec<u8>]) -> Vec<String> {
     .collect();
 
     vec![
-        format!("{frame:?}"),
-        e.accessible_text(),
-        attrs,
-        format!("{:?}", e.drain_events()),
-        format!("{:?}", e.drain_replies()),
-        keys.join("|"),
-        format!("{:?}", e.encode_paste("x")),
-        mouse.join("|"),
-        format!("{:?}|{:?}", e.encode_focus(true), e.encode_focus(false)),
-        format!(
-            "sync={} w32={} scheme={} sb={}",
-            e.synchronized_output(),
-            e.win32_input_mode(),
-            e.color_scheme_updates(),
-            e.scrollback_len(),
+        ("frame", format!("{frame:?}")),
+        ("text", e.accessible_text()),
+        ("attrs", attrs),
+        ("events", format!("{:?}", e.drain_events())),
+        ("replies", format!("{:?}", e.drain_replies())),
+        ("keys", keys.join("|")),
+        ("paste", format!("{:?}", e.encode_paste("x"))),
+        ("mouse", mouse.join("|")),
+        (
+            "focus",
+            format!("{:?}|{:?}", e.encode_focus(true), e.encode_focus(false)),
         ),
-        format!("{:?}|{:?}", e.command_marks(), e.command_lines()),
+        (
+            "modes",
+            format!(
+                "sync={} w32={} scheme={} sb={}",
+                e.synchronized_output(),
+                e.win32_input_mode(),
+                e.color_scheme_updates(),
+                e.scrollback_len(),
+            ),
+        ),
+        (
+            "marks",
+            format!("{:?}|{:?}", e.command_marks(), e.command_lines()),
+        ),
     ]
+}
+
+/// The surface names, in golden column order.
+fn surface_names() -> Vec<&'static str> {
+    surfaces(&CAPTURES[0], &[])
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// A golden row split into its kind and the surfaces that moved. The count column is the one
+/// token of the form `x<digits>`, which no kind or surface name can be.
+fn parse_row(line: &str) -> (&str, Vec<&str>) {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let at = words
+        .iter()
+        .position(|w| {
+            w.len() > 1 && w.starts_with('x') && w[1..].bytes().all(|b| b.is_ascii_digit())
+        })
+        .unwrap_or_else(|| panic!("golden row with no count column: {line:?}"));
+    let kind = line[..line.find(words[at]).unwrap()].trim_end();
+    let moved = words[at + 1..]
+        .iter()
+        .copied()
+        .filter(|w| *w != "-")
+        .collect();
+    (kind, moved)
 }
 
 /// The inventory of one capture, as the golden spells it.
@@ -445,11 +463,10 @@ fn inventory(c: &Capture) -> String {
             })
             .collect();
         let moved: Vec<&str> = surfaces(c, &stripped)
-            .iter()
+            .into_iter()
             .zip(&base)
-            .zip(SURFACES)
-            .filter(|((a, b), _)| a != b)
-            .map(|(_, name)| *name)
+            .filter(|((_, a), (_, b))| a != b)
+            .map(|((name, _), _)| name)
             .collect();
         let verdict = if moved.is_empty() {
             "-".to_string()
@@ -485,18 +502,17 @@ fn each_capture_matches_its_inventory() {
 
 #[test]
 fn every_surface_sees_an_effect_somewhere_in_the_corpus() {
-    let mut seen: BTreeMap<&str, Vec<String>> = SURFACES.iter().map(|s| (*s, Vec::new())).collect();
+    let mut seen: BTreeMap<&str, Vec<String>> = surface_names()
+        .into_iter()
+        .map(|s| (s, Vec::new()))
+        .collect();
     for c in CAPTURES {
         for line in c.golden.lines().filter(|l| !l.starts_with('#')) {
-            let kind = line.split(" x").next().unwrap_or("").trim_end();
-            for name in line
-                .split_whitespace()
-                .skip_while(|w| !w.starts_with('x'))
-                .skip(1)
-            {
-                if let Some(v) = seen.get_mut(name) {
-                    v.push(format!("{}:{kind}", c.name));
-                }
+            let (kind, moved) = parse_row(line);
+            for name in moved {
+                seen.get_mut(name)
+                    .unwrap_or_else(|| panic!("{}: {kind:?} names no surface {name:?}", c.name))
+                    .push(format!("{}:{kind}", c.name));
             }
         }
     }

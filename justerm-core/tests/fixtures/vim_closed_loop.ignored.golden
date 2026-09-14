@@ -1,11 +1,20 @@
-# vim_closed_loop 80x24 bytes=4934 kinds=33
+# vim_closed_loop 80x24 bytes=4934 kinds=41
 C0 0x0a                x22    frame text
 C0 0x0d                x24    frame text
-CSI %m                 x1     -
-CSI 22t                x3     events
-CSI 23t                x2     events
+CSI 0%m                x1     -
+CSI 22;0;0t            x1     -
+CSI 22;1t              x1     -
+CSI 22;2t              x1     -
+CSI 23;1t              x1     -
+CSI 23;2t              x1     events
+CSI 23m                x3     -
+CSI 27m                x3     -
+CSI 29m                x3     -
+CSI 2J                 x3     frame text
 CSI 6n                 x2     replies
-CSI >4m                x3     -
+CSI 94m                x3     frame
+CSI >4;2m              x1     -
+CSI >4;m               x2     keys
 CSI >c                 x1     replies
 CSI ?1004h             x1     -
 CSI ?1004l             x1     focus
@@ -21,9 +30,8 @@ CSI ?25h               x3     frame
 CSI ?25l               x3     -
 CSI C                  x3     -
 CSI H                  x87    frame text replies
-CSI J                  x3     frame text
 CSI K                  x3     frame text
-CSI m                  x18    frame
+CSI m                  x6     frame
 CSI r                  x1     -
 DCS $q                 x1     -
 DCS +q                 x10    -

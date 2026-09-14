@@ -1,7 +1,10 @@
-# tmux_clipboard 80x24 bytes=1185 kinds=29
+# tmux_clipboard 80x24 bytes=1185 kinds=31
 C0 0x0a                x70    -
 C0 0x0d                x69    -
-CSI 22t                x1     -
+CSI 22;0;0t            x1     -
+CSI 2J                 x2     frame text
+CSI 30m                x3     -
+CSI 42m                x3     -
 CSI >c                 x1     replies
 CSI >q                 x1     -
 CSI ?1000l             x4     -
@@ -19,10 +22,9 @@ CSI ?25h               x7     frame
 CSI ?25l               x3     -
 CSI ?7727h             x1     -
 CSI ?7727l             x1     -
-CSI H                  x9     frame
-CSI J                  x2     frame text
+CSI H                  x9     -
 CSI K                  x69    -
-CSI m                  x12    -
+CSI m                  x6     frame
 CSI r                  x3     -
 ESC (B                 x6     -
 ESC =                  x1     -
