@@ -585,6 +585,10 @@ impl Hyperlink {
     /// The link target, exactly as the application declared it — never validated,
     /// never resolved. Whether it is a URL a consumer is willing to open is that
     /// consumer's policy (ADR-0017), the same way colour resolution is.
+    ///
+    /// **One exception to "exactly":** a URI containing 14 or more unencoded `;` arrives
+    /// cut short, because the parser this engine builds on passes at most 16 OSC fields.
+    /// The shorter URI is not marked as cut. A percent-encoded `%3B` is unaffected.
     pub fn uri(&self) -> &str {
         &self.uri
     }
@@ -5981,6 +5985,10 @@ impl Perform for Term {
             // is the *slice* being non-empty, not the string: a fieldless `OSC 2` must stay
             // ignored where `OSC 2 ;` clears the title, and `params.get(1..)` answers
             // `Some(&[])` for the first, whose join is indistinguishable from the second.
+            //
+            // The rejoin recovers only what `vte` hands over, which is at most 16 fields: a
+            // title with 15 or more `;` still arrives cut, and cannot be told from a complete
+            // one here (#840, closed not planned; see the VT interpretation map note).
             b"0" | b"2" => {
                 if let Some(fields) = params.get(1..).filter(|f| !f.is_empty()) {
                     let title = String::from_utf8_lossy(&fields.join(&b';')).into_owned();
@@ -5992,7 +6000,8 @@ impl Perform for Term {
             }
             // OSC 7 = current working directory (a file:// URI). Rejoined for the reason
             // on the title arm above — `;` is a legal byte in a path and in a URI, and the
-            // engine hands the value over exactly as declared (#880, ADR-0017).
+            // engine hands the value over as declared (#880, ADR-0017), up to the same
+            // 16-field bound as the title.
             b"7" => {
                 if let Some(fields) = params.get(1..).filter(|f| !f.is_empty()) {
                     let cwd = String::from_utf8_lossy(&fields.join(&b';')).into_owned();
@@ -6031,13 +6040,16 @@ impl Perform for Term {
                 // (`OscLinkService.ts:34`, `:49-54`).
                 // The URI is `params[2..]` **rejoined**, not `params[2]` (#650). vte splits the
                 // OSC payload on `;`, so a URI carrying an unencoded `;` arrives in pieces and
-                // reading only the first dropped the rest — silently, with no error. Nothing is
-                // lost at the parser: measured, `]8;;https://x/a;b=c` arrives as
-                // `["8", "", "https://x/a", "b=c"]`. xterm.js special-cases the same thing from
-                // the other side, splitting on the *first* `;` only and taking all the rest as
-                // the URI, *"to support unencoded semi-colons in the URIs"*
-                // (`InputHandler.ts:3106-3112`). Reachable without anything exotic: `?a=1;b=2`
-                // is a legal query string and `;` is a legal filename byte.
+                // reading only the first dropped the rest — silently, with no error. Measured,
+                // `]8;;https://x/a;b=c` arrives as `["8", "", "https://x/a", "b=c"]`. xterm.js
+                // special-cases the same thing from the other side, splitting on the *first* `;`
+                // only and taking all the rest as the URI, *"to support unencoded semi-colons in
+                // the URIs"* (`InputHandler.ts:3106-3112`). `?a=1;b=2` is a legal query string.
+                //
+                // Nothing is lost at the parser **up to 16 fields**, and past that the tail is
+                // gone before this arm runs: `vte` records at most 16 field boundaries, so a URI
+                // with 14 or more `;` resolves to a shorter one that is indistinguishable from a
+                // complete link (#840, closed not planned; see the VT interpretation map note).
                 //
                 // The close survives this: `]8;;` arrives as `["8", "", ""]`, whose rejoin is
                 // empty, and an empty URI still closes. Never decoded — a `%3B` stays `%3B`,

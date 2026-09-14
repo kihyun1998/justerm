@@ -1036,7 +1036,8 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   in it, and an empty value is **not** an id; the group key is `id` **and** URI together, so a reused
   id pointing at a new target does not merge. The URI is everything after the *second* `;` — it is
   rejoined from vte's split, so an unencoded `;` inside it is kept rather than truncating the target
-  (#650, matching xterm's deliberately special-cased split-on-first-`;`). It is never decoded: a
+  (#650, matching xterm's deliberately special-cased split-on-first-`;`) — up to 13 of them, past
+  which vte has already dropped the tail and the shorter URI is not marked (#840). It is never decoded: a
   `%3B` stays a `%3B`. The group is held **weakly**: when the last row holding
   the link goes, the key is gone too, and a later open of the same id is genuinely a new link — which
   is why grouping did not reintroduce the pool #628 deleted (#635, xterm.js reaches the same lifetime

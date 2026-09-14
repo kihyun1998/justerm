@@ -267,10 +267,17 @@ pub enum TermEvent {
     /// measured pushes at startup, before setting a title of its own — and that
     /// means "go back to whatever you would show by default", not "show a blank
     /// title".
+    ///
+    /// A title containing 15 or more `;` arrives cut short, because the parser this
+    /// engine builds on passes at most 16 OSC fields; the shorter title is not marked.
     Title(String),
     /// The terminal bell rang (BEL, `0x07`).
     Bell,
     /// The working directory was reported (OSC 7), e.g. `file://host/path`.
+    ///
+    /// Passed as declared, except that a value containing 15 or more unencoded `;`
+    /// arrives cut short (the same 16-field parser bound as [`TermEvent::Title`]).
+    /// An emitter that percent-encodes `;` never reaches it.
     Cwd(String),
     /// The app requested 80/132-column mode (DECCOLM `?3`). justerm is
     /// dimension-free, so this is a *request* — the consumer may honor it by

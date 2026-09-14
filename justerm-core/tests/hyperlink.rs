@@ -209,10 +209,11 @@ fn hyperlink_round_trips_through_serialization() {
 /// `OSC 8 ; params ; URI` is `;`-separated, so vte hands the handler the URI in pieces; reading
 /// `params[2]` alone kept the first piece and dropped the rest, silently. xterm.js special-cases
 /// exactly this — it splits on the **first** `;` only, *"to support unencoded semi-colons in the
-/// URIs"* (`InputHandler.ts:3106`) — and nothing is lost at the parser, so this is a rejoin.
+/// URIs"* (`InputHandler.ts:3106`) — and at this length nothing is lost at the parser, so this is
+/// a rejoin. Past 16 fields the parser does lose the tail (#840); this test stays below that.
 ///
-/// Reachable without anything exotic: `?a=1;b=2` is a legal query string, and `;` is a legal
-/// filename byte, so `ls --hyperlink=auto` can emit one inside a `file://` URI.
+/// Reachable without anything exotic: `?a=1;b=2` is a legal query string. Not through
+/// `ls --hyperlink`, which percent-encodes a `;` in a filename as `%3b` (coreutils 8.32, #840).
 #[test]
 fn a_uri_keeps_its_unencoded_semicolons() {
     let mut t = Engine::new(60, 2);
