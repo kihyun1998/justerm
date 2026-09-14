@@ -64,7 +64,7 @@ on 0.15.0 while a maintainer's local proofs ran on 0.14.0).
    that breaks the `justerm-wasm-decode` binding passes a non-workspace gate silently (it bit v0.4.0; CI's
    `test.yml` already uses `--workspace`, so this just matches the local gate to CI before the tag).
 3. Commit: `chore(release): vX.Y.Z — <summary> (#issues)` (Cargo.toml + Cargo.lock).
-4. Tag: `git tag -a vX.Y.Z -m "vX.Y.Z — <summary>"`.
+4. Tag: `git tag -a --cleanup=verbatim vX.Y.Z -m "vX.Y.Z — <summary>"`.
 5. Push **both** the branch and the tag: `git push origin master && git push origin vX.Y.Z`.
 
 That tag push is the publish trigger. Verify it:
@@ -148,7 +148,7 @@ Cut a renderer release:
 2. Gate the renderer (out of every cargo umbrella — see `docs/agents/theflow.md` §gate matrix):
    `cargo fmt/test/clippy/build --manifest-path justerm-renderer/Cargo.toml` + `pnpm test:proofs`.
    The `test` step carries `--locked`, so a forgotten lock refresh fails here rather than at the tag.
-3. Commit, then tag: `git tag -a renderer-vX.Y.Z -m "renderer-vX.Y.Z — …"`.
+3. Commit, then tag: `git tag -a --cleanup=verbatim renderer-vX.Y.Z -m "renderer-vX.Y.Z — …"`.
 4. Push the tag: `git push origin renderer-vX.Y.Z`.
 
 | Workflow | Trigger | Publishes | Gate | Secret |
@@ -183,7 +183,7 @@ Cut a web release:
 
 1. Bump `version` in `justerm-web/package.json`.
 2. Gate it: `pnpm typecheck && pnpm test && pnpm build` (+ `pnpm test:e2e` for UI-observable changes).
-3. Commit, then tag: `git tag -a web-vX.Y.Z -m "web-vX.Y.Z — …"`.
+3. Commit, then tag: `git tag -a --cleanup=verbatim web-vX.Y.Z -m "web-vX.Y.Z — …"`.
 4. Push the tag: `git push origin web-vX.Y.Z`.
 
 | Workflow | Trigger | Publishes | Gate | Secret |
@@ -271,6 +271,13 @@ step in each track's flow above already writes), so there is one source for the 
 returns the annotation for an annotated tag; for a *lightweight* tag it falls through to the tagged
 commit's message rather than being empty, so the `--generate-notes` fallback is a last resort, not
 the lightweight-tag path.
+
+**Pass `--cleanup=verbatim` whenever the annotation is Markdown.** `git tag`'s default cleanup is
+`strip`, which deletes every line starting with `#` — and a Markdown heading is exactly such a line.
+It applies to `-m` and `-F` alike (measured, git 2.50.1). `web-v0.12.0`'s tag lost its `## Breaking` /
+`## Added` / `## Fixed` headings this way and its Release body was repaired by hand with
+`gh release edit --notes-file`. `web-v0.11.0`'s annotation carries no headings either. A pushed tag
+is not rewritten, so the repair is the Release page, not the tag.
 
 Two deliberate details:
 
