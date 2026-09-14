@@ -1,0 +1,22 @@
+# undercurl_matrix 80x10 bytes=470 kinds=21
+C0 0x0a                x7     frame text attrs
+C0 0x0d                x7     frame text attrs
+CSI 0m                 x2     -
+CSI 24m                x2     frame
+CSI 2J                 x1     -
+CSI 38;2;255;255;255m  x1     frame
+CSI 4:0m               x4     frame attrs
+CSI 4:1m               x1     frame attrs
+CSI 4:2m               x1     frame attrs
+CSI 4:3m               x2     frame attrs
+CSI 4:4m               x1     frame attrs
+CSI 4:5m               x1     frame attrs
+CSI 4m                 x1     frame attrs
+CSI 58:2:1:0:200:0m    x1     frame attrs
+CSI 58:2::128:64:255m  x1     frame attrs
+CSI 58:2::255:0:0m     x2     frame attrs
+CSI 58:5:9m            x1     frame attrs
+CSI 58;2;0;128;255m    x1     frame attrs
+CSI 58;5;46m           x1     frame attrs
+CSI 59m                x6     -
+CSI H                  x1     -

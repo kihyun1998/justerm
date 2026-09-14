@@ -1,0 +1,18 @@
+# top 80x24 bytes=8758 kinds=17
+C0 0x0a                x92    frame text modes
+C0 0x0d                x92    frame text modes
+CSI 1m                 x54    frame
+CSI 2J                 x1     -
+CSI 39;49m             x185   -
+CSI 7m                 x2     frame
+CSI ?12l               x1     -
+CSI ?1h                x1     -
+CSI ?1l                x1     keys
+CSI ?25h               x1     frame
+CSI ?25l               x3     -
+CSI H                  x6     frame text modes
+CSI K                  x71    frame text
+CSI m                  x240   frame
+ESC (B                 x240   -
+ESC =                  x1     -
+ESC >                  x1     keys

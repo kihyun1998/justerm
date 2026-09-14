@@ -1,0 +1,10 @@
+# written_space 80x24 bytes=155 kinds=9
+C0 0x0a                x11    frame text
+C0 0x0d                x13    frame text
+CSI 2J                 x1     -
+CSI ?1h                x1     -
+CSI ?1l                x1     keys
+CSI H                  x1     -
+CSI K                  x1     -
+ESC =                  x1     -
+ESC >                  x1     keys

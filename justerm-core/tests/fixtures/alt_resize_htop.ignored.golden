@@ -1,0 +1,39 @@
+# alt_resize_htop 80x24 bytes=12642 kinds=38
+C0 0x08                x2     -
+C0 0x09                x9     -
+C0 0x0a                x7     frame text
+C0 0x0d                x2     frame text
+CSI 0;1m               x133   frame
+CSI 0m                 x101   frame
+CSI 22;0;0t            x1     -
+CSI 2J                 x1     -
+CSI 30m                x48    frame
+CSI 31m                x41    frame
+CSI 32m                x39    frame
+CSI 33m                x1     frame
+CSI 34m                x3     frame
+CSI 35m                x9     frame
+CSI 36m                x127   frame
+CSI 39;49m             x46    -
+CSI 39m                x140   frame
+CSI 42m                x5     frame
+CSI 44m                x3     frame
+CSI 46m                x44    frame
+CSI 4l                 x1     -
+CSI 90m                x120   frame
+CSI ?1006;1000h        x1     frame mouse
+CSI ?1049h             x1     frame text modes
+CSI ?1h                x1     keys
+CSI ?25l               x1     frame
+CSI ?7h                x1     -
+CSI H                  x345   frame text
+CSI K                  x8     frame text
+CSI S                  x1     frame text
+CSI T                  x1     frame text
+CSI X                  x5     frame text
+CSI d                  x5     frame text
+CSI m                  x175   frame
+CSI r                  x35    frame text
+ESC (B                 x409   -
+ESC =                  x1     keys
+ESC M                  x8     frame text

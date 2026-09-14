@@ -1,0 +1,11 @@
+# softwrap_shifts 80x24 bytes=640 kinds=10
+C0 0x0a                x10    frame text
+C0 0x0d                x10    frame text
+CSI 2J                 x2     frame text
+CSI H                  x12    frame text
+CSI L                  x3     -
+CSI M                  x4     frame text
+CSI S                  x3     -
+CSI T                  x3     -
+CSI r                  x2     -
+ESC M                  x2     -

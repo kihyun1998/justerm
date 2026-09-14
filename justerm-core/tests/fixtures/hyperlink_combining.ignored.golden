@@ -1,0 +1,6 @@
+# hyperlink_combining 80x24 bytes=807 kinds=5
+C0 0x0a                x11    frame text attrs
+C0 0x0d                x11    frame text attrs
+CSI 2J                 x1     -
+CSI H                  x2     frame
+OSC 8                  x18    frame attrs

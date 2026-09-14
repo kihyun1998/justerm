@@ -1,0 +1,37 @@
+# htop 80x24 bytes=4026 kinds=36
+C0 0x0d                x3     frame text
+CSI 0;1m               x43    frame
+CSI 0m                 x27    frame
+CSI 22;0;0t            x1     -
+CSI 2J                 x1     -
+CSI 30m                x18    frame
+CSI 31m                x10    frame
+CSI 32m                x15    frame
+CSI 33m                x2     frame
+CSI 34m                x3     frame
+CSI 35m                x2     frame
+CSI 36m                x46    frame
+CSI 39;49m             x16    -
+CSI 39m                x60    frame
+CSI 42m                x5     frame
+CSI 44m                x3     frame
+CSI 46m                x14    frame
+CSI 4l                 x1     -
+CSI 90m                x34    frame
+CSI ?1006;1000h        x1     -
+CSI ?1006;1000l        x1     frame mouse
+CSI ?1049h             x1     frame
+CSI ?12l               x1     -
+CSI ?1h                x1     keys
+CSI ?25h               x1     frame
+CSI ?25l               x1     -
+CSI ?7h                x1     -
+CSI H                  x57    frame text
+CSI J                  x1     frame text
+CSI K                  x3     frame
+CSI X                  x4     frame text
+CSI d                  x3     frame text
+CSI m                  x66    frame
+CSI r                  x1     -
+ESC (B                 x136   -
+ESC =                  x1     keys
