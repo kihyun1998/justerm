@@ -83,6 +83,24 @@ how this repo *records* one.
 - **Adding a capture moves every test that globs the directory.** `span_bounds.rs` replays every
   `.raw` and holds a floor rather than a count for exactly that reason — it read 255 frames before
   #891 and 321 after, and a pinned count would have broken on the addition instead of on a defect.
+- **An inventory golden pins what each capture does nothing with (#895).** Every other capture test
+  pins what a stream does, so a handler whose effect reaches none of their goldens could stop firing
+  with the suite green. `ignored_inventory.rs` replays each capture once whole and once per sequence
+  kind with that kind removed, and `<capture>.ignored.golden` records which consumer surfaces moved.
+  Three things make its `-` a measurement rather than a shrug. **A positive control per surface**:
+  every surface must move for some kind somewhere in the corpus, or it is a broken instrument. The
+  mutation that proves it drops the mouse surface and regenerates the goldens; they go green, and
+  the control goes red. **A scanner guard**: a token that runs long swallows the next sequence and
+  manufactures a false effect, measured when the DCS branch was made to ignore ST. **A kind keeps a
+  parameter where the parameter names a function** (`22t` pushes a title and `23t` pops one), and
+  drops it where it is a quantity.
+- **The inventory's verdict is end-state only, and that was the maintainer's scope call.** `-` means
+  the state at the end of the stream is identical without the kind, not that the engine ignores it:
+  a mode set and reset before the cut reads `-` (htop's `?1006;1000h`, vim's `>4m`), as does state
+  with no getter that nothing later exercises (tab stops, the saved cursor, charsets). Comparing the
+  trajectory would see those; it was shown with its cost and left out of #895. The list of captures is
+  hand-kept rather than globbed, so adding a capture is a deliberate entry there and not a silent
+  change of what is pinned.
 - **`.raw` is binary to git.** A line-ending conversion rewrites the CR/LF bytes inside a stream and
   every replay built on it breaks (#20); `.gitattributes` pins it by extension so the rule survives
   crate moves.
@@ -105,6 +123,8 @@ how this repo *records* one.
   can-and-cannot-observe convention
 - `justerm-core/tests/span_bounds.rs` — the directory-globbing replay whose frame floor moves with
   the corpus
+- `justerm-core/tests/ignored_inventory.rs` and `tests/fixtures/*.ignored.golden` — the per-kind
+  differential replay, its surface controls and its scanner guard
 - `justerm-core/src/term.rs` — `drain_replies` and the `report_*` methods are the two halves a closed
   loop has to drive
 
@@ -126,7 +146,9 @@ territories.
 ## Blast radius
 
 - [VT interpretation](vt-interpretation.md) — the consumer of the counts. Every priority argued from
-  reach reads this corpus, so a recorder that cannot hold a class makes that class look unimportant
+  reach reads this corpus, so a recorder that cannot hold a class makes that class look unimportant.
+  And the reverse since #895: a stream-driven handler that starts or stops having an effect moves an
+  `*.ignored.golden` in the same change
 - [events & replies](events-and-replies.md) — a closed loop is the only thing in this repo that
   drives both channels against a real application; `reply_filter.rs` is a consumer of that territory
 - [input encoding](input-encoding.md) — `modify_other_keys.rs` drives the encoder from
@@ -141,8 +163,12 @@ territories.
 - **vim's ten XTGETTCAP questions go unanswered.** The closed-loop capture proves they are reached
   in ordinary use, and a test in it inverts the day they are answered; the engine does not answer
   them.
-- **The inventory golden #891's own comment deferred is still unbuilt** — per capture, the frozen set
-  of sequence kinds with no observable effect, which would fail when an arm silently stops firing.
+- **The inventory cannot see a handler whose effect is undone before the end of its stream.** A
+  mode set and later reset before the cut, and state with no getter that nothing exercises
+  afterwards, read `-` while handled. So a regression in `?1006;1000h` is invisible on `htop.raw`
+  and caught only on `alt_resize_htop`, where the stream ends before the reset.
+- **No capture closes an OSC with ST**; every OSC in the corpus ends in BEL. The scanner's ST branch
+  is therefore proven only on synthetic bytes, and a capture that uses it is the first real exercise.
 - **`alt_resize_htop` and `alt_resize_vim` have no recorder script.** What is known is in their
   consuming test's doc comment; the vim flags and the exact dwell are not, so neither can be
   re-recorded to the byte.

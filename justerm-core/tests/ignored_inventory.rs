@@ -13,9 +13,8 @@
 //! mean the engine ignores it. State that is set and never exercised later reads `-` while fully
 //! handled: a DECSC with no DECRC, an HTS with no HT, a designated charset nothing prints through,
 //! an SGR a later full clear paints over. Tab stops, the saved cursor, the charsets and the scroll
-//! region have no getter at all and are only visible through a later effect. Comparing the
-//! trajectory instead of the end state would see them; that was weighed against its cost and
-//! left out of #895's scope.
+//! region have no getter at all and are only visible through a later effect. Why the end state
+//! and not the trajectory is in `docs/map/territory/capture-corpus.md`.
 //!
 //! ## What the surfaces can and cannot observe
 //!
@@ -26,11 +25,10 @@
 //!
 //! - **An alt-screen capture is cut at its first `CSI ? 1049 l`**, as `vttest.rs`'s capture tests
 //!   do. An application tears the alt buffer down before it exits, so the state at EOF holds none
-//!   of what it drew and every grid-affecting kind would read `-`, the controls included — the
-//!   first thing the `probe/47-dogfood-inventory` probe got wrong.
+//!   of what it drew and every grid-affecting kind would read `-`, the controls included.
 //! - **Input-side state is read through the encoders, with modified keys.** Cursor-key, keypad,
 //!   modifyOtherKeys and the kitty flags never reach the screen, and modifyOtherKeys is invisible
-//!   to an unmodified key — the probe's second mistake.
+//!   to an unmodified key.
 //! - **Kinds are bracketed by this file's own scanner**, not by `vte`. A mis-bracketed token
 //!   corrupts its neighbours when removed and manufactures a false effect, so
 //!   [`the_scanner_brackets_every_capture_exactly`] holds every ESC to exactly one token, and no

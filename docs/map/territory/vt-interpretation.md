@@ -264,6 +264,8 @@ Every stateful territory downstream, because this is where state is written.
 - [reflow](reflow.md) — `resize` lives here too, and was deliberately not extracted
 - [input encoding](input-encoding.md) — the modes it reads are set by *these* verbs, which is why the
   encoder cannot live in the consumer
+- [the capture corpus](capture-corpus.md) — a verb that gains or loses an effect on a recorded stream
+  moves that capture's `*.ignored.golden` (#895)
 
 ## Known holes / open
 
