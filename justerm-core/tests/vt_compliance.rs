@@ -710,6 +710,96 @@ fn vertical_position_relative_stops_at_the_bottom_margin() {
 }
 
 // ===========================================================================
+// Next / preceding line (CNL `CSI E` / CPL `CSI F`, #898)
+// ===========================================================================
+
+/// CNL moves down `Ps` rows and to column one.
+#[test]
+fn cursor_next_line_moves_down_to_column_one() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;5Hxy"); // grid (2, 6)
+    term.feed(b"\x1b[2E");
+
+    assert_eq!((term.cursor().row, term.cursor().col), (4, 0));
+}
+
+/// CPL moves up `Ps` rows and to column one.
+#[test]
+fn cursor_preceding_line_moves_up_to_column_one() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[5;5Hxy"); // grid (4, 6)
+    term.feed(b"\x1b[2F");
+
+    assert_eq!((term.cursor().row, term.cursor().col), (2, 0));
+}
+
+/// An absent and an explicit zero count both move one row.
+#[test]
+fn next_and_preceding_line_absent_and_zero_counts_both_move_one_row() {
+    for (seq, row) in [
+        (&b"\x1b[E"[..], 4),
+        (&b"\x1b[0E"[..], 4),
+        (&b"\x1b[F"[..], 2),
+        (&b"\x1b[0F"[..], 2),
+    ] {
+        let mut term = Engine::new(10, 8);
+        term.feed(b"\x1b[4;5H"); // grid (3, 4)
+        term.feed(seq);
+
+        assert_eq!((term.cursor().row, term.cursor().col), (row, 0), "{seq:?}");
+    }
+}
+
+/// A count past the screen edge stops on the edge row and does not scroll.
+#[test]
+fn next_and_preceding_line_stop_at_the_screen_edge_without_scrolling() {
+    let mut term = Engine::new(10, 4);
+    term.feed(b"top\x1b[4;1Hbottom");
+
+    term.feed(b"\x1b[99E");
+    assert_eq!((term.cursor().row, term.cursor().col), (3, 0));
+
+    term.feed(b"\x1b[99F");
+    assert_eq!((term.cursor().row, term.cursor().col), (0, 0));
+
+    assert_eq!(row(&term, 0), "top       ");
+    assert_eq!(row(&term, 3), "bottom    ");
+}
+
+/// Inside a scroll region CNL and CPL stop at the margins, as CUD and CUU do.
+#[test]
+fn next_and_preceding_line_stop_at_the_region_margins() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[4;5H"); // grid (3, 4)
+
+    term.feed(b"\x1b[9E");
+    assert_eq!((term.cursor().row, term.cursor().col), (5, 0));
+
+    term.feed(b"\x1b[9F");
+    assert_eq!((term.cursor().row, term.cursor().col), (2, 0));
+}
+
+/// From a parked cursor, the character after CNL lands at column one of the row
+/// CNL chose — not one row further, as it would if the deferred wrap survived.
+///
+/// The count is two so the three outcomes land on three rows: row 1 is the wrap
+/// alone (CNL ignored), row 2 is CNL, row 3 is CNL with the park still armed.
+#[test]
+fn next_line_from_a_parked_cursor_prints_where_it_landed() {
+    let mut term = Engine::new(3, 5);
+    term.feed(b"abc"); // fills row 0, arming the deferred wrap
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\x1b[2EX");
+
+    assert_eq!(row(&term, 1), "   ");
+    assert_eq!(row(&term, 2), "X  ");
+    assert_eq!(row(&term, 3), "   ");
+    assert_eq!((term.cursor().row, term.cursor().col), (2, 1));
+}
+
+// ===========================================================================
 // Scrollback (#3)
 // ===========================================================================
 

@@ -5847,6 +5847,15 @@ impl Perform for Term {
         match action {
             'A' => self.move_up(param_or(params, 0, 1) as usize),
             'B' | 'e' => self.move_down(param_or(params, 0, 1) as usize),
+            // CNL / CPL (CSI Ps E / F): CUD / CUU, then CR (#898).
+            'E' => {
+                self.move_down(param_or(params, 0, 1) as usize);
+                self.carriage_return();
+            }
+            'F' => {
+                self.move_up(param_or(params, 0, 1) as usize);
+                self.carriage_return();
+            }
             'C' | 'a' => self.move_forward(param_or(params, 0, 1) as usize),
             'D' => self.move_back(param_or(params, 0, 1) as usize),
             // CBT (CSI Ps Z): back-tab, the mirror of HT over the tab-stop
