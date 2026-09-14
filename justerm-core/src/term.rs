@@ -3298,6 +3298,19 @@ impl Term {
         }
     }
 
+    /// CHT (CSI Ps I): [`Term::put_tab`] repeated `n` times, stopping at the first
+    /// one that does not move — so the deferred-wrap rule is `put_tab`'s, and the
+    /// work is bounded by the row rather than by the parameter (#898).
+    fn put_forward_tabs(&mut self, n: usize) {
+        for _ in 0..n {
+            let col = self.cursor.col;
+            self.put_tab();
+            if self.cursor.col == col {
+                break;
+            }
+        }
+    }
+
     /// CBT (CSI Ps Z): step back `n` tab stops, or to column one if fewer
     /// remain.
     ///
@@ -5861,6 +5874,8 @@ impl Perform for Term {
             // CBT (CSI Ps Z): back-tab, the mirror of HT over the tab-stop
             // table. Cursor motion only — it writes no cell (#826).
             'Z' => self.put_back_tab(param_or(params, 0, 1) as usize),
+            // CHT (CSI Ps I): forward tab, the counted HT (#898).
+            'I' => self.put_forward_tabs(param_or(params, 0, 1) as usize),
             // REP (CSI Ps b): repeat the preceding grapheme. `param_or` folds an
             // absent parameter and an explicit zero to one, as everywhere else here.
             'b' => {

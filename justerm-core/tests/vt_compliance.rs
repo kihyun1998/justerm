@@ -408,6 +408,62 @@ fn back_tab_on_a_full_row_prints_where_it_landed_not_on_the_next_row() {
     assert_eq!(term.cursor().row, 0);
 }
 
+/// CHT (CSI Ps I) advances to the next tab stop (#898).
+#[test]
+fn forward_tab_lands_on_the_next_stop() {
+    let mut term = Engine::new(40, 1);
+    term.feed(b"\x1b[1;3H"); // column 2
+    term.feed(b"\x1b[I");
+
+    assert_eq!(term.cursor().col, 8);
+}
+
+/// The count repeats the walk — `n` stops, not `n * 8` columns — so an uneven
+/// stop set by HTS is counted as a stop.
+#[test]
+fn forward_tab_count_repeats_the_walk() {
+    let mut term = Engine::new(40, 1);
+    term.feed(b"\x1b[1;4H\x1bH\r"); // extra stop at column 3; back to column one
+    term.feed(b"\x1b[2I");
+
+    assert_eq!(term.cursor().col, 8); // 0 → 3 → 8, where arithmetic says 16
+}
+
+/// An absent and an explicit zero count both move one stop.
+#[test]
+fn forward_tab_absent_and_zero_counts_both_move_one_stop() {
+    for seq in [&b"\x1b[I"[..], &b"\x1b[0I"[..]] {
+        let mut term = Engine::new(40, 1);
+        term.feed(b"\x1b[1;10H"); // column 9
+        term.feed(seq);
+
+        assert_eq!(term.cursor().col, 16, "{seq:?}");
+    }
+}
+
+/// A count past the last stop lands on the last column, as HT does.
+#[test]
+fn forward_tab_with_a_huge_count_lands_on_the_last_column() {
+    let mut term = Engine::new(20, 1);
+    term.feed(b"\x1b[65535I");
+
+    assert_eq!(term.cursor().col, 19);
+}
+
+/// On a full row CHT finds no stop to move to, so it leaves the deferred wrap
+/// armed as HT does (#848): the next character wraps instead of overwriting the
+/// last column.
+#[test]
+fn forward_tab_on_a_full_row_keeps_the_deferred_wrap() {
+    let mut term = Engine::new(9, 2);
+    term.feed(b"123456789"); // fills row 0, arming the deferred wrap
+
+    term.feed(b"\x1b[3IX");
+
+    assert_eq!(row(&term, 0), "123456789");
+    assert_eq!(row(&term, 1), "X        ");
+}
+
 /// `CSI ? Z` and `CSI > Z` are *unreachable*, not unhandled: a private prefix
 /// arrives as an intermediate and `csi_dispatch` returns above the `match`, so
 /// adding a `'Z'` arm did nothing for them (#824's rule).
