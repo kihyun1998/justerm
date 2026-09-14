@@ -754,15 +754,28 @@ fn cursor_down_from_below_the_region_reaches_the_screen_bottom() {
     assert_eq!(term.cursor().row, 7);
 }
 
-/// VPR (`CSI e`) is CUD under another final, so it takes the same clamp.
+/// VPR (`CSI e`) positions a row the way CUP does rather than moving like CUD,
+/// so without origin mode a scroll region does not stop it.
 #[test]
-fn vertical_position_relative_stops_at_the_bottom_margin() {
+fn vertical_position_relative_passes_the_bottom_margin_without_origin_mode() {
     let mut term = Engine::new(10, 8);
     term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
-    term.feed(b"\x1b[4;1H"); // grid row 3
+    term.feed(b"\x1b[4;4H"); // grid (3, 3)
     term.feed(b"\x1b[9e");
 
-    assert_eq!(term.cursor().row, 5);
+    assert_eq!((term.cursor().row, term.cursor().col), (7, 3));
+}
+
+/// Under origin mode VPR is bounded by the bottom margin, as CUP is.
+#[test]
+fn vertical_position_relative_under_origin_mode_stops_at_the_bottom_margin() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[?6h"); // DECOM → home to the region top, grid (2, 0)
+    term.feed(b"\x1b[1;4H"); // region row 1 → grid (2, 3)
+    term.feed(b"\x1b[9e");
+
+    assert_eq!((term.cursor().row, term.cursor().col), (5, 3));
 }
 
 // ===========================================================================

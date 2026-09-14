@@ -4243,10 +4243,10 @@ impl Term {
         (nr, 0)
     }
 
-    // ---- cursor movement (CSI A/B/C/D/G/d/H/f) -------------------------------
+    // ---- cursor movement (CSI A/B/C/D/E/F/G/d/e/H/f) -------------------------
 
-    /// CUU: up `n` rows, stopping at the top margin when the cursor is at or below
-    /// it and at the screen top otherwise.
+    /// Up `n` rows — CUU, and through it VT52 `ESC A` and CPL — stopping at the top
+    /// margin when the cursor is at or below it and at the screen top otherwise.
     fn move_up(&mut self, n: usize) {
         let floor = if self.cursor.row >= self.scroll_top {
             self.scroll_top
@@ -4257,8 +4257,8 @@ impl Term {
         self.cursor.pending_wrap = false;
     }
 
-    /// CUD: down `n` rows, stopping at the bottom margin when the cursor is at or
-    /// above it and at the screen bottom otherwise.
+    /// Down `n` rows — CUD, and through it VT52 `ESC B` and CNL — stopping at the
+    /// bottom margin when the cursor is at or above it and at the screen bottom otherwise.
     fn move_down(&mut self, n: usize) {
         let ceiling = if self.cursor.row <= self.scroll_bottom {
             self.scroll_bottom
@@ -4307,15 +4307,28 @@ impl Term {
     }
 
     fn goto(&mut self, row: usize, col: usize) {
-        // Origin mode addresses rows relative to the scroll region's top margin
-        // and clamps to its bottom; otherwise rows are absolute to the screen.
-        let (offset, max_row) = if self.origin_mode {
+        let (offset, max_row) = self.addressable_rows();
+        self.cursor.row = (row + offset).min(max_row);
+        self.cursor.col = col.min(self.grid.cols() - 1);
+        self.cursor.pending_wrap = false;
+    }
+
+    /// The row addressing origin and the last addressable row. Origin mode
+    /// addresses rows relative to the scroll region's top margin and clamps to its
+    /// bottom; otherwise rows are absolute to the screen.
+    fn addressable_rows(&self) -> (usize, usize) {
+        if self.origin_mode {
             (self.scroll_top, self.scroll_bottom)
         } else {
             (0, self.grid.rows() - 1)
-        };
-        self.cursor.row = (row + offset).min(max_row);
-        self.cursor.col = col.min(self.grid.cols() - 1);
+        }
+    }
+
+    /// VPR (CSI Ps e): the current row plus `n`, positioned as CUP positions a row
+    /// — bounded by the last addressable row, not by the scroll margin CUD stops at.
+    fn vertical_position_relative(&mut self, n: usize) {
+        let (_, max_row) = self.addressable_rows();
+        self.cursor.row = (self.cursor.row + n).min(max_row);
         self.cursor.pending_wrap = false;
     }
 
@@ -5860,7 +5873,8 @@ impl Perform for Term {
         }
         match action {
             'A' => self.move_up(param_or(params, 0, 1) as usize),
-            'B' | 'e' => self.move_down(param_or(params, 0, 1) as usize),
+            'B' => self.move_down(param_or(params, 0, 1) as usize),
+            'e' => self.vertical_position_relative(param_or(params, 0, 1) as usize),
             // CNL / CPL (CSI Ps E / F): CUD / CUU, then CR (#898).
             'E' => {
                 self.move_down(param_or(params, 0, 1) as usize);
