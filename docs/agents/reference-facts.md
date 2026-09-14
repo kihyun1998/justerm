@@ -3274,4 +3274,6 @@ carriage return, and how CHT spends its count. Four trees, every row re-opened a
 record choosing it (`docs/map/territory/cursor-position.md` listed clamping under *zero governing
 records*). CNL / CPL as each tree's own CUD / CUU plus a return to column one: 4/4 — alacritty's
 `goto` is the same computation its CUU / CUD make, so it differs only by inheriting their missing
-clamp. CHT spending the count as repeated walks: 4/4.
+clamp. CHT spending the count as repeated walks: 4/4. CHT from a parked cursor keeps the park: 4/4 —
+where `HT` splits 3-1 (#848), alacritty's CHT breaks at the last column instead of consuming the wrap
+as its `put_tab` does.
