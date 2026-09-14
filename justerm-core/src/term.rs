@@ -3300,7 +3300,9 @@ impl Term {
 
     /// CHT (CSI Ps I): [`Term::put_tab`] repeated `n` times, stopping at the first
     /// one that does not move — so the deferred-wrap rule is `put_tab`'s, and the
-    /// work is bounded by the row rather than by the parameter (#898).
+    /// work is bounded by the row rather than by the parameter (#898). The break
+    /// is defensive only: a `put_tab` that did not move will not move on a repeat,
+    /// so removing it changes no outcome and no test can redden it.
     fn put_forward_tabs(&mut self, n: usize) {
         for _ in 0..n {
             let col = self.cursor.col;
@@ -3383,11 +3385,10 @@ impl Term {
     /// The unanimity is over that population and not over every writer of
     /// `cursor.col`. `linefeed_inner` and `reverse_index` do **not** clear it,
     /// which is a separate and unsettled question — justerm is the outlier 3-1
-    /// there — and deliberately outside this change. Nor is `put_tab` a clean
-    /// precedent: at the right edge of a full row it clears the flag *without
-    /// moving*, so the next character overwrites the last column instead of
-    /// wrapping, which all four references avoid. The rule is sound where the
-    /// verb actually moves the cursor, and CBT always does. See
+    /// there — and deliberately outside this change. `put_tab` is in that
+    /// population only where it moves: at the right edge of a full row it finds
+    /// no stop and leaves the flag armed (#848), which is the same rule — clear
+    /// where the verb moves the cursor — and CBT always moves. See
     /// `docs/agents/reference-facts.md`.
     ///
     /// **What the divergence actually costs, stated as behaviour rather than as

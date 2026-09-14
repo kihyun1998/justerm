@@ -30,6 +30,14 @@ Read out of the source; there is no record to read instead.
   last column leaves the cursor where it is and defers the wrap to the *next* print. **Eager wrapping
   here is the classic off-by-one that shifts every subsequent line**, which is why the flag exists at
   all rather than the cursor simply advancing.
+- **Relative vertical motion stops at a scroll margin from its inner side** (#898): `move_up` stops
+  at the top margin when the cursor is at or below it, `move_down` at the bottom margin when it is at
+  or above it, and each is bounded only by the screen edge from the other side — so a cursor below
+  the region moving up crosses the bottom margin and stops at the top one. CUU, CUD, VPR, VT52
+  `ESC A` / `ESC B`, and CNL / CPL all go through these two. It was screen-bounded until #898, with
+  no record choosing that; the rule is **derived** (ADR-0004: xterm, xterm.js and ghostty clamp,
+  alacritty omits it), while putting the change into #898 rather than a slice of its own was the
+  **maintainer's scope call** (2026-09-14), made on the 3-1 tally below.
 - **Position is clamped on set**, to `rows-1` / `cols-1` — so an out-of-range addressing sequence
   yields a degenerate position rather than a panic or an out-of-bounds write.
 - **Two cursors exist.** `cursor` and `saved_cursor`, the latter written on alt-screen enter
@@ -95,6 +103,10 @@ pinned tree — the single most consequential positional rule here.
   local — *a flag outliving `?7l` contradicts the site that wrote it* — and that site is what
   changed.
 
+- [Relative vertical motion against the margins, and the two verbs composed from it](../../agents/reference-facts.md#relative-vertical-motion-against-the-margins-and-the-two-verbs-composed-from-it-898-verified-2026-09-14)
+  — **where CUU / CUD stop inside a region**, measured across all four by #898. 3-1 for the margin
+  clamp, alacritty the outlier, and justerm was on alacritty's side until that change.
+
 How it survives a resize remains unpinned.
 
 ## Cross-cutting invariants
@@ -116,7 +128,8 @@ How it survives a resize remains unpinned.
 
 - **Zero governing records**, for rules whose failure mode is a silently shifted screen. Narrowed
   by #848 but not closed: the deferred wrap now has a stated lifecycle, clamping and the
-  alt-screen save/restore pairing still have nothing.
+  alt-screen save/restore pairing still have nothing. #898 measured the relative-motion half of
+  clamping (the margin stops above) but wrote no record — it is a derivation, not a choice.
 - ~~**The deferred-wrap rule survives only as a field comment.**~~ **Closed by #848 — the field
   comment is now the owner rather than a remnant**, and it states the rule the 22 cursor-movers are
   measured against. What the hole predicted had already happened three times over: `put_tab` cleared
