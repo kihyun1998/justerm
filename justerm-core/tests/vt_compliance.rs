@@ -628,6 +628,88 @@ fn decom_set_homes_to_region_unset_does_not_move() {
 }
 
 // ===========================================================================
+// Relative vertical motion against the scroll region (CUU / CUD, #898)
+// ===========================================================================
+
+/// CUU from inside the region stops at the top margin, not the screen top.
+#[test]
+fn cursor_up_inside_the_region_stops_at_the_top_margin() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[5;4H"); // grid (4, 3)
+    term.feed(b"\x1b[9A");
+
+    assert_eq!((term.cursor().row, term.cursor().col), (2, 3));
+}
+
+/// CUU from *below* the region stops at the top margin too: the clamp keys on
+/// the cursor being at or below the top margin, not on it being inside.
+#[test]
+fn cursor_up_from_below_the_region_stops_at_the_top_margin() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[8;1H"); // grid row 7, below the bottom margin
+    term.feed(b"\x1b[9A");
+
+    assert_eq!(term.cursor().row, 2);
+}
+
+/// CUU from above the region is bounded only by the screen top.
+#[test]
+fn cursor_up_from_above_the_region_reaches_the_screen_top() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[2;1H"); // grid row 1, above the top margin
+    term.feed(b"\x1b[9A");
+
+    assert_eq!(term.cursor().row, 0);
+}
+
+/// CUD from inside the region stops at the bottom margin, not the screen bottom.
+#[test]
+fn cursor_down_inside_the_region_stops_at_the_bottom_margin() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[4;4H"); // grid (3, 3)
+    term.feed(b"\x1b[9B");
+
+    assert_eq!((term.cursor().row, term.cursor().col), (5, 3));
+}
+
+/// CUD from *above* the region stops at the bottom margin too.
+#[test]
+fn cursor_down_from_above_the_region_stops_at_the_bottom_margin() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[1;1H"); // grid row 0, above the top margin
+    term.feed(b"\x1b[9B");
+
+    assert_eq!(term.cursor().row, 5);
+}
+
+/// CUD from below the region is bounded only by the screen bottom.
+#[test]
+fn cursor_down_from_below_the_region_reaches_the_screen_bottom() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[7;1H"); // grid row 6, below the bottom margin
+    term.feed(b"\x1b[9B");
+
+    assert_eq!(term.cursor().row, 7);
+}
+
+/// VPR (`CSI e`) is CUD under another final, so it takes the same clamp.
+#[test]
+fn vertical_position_relative_stops_at_the_bottom_margin() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+    term.feed(b"\x1b[4;1H"); // grid row 3
+    term.feed(b"\x1b[9e");
+
+    assert_eq!(term.cursor().row, 5);
+}
+
+// ===========================================================================
 // Scrollback (#3)
 // ===========================================================================
 

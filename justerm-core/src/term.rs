@@ -4231,13 +4231,27 @@ impl Term {
 
     // ---- cursor movement (CSI A/B/C/D/G/d/H/f) -------------------------------
 
+    /// CUU: up `n` rows, stopping at the top margin when the cursor is at or below
+    /// it and at the screen top otherwise.
     fn move_up(&mut self, n: usize) {
-        self.cursor.row = self.cursor.row.saturating_sub(n);
+        let floor = if self.cursor.row >= self.scroll_top {
+            self.scroll_top
+        } else {
+            0
+        };
+        self.cursor.row = self.cursor.row.saturating_sub(n).max(floor);
         self.cursor.pending_wrap = false;
     }
 
+    /// CUD: down `n` rows, stopping at the bottom margin when the cursor is at or
+    /// above it and at the screen bottom otherwise.
     fn move_down(&mut self, n: usize) {
-        self.cursor.row = (self.cursor.row + n).min(self.grid.rows() - 1);
+        let ceiling = if self.cursor.row <= self.scroll_bottom {
+            self.scroll_bottom
+        } else {
+            self.grid.rows() - 1
+        };
+        self.cursor.row = (self.cursor.row + n).min(ceiling);
         self.cursor.pending_wrap = false;
     }
 
