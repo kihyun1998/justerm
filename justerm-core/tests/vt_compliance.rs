@@ -766,16 +766,34 @@ fn vertical_position_relative_passes_the_bottom_margin_without_origin_mode() {
     assert_eq!((term.cursor().row, term.cursor().col), (7, 3));
 }
 
-/// Under origin mode VPR is bounded by the bottom margin, as CUP is.
+/// Under origin mode VPR is bounded by the bottom margin, as CUP is. The count of
+/// one lands short of the margin, so an offset added twice would show (grid row 5).
 #[test]
 fn vertical_position_relative_under_origin_mode_stops_at_the_bottom_margin() {
     let mut term = Engine::new(10, 8);
     term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
     term.feed(b"\x1b[?6h"); // DECOM → home to the region top, grid (2, 0)
     term.feed(b"\x1b[1;4H"); // region row 1 → grid (2, 3)
-    term.feed(b"\x1b[9e");
 
+    term.feed(b"\x1b[1e");
+    assert_eq!((term.cursor().row, term.cursor().col), (3, 3));
+
+    term.feed(b"\x1b[9e");
     assert_eq!((term.cursor().row, term.cursor().col), (5, 3));
+}
+
+/// A cursor already on a margin is inside the region for the clamp: CUU from the
+/// top margin and CUD from the bottom margin do not move.
+#[test]
+fn cursor_up_and_down_from_a_margin_stay_on_it() {
+    let mut term = Engine::new(10, 8);
+    term.feed(b"\x1b[3;6r"); // region grid rows 2..=5
+
+    term.feed(b"\x1b[3;1H\x1b[A"); // on the top margin
+    assert_eq!(term.cursor().row, 2);
+
+    term.feed(b"\x1b[6;1H\x1b[B"); // on the bottom margin
+    assert_eq!(term.cursor().row, 5);
 }
 
 // ===========================================================================
