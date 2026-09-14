@@ -291,6 +291,9 @@ fn other_window_operations_remain_ignored() {
 ///
 /// One semicolon is enough to reach this, which is what makes it worth a test rather than
 /// a note: a shell that titles itself from a command line hits it.
+///
+/// "Every" holds up to the parser's 16-field bound; a title with 15 or more `;` still arrives
+/// cut (#840).
 #[test]
 fn osc_title_keeps_every_semicolon() {
     for osc in [&b"0"[..], &b"2"[..]] {

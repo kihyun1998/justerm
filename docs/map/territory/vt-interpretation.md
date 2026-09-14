@@ -183,6 +183,23 @@ for a terminal engine, that list is half the specification.
   consumer. `MAX_CLIPBOARD_BASE64` is the only one today; the payloads `OSC 0/2`, `OSC 7` and
   `OSC 8` retain are bounded by nothing, which is a fact about this territory and not a claim that
   it is wrong.
+- **The bytes are unbounded, and the fields are not.** `vte` records at most 16 field boundaries
+  per OSC (`src/lib.rs:531-532` in 0.15.0 and on master), so what lies past the 16th `;` never
+  reaches `osc_dispatch`. A payload cut there arrives looking exactly like a complete 16-field one.
+  So the rejoin rule (#650, #880) recovers a payload only up to that bound. Measured on the engine
+  (#840):
+  - `OSC 8` URIs are complete up to 13 `;` and cut from 14.
+  - `OSC 0`/`2` titles and `OSC 7` cwd values are complete up to 14 `;` and cut from 15.
+  - `OSC 4` keeps its first 7 pairs, a correct prefix.
+  - `OSC 52` cannot be cut into a valid value, because a rejoined `;` fails base64.
+
+  The parser path Alacritty pins cuts at the same boundaries to the same byte lengths, so the
+  cause is vte and not the handlers. Handing a handler a pre-split field array is where this
+  differs from xterm.js and ghostty, whose handlers read the raw payload and which bound an OSC in
+  bytes by dropping it.
+  **Not guarded, by the maintainer's call.** Refusing at exactly 16 fields would drop the complete
+  value on the boundary. And reach measured low: `ls --hyperlink` and penterm's bash, zsh, fish and
+  pwsh OSC 7 integrations percent-encode `;`, and only its cmd.exe integration sends a raw path.
 - **Tab stops are explicit per-column state**, not a modulo: HTS sets, TBC clears, default every
   eighth column. A modulo would be wrong the moment an application moves one — and since #826 that
   is two verbs' problem rather than one, because `CBT` walks the same table backwards. The two walks

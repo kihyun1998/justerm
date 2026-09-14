@@ -865,6 +865,9 @@ Two things that table cannot show, and both were needed to act on it:
 - **Nothing is lost at the parser**, which is what made this a rejoin instead of an impossibility —
   vte hands the handler `["8", "", "https://example.com/a", "b=c"]`, and
   `["8", "id=q", "https://x/p?a=1", "b=2", "c=3"]` for a longer one. Only the handler discarded it.
+  **True at those field counts only.** vte 0.15.0 records at most 16 field boundaries
+  (`src/lib.rs:531-532`), so from 14 URI semicolons the tail is dropped before the handler runs, and
+  the cut URI is indistinguishable from a complete one (#840, measured 2026-09-14).
 
 The fix is `params[2..].join(';')`. The close survives it (`]8;;` is `["8", "", ""]`, whose rejoin is
 empty), and a `%3B` is still never decoded — `Hyperlink::uri` hands the target over exactly as
@@ -3034,6 +3037,11 @@ not: for every OSC whose argument is one free-form string, the payload is `param
 The rule was established once, for `OSC 8`, in #650 — and never applied to the other handlers, so a
 window title or a cwd containing a single semicolon was cut at it and the short value announced as
 the real one.
+
+The rejoin recovers every `;` **up to vte's 16-field bound** and none past it: a title or cwd with 15
+or more `;` still arrives cut, and nothing marks it (#840, measured 2026-09-14, closed not planned).
+Unlike the two references above, which receive the rest of the buffer verbatim, vte pre-splits the
+payload into a fixed array of field slices.
 
 | Fact | Reference | Site |
 |---|---|---|
