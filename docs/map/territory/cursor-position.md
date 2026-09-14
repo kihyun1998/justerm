@@ -34,12 +34,12 @@ Read out of the source; there is no record to read instead.
   at the top margin when the cursor is at or below it, `move_down` at the bottom margin when it is at
   or above it, and each is bounded only by the screen edge from the other side — so a cursor below
   the region moving up crosses the bottom margin and stops at the top one. CUU, CUD, VT52
-  `ESC A` / `ESC B`, and CNL / CPL all go through these two. **VPR does not**: it is a positioning
-  verb sharing `goto`'s row bounds (`Term::addressable_rows`), and routing it through `move_down`
-  is what #898 first got wrong. It was screen-bounded until #898, with
-  no record choosing that; the rule is **derived** — ADR-0004's spec-over-omission tie-break applied
-  to the tally linked under *Reference behaviour* — while putting the change into #898 rather than a
-  slice of its own was the **maintainer's scope call** (2026-09-14), made on that tally.
+  `ESC A` / `ESC B`, and CNL / CPL all go through these two. The two movers were screen-bounded
+  until #898, with no record choosing that; the rule is **derived** — ADR-0004's spec-over-omission
+  tie-break applied to the tally linked under *Reference behaviour* — while putting the change into
+  #898 rather than a slice of its own was the **maintainer's scope call** (2026-09-14), made on that
+  tally. **VPR does not go through them**: it is a positioning verb sharing `goto`'s row bounds
+  (`Term::addressable_rows`), and routing it through `move_down` is what #898 first got wrong.
 - **Position is clamped on set**, to `rows-1` / `cols-1` — so an out-of-range addressing sequence
   yields a degenerate position rather than a panic or an out-of-bounds write.
 - **Two cursors exist.** `cursor` and `saved_cursor`, the latter written on alt-screen enter
