@@ -9,6 +9,7 @@ import {
   type NamedKey,
 } from "./input";
 import { PointerRouter, type LocalPointer } from "./pointer";
+import { SCROLLBAR_ATTRIBUTE } from "./scrollbar";
 import { WheelScroller, type ScrollOptions } from "./scroll-control";
 import { CompositionController } from "./composition";
 import { ClipboardController, type ClipboardOptions } from "./clipboard";
@@ -562,13 +563,15 @@ export class Terminal {
     const onDown = (e: MouseEvent): void => {
       this.focus(); // not `ta.focus()` — routes through the anchor re-sync (#631)
       this.renderer.restartCursorBlink?.();
-      if (!router.down(e)) return;
+      if (onScrollbar(e) || !router.down(e)) return;
       e.preventDefault();
       if (!router.active) return;
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     };
-    const onHover = (e: MouseEvent): void => router.hover(e);
+    const onHover = (e: MouseEvent): void => {
+      if (!onScrollbar(e)) router.hover(e);
+    };
     element.addEventListener("mousedown", onDown);
     element.addEventListener("mousemove", onHover);
     this.detach.push(() => {
@@ -786,6 +789,11 @@ export class Terminal {
     // Optional on the port, so a renderer with nothing of its own to stop simply omits it.
     this.renderer.dispose?.();
   }
+}
+
+/** Whether a pointer event landed on a scrollbar inside the element rather than on the grid. */
+function onScrollbar(e: MouseEvent): boolean {
+  return e.target instanceof Element && e.target.closest(`[${SCROLLBAR_ATTRIBUTE}]`) !== null;
 }
 
 /** How often a held local drag is asked to auto-scroll past an edge, in ms. */

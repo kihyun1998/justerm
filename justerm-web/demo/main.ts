@@ -3213,14 +3213,21 @@ function runOriginArm(shape: "declares" | "silent"): OriginDragArm {
   return { boxWasVisible, pressBegan, windowExists, before, hidden, ticked, shown };
 }
 
-/** What one press did on the page's real widget: pointer reports sent, selections begun. */
+/** What one press did on the page's real widget: pointer reports sent, selections begun, and whether
+ * an ancestor of the widget's element still saw the press. */
 interface PressOutcome {
   reports: number;
   selections: number;
+  ancestorSaw: number;
 }
 interface ThumbPressProbe {
   /** A press on a scrollbar thumb mounted inside the widget's element. */
   thumb: PressOutcome;
+  /** A press on that scrollbar's track, beside the thumb. */
+  track: PressOutcome;
+  /** Pointer reports from buttonless motion over the track, and over the grid (the control). */
+  trackHoverReports: number;
+  gridHoverReports: number;
   /** The same press on the grid beside it — the control: it must do something, or `thumb` proves nothing. */
   grid: PressOutcome;
 }
@@ -3234,20 +3241,40 @@ window.__thumbPressProbe = (): ThumbPressProbe => {
   probeBar.update({ displayOffset: 0, scrollbackLen: 100, rows: ROWS });
   const track = termContainer.lastElementChild as HTMLElement;
   const thumb = track.firstElementChild as HTMLElement;
+  // The thumb covers the top of the track when scrolled to the bottom; this leaves a track strip above.
+  probeBar.update({ displayOffset: 100, scrollbackLen: 100, rows: ROWS });
+  let ancestor = 0;
+  const onAncestor = (): void => void ancestor++;
+  document.body.addEventListener("mousedown", onAncestor);
   const press = (target: HTMLElement, x: number, y: number): PressOutcome => {
     const reports = mouseIntentCount;
     const selections = selectionBeginCount;
+    const saw = ancestor;
     const at = { clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true };
     target.dispatchEvent(new MouseEvent("mousedown", { ...at, buttons: 1, detail: 1 }));
     window.dispatchEvent(new MouseEvent("mouseup", { ...at, buttons: 0 }));
-    return { reports: mouseIntentCount - reports, selections: selectionBeginCount - selections };
+    return {
+      reports: mouseIntentCount - reports,
+      selections: selectionBeginCount - selections,
+      ancestorSaw: ancestor - saw,
+    };
   };
   const t = thumb.getBoundingClientRect();
   const thumbOutcome = press(thumb, t.left + t.width / 2, t.top + t.height / 2);
+  const k = track.getBoundingClientRect();
+  const trackOutcome = press(track, k.left + k.width / 2, k.bottom - 4);
   const c = canvas.getBoundingClientRect();
   const gridOutcome = press(canvas, c.left + 20, c.top + 20);
+  const hover = (target: HTMLElement, x: number, y: number): number => {
+    const reports = mouseIntentCount;
+    target.dispatchEvent(new MouseEvent("mousemove", { clientX: x, clientY: y, buttons: 0, bubbles: true }));
+    return mouseIntentCount - reports;
+  };
+  const trackHoverReports = hover(track, k.left + k.width / 2, k.bottom - 4);
+  const gridHoverReports = hover(canvas, c.left + 20, c.top + 20);
+  document.body.removeEventListener("mousedown", onAncestor);
   track.remove();
-  return { thumb: thumbOutcome, grid: gridOutcome };
+  return { thumb: thumbOutcome, track: trackOutcome, grid: gridOutcome, trackHoverReports, gridHoverReports };
 };
 
 window.__geometryOriginProbe = (): { silent: OriginDragArm; declares: OriginDragArm } => {

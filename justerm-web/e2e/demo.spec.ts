@@ -3216,15 +3216,26 @@ test.describe("pointer routing (#902)", () => {
     await page.mouse.up();
   });
 
-  test("a scrollbar thumb inside the element keeps its press: no report and no selection, where the grid gets one", async ({ page }) => {
+  test("a scrollbar inside the element is not the grid: thumb and track presses neither report nor select, and still reach ancestors", async ({ page }) => {
     const off = await page.evaluate(() => window.__thumbPressProbe!());
-    expect(off.grid, "control: the grid press selects").toEqual({ reports: 0, selections: 1 });
-    expect(off.thumb).toEqual({ reports: 0, selections: 0 });
+    expect(off.grid, "control: the grid press selects").toEqual({ reports: 0, selections: 1, ancestorSaw: 1 });
+    expect(off.thumb).toEqual({ reports: 0, selections: 0, ancestorSaw: 1 });
+    expect(off.track).toEqual({ reports: 0, selections: 0, ancestorSaw: 1 });
 
     await appMouse(page, "?1000");
     const tracked = await page.evaluate(() => window.__thumbPressProbe!());
-    expect(tracked.grid, "control: the grid press reports press + release").toEqual({ reports: 2, selections: 0 });
-    expect(tracked.thumb).toEqual({ reports: 0, selections: 0 });
+    expect(tracked.grid, "control: the grid press reports press + release").toEqual({
+      reports: 2,
+      selections: 0,
+      ancestorSaw: 1,
+    });
+    expect(tracked.thumb).toEqual({ reports: 0, selections: 0, ancestorSaw: 1 });
+    expect(tracked.track).toEqual({ reports: 0, selections: 0, ancestorSaw: 1 });
+
+    await appMouse(page, "?1003");
+    const any = await page.evaluate(() => window.__thumbPressProbe!());
+    expect(any.gridHoverReports, "control: bare motion over the grid reports").toBe(1);
+    expect(any.trackHoverReports).toBe(0);
   });
   test("a local drag held past the bottom edge auto-scrolls until the button is released", async ({ page }) => {
     const scrolls: string[] = [];
