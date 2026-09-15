@@ -1159,10 +1159,17 @@ const termContainer = document.createElement("div");
 Object.assign(termContainer.style, { position: "relative", width: "100vw", height: "100vh" });
 document.body.insertBefore(termContainer, canvas);
 termContainer.appendChild(canvas);
+/** The page's search chord (Ctrl/Cmd+F) — claimed from the terminal, handled by the search box. */
+const isSearchChord = (e: KeyboardEvent): boolean => (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f";
+
 term = new Terminal(source, renderer, {
   element: termContainer,
   input: inputSink,
   getGeometry,
+  // #901: the search chord is this page's, so the widget must not also send it to the shell. The
+  // page's own `keydown` listener (below the search box) still opens the box as the event bubbles.
+  // `__keyClaim` is the e2e's policy, asked only about the keys the page does not claim itself.
+  beforeKey: (e) => !isSearchChord(e) && (window.__keyClaim?.(e) ?? true),
   // Local wheel scroll → move the demo backend's viewport and re-render. Clamped
   // by the widget already; this just applies the requested offset.
   onScroll: (offset) => {
@@ -1482,7 +1489,7 @@ input.addEventListener("keydown", (e) => {
   }
 });
 window.addEventListener("keydown", (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+  if (isSearchChord(e)) {
     e.preventDefault();
     box.style.display = "flex";
     input.focus();
@@ -1693,6 +1700,8 @@ declare global {
     __seedRows?: (n: number) => { rows: number; scrollbackLen: number };
     __setDpr?: (dpr: number) => void;
     __setLineHeight?: (lh: number) => void;
+    /** #901: a consumer key policy the e2e installs; the demo's `beforeKey` asks it last. */
+    __keyClaim?: (e: KeyboardEvent) => boolean;
   }
 }
 

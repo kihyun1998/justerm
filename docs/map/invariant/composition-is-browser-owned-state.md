@@ -37,7 +37,9 @@ reading that one. The same shape as an absolute-index walk being rediscovered th
 
 - [input encoding](../territory/input-encoding.md) — **owns the mechanism**: `composition.ts`, the
   hidden textarea as the real input target (a canvas cannot receive composition events), and the
-  decision that a confirmation is a raw `text` intent rather than a paste
+  decision that a confirmation is a raw `text` intent rather than a paste. The consumer's key veto
+  (`TerminalOptions.beforeKey`, #901) is asked only after that gate, so a claim cannot take a key the
+  composition owns
 - [caret drawing](../territory/caret-drawing.md) — the caret stops blinking while composing (#592),
   driven by a `setComposing` notification off a browser event, because there is no frame field to key
   on. The rejected half is recorded below under *what is not part of this fact*
