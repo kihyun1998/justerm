@@ -447,7 +447,8 @@ export class Terminal {
 
   /** Retain the scroll/routing state each frame carries; drop the wheel remainder
    * on a buffer switch (alt-screen), so a fresh screen doesn't inherit a stale
-   * trackpad fraction (xterm resets on buffer switch). */
+   * trackpad fraction. Ours, not xterm.js's: its `MouseService.reset()` runs only on a
+   * terminal reset (`CoreBrowserTerminal.reset`, 699f553), never on a buffer switch. */
   private track(frame: DecodedFrame): void {
     this.mask = frame.mouseWantedEvents ?? 0;
     this.displayOffset = frame.displayOffset ?? 0;

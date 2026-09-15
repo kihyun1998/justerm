@@ -153,8 +153,8 @@ describe("WheelScroller.consumeWheelEvent", () => {
     expect(half.consumeWheelEvent(wheel({ deltaY: 1, deltaMode: PAGE }), rows25)).toBe(12); // 12.5, not .5 + 12.5
   });
 
-  // reset() drops the carried remainder (xterm calls it on buffer activate, so
-  // an alt-screen switch starts scroll accumulation clean). Without the reset the
+  // reset() drops the carried remainder (Terminal calls it on an alt-screen switch,
+  // so a fresh screen starts scroll accumulation clean). Without the reset the
   // third swipe would tip over to 1 (.90 + .45); after it, accumulation restarts.
   it("clears the partial-scroll remainder on reset", () => {
     const s = new WheelScroller();
