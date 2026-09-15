@@ -259,6 +259,21 @@ export interface TerminalOptions {
    * so only the code that took the measurement can tell it from a real one. See
    * {@link CaptureOptions.getGeometry}, which states the contract (#819). */
   getGeometry?(): CellGeometry | undefined;
+  /**
+   * The consumer's say over a keydown before the widget encodes it (#901) — xterm.js's
+   * `attachCustomKeyEventHandler`. Return `false` to claim the key: no intent is sent and the widget
+   * does not call `preventDefault`. Return `true` to let it through.
+   *
+   * **Asked after the IME gate, never before it.** A key an IME owns (a `keyCode` 229 composition
+   * key, or a modifier while composing) never reaches this hook, so a claim cannot break composing.
+   * A key that finalizes a composition has already committed its text when this is asked, as with
+   * Enter.
+   *
+   * **A claimed key keeps its browser default, and cancelling it is yours.** An un-cancelled
+   * `Ctrl+V` / `Ctrl+Shift+V` goes on to fire `paste` on the input textarea, which the widget sends
+   * as a paste intent. Call `ev.preventDefault()` here for any chord whose default you replace.
+   */
+  beforeKey?(ev: KeyboardEvent): boolean;
   /** A local scroll request: scroll the viewport to this display offset (lines up
    * from the bottom). Wheel (normal buffer, no app tracking) funnels here; the
    * consumer's scrollbar drag funnels to the SAME callback for one coherent
@@ -451,7 +466,7 @@ export class Terminal {
           // Clear once idle whether the key was swallowed (229 diff) or finalized a
           // composition (Enter, proceed=true) — both leave committed text behind.
           this.clearTextareaWhenIdle();
-          return proceed;
+          return proceed && (o.beforeKey?.(e) ?? true);
         },
       }),
     );

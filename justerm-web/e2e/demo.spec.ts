@@ -827,6 +827,97 @@ test.describe("S7 IME composition (#116)", () => {
   });
 });
 
+test.describe("a consumer claims a key before Terminal encodes it (#901)", () => {
+  const recordInput = (page: Page): string[] => {
+    const lines: string[] = [];
+    page.on("console", (m) => {
+      if (m.text().startsWith("[input]")) lines.push(m.text());
+    });
+    return lines;
+  };
+
+  test("the demo's search chord opens search and never reaches the shell", async ({ page }) => {
+    const intents = recordInput(page);
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    // Control: an unclaimed key still becomes an intent, so silence below is the claim, not dead capture.
+    await page.keyboard.press("a");
+    await expect.poll(() => intents.some((l) => l.includes('"char":"a"'))).toBe(true);
+    await page.keyboard.press("Control+f");
+    await expect(page.locator('input[placeholder="search"]')).toBeVisible();
+    expect(intents.filter((l) => l.includes('"char":"f"'))).toEqual([]);
+  });
+
+  test("a claimed paste chord owns its default: cancelled, no paste intent; not cancelled, the paste leaks", async ({
+    page,
+  }) => {
+    const intents = recordInput(page);
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    const pressClaimed = async (cancelDefault: boolean) => {
+      await page.evaluate((cancel) => {
+        window.__keyClaim = (e) => {
+          if (!(e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "v")) return true;
+          if (cancel) e.preventDefault();
+          return false;
+        };
+      }, cancelDefault);
+      await page.keyboard.press("Control+Shift+V");
+      await page.keyboard.press("a"); // a marker intent: everything the chord caused lands before it
+    };
+
+    await pressClaimed(true);
+    await expect.poll(() => intents.filter((l) => l.includes('"char":"a"')).length).toBe(1);
+    expect(intents.filter((l) => l.includes("[input] paste") || l.includes('"char":"V"'))).toEqual([]);
+
+    // The positive control: the instrument can see the paste a claim leaves behind.
+    intents.length = 0;
+    await pressClaimed(false);
+    await expect.poll(() => intents.filter((l) => l.includes('"char":"a"')).length).toBe(1);
+    expect(intents.filter((l) => l.includes("[input] paste"))).toHaveLength(1);
+    expect(intents.filter((l) => l.includes('"char":"V"'))).toEqual([]);
+  });
+
+  test("a composition key is never offered to the consumer, and a claimed Enter still commits", async ({
+    page,
+  }) => {
+    const intents = recordInput(page);
+    const asked: string[] = [];
+    page.on("console", (m) => {
+      const code = m.text().match(/^\[claim-asked\] (\d+)$/)?.[1];
+      if (code !== undefined) asked.push(code);
+    });
+    const imeKeyCode = await page.evaluate(() => {
+      window.__keyClaim = (e) => {
+        console.log(`[claim-asked] ${e.keyCode}`);
+        return e.key !== "Enter";
+      };
+      const ta = document.querySelector("textarea")!;
+      (document.querySelector("#term") as HTMLElement).dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true }),
+      );
+      ta.dispatchEvent(new CompositionEvent("compositionstart"));
+      ta.dispatchEvent(new CompositionEvent("compositionupdate", { data: "가" }));
+      ta.value = "가";
+      ta.selectionStart = 1;
+      ta.selectionEnd = 1;
+      const imeKey = new KeyboardEvent("keydown", { key: "Process", keyCode: 229, bubbles: true, cancelable: true });
+      ta.dispatchEvent(imeKey);
+      return imeKey.keyCode;
+    });
+    expect(imeKeyCode).toBe(229); // the dispatched key really is a composition key
+    // Same round-trip margin as the Enter test above: the deferred update write must land first.
+    await page.waitForTimeout(20);
+    const enterDefaultPrevented = await page.evaluate(() => {
+      const enter = new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true, cancelable: true });
+      document.querySelector("textarea")!.dispatchEvent(enter);
+      return enter.defaultPrevented;
+    });
+    await expect.poll(() => asked).toEqual(["13"]); // asked about Enter, never about the 229 before it
+    expect(enterDefaultPrevented).toBe(false); // declined, so the widget left its default alone
+    await expect.poll(() => intents.filter((t) => t.includes('text "가"'))).toHaveLength(1);
+    expect(intents.filter((t) => t.includes('"type":"enter"'))).toEqual([]);
+  });
+});
+
 // #117 (S13): consumer event surface. The demo pushes title/bell/cwd through the source's
 // event channel (a real backend drains them from core); the widget routes each to the
 // consumer handlers. onTitle drives the real document title (DOM-observable); onBell/onCwd
