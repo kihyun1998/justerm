@@ -3078,3 +3078,137 @@ test("an OSC 52 store reaches the clipboard and a query answers with its own ter
     .poll(() => clip.join("\n"))
     .toContain('[clipboard] report clipboard "HELLOJUSTERM" term=st');
 });
+
+// #902: the widget owns the pointer. Driven with the real mouse on the page's real `Terminal`: a press
+// goes to the application when the frame's mask asks for it and to the selection otherwise, Shift
+// forces it local, and the gesture is followed to a release anywhere in the window.
+test.describe("pointer routing (#902)", () => {
+  /** Console lines for pointer reports (`[input] mouse …`) and local selections (`[sel] …`). */
+  function recordPointer(page: Page): { reports: string[]; selections: string[] } {
+    const out = { reports: [] as string[], selections: [] as string[] };
+    page.on("console", (m) => {
+      const t = m.text();
+      if (t.startsWith("[input] mouse")) out.reports.push(t);
+      if (t.startsWith("[sel]")) out.selections.push(t);
+    });
+    return out;
+  }
+  /** Step the App mouse button until it reads `label`. */
+  async function appMouse(page: Page, label: "OFF" | "?1000" | "?1002" | "?1003"): Promise<void> {
+    for (let i = 0; i < 4; i++) {
+      const btn = page.getByRole("button", { name: /^App mouse: / });
+      if ((await btn.textContent()) === `App mouse: ${label}`) return;
+      await btn.click();
+    }
+    throw new Error(`App mouse never reached ${label}`);
+  }
+  async function gridPoint(page: Page, x: number, y: number): Promise<{ x: number; y: number }> {
+    const box = (await page.locator("#term").boundingBox())!;
+    return { x: box.x + x, y: box.y + y };
+  }
+
+  test("OFF: a press and drag select locally, report nothing, and keep focus on the input", async ({ page }) => {
+    const rec = recordPointer(page);
+    const a = await gridPoint(page, 30, 30);
+    const b = await gridPoint(page, 200, 30);
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    await page.mouse.move(b.x, b.y, { steps: 4 });
+    await page.mouse.up();
+
+    await expect.poll(() => rec.selections.length).toBeGreaterThan(0);
+    expect(rec.reports).toEqual([]);
+    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("TEXTAREA");
+  });
+
+  test("?1000: a press and its release go to the app, the drag between them does not, nothing is selected", async ({ page }) => {
+    await appMouse(page, "?1000");
+    const rec = recordPointer(page);
+    const a = await gridPoint(page, 30, 30);
+    const b = await gridPoint(page, 200, 30);
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    await page.mouse.move(b.x, b.y, { steps: 4 });
+    await page.mouse.up();
+
+    await expect.poll(() => rec.reports.length).toBe(2);
+    expect(rec.reports[0]).toMatch(/^\[input\] mouse press left @/);
+    expect(rec.reports[1]).toMatch(/^\[input\] mouse release left @/);
+    expect(rec.selections).toEqual([]);
+    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("TEXTAREA");
+  });
+
+  test("?1002: the drag is reported as held-button motion", async ({ page }) => {
+    await appMouse(page, "?1002");
+    const rec = recordPointer(page);
+    const a = await gridPoint(page, 30, 30);
+    const b = await gridPoint(page, 200, 30);
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    await page.mouse.move(b.x, b.y, { steps: 4 });
+    await page.mouse.up();
+
+    await expect.poll(() => rec.reports.some((r) => r.startsWith("[input] mouse release"))).toBe(true);
+    expect(rec.reports.some((r) => r.startsWith("[input] mouse motion left"))).toBe(true);
+    expect(rec.selections).toEqual([]);
+  });
+
+  test("?1003: bare motion is reported with no button, and ?1002 does not report it", async ({ page }) => {
+    const rec = recordPointer(page);
+    const a = await gridPoint(page, 30, 30);
+    const b = await gridPoint(page, 200, 30);
+
+    await appMouse(page, "?1002");
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.move(b.x, b.y, { steps: 4 });
+    expect(rec.reports, "control: button-event tracking has no bare motion").toEqual([]);
+
+    await appMouse(page, "?1003");
+    await page.mouse.move(a.x, a.y, { steps: 4 });
+    await expect.poll(() => rec.reports.some((r) => r.startsWith("[input] mouse motion null"))).toBe(true);
+  });
+
+  test("Shift forces a tracked press local: it selects and reports nothing", async ({ page }) => {
+    await appMouse(page, "?1002");
+    const rec = recordPointer(page);
+    const a = await gridPoint(page, 30, 30);
+    const b = await gridPoint(page, 200, 30);
+    await page.keyboard.down("Shift");
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    await page.mouse.move(b.x, b.y, { steps: 4 });
+    await page.mouse.up();
+    await page.keyboard.up("Shift");
+
+    await expect.poll(() => rec.selections.length).toBeGreaterThan(0);
+    expect(rec.selections[0]).toMatch(/^\[sel\] begin char @/);
+    expect(rec.reports).toEqual([]);
+  });
+
+  test("the release is followed outside the element: a mouseup on the document still reaches the app", async ({ page }) => {
+    await appMouse(page, "?1000");
+    const rec = recordPointer(page);
+    const a = await gridPoint(page, 30, 30);
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    // The element never sees this event: it is dispatched on `body`, which contains the element.
+    await page.evaluate(() =>
+      document.body.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0, buttons: 0 })),
+    );
+
+    await expect.poll(() => rec.reports.length).toBe(2);
+    expect(rec.reports[1]).toMatch(/^\[input\] mouse release left @/);
+    await page.mouse.up();
+  });
+
+  test("a scrollbar thumb inside the element keeps its press: no report and no selection, where the grid gets one", async ({ page }) => {
+    const off = await page.evaluate(() => window.__thumbPressProbe!());
+    expect(off.grid, "control: the grid press selects").toEqual({ reports: 0, selections: 1 });
+    expect(off.thumb).toEqual({ reports: 0, selections: 0 });
+
+    await appMouse(page, "?1000");
+    const tracked = await page.evaluate(() => window.__thumbPressProbe!());
+    expect(tracked.grid, "control: the grid press reports press + release").toEqual({ reports: 2, selections: 0 });
+    expect(tracked.thumb).toEqual({ reports: 0, selections: 0 });
+  });
+});

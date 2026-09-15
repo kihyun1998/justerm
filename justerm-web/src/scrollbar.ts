@@ -197,6 +197,9 @@ export class Scrollbar {
     };
     this.thumb.addEventListener("mousedown", (e) => {
       e.preventDefault();
+      // The thumb's press is its own gesture: a Terminal whose element contains the track would
+      // otherwise route it as a press on the grid, to a selection or to the application (#902).
+      e.stopPropagation();
       this.dragging = true;
       window.addEventListener("mousemove", this.onMove);
       window.addEventListener("mouseup", this.onUp);

@@ -42,6 +42,10 @@ export type {
 // are pure + exported for reuse.
 export { rendererNotifyingSink, routeWheel, Terminal, wheelGoesToApp, wheelScrollTarget } from "./terminal";
 export type { TerminalOptions, WheelAction } from "./terminal";
+// Pointer routing (#902) — whether a press reports to the application or stays local, the press
+// counterpart of `wheelGoesToApp`; `LocalPointer` is the shape `TerminalOptions.selection` takes.
+export { pressGoesToApp } from "./pointer";
+export type { LocalPointer } from "./pointer";
 export { JustermRenderer } from "./justerm-renderer";
 export type { AttachedRendererOptions, JustermRendererOptions, Theme } from "./justerm-renderer";
 // TerminalSurface (#775, Epic #287 S7) — one canvas, one WebGL2 context, N attached terminals.

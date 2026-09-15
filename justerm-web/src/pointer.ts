@@ -36,6 +36,11 @@ export class PointerRouter {
 
   constructor(private readonly deps: PointerRouterDeps) {}
 
+  /** Whether a press is still being followed to its release. */
+  get active(): boolean {
+    return this.gesture !== "none";
+  }
+
   down(ev: PointerEventLike): boolean {
     if (this.gesture === "app" || (this.gesture === "none" && pressGoesToApp(this.deps.mask(), ev))) {
       if (!this.report(ev, "press")) return false;

@@ -8,6 +8,7 @@ import {
   type InputSink,
   type NamedKey,
 } from "./input";
+import { PointerRouter, type LocalPointer } from "./pointer";
 import { WheelScroller, type ScrollOptions } from "./scroll-control";
 import { CompositionController } from "./composition";
 import { ClipboardController, type ClipboardOptions } from "./clipboard";
@@ -277,6 +278,20 @@ export interface TerminalOptions {
    * everything still lets composed text through; drop intents at {@link input} for that.
    */
   beforeKey?(ev: KeyboardEvent): boolean;
+  /**
+   * What a pointer press does when it stays local — normally the consumer's
+   * {@link import("./selection").SelectionController}, which already has this shape (#902).
+   *
+   * The widget owns the pointer: it listens on {@link element}, decides per press whether the
+   * application gets it (the frame's `mouseWantedEvents` mask, Shift forcing it local), follows the
+   * gesture on `window` to its release, and drives `tick()` while a local drag is held. So hand the
+   * controller over here and **bind no pointer listeners of your own for it**, or every press is
+   * handled twice. A press the widget acts on has its default cancelled, which is what keeps focus on
+   * the input textarea (see {@link element}).
+   *
+   * Omit it and a press the application does not take does nothing locally.
+   */
+  selection?: LocalPointer;
   /** A local scroll request: scroll the viewport to this display offset (lines up
    * from the bottom). Wheel (normal buffer, no app tracking) funnels here; the
    * consumer's scrollbar drag funnels to the SAME callback for one coherent
@@ -463,7 +478,6 @@ export class Terminal {
     this.detach.push(
       captureInput(ta, sink, {
         getGeometry,
-        mouseReporting: () => false,
         beforeKey: (e) => {
           const proceed = composition.keydown(e.keyCode);
           // Clear once idle whether the key was swallowed (229 diff) or finalized a
@@ -515,14 +529,47 @@ export class Terminal {
       ta.removeEventListener("compositionend", onEnd);
     });
 
-    // Pointer-down focuses the textarea (it's pointer-events:none so the canvas
-    // still gets the click for selection) and resets the blink phase.
-    const onDown = (): void => {
+    // Pointer-down focuses the textarea (it's pointer-events:none, so the press lands on the
+    // element) and resets the blink phase, then goes to the application or stays local (#902).
+    let tickTimer: ReturnType<typeof setInterval> | undefined;
+    const setTicking = (on: boolean): void => {
+      clearInterval(tickTimer);
+      tickTimer = on ? setInterval(() => o.selection?.tick(), SELECTION_TICK_MS) : undefined;
+    };
+    const router = new PointerRouter({
+      mask: () => this.mask,
+      getGeometry,
+      send: (event) => sink.send({ kind: "mouse", event }),
+      local: o.selection,
+      setTicking,
+    });
+    const onMove = (e: MouseEvent): void => router.move(e);
+    const onUp = (e: MouseEvent): void => {
+      router.up(e);
+      if (!router.active) unfollow();
+    };
+    const unfollow = (): void => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    const onDown = (e: MouseEvent): void => {
       this.focus(); // not `ta.focus()` — routes through the anchor re-sync (#631)
       this.renderer.restartCursorBlink?.();
+      if (!router.down(e)) return;
+      e.preventDefault();
+      if (!router.active) return;
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
     };
+    const onHover = (e: MouseEvent): void => router.hover(e);
     element.addEventListener("mousedown", onDown);
-    this.detach.push(() => element.removeEventListener("mousedown", onDown));
+    element.addEventListener("mousemove", onHover);
+    this.detach.push(() => {
+      element.removeEventListener("mousedown", onDown);
+      element.removeEventListener("mousemove", onHover);
+      unfollow();
+      setTicking(false);
+    });
 
     this.scroller = new WheelScroller(o.scroll);
     const onWheel = (e: WheelEvent): void => this.onWheel(e, o);
@@ -733,6 +780,9 @@ export class Terminal {
     this.renderer.dispose?.();
   }
 }
+
+/** How often a held local drag is asked to auto-scroll past an edge, in ms. */
+const SELECTION_TICK_MS = 50;
 
 /** The hidden `<textarea>` input proxy (#116). Positioned over the cursor so the
  * IME candidate window appears there, but visually invisible and click-through

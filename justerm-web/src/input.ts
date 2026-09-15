@@ -383,10 +383,10 @@ export interface CaptureOptions {
    */
   getGeometry(): CellGeometry | undefined;
   /**
-   * Whether mouse/wheel events should be *reported to the app* (the app has a
-   * mouse-tracking mode on). When false they stay local (selection / scrollback).
-   * Until the frame exposes the mode (a core-surface gap — see #111 notes), the
-   * consumer supplies it; default `false` (no app reporting).
+   * Whether mouse/wheel events on `target` should be *reported to the app*. When false they stay
+   * local; default `false`. {@link import("./terminal").Terminal} does not use this: it routes the
+   * pointer itself from the frame's `mouseWantedEvents` mask (#902). It is for a consumer building
+   * its own widget from these parts.
    */
   mouseReporting?(): boolean;
   /**
