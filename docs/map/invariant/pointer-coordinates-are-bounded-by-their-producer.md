@@ -57,7 +57,7 @@ changing what `justerm-web` hands it.
   overshooting left on column 0's `Left`.
 - [input encoding](../territory/input-encoding.md) — the mouse-reporting converter, whose bound
   exists because an unbounded value would wrap in core's `encode_mouse` (#266). It clamps `px`/`py`
-  as well as `col`/`row`, because `?1016` SGR-pixel reporting sends the raw pixels too.
+  as well as `col`/`row`, because `?1016` SGR-pixel reporting sends the pixels too.
   **A bound is not an integer, and the pixels needed both (#907).** `col`/`row` were integers as a
   side effect of the division being floored; `px`/`py` had no division, so they left the clamp as
   fractional CSS px — ordinary in a real browser, where `getBoundingClientRect()` and `clientX` are
