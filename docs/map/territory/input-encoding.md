@@ -122,6 +122,8 @@ Nothing governs the encoding itself.
   - **The DOM back/forward buttons (3/4) are not reported.** The widget's DOM→intent map does not name
     them, so they arrive as `null`, and core encodes a buttonless press as code 3 — the legacy
     *release*. The intent type and core do have `back`/`forward` (#52); mapping them is not done.
+    Leaving the drop, not mapping the buttons and not making core refuse a buttonless press, is the
+    **maintainer's call** (2026-09-15), shown both alternatives. Core still accepts that input.
   - **A scrollbar inside `element` is not the grid.** `Scrollbar` marks its track
     (`SCROLLBAR_ATTRIBUTE`) and `Terminal` routes no press or motion whose target is inside it —
     PenTerm mounts its track inside the pane, over the canvas's last columns. Skipped by target rather
