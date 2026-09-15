@@ -77,7 +77,10 @@ status.
   is a `Term` method reading injected policy, not a free function over a fixed set — the set itself
   lives in `term.rs` (`DEFAULT_WORD_SEPARATORS`, `set_word_separators`, and the `full_reset` line
   that carries it across RIS)
-- Consumers: justerm-web does pixel→cell and clipboard; justerm-renderer paints the highlight
+- Consumers: justerm-web does pixel→cell and clipboard; justerm-renderer paints the highlight.
+  `SelectionController` binds no listeners — since #902 `Terminal` feeds it through
+  `TerminalOptions.selection`, only the presses the application did not take (see
+  [input encoding](input-encoding.md))
 
 ## Reference behaviour
 

@@ -230,7 +230,8 @@ export function rendererNotifyingSink(sink: InputSink, renderer: Renderer): Inpu
  * Wiring the {@link Terminal} needs to be a complete widget, not just a frame
  * pump. Omit it and the widget is the pure source→renderer pump (headless-
  * testable, no DOM); supply it and `mount` also captures input, restarts the
- * cursor blink on typing, tracks focus, and routes the wheel (S16 #133).
+ * cursor blink on typing, tracks focus, and routes the wheel (S16 #133) and
+ * pointer presses (#902).
  */
 export interface TerminalOptions {
   /** The element input listeners attach to (the canvas or a wrapper). Provide it WITH `input` +
@@ -242,18 +243,20 @@ export interface TerminalOptions {
    * textarea the widget mounts inside it, and a pointer-down here focuses *that* through
    * {@link Terminal.focus}. A canvas being unfocusable is therefore not a problem to solve.
    *
-   * **If you do make it (or a child) focusable, cancel the pointer-down's default action.** The
+   * **If you do make it (or a child) focusable, its pointer-down's default must be cancelled.** The
    * browser's focusing steps run after our `mousedown` handler, so an un-cancelled default moves
-   * focus to your element and blurs the textarea — typing and IME both stop. `preventDefault()` on
-   * `mousedown` is the fix, and it is what the demo and xterm.js both do
+   * focus to your element and blurs the textarea — typing and IME both stop. The widget cancels every
+   * press it acts on — one it reports to the application or hands to {@link selection} (#902). A
+   * press it does not act on — no `selection` and an application that tracks nothing, or a press with
+   * no measured box — keeps its default, and cancelling it is yours. xterm.js does the same pairing
    * (`browser/services/MouseService.ts:224-226` — `preventDefault()` then focus). */
   element?: HTMLElement;
-  /** Where normalised input intents go — keys/paste/focus, a wheel notch when the
-   * app tracks the wheel, and cursor keys from a wheel on the alt screen. The
+  /** Where normalised input intents go — keys/paste/focus, pointer and wheel reports
+   * when the app tracks them, and cursor keys from a wheel on the alt screen. The
    * backend feeds them to core's encoders. Required with `element`. */
   input?: InputSink;
   /** Canvas origin + cell size, read per event (it changes on resize) — maps a
-   * wheel notch to cell coords for the app-reporting path. Required with `element`.
+   * pointer event or wheel notch to cell coords. Required with `element`.
    *
    * Answer `undefined` when the box cannot be measured (`display: none`, detached, not yet laid
    * out): an absent box measures as all zeros and `0` is in range for everything derived from it,
@@ -325,8 +328,9 @@ export interface TerminalOptions {
  * justerm-renderer / a fake), which is what makes it testable without a backend or a canvas.
  *
  * The DOM attachment in {@link mount} is browser-only glue (not unit-tested, like
- * {@link captureInput}); the decisions it makes — wheel routing ({@link routeWheel})
- * and renderer notification ({@link rendererNotifyingSink}) — are pure and covered.
+ * {@link captureInput}); the decisions it makes — wheel routing ({@link routeWheel}),
+ * pointer routing ({@link PointerRouter}) and renderer notification
+ * ({@link rendererNotifyingSink}) — are pure and covered.
  */
 export class Terminal {
   private unsubscribe: Unsubscribe | undefined;
@@ -458,8 +462,8 @@ export class Terminal {
    * cursor is the real keyboard/IME/clipboard target (a canvas can't receive
    * composition events, #116); keys/paste/focus flow through it via {@link
    * captureInput}, gated by the {@link CompositionController} so an IME owns its
-   * keys, then by the consumer's {@link TerminalOptions.beforeKey}. The element (a container over the canvas) keeps the wheel + a pointer-down
-   * that focuses the textarea. */
+   * keys, then by the consumer's {@link TerminalOptions.beforeKey}. The element (a container over
+   * the canvas) keeps the wheel and the pointer. */
   private attach(o: TerminalOptions): void {
     // The DOM group is all-or-nothing: element requires input + getGeometry.
     const element = o.element;

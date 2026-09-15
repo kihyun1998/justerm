@@ -17,20 +17,40 @@ export interface PointerEventLike extends MouseEventLike {
 
 /** The local half of a press — the shape {@link import("./selection").SelectionController} has. */
 export interface LocalPointer {
+  /** `forced`: the press is local only because Shift overrode an application that tracks presses. */
   mouseDown(ev: MouseEventLike, detail: number, forced?: boolean): void;
   mouseMove(ev: MouseEventLike): void;
   mouseUp(ev: MouseEventLike): void;
   tick(): void;
 }
 
+/** What a {@link PointerRouter} reads and drives. */
 export interface PointerRouterDeps {
+  /** The latest frame's `mouseWantedEvents` mask. */
   mask(): number;
+  /** The cell geometry, or `undefined` when the box cannot be measured (#819). */
   getGeometry(): CellGeometry | undefined;
+  /** Where a pointer report for the application goes. */
   send(event: MouseEvent): void;
+  /** Where a press that stays local goes; absent, such a press does nothing. */
   local?: LocalPointer;
+  /** Start or stop calling the local handler's `tick()` on a timer. */
   setTicking(on: boolean): void;
 }
 
+/**
+ * Routes pointer events, one press at a time, to the application or to a {@link LocalPointer}.
+ *
+ * The route is decided at the press and holds until the gesture ends. A gesture reported to the
+ * application reports its drag (DRAG bit) and release (UP bit) and ends when no button is held; an
+ * X10 application (DOWN only) gets the press alone. A primary-button press that stays local hands its
+ * motion and release to the local handler and ticks it meanwhile. Bare motion with no gesture and no
+ * button held is reported under the MOVE bit. Nothing is reported without a measured box, nor for a
+ * press or release of a button the intent cannot name.
+ *
+ * Pure: the widget binds the DOM listeners — {@link down} and {@link hover} on its element,
+ * {@link move} and {@link up} on `window` while {@link active} — and owns the timer.
+ */
 export class PointerRouter {
   private gesture: "none" | "app" | "local" = "none";
 
@@ -41,6 +61,7 @@ export class PointerRouter {
     return this.gesture !== "none";
   }
 
+  /** A press. Returns whether it was acted on, so the caller can cancel its default. */
   down(ev: PointerEventLike): boolean {
     if (this.gesture === "app" || (this.gesture === "none" && pressGoesToApp(this.deps.mask(), ev))) {
       if (!this.report(ev, "press")) return false;
@@ -57,6 +78,7 @@ export class PointerRouter {
     return true;
   }
 
+  /** Motion during a gesture. */
   move(ev: MouseEventLike): void {
     if (this.gesture === "local") {
       this.deps.local?.mouseMove(ev);
@@ -66,11 +88,13 @@ export class PointerRouter {
     if (ev.buttons !== 0 && (this.deps.mask() & MouseEvents.Drag) !== 0) this.report(ev, "motion");
   }
 
+  /** Motion over the element. */
   hover(ev: MouseEventLike): void {
     if (this.gesture !== "none" || ev.buttons !== 0) return;
     if ((this.deps.mask() & MouseEvents.Move) !== 0) this.report(ev, "motion");
   }
 
+  /** A release during a gesture. */
   up(ev: MouseEventLike): void {
     if (this.gesture === "local") {
       this.gesture = "none";

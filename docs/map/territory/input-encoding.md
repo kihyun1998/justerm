@@ -67,9 +67,11 @@ Nothing governs the encoding itself.
 - **The input target is a hidden textarea, not the canvas** — a canvas cannot receive IME events at
   all. Focus restoration must go through the widget's own `focus()`; focusing the canvas kills typing
   and IME together. So `element` does **not** have to be focusable and the widget never makes it so
-  (#649) — but a consumer that makes it focusable must `preventDefault` the pointer-down, because the
+  (#649) — but a focusable element's pointer-down must have its default cancelled, because the
   browser's focusing steps run *after* the widget's handler and would blur the textarea it just
-  focused. xterm.js has the same pairing (`preventDefault()` then focus).
+  focused. Since #902 the widget cancels every press it acts on (reported, or handed to
+  `TerminalOptions.selection`); a press it does not act on is still the consumer's to cancel.
+  xterm.js has the same pairing (`preventDefault()` then focus).
 - **A composition freezes the anchor for every writer, forced or not** (#637 for the frame stream,
   #649 for the point-of-use re-sync). The predicate is "a candidate window is open" — `isComposing`,
   not the broader `active`, which outlives it by one deferred read and so would swallow the
@@ -88,20 +90,38 @@ Nothing governs the encoding itself.
   the event from every listener below that ancestor and has no ordering against the IME. What a real
   OS IME delivers for a chord pressed mid-composition is unmeasured (see the rows). Rows in
   [`reference-facts.md`](../../agents/reference-facts.md).
-- **The widget does not report mouse press or motion at all, and finding that out costs three probes
-  if it is not written here.** `captureInput` gates every mouse report on `mouseReporting()`, and
-  `Terminal` passes `() => false` **hardcoded** — so inside the widget that path never fires, and
-  neither does the `px`/`py` pair it would carry (the `?1016` SGR-pixel coordinates). The one live
-  in-widget producer of a mouse report is the **app-wheel route**, which builds its report directly
-  rather than through `captureInput`. Everything else is a consumer wiring the exported
-  `mouseFromDom` / `wheelMouseFromDom` itself, which is the documented way to get mouse reporting and
-  is why those converters are public at all.
-  **The consequence worth carrying:** a question of the form *"what does the widget send the
-  application when the geometry is degenerate?"* is answered on the wheel route or not at all. Asked
-  in 2026-07 it measured **zero reports** while the cell was unmeasured — not a garbage coordinate —
-  because the wheel scroller bails first (#675) and the route never reaches its report. So the
-  converters' own precondition (#672) governs a surface the *consumer* drives, not one the widget
-  does.
+- **The widget owns the pointer, and the route is decided at the press** (#902, implementing
+  ADR-0016's *"mouse routing consults the same bits"*, which until then only the wheel did).
+  `PointerRouter` sends a press to the application when the mask's DOWN bit is set and Shift is not
+  held, and otherwise to `TerminalOptions.selection` — the consumer's `SelectionController`, handed
+  over rather than wired by the consumer. That ownership is the **maintainer's call** (2026-09-15),
+  made on a lens + refuter pass over five shapes: a consumer consulting an exported verdict before
+  calling its controller (what an unmigrated or forgetful wiring gets wrong silently — it selects
+  *and* reports), the controller consulting an injected mask, the widget swallowing app-bound presses
+  in the capture phase (the #901 mechanism, rejected above, and it would kill a scrollbar thumb inside
+  `element`), and the widget owning dispatch. It chose the last. What that decision did **not** cover:
+  the dedup below, and whether a press routed to the application should clear a selection.
+  - **Deciding at the press is enough because core filters at encode time.** `encode_mouse` gates on
+    the live `wanted_events()`, so a release or drag after the application stopped tracking is
+    dropped there. The widget owes two things only: a local press never has its release reported,
+    and a reported press never reaches the selection.
+  - **Shift forces a press local on every platform, and is not an option** (maintainer's call,
+    2026-09-15). alacritty and ghostty use Shift everywhere; xterm.js alone uses Alt on macOS behind
+    `macOptionClickForcesSelection`, and Alt here already means block selection and alt-click cursor
+    move. A forced Shift press **anchors** rather than extends (`mouseDown(ev, detail, forced)`): the
+    engine drops a selection on every screen swap, so the one the controller remembers is usually gone
+    by the time an application takes the mouse, and an extend of nothing selects nothing.
+  - **The gesture is followed on `window`**, only while one is live, and a reported gesture ends when
+    no button is held. Bare motion (MOVE) is listened for on `element` and never while a gesture is
+    live, so a drag is not reported twice.
+  - **A press or release of a button the intent cannot name is not reported.** DOM buttons 3/4 map to
+    `null`, and core encodes a buttonless press as code 3 — the legacy *release*.
+  - **A scrollbar thumb keeps its own press** (`Scrollbar` stops propagation). Where the track lives
+    inside `element` — PenTerm's arrangement, not the demo's — the grid would otherwise route the thumb
+    press to the application or to a selection. xterm.js reaches the same result through
+    `pointerdown.preventDefault()`, which suppresses the compatibility `mousedown` altogether.
+  - `CaptureOptions.mouseReporting` survives for a consumer building its own widget from the parts;
+    `Terminal` no longer passes it.
 
 ## Code
 
@@ -110,6 +130,8 @@ Nothing governs the encoding itself.
   and the mode flags they read (`bracketed_paste`, and the DEC modes tracked from output)
 - `justerm-web/src/input.ts` — DOM events → intent objects; the intent types mirror the backend
   contract
+- `justerm-web/src/pointer.ts` — `PointerRouter` (press/drag/release/bare-motion routing) and
+  `pressGoesToApp`; `Terminal.attach` binds its listeners and owns the selection tick timer
 - `justerm-web/src/composition.ts` — IME composition, including the backspace-during-composition case
   reported as one delete
 
@@ -154,6 +176,11 @@ application misbehaves.
 
 - **Zero governing records for the encoding**, in a territory where being wrong produces a
   misbehaving application rather than an error.
+- **No same-cell motion dedup** (#902 left it out, maintainer's call). All three references drop a
+  repeated motion report, and core is stateless, so `?1003` repeats a cell at pointer rate. The key is
+  the unresolved part: a cell key drops the sub-cell motion `?1016` exists to carry and a pixel key
+  duplicates cell reports, and the widget cannot choose because ADR-0016 kept the coordinate encoding
+  off the wire.
 - ~~**The kitty keyboard protocol is deferred, not decided.**~~ — **closed by #23, and this line
   outlived it by a long way.** The flag stack, the push/pop/set forms, the query reply and the
   `CSI u` encoding all ship (`input.rs::kitty_encode`, `tests/kitty.rs`); what the bullet described
