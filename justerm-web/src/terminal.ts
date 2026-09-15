@@ -440,7 +440,7 @@ export class Terminal {
    * cursor is the real keyboard/IME/clipboard target (a canvas can't receive
    * composition events, #116); keys/paste/focus flow through it via {@link
    * captureInput}, gated by the {@link CompositionController} so an IME owns its
-   * keys. The element (a container over the canvas) keeps the wheel + a pointer-down
+   * keys, then by the consumer's {@link TerminalOptions.beforeKey}. The element (a container over the canvas) keeps the wheel + a pointer-down
    * that focuses the textarea. */
   private attach(o: TerminalOptions): void {
     // The DOM group is all-or-nothing: element requires input + getGeometry.
