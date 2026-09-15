@@ -798,8 +798,8 @@ export class Terminal {
  *
  * **A contract, so a host can depend on it.** A host asking *"is the keyboard in a text field?"*
  * reads a focused `<textarea>` as a form field; `el.hasAttribute(INPUT_ATTRIBUTE)` tells it this one
- * is a terminal's input, and `element.querySelector(`[${INPUT_ATTRIBUTE}]`)` finds the one a given
- * widget mounted inside its {@link TerminalOptions.element}. The element exists only while a widget
+ * is a terminal's input, and `element.querySelector("[data-justerm-input]")` finds the one a widget
+ * mounted inside the {@link TerminalOptions.element} it was given. The element exists only while a widget
  * mounted with that DOM group is alive: before `mount`, and after `dispose`, there is none.
  *
  * Do not identify it by `aria-label` (accessible text, not an identity) or by its position in the
