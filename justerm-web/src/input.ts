@@ -159,7 +159,9 @@ export interface MouseEvent {
   /** 0-based cell coordinates (the encoding shifts to 1-based on the wire). */
   col: number;
   row: number;
-  /** 0-based pixel coordinates (used only by the `?1016` SGR-pixels encoding). */
+  /** 0-based pixel coordinates (used only by the `?1016` SGR-pixels encoding): whole **CSS** px
+   * relative to the grid's top-left, floored, and within the grid — so each is an integer in
+   * `[0, ceil(cols × cellWidth) − 1]` / `[0, ceil(rows × cellHeight) − 1]`, fitting core's `usize`. */
   px: number;
   py: number;
   mods: number;
@@ -348,14 +350,15 @@ function cellEvent(
   const py = ev.clientY - geom.originY;
   // Clamp to the grid: a pointer outside it (a drag past the edge) reports the edge cell, never a
   // negative / out-of-range coord that would wrap to a huge `usize` in core's `encode_mouse`
-  // (#266). px/py are clamped to the grid's pixel extent for the same reason (`?1016` SGR-pixels).
+  // (#266). px/py are floored to whole CSS px and bounded to the last pixel inside the grid, since
+  // `?1016` SGR-pixels sends them into core's `usize` fields too (#907).
   return {
     button,
     action,
     col: clampTo(Math.floor(px / geom.cellWidth), geom.cols - 1),
     row: clampTo(Math.floor(py / geom.cellHeight), geom.rows - 1),
-    px: clampTo(px, geom.cols * geom.cellWidth),
-    py: clampTo(py, geom.rows * geom.cellHeight),
+    px: clampTo(Math.floor(px), Math.ceil(geom.cols * geom.cellWidth) - 1),
+    py: clampTo(Math.floor(py), Math.ceil(geom.rows * geom.cellHeight) - 1),
     mods: modsOf(ev),
   };
 }
