@@ -57,7 +57,16 @@ changing what `justerm-web` hands it.
   overshooting left on column 0's `Left`.
 - [input encoding](../territory/input-encoding.md) — the mouse-reporting converter, whose bound
   exists because an unbounded value would wrap in core's `encode_mouse` (#266). It clamps `px`/`py`
-  as well as `col`/`row`, because `?1016` SGR-pixel reporting sends the raw pixels too.
+  as well as `col`/`row`, because `?1016` SGR-pixel reporting sends the pixels too.
+  **A bound is not an integer, and the pixels needed both (#907).** `col`/`row` were integers as a
+  side effect of the division being floored; `px`/`py` had no division, so they left the clamp as
+  fractional CSS px — ordinary in a real browser, where `getBoundingClientRect()` and `clientX` are
+  fractional — and a consumer mirroring core's `usize` refused every report. Now floored, which is
+  xterm.js's rule (`getMouseReportCoords`), and bounded to the last pixel *inside* the grid,
+  `ceil(extent) − 1`: the old inclusive `extent` let a pointer past the edge report one pixel beyond
+  it. The unit stays CSS px, the space `CellGeometry` is measured in. Unit fixtures with integer
+  geometry could not see this; headless Chromium delivers whole-pixel `clientX`, so the e2e proof
+  gets its fraction from a sub-pixel canvas origin and asserts that the fraction is there.
 - [accessibility](../territory/accessibility.md) — the AT-selection bridge converts DOM text offsets
   rather than pixels, so the arithmetic differs, but the obligation is the same one and it is
   discharged (out-of-tree endpoints resolve to the tree's edges).

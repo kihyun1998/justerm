@@ -216,6 +216,13 @@ application misbehaves.
   `encode_mouse` takes viewport coordinates and the offset resets only on a screen swap, so on the
   normal screen the row is not the one the application drew there. The wheel's report already had
   this; #902 made presses reach it.
+- **`?1016` pixels are CSS px, and nothing pairs that with a cell pixel size.** An application turns
+  reported pixels into cells by dividing by a pixel size it learned elsewhere, and core answers no
+  pixel query (`window_ops` handles 22/23 only), so the only source is the consumer's PTY winsize.
+  All three references report the mouse pixels and the size in **one** unit; here the widget
+  publishes CSS px for the pointer (#907) while `cellSize()` is device px, so a consumer filling
+  `ws_xpixel` from `cellSize()` would be off by `dpr`. Unreached in the first consumer, which sends
+  `pixel_width: 0` (PenTerm `src-tauri/src/pty/manager.rs`, measured 2026-09-15). Found by #907's lens.
 - **Whether a press routed to the application clears a selection** is undecided (#902 did not cover
   it). A selection made before an application took the mouse on the normal screen stays highlighted
   while its clicks are reported; core already clears on a screen swap.

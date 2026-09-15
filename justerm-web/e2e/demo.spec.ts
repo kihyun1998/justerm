@@ -3201,6 +3201,37 @@ test.describe("pointer routing (#902)", () => {
     await expect.poll(() => rec.reports.some((r) => r.startsWith("[input] mouse motion null"))).toBe(true);
   });
 
+  // #907: a real browser's pointer offset is fractional, and core's `MouseEvent.px: usize` refuses a
+  // fraction — so the report must carry the floored CSS px, not the raw offset. Headless Chromium
+  // delivers whole-pixel `clientX`, so the fraction comes from a sub-pixel canvas origin instead.
+  test("a press at a fractional position reports whole CSS pixels", async ({ page }) => {
+    await appMouse(page, "?1000");
+    const rec = recordPointer(page);
+    await page.evaluate(() => {
+      const el = document.querySelector<HTMLElement>("#term")!;
+      el.style.transform = "translate(0.37px, 0.61px)";
+      window.addEventListener(
+        "mousedown",
+        (e) => {
+          const r = el.getBoundingClientRect();
+          (window as unknown as { rawOffset: [number, number] }).rawOffset = [e.clientX - r.left, e.clientY - r.top];
+        },
+        { capture: true, once: true },
+      );
+    });
+    const at = await gridPoint(page, 42.37, 31.61);
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.down();
+    await page.mouse.up();
+
+    await expect.poll(() => rec.reports.length).toBe(2);
+    const [x, y] = await page.evaluate(() => (window as unknown as { rawOffset: [number, number] }).rawOffset);
+    expect(Number.isInteger(x) && Number.isInteger(y), `the browser's offset is fractional: ${x},${y}`).toBe(false);
+    const m = rec.reports[0]!.match(/^\[input\] mouse press left @\d+,\d+ px=([^,]+),(\S+)$/);
+    expect(m, rec.reports[0]).not.toBeNull();
+    expect([Number(m![1]), Number(m![2])]).toEqual([Math.floor(x), Math.floor(y)]);
+  });
+
   test("Shift forces a tracked press local: it selects and reports nothing", async ({ page }) => {
     await appMouse(page, "?1002");
     const rec = recordPointer(page);

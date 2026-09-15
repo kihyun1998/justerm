@@ -110,6 +110,38 @@ describe("mouseFromDom", () => {
     expect([below.col, below.row]).toEqual([39, 23]); // right/below → last cell, not 90/45
   });
 
+  // A real browser hands fractional `clientX` and a fractional canvas origin, and core's
+  // `MouseEvent.px: usize` cannot take a fraction (#907). The pixels are floored CSS px.
+  const fractional = { originX: 10.5, originY: 3.25, cellWidth: 8.5, cellHeight: 17.25, cols: 81, rows: 24 };
+
+  it("reports integer pixels, floored, from fractional geometry", () => {
+    const at = mouse({ clientX: 164.9, clientY: 50.8, button: 0, buttons: 1 });
+    const intents = [
+      mouseFromDom(at, "press", fractional),
+      mouseFromDom(at, "release", fractional),
+      mouseFromDom(at, "motion", fractional),
+      wheelMouseFromDom(at, -1, fractional),
+    ];
+    for (const ev of intents) {
+      expect({ col: ev.col, row: ev.row, px: ev.px, py: ev.py }).toEqual({
+        col: 18, // floor(154.4 / 8.5)
+        row: 2, // floor(47.55 / 17.25)
+        px: 154, // floor(164.9 - 10.5), not 154.4
+        py: 47, // floor(50.8 - 3.25), not 47.55
+      });
+    }
+  });
+
+  it("bounds pixels to the last pixel inside the grid", () => {
+    const below = mouseFromDom(mouse({ clientX: 2000, clientY: 2000 }), "press", fractional);
+    // Extent 688.5 × 414: the last pixel is 688 (fractional extent) and 413 (integer extent).
+    expect([below.px, below.py]).toEqual([688, 413]);
+    const inside = mouseFromDom(mouse({ clientX: 10.5 + 688.2, clientY: 3.25 + 413.9 }), "press", fractional);
+    expect([inside.px, inside.py]).toEqual([688, 413]);
+    const above = mouseFromDom(mouse({ clientX: -40.7, clientY: -3.1 }), "press", fractional);
+    expect([above.px, above.py]).toEqual([0, 0]);
+  });
+
   // When the app requests wheel reporting, a wheel notch is a button press
   // (xterm's 64-base wheel group). deltaY < 0 scrolls up.
   it("maps a wheel notch to a wheel-button press", () => {
