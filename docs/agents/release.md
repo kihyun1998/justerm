@@ -173,11 +173,13 @@ The workflow is **inert until a `web-v*` tag is pushed** — having it is not th
 starting to publish. **It has since been published** (verified against the registry, 2026-07-21):
 `web-v0.7.0` and `web-v0.7.1` are tagged and `justerm-web` 0.7.0 / 0.7.1 are on npm, so the earlier
 "nothing has been published / not on npm" wording here was stale and contradicted the `justerm-web
-dependency bump` paragraph above. It did **not** wait for penterm's migration — penterm's webview is
-still xterm.js and carries no justerm npm dependency at all (`../penterm/package.json`), so the
-package currently has **no known consumer**; the npm downloads API reports no download history for
-it. Treat that as the live semver context: the published surface is real, but nothing observable
-depends on it yet.
+dependency bump` paragraph above. It did **not** wait for penterm's migration. **penterm is now a
+consumer** (verified 2026-09-15, #903): `../penterm/package.json` pins `justerm-web` `0.12.0` and
+`justerm-wasm-decode` `0.17.0` **exactly**, and mounts the widget for its Native (beta) panes while
+its default webview stays xterm.js. Treat that as the live semver context — an exact pin means a
+release reaches penterm only when penterm bumps it, so a breaking web change is penterm's migration
+to schedule, not a silent break. (This paragraph said *"no known consumer"* until then, which was
+true when written.)
 
 Cut a web release:
 

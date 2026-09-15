@@ -114,11 +114,11 @@ need the separate checks in the gate matrix below.
 - *Cross-repo* — **penterm** at `../penterm/src-tauri/Cargo.toml` (`justerm-core =
   "0.6.0"`, from crates.io). penterm's Rust dep lives under `src-tauri/`, **not**
   the repo-root manifest — a top-level `grep` misses it and falsely reports "no
-  consumer". **Its webview is still xterm.js** (verified 2026-07-21:
-  `../penterm/package.json` carries `@xterm/*` and *no* justerm dependency —
-  `justerm-wasm-decode` and `justerm-web` adoption is planned, not done, per
-  `penterm/src/features/block/lib/isTerminalKind.ts`). So the npm packages have
-  **no known consumer**; do not treat penterm as one until that manifest says so.
+  consumer". **Its webview is also an npm consumer now** (verified 2026-09-15, #903):
+  `../penterm/package.json` pins `justerm-web` `0.12.0` and `justerm-wasm-decode`
+  `0.17.0` exactly, mounted for Native (beta) panes, while `@xterm/*` stays the
+  default terminal. (Until then this line said the npm packages had *no known
+  consumer* — true on 2026-07-21, when the manifest carried no justerm dependency.)
 
 ## Step 1 — reference routing table
 

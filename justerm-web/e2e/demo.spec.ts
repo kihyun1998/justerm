@@ -815,6 +815,24 @@ test.describe("S7 IME composition (#116)", () => {
     await expect(ta).toHaveAttribute("aria-multiline", "false"); // a single-line prompt (xterm)
   });
 
+  test("the input textarea carries the published identity attribute (#903)", async ({ page }) => {
+    // The literal, not the exported constant: a consumer may hard-code the value, so the value is
+    // the contract — `test/terminal.test.ts` ties the constant to this same literal.
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    // Found from the element the widget was given (`#term`'s wrapper), not only from the document:
+    // that lookup is the half of the contract a host uses to find a given widget's input.
+    const identity = await page.evaluate(() => {
+      const marked = document.querySelectorAll("[data-justerm-input]");
+      const element = document.getElementById("term")!.parentElement!;
+      return {
+        count: marked.length,
+        focusedIsMarked: marked[0] === document.activeElement,
+        foundFromElement: element.querySelector("[data-justerm-input]") === document.activeElement,
+      };
+    });
+    expect(identity).toEqual({ count: 1, focusedIsMarked: true, foundFromElement: true });
+  });
+
   test("focus returns to the input textarea after the accessible view closes", async ({ page }) => {
     // The input target moved to the hidden textarea; focus-restore paths must target it,
     // not the (now inert) canvas — else typing/IME is dead after the overlay closes.

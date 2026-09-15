@@ -792,6 +792,21 @@ export class Terminal {
   }
 }
 
+/**
+ * The attribute on a mounted {@link Terminal}'s input element — the hidden `<textarea>` that
+ * receives keys, IME and paste (#903). Its value is always empty; its presence is the identity.
+ *
+ * **A contract, so a host can depend on it.** A host asking *"is the keyboard in a text field?"*
+ * reads a focused `<textarea>` as a form field; `el.hasAttribute(INPUT_ATTRIBUTE)` tells it this one
+ * is a terminal's input, and `element.querySelector("[data-justerm-input]")` finds the one a widget
+ * mounted inside the {@link TerminalOptions.element} it was given. The element exists only while a widget
+ * mounted with that DOM group is alive: before `mount`, and after `dispose`, there is none.
+ *
+ * Do not identify it by `aria-label` (accessible text, not an identity) or by its position in the
+ * DOM (not promised).
+ */
+export const INPUT_ATTRIBUTE = "data-justerm-input";
+
 /** Whether a pointer event landed on a scrollbar inside the element rather than on the grid. */
 function onScrollbar(e: MouseEvent): boolean {
   return e.target instanceof Element && e.target.closest(`[${SCROLLBAR_ATTRIBUTE}]`) !== null;
@@ -812,6 +827,7 @@ const SELECTION_TICK_MS = 50;
  * double-reading what the AT already announced on input. */
 function makeHiddenTextarea(): HTMLTextAreaElement {
   const ta = document.createElement("textarea");
+  ta.setAttribute(INPUT_ATTRIBUTE, "");
   ta.setAttribute("aria-label", "Terminal input");
   ta.setAttribute("aria-multiline", "false");
   ta.autocapitalize = "off";
