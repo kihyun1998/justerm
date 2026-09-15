@@ -217,8 +217,13 @@ export class SelectionController {
     this.onPrimarySelection = opts.onPrimarySelection;
   }
 
-  /** A mouse press. `detail` is the DOM click count (1 = single). */
-  mouseDown(ev: MouseEventLike, detail: number): void {
+  /**
+   * A mouse press. `detail` is the DOM click count (1 = single).
+   *
+   * `forced` says the press is local only because Shift overrode an application that tracks the
+   * mouse (#902). Such a press anchors a new selection rather than extending the remembered one.
+   */
+  mouseDown(ev: MouseEventLike, detail: number, forced = false): void {
     // Middle-click pastes the X11 primary buffer — a separate gesture, not a
     // selection. Only the left button drives selection; right/other are ignored.
     if (ev.button === 1) {
@@ -234,7 +239,7 @@ export class SelectionController {
     this.downTimeStamp = ev.timeStamp ?? 0;
     this.dragged = false;
     const { row, col, side } = cellAndSide(ev, geom);
-    if (ev.shiftKey && this.hasSelection) {
+    if (ev.shiftKey && this.hasSelection && !forced) {
       // Shift+click extends the live selection (keep the anchor) — incremental.
       this.port.extend(row, col, side);
     } else {
@@ -331,6 +336,8 @@ export class SelectionController {
    * shell to move its cursor to the clicked cell — a feature distinct from block
    * selection (xterm `altClickMovesCursor`). */
   mouseUp(ev: MouseEventLike): void {
+    // A release no press of this controller began is not a click (#902).
+    if (!this.dragging) return;
     this.dragging = false;
     this.dragScrollAmount = 0;
     const elapsed = (ev.timeStamp ?? 0) - this.downTimeStamp;
