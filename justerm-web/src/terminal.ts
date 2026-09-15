@@ -447,7 +447,8 @@ export class Terminal {
 
   /** Retain the scroll/routing state each frame carries; drop the wheel remainder
    * on a buffer switch (alt-screen), so a fresh screen doesn't inherit a stale
-   * trackpad fraction (xterm resets on buffer switch). */
+   * trackpad fraction. Ours, not xterm.js's: its `MouseService.reset()` runs only on a
+   * terminal reset (`CoreBrowserTerminal.reset`, 699f553), never on a buffer switch. */
   private track(frame: DecodedFrame): void {
     this.mask = frame.mouseWantedEvents ?? 0;
     this.displayOffset = frame.displayOffset ?? 0;
@@ -714,7 +715,8 @@ export class Terminal {
 
   /** Route a wheel notch through the shared accumulator, then dispatch: a
    * wheel-button report to the app, cursor keys on the alt screen, or a local
-   * scroll request. `none` (sub-line/zero) leaves the event for native scroll. */
+   * scroll request. `none` (sub-line/zero) leaves the event for native scroll, except a
+   * LINE/PAGE notch carried below a whole line, which is consumed (#908). */
   private onWheel(e: WheelEvent, o: TerminalOptions): void {
     // Attached only with the DOM group, so these are present; narrow for the types.
     const getGeometry = o.getGeometry;
@@ -733,7 +735,14 @@ export class Terminal {
       rows: this.rows,
     });
     const action = routeWheel(this.mask, lines, this.altScreen, this.displayOffset, this.scrollbackLen);
-    if (action.kind === "none") return;
+    if (action.kind === "none") {
+      // A LINE or PAGE notch the scroller carried below a whole line (a fractional sensitivity,
+      // #908) is still this terminal's, so the page must not scroll under it. A sub-line PIXEL
+      // delta keeps leaving the event to native scroll; shift and a non-finite delta bail as before.
+      const carried = e.deltaMode !== 0 /* DOM_DELTA_PIXEL */ && lines === 0 && e.deltaY !== 0 && !e.shiftKey;
+      if (carried && Number.isFinite(e.deltaY)) e.preventDefault();
+      return;
+    }
     e.preventDefault();
     switch (action.kind) {
       case "app":
