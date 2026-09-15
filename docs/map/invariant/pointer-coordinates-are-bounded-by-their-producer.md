@@ -181,9 +181,18 @@ fix mentions a shared rule.
   published `dragScrollSpeed` keeps its signature and xterm's semantics. Generalised: **when a
   derived value is ambiguous, the fix is usually upstream of the multiplication, not a rule about
   the result.**
+  **#908 is the same rule on the integer axis, one step after #907 found it at the pointer.**
+  `WheelScroller` emitted whole lines only in pixel mode; line and page modes returned
+  `deltaY × scrollSensitivity` as-is, so a fractional sensitivity handed `onScroll` a fractional
+  display offset — while the scrollbar, the other producer behind the same callback, rounded. Every
+  mode now goes through the one accumulator (alacritty and ghostty share one across modes too),
+  emitting whole lines toward zero. It accumulates in **lines**, not pixels as those references do,
+  because LINE mode must keep working with an unmeasured cell (#675's control), so a line or page
+  remainder does not depend on the cell.
   One thing stays deliberately open, recorded where it belongs rather than here: the *staleness* of
   the wheel scroller's retained fraction across a cell change — #630's third instance, a different
-  axis of the same field.
+  axis of the same field. (Since #908 the field can hold a line-mode remainder too, which is not
+  cell-derived; only the pixel-mode part can go stale.)
 - **A side-from-raw-pixel refactor.** The clamp currently doubles as the overshoot rule for `Side`;
   computing the side from the unclamped pixel (alacritty's shape) would need alacritty's explicit
   `end_of_grid → Right` arm restored alongside it.
