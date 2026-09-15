@@ -3102,12 +3102,26 @@ test.describe("pointer routing (#902)", () => {
     }
     throw new Error(`App mouse never reached ${label}`);
   }
+  /**
+   * Make the widget's element focusable. The demo's is not, and an unfocusable element cannot take
+   * focus from the textarea whether or not the press's default is cancelled — so without this the
+   * focus assertion has no window to fail in.
+   */
+  async function focusableElement(page: Page): Promise<void> {
+    const tabIndex = await page.evaluate(() => {
+      const el = document.querySelector("textarea")!.parentElement!;
+      el.tabIndex = -1;
+      return el.tabIndex;
+    });
+    expect(tabIndex).toBe(-1);
+  }
   async function gridPoint(page: Page, x: number, y: number): Promise<{ x: number; y: number }> {
     const box = (await page.locator("#term").boundingBox())!;
     return { x: box.x + x, y: box.y + y };
   }
 
   test("OFF: a press and drag select locally, report nothing, and keep focus on the input", async ({ page }) => {
+    await focusableElement(page);
     const rec = recordPointer(page);
     const a = await gridPoint(page, 30, 30);
     const b = await gridPoint(page, 200, 30);
@@ -3123,6 +3137,7 @@ test.describe("pointer routing (#902)", () => {
 
   test("?1000: a press and its release go to the app, the drag between them does not, nothing is selected", async ({ page }) => {
     await appMouse(page, "?1000");
+    await focusableElement(page);
     const rec = recordPointer(page);
     const a = await gridPoint(page, 30, 30);
     const b = await gridPoint(page, 200, 30);
@@ -3210,5 +3225,25 @@ test.describe("pointer routing (#902)", () => {
     const tracked = await page.evaluate(() => window.__thumbPressProbe!());
     expect(tracked.grid, "control: the grid press reports press + release").toEqual({ reports: 2, selections: 0 });
     expect(tracked.thumb).toEqual({ reports: 0, selections: 0 });
+  });
+  test("a local drag held past the bottom edge auto-scrolls until the button is released", async ({ page }) => {
+    const scrolls: string[] = [];
+    page.on("console", (m) => {
+      if (m.text().startsWith("[sel] drag-scroll")) scrolls.push(m.text());
+    });
+    const a = await gridPoint(page, 30, 30);
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    // Past the bottom, and dispatched on `window` — where the widget follows a gesture.
+    await page.evaluate(() =>
+      window.dispatchEvent(
+        new MouseEvent("mousemove", { clientX: 40, clientY: window.innerHeight + 60, buttons: 1 }),
+      ),
+    );
+    await expect.poll(() => scrolls.length, { timeout: 3_000 }).toBeGreaterThan(1);
+    await page.mouse.up();
+    const atRelease = scrolls.length;
+    await page.waitForTimeout(300);
+    expect(scrolls.length, "no tick after the release").toBe(atRelease);
   });
 });

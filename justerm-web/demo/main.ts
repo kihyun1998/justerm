@@ -1187,6 +1187,7 @@ const controller = new SelectionController(port, getGeometry, {
   isAtBottom: () => displayOffset === 0,
   // Drag past an edge: positive = scroll toward newer (offset → 0).
   onScroll: (lines) => {
+    console.log(`[sel] drag-scroll ${lines}`); // #902: observable proof the widget ticks a held drag
     displayOffset = Math.min(Math.max(displayOffset - lines, 0), maxOffset());
     render();
   },
