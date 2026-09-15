@@ -15,9 +15,9 @@ function wheel(p: Partial<WheelLike> & { deltaY: number; deltaMode: number }): W
 }
 
 describe("WheelScroller.consumeWheelEvent", () => {
-  // DOM_DELTA_LINE: amount = deltaY × scrollSensitivity (default 1). xterm
-  // CoreMouseService.consumeWheelEvent — the LINE branch returns the modified
-  // amount as-is. Sign follows deltaY (positive = scroll down/newer).
+  // DOM_DELTA_LINE: amount = deltaY × scrollSensitivity (default 1), after xterm's
+  // CoreMouseService.consumeWheelEvent — a whole amount passes through unchanged (a
+  // fractional one carries, #908). Sign follows deltaY (positive = scroll down/newer).
   it("returns line-mode deltaY directly at default sensitivity", () => {
     const s = new WheelScroller();
 
