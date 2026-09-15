@@ -1693,6 +1693,7 @@ declare global {
     __cursorPolicyProbe?: () => CursorPolicyProbe;
     __spacingProbe?: () => SpacingProbe;
     __preeditProbe?: () => PreeditProbe;
+    __preeditOriginProbe?: () => Promise<PreeditOriginProbe>;
     __imeAnchorProbe?: () => ImeAnchorProbe;
     __imeDriftProbe?: () => ImeDriftProbe;
     __imePointerProbe?: () => ImePointerProbe;
@@ -4179,4 +4180,75 @@ window.__preeditProbe = (): PreeditProbe => {
   const ended = strip();
   const anchorEnded = anchor();
   return { idle, composing, ended, anchorIdle, anchorComposing, anchorEnded, unchangedUpdate };
+};
+
+/** #911 — where a composition's run is drawn when the PREVIOUS syllable's commit is still in flight. */
+interface PreeditOriginProbe {
+  /** Ink pixels per cell, eight cells from the cursor, with no composition open — the reference. */
+  idle: number[];
+  /** One strip per syllable of a CONTINUOUS burst, each read while that syllable's run is open and
+   * the previous syllable's commit is still queued behind the deferred read. */
+  burst: number[][];
+  /** The same reading for a composition started once the burst's commits have drained. */
+  settled: number[];
+}
+
+window.__preeditOriginProbe = async (): Promise<PreeditOriginProbe> => {
+  // Same per-cell 2-D sampling as `__preeditProbe`, and for the same two reasons: a read after the
+  // browser presents returns a cleared buffer, and a single scanline through a Hangul syllable can
+  // miss every stroke.
+  const gl = canvas.getContext("webgl2")!;
+  const { width: cw, height: ch } = renderer.cellSize();
+  const ta = document.querySelector("textarea")!;
+  const strip = (): number[] => {
+    render();
+    const cells: number[] = [];
+    for (let c = 0; c < 8; c++) {
+      const px = new Uint8Array(4 * Math.round(cw) * Math.round(ch));
+      const y = gl.drawingBufferHeight - 1 - Math.round((CURSOR_ROW + 1) * ch) + 1;
+      gl.readPixels(Math.round((CURSOR_COL + c) * cw), y, Math.round(cw), Math.round(ch), gl.RGBA, gl.UNSIGNED_BYTE, px);
+      let ink = 0;
+      for (let i = 0; i < px.length; i += 4) {
+        const r = px[i] ?? 0;
+        const g = px[i + 1] ?? 0;
+        const b = px[i + 2] ?? 0;
+        if (r > 60 || g > 60 || b > 60) ink++;
+      }
+      cells.push(ink);
+    }
+    return cells;
+  };
+  const syllable = (data: string, value: string): void => {
+    ta.dispatchEvent(new CompositionEvent("compositionstart"));
+    ta.dispatchEvent(new CompositionEvent("compositionupdate", { data }));
+    ta.value = value;
+    ta.selectionStart = value.length;
+    ta.selectionEnd = value.length;
+  };
+
+  const idle = strip();
+
+  // The burst runs in ONE task, with no `await` between the syllables. That is not a shortcut: the
+  // committed text leaves on a deferred read (`setTimeout(0)`, #116), and a real IME's
+  // `compositionend` and the next `compositionstart` land in the same millisecond (measured,
+  // ADR-0028). So the commit is still queued when the next composition starts — which is the
+  // condition, and awaiting anything here would drain it and destroy the case under test.
+  const burst: number[][] = [];
+  let value = "";
+  for (const s of ["안", "녕", "하"]) {
+    value += s;
+    syllable(s, value);
+    burst.push(strip());
+    ta.dispatchEvent(new CompositionEvent("compositionend", { data: s }));
+  }
+
+  // Let every queued commit read run, so the next composition starts with nothing in flight.
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  syllable("안", `${value}안`);
+  const settled = strip();
+  ta.dispatchEvent(new CompositionEvent("compositionend", { data: "안" }));
+  render();
+
+  return { idle, burst, settled };
 };

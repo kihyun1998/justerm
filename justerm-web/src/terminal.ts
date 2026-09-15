@@ -216,6 +216,32 @@ export function preeditIntent(
   return { codepoints: Uint32Array.from(text, (c) => c.codePointAt(0) ?? 0), origin };
 }
 
+/**
+ * Where a composition that is starting should draw, given what the widget is still holding (#911).
+ *
+ * `cursorAnchor` is written only by the frame stream, so it can never be fresher than the last frame
+ * the engine sent. `lastRunEnd` is where the previous composition's run finished — the renderer's own
+ * caret column, one past its last cell.
+ *
+ * **When a commit is in flight the frame stream is known to be stale, not merely possibly stale.**
+ * The committed text leaves one deferred read after `compositionend` (#116) and a continuous-CJK
+ * `compositionstart` lands inside that window, so at the latch the engine has not been handed the
+ * previous syllable at all — `cursorAnchor` still points at the cell that syllable is about to take.
+ * The previous run's end is the one coordinate that does account for it.
+ *
+ * Pure so the choice is testable at all: the wiring needs a DOM and the unit suite runs in
+ * `environment: "node"`. It is the run's END rather than a width because the widget has no
+ * `wcwidth` — see {@link Renderer.setPreedit}, whose return exists for that reason.
+ */
+export function preeditLatch(
+  cursorAnchor: TextareaAnchor | undefined,
+  lastRunEnd: TextareaAnchor | undefined,
+  commitPending: boolean,
+): TextareaAnchor | undefined {
+  if (commitPending && lastRunEnd) return lastRunEnd;
+  return cursorAnchor;
+}
+
 export function rendererNotifyingSink(sink: InputSink, renderer: Renderer): InputSink {
   return {
     send(intent) {
@@ -371,6 +397,15 @@ export class Terminal {
    * composition's life: the frame stream keeps reassigning {@link Terminal.cursorAnchor}, and a
    * composition that re-read it would walk to wherever the application's output went. */
   private preeditOrigin: TextareaAnchor | undefined;
+  /** Where the open composition's run currently ends (#911) — the renderer's caret column, one past
+   * its last cell. Set by every non-empty update and read by the NEXT `compositionstart`, which is
+   * where the composition that just ended hands its end over.
+   *
+   * Consumed at that latch, which is what scopes it to a single composition: a composition that
+   * draws nothing (a start and an end with no update in between) leaves it undefined, so the latch
+   * after it falls back to the frame stream instead of reaching past it for a run that may be
+   * arbitrarily old — rows that have since scrolled away. */
+  private preeditEnd: TextareaAnchor | undefined;
   /** Latched by {@link Terminal.dispose} (#606): the widget's lifecycle is one-shot, so this both
    * keeps the renderer from being disposed twice and refuses a re-mount. */
   private disposed = false;
@@ -508,7 +543,13 @@ export class Terminal {
       this.syncTextareaAnchor();
       // Latch the origin here, after the re-sync above has made the cell current (#631) and while
       // the guard still reads `composing === false`. Everything the composition draws hangs off it.
-      this.preeditOrigin = this.cursorAnchor;
+      //
+      // `active`, not `composing`: read before `compositionStart()` below, it is exactly "a commit is
+      // still queued behind its deferred read", which is the state in which `cursorAnchor` cannot yet
+      // describe where this composition begins (#911). `composition.test.ts` pins that it is true at
+      // this instant in continuous CJK and false otherwise.
+      this.preeditOrigin = preeditLatch(this.cursorAnchor, this.preeditEnd, composition.active);
+      this.preeditEnd = undefined;
       composition.compositionStart();
       this.renderer.setComposing?.(true);
     };
@@ -687,6 +728,9 @@ export class Terminal {
     const at = intent.origin;
     const caretCol = this.renderer.setPreedit?.(at.col, at.row, intent.codepoints);
     if (caretCol === undefined) return; // a preedit-blind renderer: nothing drawn, nothing to aim at
+    // Keep a non-empty run's end for the next composition to latch from (#911). Skipped for the
+    // clearing call at `compositionend`, whose caret column is the origin again, not the end.
+    if (intent.codepoints.length > 0) this.preeditEnd = { col: caretCol, row: at.row };
     this.writeTextareaAnchor(caretCol, at.row);
   }
 
