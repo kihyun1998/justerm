@@ -95,7 +95,7 @@ Nothing governs the encoding itself.
   `PointerRouter` sends a press to the application when the mask's DOWN bit is set and Shift is not
   held, and otherwise to `TerminalOptions.selection` — the consumer's `SelectionController`, handed
   over rather than wired by the consumer. That ownership is the **maintainer's call** (2026-09-15),
-  made on a lens + refuter pass over five shapes: a consumer consulting an exported verdict before
+  made on a lens + refuter pass over four shapes: a consumer consulting an exported verdict before
   calling its controller (what an unmigrated or forgetful wiring gets wrong silently — it selects
   *and* reports), the controller consulting an injected mask, the widget swallowing app-bound presses
   in the capture phase (the #901 mechanism, rejected above, and it would kill a scrollbar thumb inside
@@ -114,12 +114,18 @@ Nothing governs the encoding itself.
   - **The gesture is followed on `window`**, only while one is live, and a reported gesture ends when
     no button is held. Bare motion (MOVE) is listened for on `element` and never while a gesture is
     live, so a drag is not reported twice.
-  - **A press or release of a button the intent cannot name is not reported.** DOM buttons 3/4 map to
-    `null`, and core encodes a buttonless press as code 3 — the legacy *release*.
-  - **A scrollbar thumb keeps its own press** (`Scrollbar` stops propagation). Where the track lives
-    inside `element` — PenTerm's arrangement, not the demo's — the grid would otherwise route the thumb
-    press to the application or to a selection. xterm.js reaches the same result through
-    `pointerdown.preventDefault()`, which suppresses the compatibility `mousedown` altogether.
+  - **A reported gesture whose release never arrived ends** at the next buttonless move, or at a
+    press with no other button held — otherwise it would keep claiming presses, Shift included.
+  - **The DOM back/forward buttons (3/4) are not reported.** The widget's DOM→intent map does not name
+    them, so they arrive as `null`, and core encodes a buttonless press as code 3 — the legacy
+    *release*. The intent type and core do have `back`/`forward` (#52); mapping them is not done.
+  - **A scrollbar inside `element` is not the grid.** `Scrollbar` marks its track
+    (`SCROLLBAR_ATTRIBUTE`) and `Terminal` routes no press or motion whose target is inside it —
+    PenTerm mounts its track inside the pane, over the canvas's last columns. Skipped by target rather
+    than by the thumb stopping propagation: that was the first version, and it also hid the press from
+    every ancestor, which PenTerm's pane host uses to take the keyboard. xterm.js's slider reaches the
+    "not the grid" half through `pointerdown.preventDefault()`, which suppresses the compatibility
+    `mousedown` altogether.
   - `CaptureOptions.mouseReporting` survives for a consumer building its own widget from the parts;
     `Terminal` no longer passes it.
 
@@ -181,6 +187,9 @@ application misbehaves.
   the unresolved part: a cell key drops the sub-cell motion `?1016` exists to carry and a pixel key
   duplicates cell reports, and the widget cannot choose because ADR-0016 kept the coordinate encoding
   off the wire.
+- **Whether a press routed to the application clears a selection** is undecided (#902 did not cover
+  it). A selection made before an application took the mouse on the normal screen stays highlighted
+  while its clicks are reported; core already clears on a screen swap.
 - ~~**The kitty keyboard protocol is deferred, not decided.**~~ — **closed by #23, and this line
   outlived it by a long way.** The flag stack, the push/pop/set forms, the query reply and the
   `CSI u` encoding all ship (`input.rs::kitty_encode`, `tests/kitty.rs`); what the bullet described

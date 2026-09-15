@@ -2691,7 +2691,7 @@ test("a wheel survives an unmeasured cell instead of latching NaN (#675)", async
 });
 
 // #680 — a drag that outlives the canvas's box used to auto-scroll at DRAG_SCROLL_MAX_SPEED.
-// `mousedown` is on the canvas, so a hidden canvas cannot be pressed — but `mousemove`/`mouseup`
+// A hidden canvas cannot be pressed — but `mousemove`/`mouseup`
 // are window-scoped and the tick timer is already running, so a drag ALREADY IN PROGRESS survives
 // the canvas losing its box. That is a collapsing panel or a tab switch mid-selection.
 //

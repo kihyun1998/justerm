@@ -65,6 +65,23 @@ engine resolves it. (Verified the analogy did not transfer before relying on it.
   the behaviour is unchanged.
 - **Small.** One header byte; no overlay-coordinate machinery (this is a flag, not a span/anchor).
 
+## Amendment (2026-09-15, #902) — mouse routing landed; the predicate seam stayed
+
+*"Mouse routing (#111) consults the same bits"* was true of the wheel only until #902: the widget's
+`captureInput` path stayed behind a hardcoded `mouseReporting: () => false`, so no press, release or
+drag reached an application. #902 routes them from this mask (`justerm-web/src/pointer.ts`), and
+`Terminal` no longer passes the predicate.
+
+Two statements above are narrower than they read:
+
+- **The seam did not go away.** `CaptureOptions.mouseReporting` is published and is kept for a
+  consumer assembling its own widget from `captureInput`; only `Terminal` stopped relying on it.
+- **"The encoding is irrelevant to routing" holds for routing and not for motion dedup.** A repeated
+  same-cell motion report can be dropped only by a key that knows the encoding — a cell key drops
+  `?1016`'s sub-cell motion, a pixel key duplicates cell reports — so the rejected alternative
+  *"also carry the coordinate encoding"* is re-opened for that purpose, undecided. Recorded as a known
+  hole in `docs/map/territory/input-encoding.md`.
+
 ## Alternatives considered
 
 - **Expose the protocol enum (`MouseProtocol`); the consumer maps it.** Rejected — duplicates the VT

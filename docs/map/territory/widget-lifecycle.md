@@ -62,6 +62,7 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
 | input attachment | returns a disposer | `Terminal`, via `detach` |
 | the frame source's two subscriptions | returns `Unsubscribe` | `Terminal` |
 | the scrollbar's window listeners | `dispose()` | nobody |
+| a live pointer gesture's window listeners and the selection tick interval (#902) | `dispose()` | `Terminal`, via `detach` |
 | resize observation | returns a disposer | nobody — the demo writes `void disposeFit;` |
 | the a11y controller's announce timer | `dispose()` | nobody |
 | the accessible view's keydown | **none** | — |

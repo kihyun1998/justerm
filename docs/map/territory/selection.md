@@ -115,7 +115,7 @@ at a recorded SHA; a paraphrase drops the pin).
   undefined`, because the consumer took the measurement and is the only party that can tell absence
   from a legitimate `0`. This territory holds the site, and it is the one with **state** to unwind —
   `SelectionController.mouseMove` *and* `tick` both reset `dragScrollAmount`, since a refusal that
-  only returned early would latch the last auto-scroll speed and the consumer's timer fires whether
+  only returned early would latch the last auto-scroll speed and the tick timer fires whether
   or not the pointer moves. Distinct from the product ambiguity #680 settled next door, which this
   note draws the boundary against — and #819 is what showed the two are reachable through the *same*
   symptom: #680's `cellHeight > 0` guard passes when the cell comes from the renderer, so the

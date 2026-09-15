@@ -225,7 +225,7 @@ describe("PointerRouter — presses with nothing to report", () => {
     expect(local!.calls).toEqual([]);
   });
 
-  it("arms no follow-through for press-only tracking (X10): the release is not reported", () => {
+  it("reports only the press under press-only tracking (X10): no drag, no release", () => {
     const { router, sent } = rig(MouseEvents.Down);
 
     router.down(at(5, 3));

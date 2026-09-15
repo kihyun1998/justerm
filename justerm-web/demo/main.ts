@@ -1083,7 +1083,7 @@ function render(out?: { scrollCount: number }): void {
   updateLinks();
 }
 
-// --- S8 wiring: SelectionController → fake engine, DOM mouse → controller ---
+// --- S8 wiring: SelectionController → fake engine; the widget feeds it presses (#902) ---
 /** #902: presses that became a selection, and pointer reports that reached the app — counted so a
  * probe can tell "went to the app", "stayed local" and "went nowhere" apart without reading logs. */
 let selectionBeginCount = 0;
@@ -2673,8 +2673,8 @@ window.__imeDriftProbe = (): ImeDriftProbe => {
  *    pointer-down there MUST move the anchor again. Keyed on `active` it would stay frozen.
  *
  * The demo can host this at all because a real pointer-down here does not blur the textarea: the
- * canvas `preventDefault`s mousedown, which cancels the focusing steps for the whole dispatch. That
- * is the unprotected consumer shape, and it is the page's ordinary configuration rather than a rig.
+ * widget `preventDefault`s the mousedown it hands to the selection (#902), which cancels the focusing
+ * steps for the whole dispatch. That is the page's ordinary configuration rather than a rig.
  */
 interface ImePointerProbe {
   /** Anchor right after a real `compositionstart` — the frozen reference point. */
@@ -3195,7 +3195,7 @@ function runOriginArm(shape: "declares" | "silent"): OriginDragArm {
   move();
   const hidden = step();
 
-  // The consumer drives this on a timer while the button is down (`demo/main.ts` at 50ms).
+  // A timer drives this while the button is down (`Terminal` at 50ms since #902).
   ctl.tick();
   ctl.tick();
   ctl.tick();

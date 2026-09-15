@@ -140,7 +140,7 @@ function modeForClick(detail: number): SelType {
  * real browser, since `mousemove`/`mouseup` are window-scoped in every wiring
  * we ship. `fit.ts` floors `rows`/`cols` as well, so a container that is not an
  * exact multiple of the cell keeps a remainder strip outside the canvas; whether
- * a *press* there arrives depends on which element the consumer listens on, and
+ * a *press* there arrives depends on which element the presses come from, and
  * this controller does not own that choice.
  *
  * The clamp is deliberately *not* left to the engine, and the reason is
@@ -304,7 +304,7 @@ export class SelectionController {
     }
   }
 
-  /** One auto-scroll step — the consumer calls this on a timer while the button
+  /** One auto-scroll step — called on a timer while the button
    * is down. Scrolls the viewport by the pending amount and pins the focus to
    * the edge row toward the pointer (xterm `_dragScroll`). No-op in bounds.
    *
@@ -318,7 +318,7 @@ export class SelectionController {
   tick(): void {
     if (!this.dragging || this.dragScrollAmount === 0) return;
     // #819 — the second half of the reset in {@link SelectionController.mouseMove}, and it is not
-    // redundant with it: this timer is the consumer's and fires whether or not the pointer moves,
+    // redundant with it: the timer fires whether or not the pointer moves,
     // so a user holding still while the pane is hidden would never reach that reset. Asking here
     // costs one callback per tick and is what makes "a pane the user cannot see requests nothing"
     // true for a stationary pointer as well as a moving one.

@@ -47,8 +47,9 @@ export interface PointerRouterDeps {
  * Routes pointer events, one press at a time, to the application or to a {@link LocalPointer}.
  *
  * The route is decided at the press and holds until the gesture ends. A gesture reported to the
- * application reports its drag (DRAG bit) and release (UP bit) and ends when no button is held; an
- * X10 application (DOWN only) gets the press alone. A primary-button press that stays local hands its
+ * application reports its drag (DRAG bit) and release (UP bit) and ends when no button is held — at
+ * its release, or at a buttonless move or a lone press when that release never arrived; an X10
+ * application (DOWN only) gets the press alone. A primary-button press that stays local hands its
  * motion and release to the local handler and ticks it meanwhile. Bare motion with no gesture and no
  * button held is reported under the MOVE bit. Nothing is reported without a measured box, nor for a
  * press or release of a button the intent cannot name.

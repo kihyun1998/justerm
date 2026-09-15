@@ -246,10 +246,11 @@ export interface TerminalOptions {
    *
    * **If you do make it (or a child) focusable, its pointer-down's default must be cancelled.** The
    * browser's focusing steps run after our `mousedown` handler, so an un-cancelled default moves
-   * focus to your element and blurs the textarea — typing and IME both stop. The widget cancels every
-   * press it acts on — one it reports to the application or hands to {@link selection} (#902). A
-   * press it does not act on — no `selection` and an application that tracks nothing, or a press with
-   * no measured box — keeps its default, and cancelling it is yours. xterm.js does the same pairing
+   * focus to your element and blurs the textarea — typing and IME both stop. The widget cancels a
+   * press it reports to the application or hands to {@link selection} (#902). Any other press keeps
+   * its default and cancelling it is yours: with no `selection` and an application that tracks
+   * nothing, a report it could not make (no measured box, the back/forward buttons), or a press on a
+   * `Scrollbar` mounted inside the element. xterm.js does the same pairing
    * (`browser/services/MouseService.ts:224-226` — `preventDefault()` then focus). */
   element?: HTMLElement;
   /** Where normalised input intents go — keys/paste/focus, pointer and wheel reports
