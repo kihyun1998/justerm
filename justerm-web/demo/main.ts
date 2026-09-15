@@ -1160,7 +1160,7 @@ const inputSink: InputSink = {
     } else if (intent.kind === "mouse") {
       mouseIntentCount++;
       console.log(
-        `[input] mouse ${intent.event.action} ${intent.event.button} @${intent.event.col},${intent.event.row}`,
+        `[input] mouse ${intent.event.action} ${intent.event.button} @${intent.event.col},${intent.event.row} px=${intent.event.px},${intent.event.py}`,
       );
     }
     else if (intent.kind === "paste") console.log(`[input] paste ${JSON.stringify(intent.text)}`);
