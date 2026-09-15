@@ -272,6 +272,9 @@ export interface TerminalOptions {
    * **A claimed key keeps its browser default, and cancelling it is yours.** An un-cancelled
    * `Ctrl+V` / `Ctrl+Shift+V` goes on to fire `paste` on the input textarea, which the widget sends
    * as a paste intent. Call `ev.preventDefault()` here for any chord whose default you replace.
+   *
+   * **It cannot stop all input.** An IME commit is a text intent, not a key, so returning `false` for
+   * everything still lets composed text through; drop intents at {@link input} for that.
    */
   beforeKey?(ev: KeyboardEvent): boolean;
   /** A local scroll request: scroll the viewport to this display offset (lines up

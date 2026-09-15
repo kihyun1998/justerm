@@ -79,12 +79,14 @@ Nothing governs the encoding itself.
 - **A consumer claims a key through `TerminalOptions.beforeKey`, asked after the IME gate** (#901).
   A composition key never reaches the consumer, and a key that finalizes a composition has committed
   its text before the consumer is asked. This is the reverse of xterm.js, which asks its custom key
-  handler first; the reason is that a consumer-side 229 guard is not the widget's gate — it misses the
-  finalize, so a claimed `Enter` would drop the composition's commit. **A claimed key keeps its
+  handler first; under that order every consumer owns a composition guard, and a claimed `Enter`
+  skips the finalize, so the commit goes out at `compositionend` — after whatever the consumer sent
+  for the key. Reordered, not lost. **A claimed key keeps its
   browser default**, as in xterm.js: an un-cancelled paste chord goes on to fire `paste`, which the
   widget sends as a paste intent, so the consumer cancels any default it replaces. A capture-phase
   listener on an ancestor with `stopPropagation` could claim keys before this existed, but it hides
-  the event from every other listener and has no ordering against the IME. Rows in
+  the event from every listener below that ancestor and has no ordering against the IME. What a real
+  OS IME delivers for a chord pressed mid-composition is unmeasured (see the rows). Rows in
   [`reference-facts.md`](../../agents/reference-facts.md).
 - **The widget does not report mouse press or motion at all, and finding that out costs three probes
   if it is not written here.** `captureInput` gates every mouse report on `mouseReporting()`, and

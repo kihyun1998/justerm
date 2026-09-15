@@ -3297,7 +3297,7 @@ there is no default action and no hidden textarea to compare.
 | A claim returns **before** the widget's own `preventDefault` / `stopPropagation`, which sit at the end of the handled path | xterm.js | `src/browser/CoreBrowserTerminal.ts:849-851` vs `:928-929` @ `699f553` |
 | `paste` is a separate listener on both the textarea and the element, so an un-cancelled paste chord reaches it after a claim | xterm.js | `src/browser/CoreBrowserTerminal.ts:379-380` @ `699f553` |
 | The handler is asked on `keyup` and `keypress` too, not only `keydown` | xterm.js | `src/browser/CoreBrowserTerminal.ts:953`, `:987`; listeners `:414-416` @ `699f553` |
-| **PenTerm, living on that order, re-implements the IME gate inside its handler** (`isComposing || keyCode === 229`) and calls `preventDefault` itself, noting xterm returns ahead of its own cancel | PenTerm (consumer) | `src/blocks/terminal/lib/buildTerminalKeyHandler.ts` |
+| **PenTerm, living on that order, guards the IME in one of its four gates only** — `shiftEnterGate` checks `isComposing || keyCode === 229`; its keybinding router claims a chord whatever the composition state — and calls `preventDefault` itself, noting xterm returns ahead of its own cancel | PenTerm (consumer) | `src/blocks/terminal/lib/buildTerminalKeyHandler.ts:177` (the guard), `:156-162` (the router) @ penterm `cfdf92976` |
 
 **Measured, not read** (Chromium headless shell 1228, Playwright trusted key input, a bare
 `<textarea>`): `Control+V` and `Control+Shift+V` each fire `paste` when the `keydown` is not cancelled,
@@ -3305,8 +3305,18 @@ and neither fires it when the `keydown` is. WebKit — which is what a Tauri con
 **unmeasured**.
 
 **Where justerm diverges, and the measurement that decided it.** justerm asks the consumer *after*
-the IME gate. The reference's order would make every consumer repeat PenTerm's 229 guard — and that
-guard is not equivalent to the widget's gate: with a consumer asked first but skipping 229, a claimed
-`Enter` during a composition never reaches `CompositionController.keydown`, so the composition is not
-finalized and the committed text is not sent (the #901 e2e reddens on exactly that assertion under
-that mutation). The default-action half follows the reference unchanged.
+the IME gate, so two things hold that the reference's order leaves to each consumer: a consumer needs
+no composition guard at all, and a key that finalizes a composition has sent its commit *before* the
+consumer is asked. Under the reference's order with a 229-only guard, a claimed `Enter` skips
+`CompositionController.keydown`, and the commit goes out only at `compositionend` — **after** whatever
+the consumer sent for that key (for PenTerm, Shift+Enter's continuation bytes would reach the shell
+ahead of the syllable). The #901 e2e fires `compositionend` and reddens on exactly that ordering under
+that mutation. **It is reordered, not lost** — this paragraph first said *"not sent"*, true only of a
+flow with no `compositionend`, which is how the e2e was first written; the refuting pass on 2026-09-15
+caught it. The default-action half follows the reference unchanged.
+
+**Unmeasured, and it decides a case:** what keyCode a *chord's* letter key carries while a real OS IME
+has a composition open. The gate swallows 229 and Ctrl/Shift/Alt while composing, so a chord whose
+letter arrives as 229 is never offered to the consumer, and an un-cancelled `Ctrl+Shift+V` would then
+paste around it. An Enter pressed during a CDP-simulated composition arrived as `13` with
+`isComposing=true`; that simulation is not an OS IME.
