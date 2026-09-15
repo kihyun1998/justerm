@@ -75,8 +75,8 @@ Nothing governs the encoding itself.
 - **The textarea's identity is `INPUT_ATTRIBUTE` (`data-justerm-input`), published as a contract**
   (#903). A host asking *"is the keyboard in a text field?"* reads any focused `<textarea>` as a form
   field, so a terminal pane looked like typing: global shortcuts stood down and focus claims would not
-  move off it. Neither thing the element already had is an identity — `aria-label` is accessible text
-  and may be localised, and its position under `element` is not promised (PenTerm matched a direct
+  move off it. Neither thing the element already had is an identity — `aria-label` is accessible text,
+  not a name a host may key on, and its position under `element` is not promised (PenTerm matched a direct
   child meanwhile). A data attribute rather than xterm.js's `xterm-helper-textarea` class, because a
   consumer's CSS cannot collide with it and the widget already marks its scrollbar that way
   (`data-justerm-scrollbar`, #902). **No accessor on `Terminal`**, unlike xterm.js's `readonly
