@@ -1977,6 +1977,52 @@ test("the consumer can make the terminal background translucent, live (#577)", a
 // page load, so the option is only reachable by booting with it set — which is what the demo's
 // `?bgAlpha=` parameter exists for. Worth its own test rather than folded into the one above: the two
 // paths are separate call sites, and the option's is the one a consumer writes first and the one that
+// #908: a fractional `scrollSensitivity` carries a sub-line remainder, so a LINE notch can move no
+// whole line. That notch is still the terminal's — the page behind it must not scroll — while a
+// trackpad's sub-line PIXEL delta keeps chaining to the page as before, and a notch that does move
+// hands `onScroll` a whole line.
+test.describe("a fractional scrollSensitivity (#908)", () => {
+  test.use({ bootUrl: "/?scrollSensitivity=0.5" });
+
+  test("a sub-line line-mode notch is consumed, a sub-line pixel delta is not, and onScroll gets whole lines", async ({
+    page,
+  }) => {
+    const scrolls: string[] = [];
+    page.on("console", (m) => {
+      if (m.text().startsWith("[wheel] scroll")) scrolls.push(m.text());
+    });
+    const seeded = await page.evaluate(() => window.__seedRows!(150));
+    expect(seeded.scrollbackLen, "a scroll needs history to move into").toBeGreaterThan(5);
+    const notch = (deltaY: number, deltaMode: number) =>
+      page.evaluate(
+        ([deltaY, deltaMode]) => {
+          const c = document.querySelector("#term") as HTMLElement;
+          const r = c.getBoundingClientRect();
+          const ev = new WheelEvent("wheel", {
+            deltaY,
+            deltaMode,
+            bubbles: true,
+            cancelable: true,
+            clientX: r.left + 50,
+            clientY: r.top + 50,
+          });
+          return !c.dispatchEvent(ev); // true iff preventDefault was called
+        },
+        [deltaY, deltaMode] as const,
+      );
+
+    expect(await notch(-1, 1), "half a line: consumed, though nothing scrolls").toBe(true);
+    expect(scrolls).toEqual([]);
+    expect(await notch(-1, 1), "the second half: a whole line").toBe(true);
+    await expect.poll(() => scrolls.length).toBe(1);
+    expect(scrolls[0]).toBe("[wheel] scroll → displayOffset 1");
+
+    // Control: a small trackpad delta moves no whole line either, and still reaches the page.
+    expect(await notch(-5, 0), "a sub-line pixel delta chains to the page as before").toBe(false);
+    expect(scrolls).toHaveLength(1);
+  });
+});
+
 // stays silent if it is dropped (the renderer's own default is opaque, so a missing `create` call
 // looks exactly like a correct one until somebody asks for translucency).
 test.describe("bgAlpha given at create boots translucent (#577)", () => {

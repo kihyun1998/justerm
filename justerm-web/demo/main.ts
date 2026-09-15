@@ -70,6 +70,8 @@ const bootLineHeight = bootParams.get("lineHeight");
 const bootCursorThickness = bootParams.get("cursorThickness");
 const bootCursorContrast = bootParams.get("cursorContrast");
 const bootCursorColor = bootParams.get("cursorColor");
+// #908: a `Terminal` construction option, so it too is only reachable by booting with it set.
+const bootScrollSensitivity = bootParams.get("scrollSensitivity");
 
 const renderer = await JustermRenderer.create({
   canvasSelector: "#term",
@@ -1226,6 +1228,7 @@ term = new Terminal(source, renderer, {
   beforeKey: (e) => !isSearchChord(e) && (window.__keyClaim?.(e) ?? true),
   // Local wheel scroll → move the demo backend's viewport and re-render. Clamped
   // by the widget already; this just applies the requested offset.
+  ...(bootScrollSensitivity === null ? {} : { scroll: { scrollSensitivity: Number(bootScrollSensitivity) } }),
   onScroll: (offset) => {
     displayOffset = offset;
     console.log(`[wheel] scroll → displayOffset ${offset}`); // observable signal (e2e/live proxy)
