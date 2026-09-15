@@ -186,9 +186,11 @@ than of any one collaborator.
   #606 in their own source. Five source files now quote that rule. The half that remains is real and
   unchanged — the only `Terminal.dispose()` calls outside tests sit inside the demo's *proof* probes,
   and the `Scrollbar` and the resize observer are never disposed on any ordinary path — but nothing
-  can move it: a composition root is a question a **host application** asks, and `justerm-web` has no
-  consumer (penterm's webview is still xterm.js). It becomes live the day one adopts the widget, and
-  this bullet is where that reader will be standing.
+  can move it: a composition root is a question a **host application** asks, and `justerm-web` had no
+  consumer when this was written. **penterm adopted the widget on 2026-09-15** for its Native (beta)
+  panes (`../penterm/src/blocks/terminal/components/NativeTerminalSurface.tsx` mounts a `Terminal`
+  and pushes its `dispose` into the effect's cleanups), so this is now live; this bullet is where
+  that reader is standing.
   **#775 moved it, and the way it moved is worth recording because #605's closing note predicted it
   could not be.** That note was right about the reason and wrong about the reach: a composition root
   *is* a question a host asks, and what changed is that this package now has to answer it for itself.
