@@ -3315,8 +3315,16 @@ that mutation. **It is reordered, not lost** — this paragraph first said *"not
 flow with no `compositionend`, which is how the e2e was first written; the refuting pass on 2026-09-15
 caught it. The default-action half follows the reference unchanged.
 
-**Unmeasured, and it decides a case:** what keyCode a *chord's* letter key carries while a real OS IME
-has a composition open. The gate swallows 229 and Ctrl/Shift/Alt while composing, so a chord whose
-letter arrives as 229 is never offered to the consumer, and an un-cancelled `Ctrl+Shift+V` would then
+**The case this decides:** what keyCode a *chord's* letter key carries while a real OS IME has a
+composition open. The gate swallows 229 and Ctrl/Shift/Alt while composing, so a chord whose letter
+arrived as 229 would never be offered to the consumer, and an un-cancelled `Ctrl+Shift+V` would then
 paste around it. An Enter pressed during a CDP-simulated composition arrived as `13` with
 `isComposing=true`; that simulation is not an OS IME.
+
+⚠ **Measured for a Ctrl chord (2026-09-15, before `web-v0.13.0`), real OS IME, by the maintainer by
+hand:** Windows Korean IME, the demo, `ㅎ` left composing, then `Ctrl+F`. The search box opened (the
+demo's `beforeKey` claimed it); the HUD read `last keyCode 70 (key="f") isComposing=false` and
+`last intent` text `ㅎ`. So the IME **finalizes the composition on `Ctrl` itself**: the syllable goes
+out as a text intent, the letter arrives as an ordinary key, and the claim leaves no key intent behind.
+The 229 case does not arise here. **What this does not cover:** a Shift chord (Shift is inside Korean
+composition, for tense consonants, so it need not finalize) and other IMEs. The browser was not recorded.

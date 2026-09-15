@@ -99,8 +99,10 @@ Nothing governs the encoding itself.
   browser default**, as in xterm.js: an un-cancelled paste chord goes on to fire `paste`, which the
   widget sends as a paste intent, so the consumer cancels any default it replaces. A capture-phase
   listener on an ancestor with `stopPropagation` could claim keys before this existed, but it hides
-  the event from every listener below that ancestor and has no ordering against the IME. What a real
-  OS IME delivers for a chord pressed mid-composition is unmeasured (see the rows). Rows in
+  the event from every listener below that ancestor and has no ordering against the IME. A **Ctrl** chord
+  pressed mid-composition was measured with the Windows Korean IME: the IME finalizes on `Ctrl`, so
+  the letter arrives as an ordinary key and the consumer can claim it. A Shift chord is still
+  unmeasured (see the rows). Rows in
   [`reference-facts.md`](../../agents/reference-facts.md).
 - **The widget owns the pointer, and the route is decided at the press** (#902, implementing
   ADR-0016's *"mouse routing consults the same bits"*, which until then only the wheel did).
