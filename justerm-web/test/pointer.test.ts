@@ -274,6 +274,36 @@ describe("PointerRouter — the windows where a nearby predicate would disagree"
     expect(sent.map((e) => e.action)).toEqual(["press"]);
   });
 
+  it("ends a reported gesture whose release was lost, so the next press is routed afresh", () => {
+    const { router, sent, local } = rig(ANY);
+
+    router.down(at(5, 3));
+    router.move(at(6, 3, { buttons: 0 }));
+    router.hover(at(7, 3));
+    router.down(at(8, 3, { shiftKey: true, buttons: 1 }));
+
+    expect(sent.map((e) => `${e.action}:${e.button}`)).toEqual(["press:left", "motion:null"]);
+    expect(local!.calls).toEqual(["down(0,1,forced)"]);
+  });
+
+  it("routes a press afresh when no other button is held, even if the last release never arrived", () => {
+    const { router, sent, local } = rig(BUTTON);
+
+    router.down(at(5, 3));
+    router.down(at(6, 3, { shiftKey: true, buttons: 1 }));
+
+    expect(sent.map((e) => `${e.action}:${e.button}`)).toEqual(["press:left"]);
+    expect(local!.calls).toEqual(["down(0,1,forced)"]);
+
+    // The same for a right press, whose `buttons` bit (2) is not `1 << button` (4).
+    const right = rig(BUTTON);
+    right.router.down(at(5, 3, { button: 2, buttons: 2 }));
+    right.router.down(at(6, 3, { button: 2, buttons: 2, shiftKey: true }));
+
+    expect(right.sent.map((e) => `${e.action}:${e.button}`)).toEqual(["press:right"]);
+    expect(right.local!.calls).toEqual(["down(2,1,forced)"]);
+  });
+
   it("does not report the release of a button the intent cannot name, inside a live gesture", () => {
     const { router, sent } = rig(BUTTON);
 

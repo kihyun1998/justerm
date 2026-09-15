@@ -547,7 +547,10 @@ export class Terminal {
       local: o.selection,
       setTicking,
     });
-    const onMove = (e: MouseEvent): void => router.move(e);
+    const onMove = (e: MouseEvent): void => {
+      router.move(e);
+      if (!router.active) unfollow();
+    };
     const onUp = (e: MouseEvent): void => {
       router.up(e);
       if (!router.active) unfollow();

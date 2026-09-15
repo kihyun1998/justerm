@@ -9,6 +9,11 @@ export function pressGoesToApp(mouseWantedEvents: number | undefined, ev: Pick<M
   return ((mouseWantedEvents ?? 0) & MouseEvents.Down) !== 0 && !ev.shiftKey;
 }
 
+/** The DOM `buttons` bit of the DOM `button` number (left 1, right 2, middle 4, back 8, forward 16). */
+function buttonBit(button: number): number {
+  return button === 1 ? 4 : button === 2 ? 2 : 1 << button;
+}
+
 /** A DOM pointer event as the router reads it: {@link MouseEventLike} plus the click count. */
 export interface PointerEventLike extends MouseEventLike {
   /** DOM click count (1 = single, 2 = double, …). */
@@ -63,6 +68,8 @@ export class PointerRouter {
 
   /** A press. Returns whether it was acted on, so the caller can cancel its default. */
   down(ev: PointerEventLike): boolean {
+    // A reported gesture with no other button held is one whose release never arrived.
+    if (this.gesture === "app" && (ev.buttons & ~buttonBit(ev.button)) === 0) this.gesture = "none";
     if (this.gesture === "app" || (this.gesture === "none" && pressGoesToApp(this.deps.mask(), ev))) {
       if (!this.report(ev, "press")) return false;
       this.gesture = "app";
@@ -85,7 +92,11 @@ export class PointerRouter {
       return;
     }
     if (this.gesture !== "app") return;
-    if (ev.buttons !== 0 && (this.deps.mask() & MouseEvents.Drag) !== 0) this.report(ev, "motion");
+    if (ev.buttons === 0) {
+      this.gesture = "none"; // its release never arrived
+      return;
+    }
+    if ((this.deps.mask() & MouseEvents.Drag) !== 0) this.report(ev, "motion");
   }
 
   /** Motion over the element. */
