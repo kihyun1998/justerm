@@ -79,7 +79,7 @@ Nothing governs the encoding itself.
   not a name a host may key on, and its position under `element` is not promised (PenTerm matched a direct
   child meanwhile). A data attribute rather than xterm.js's `xterm-helper-textarea` class, because a
   consumer's CSS cannot collide with it and the widget already marks its scrollbar that way
-  (`data-justerm-scrollbar`, #902). **No accessor on `Terminal`**, unlike xterm.js's `readonly
+  (`data-justerm-scrollbar`, #902 — read internally, not exported, so this is the first published one). **No accessor on `Terminal`**, unlike xterm.js's `readonly
   textarea`: the attribute answers both questions a host has — *is this element a terminal's input*
   (`hasAttribute`) and *where is this widget's* (`element.querySelector`) — and an accessor adds a
   second contract about when it is `undefined` (before mount, output-only, after dispose). **That was
