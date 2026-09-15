@@ -108,9 +108,12 @@ Nothing governs the encoding itself.
   - **Shift forces a press local on every platform, and is not an option** (maintainer's call,
     2026-09-15). alacritty and ghostty use Shift everywhere; xterm.js alone uses Alt on macOS behind
     `macOptionClickForcesSelection`, and Alt here already means block selection and alt-click cursor
-    move. A forced Shift press **anchors** rather than extends (`mouseDown(ev, detail, forced)`): the
-    engine drops a selection on every screen swap, so the one the controller remembers is usually gone
-    by the time an application takes the mouse, and an extend of nothing selects nothing.
+    move. That a forced Shift press **anchors** rather than extends (`mouseDown(ev, detail, forced)`)
+    is a **derivation, not part of that call**: the engine drops a selection on every screen swap, so
+    the one the controller remembers is usually gone by the time an application takes the mouse, and
+    an extend of nothing selects nothing. It anchors on the normal screen too, where the remembered
+    selection survives — the same as xterm.js, whose selection service does not extend while mouse
+    events are active, and unlike ghostty, which extends.
   - **The gesture is followed on `window`**, only while one is live, and a reported gesture ends when
     no button is held. Bare motion (MOVE) is listened for on `element` and never while a gesture is
     live, so a drag is not reported twice.
@@ -187,6 +190,14 @@ application misbehaves.
   the unresolved part: a cell key drops the sub-cell motion `?1016` exists to carry and a pixel key
   duplicates cell reports, and the widget cannot choose because ADR-0016 kept the coordinate encoding
   off the wire.
+- **A reported press can also act elsewhere.** A link controller the consumer wires on the same element
+  still opens on its modified click, and a right press still fires `contextmenu`, so a tracking
+  application gets the press while the page acts on it. The widget owns neither; the references split
+  three ways. Found by #902's lens, unmeasured beyond reading.
+- **A press reported while the viewport is scrolled into history carries a viewport row.**
+  `encode_mouse` takes viewport coordinates and the offset resets only on a screen swap, so on the
+  normal screen the row is not the one the application drew there. The wheel's report already had
+  this; #902 made presses reach it.
 - **Whether a press routed to the application clears a selection** is undecided (#902 did not cover
   it). A selection made before an application took the mouse on the normal screen stays highlighted
   while its clicks are reported; core already clears on a screen swap.

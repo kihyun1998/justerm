@@ -170,6 +170,12 @@ Check these after changing this territory:
 
 ## Known holes / open
 
+- **`SelectionController` remembers a selection core has dropped.** `hasSelection` is set on `begin` and
+  never cleared, while core clears the selection on a screen swap — so a Shift+click after leaving an
+  alt-screen application extends nothing and selects nothing. Seen while working #902, which sidesteps
+  it only for the forced press (that one anchors); the ordinary Shift+click still has it. The
+  controller sees no frames, so repairing it needs a signal it does not receive today.
+
 - **Zero governing records.** The whole §Design model above is unrecorded. *"Why absolute
   coordinates"* and *"what moves the coordinate"* are the kind of thing that gets
   re-decided, and their grounds exist only in code comments.
