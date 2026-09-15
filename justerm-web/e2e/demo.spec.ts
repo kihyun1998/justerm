@@ -876,14 +876,16 @@ test.describe("a consumer claims a key before Terminal encodes it (#901)", () =>
     expect(intents.filter((l) => l.includes('"char":"V"'))).toEqual([]);
   });
 
-  test("a composition key is never offered to the consumer, and a claimed Enter still commits", async ({
+  test("a composition key is never offered to the consumer, and a claimed Enter is asked only after the commit went out", async ({
     page,
   }) => {
-    const intents = recordInput(page);
-    const asked: string[] = [];
+    // One ordered stream: the consumer's asks and the widget's intents share the console.
+    const stream: string[] = [];
     page.on("console", (m) => {
-      const code = m.text().match(/^\[claim-asked\] (\d+)$/)?.[1];
-      if (code !== undefined) asked.push(code);
+      const t = m.text();
+      if (t.startsWith("[claim-asked]") || t.startsWith("[input] text") || t.startsWith("[input] key")) {
+        stream.push(t);
+      }
     });
     const imeKeyCode = await page.evaluate(() => {
       window.__keyClaim = (e) => {
@@ -899,7 +901,13 @@ test.describe("a consumer claims a key before Terminal encodes it (#901)", () =>
       ta.value = "가";
       ta.selectionStart = 1;
       ta.selectionEnd = 1;
-      const imeKey = new KeyboardEvent("keydown", { key: "Process", keyCode: 229, bubbles: true, cancelable: true });
+      const imeKey = new KeyboardEvent("keydown", {
+        key: "Process",
+        keyCode: 229,
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      });
       ta.dispatchEvent(imeKey);
       return imeKey.keyCode;
     });
@@ -907,14 +915,24 @@ test.describe("a consumer claims a key before Terminal encodes it (#901)", () =>
     // Same round-trip margin as the Enter test above: the deferred update write must land first.
     await page.waitForTimeout(20);
     const enterDefaultPrevented = await page.evaluate(() => {
-      const enter = new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true, cancelable: true });
-      document.querySelector("textarea")!.dispatchEvent(enter);
+      const ta = document.querySelector("textarea")!;
+      const enter = new KeyboardEvent("keydown", {
+        key: "Enter",
+        keyCode: 13,
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      ta.dispatchEvent(enter);
+      // The composition still ends, so a commit held back by the keydown would go out here — after the ask.
+      ta.dispatchEvent(new CompositionEvent("compositionend", { data: "가" }));
       return enter.defaultPrevented;
     });
-    await expect.poll(() => asked).toEqual(["13"]); // asked about Enter, never about the 229 before it
+    await expect.poll(() => stream.filter((t) => t.startsWith("[claim-asked]"))).toEqual(["[claim-asked] 13"]);
+    await expect.poll(() => stream.filter((t) => t === '[input] text "가"')).toHaveLength(1);
+    expect(stream.indexOf('[input] text "가"')).toBeLessThan(stream.indexOf("[claim-asked] 13"));
     expect(enterDefaultPrevented).toBe(false); // declined, so the widget left its default alone
-    await expect.poll(() => intents.filter((t) => t.includes('text "가"'))).toHaveLength(1);
-    expect(intents.filter((t) => t.includes('"type":"enter"'))).toEqual([]);
+    expect(stream.filter((t) => t.includes('"type":"enter"'))).toEqual([]);
   });
 });
 
