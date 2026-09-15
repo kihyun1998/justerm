@@ -255,3 +255,42 @@ describe("PointerRouter — presses with nothing to report", () => {
     expect(ticking).toEqual([]);
   });
 });
+
+describe("PointerRouter — the windows where a nearby predicate would disagree", () => {
+  it("leaves a Shift press unforced when the application tracks nothing, so it can still extend", () => {
+    const { router, local } = rig(0);
+
+    router.down(at(5, 3, { shiftKey: true }));
+
+    expect(local!.calls).toEqual(["down(0,1,plain)"]);
+  });
+
+  it("does not report a buttonless move during a gesture as a drag (its release was lost)", () => {
+    const { router, sent } = rig(BUTTON);
+
+    router.down(at(5, 3));
+    router.move(at(6, 3, { buttons: 0 }));
+
+    expect(sent.map((e) => e.action)).toEqual(["press"]);
+  });
+
+  it("does not report the release of a button the intent cannot name, inside a live gesture", () => {
+    const { router, sent } = rig(BUTTON);
+
+    router.down(at(5, 3));
+    router.up(at(5, 3, { button: 3, buttons: 1 }));
+
+    expect(sent.map((e) => e.action)).toEqual(["press"]);
+  });
+
+  it("does not report a release whose press found no box, even if the box is back by then", () => {
+    let box: CellGeometry | undefined;
+    const { router, sent } = rig(BUTTON, { geom: () => box });
+
+    router.down(at(5, 3));
+    box = GEOM;
+    router.up(at(5, 3));
+
+    expect(sent).toEqual([]);
+  });
+});
