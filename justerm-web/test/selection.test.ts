@@ -834,7 +834,7 @@ describe("SelectionController — a gesture that outlives its element's box requ
     expect(scrolls, "the window this test lives in must exist").toEqual([9]);
 
     geom = undefined; // the pane is hidden while the drag is ALREADY scrolling
-    ctrl.tick(); // ... and the consumer's timer keeps firing, with no further pointer motion
+    ctrl.tick(); // ... and the tick timer keeps firing, with no further pointer motion
     ctrl.tick();
 
     expect(scrolls, "a hidden pane must not go on scrolling").toEqual([9]);
