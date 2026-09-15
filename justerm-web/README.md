@@ -24,7 +24,8 @@ wasm-bindgen modules, so a bundler needs WASM + top-level-await support (with Vi
 ## Usage
 
 ```ts
-import { JustermRenderer, StubFrameSource, Terminal } from "justerm-web";
+import { JustermRenderer, SelectionController, StubFrameSource, Terminal } from "justerm-web";
+import type { CellGeometry } from "justerm-web";
 
 // 1. The renderer owns the canvas. The theme is injected — justerm is theme-agnostic
 //    and never guesses a colour (all values are packed 0xRRGGBB).
@@ -47,47 +48,52 @@ const renderer = await JustermRenderer.create({
 //    (PTY -> engine -> wire -> decode); StubFrameSource drives it by hand.
 const source = new StubFrameSource();
 
+// Pixel -> cell is host policy too, so the widget asks for the geometry it needs.
+// Every length is CSS px, because that is what `clientX`/`clientY` are — `renderer.cellSize()`
+// is DEVICE px, so divide it by the ratio or the pointer lands on the wrong cell at dpr != 1.
+// Return measured values: the cell must be positive and finite, the counts non-negative
+// integers. A `0` or `NaN` cell makes every pointer event resolve to a garbage cell; the widget
+// warns once per field rather than failing.
+//
+// Return `undefined` when there is nothing to measure — a `display: none` or detached container,
+// or one the browser has not laid out yet. Do NOT skip this because the cell below stays
+// positive: an absent box reports EVERY field as 0, including `originX`/`originY`, and a position
+// of 0 is perfectly legal, so the widget cannot tell an absent box from a container in the corner
+// of the window. You can. A gesture that outlives its container — `mousemove`/`mouseup` are
+// window-scoped in every wiring, so a drag survives a tab switch or a collapsing panel — then
+// resolves cells against the top-left of the window and auto-scrolls a pane nobody can see.
+// `undefined` makes it request nothing; it does not cancel the gesture, so showing the container
+// again under a held button resumes it.
+const getGeometry = (): CellGeometry | undefined => {
+  const r = canvas.getBoundingClientRect();
+  if (r.width <= 0 || r.height <= 0) return undefined; // no box — not a box at (0, 0)
+  const cell = renderer.cellSize(); // device px
+  const dpr = window.devicePixelRatio || 1;
+  return {
+    originX: r.left,
+    originY: r.top,
+    cellWidth: cell.width / dpr,
+    cellHeight: cell.height / dpr,
+    cols,
+    rows,
+  };
+};
+
 // 3. The Terminal wires the two together and owns focus, input and selection.
 //    `input` receives an *Intent* (a key press, paste, mouse report...), not bytes:
 //    encoding intent for your backend is the host's job, not the widget's.
 const term = new Terminal(source, renderer, {
   element: document.getElementById("term-container")!,
   input: { send: (intent) => myBackend.send(intent) },
-  // Pixel -> cell is host policy too, so the widget asks for the geometry it needs.
-  // Every length is CSS px, because that is what `clientX`/`clientY` are — `renderer.cellSize()`
-  // is DEVICE px, so divide it by the ratio or the pointer lands on the wrong cell at dpr != 1.
-  // Return measured values: the cell must be positive and finite, the counts non-negative
-  // integers. A `0` or `NaN` cell makes every pointer event resolve to a garbage cell; the widget
-  // warns once per field rather than failing.
-  //
-  // Return `undefined` when there is nothing to measure — a `display: none` or detached container,
-  // or one the browser has not laid out yet. Do NOT skip this because the cell below stays
-  // positive: an absent box reports EVERY field as 0, including `originX`/`originY`, and a position
-  // of 0 is perfectly legal, so the widget cannot tell an absent box from a container in the corner
-  // of the window. You can. A gesture that outlives its container — `mousemove`/`mouseup` are
-  // window-scoped in every wiring, so a drag survives a tab switch or a collapsing panel — then
-  // resolves cells against the top-left of the window and auto-scrolls a pane nobody can see.
-  // `undefined` makes it request nothing; it does not cancel the gesture, so showing the container
-  // again under a held button resumes it.
-  getGeometry: () => {
-    const r = canvas.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return undefined; // no box — not a box at (0, 0)
-    const cell = renderer.cellSize(); // device px
-    const dpr = window.devicePixelRatio || 1;
-    return {
-      originX: r.left,
-      originY: r.top,
-      cellWidth: cell.width / dpr,
-      cellHeight: cell.height / dpr,
-      cols,
-      rows,
-    };
-  },
+  // The widget owns the pointer: a press goes to the application when it tracks the mouse, and to
+  // this controller otherwise (Shift forces it local). Bind no mouse listeners of your own for it.
+  selection: new SelectionController(mySelectionPort, getGeometry),
+  getGeometry,
 });
 ```
 
-`Terminal` takes many more options (scroll, selection, search, links, accessibility,
-clipboard, and `beforeKey` for claiming an app shortcut before it reaches the shell) —
+`Terminal` takes more options (scroll, events, clipboard, and `beforeKey` for claiming an
+app shortcut before it reaches the shell) —
 each is an injected seam rather than a built-in policy, so the host stays in control of
 transport, clipboard and theme. See the [demo](https://github.com/kihyun1998/justerm/blob/master/justerm-web/demo/main.ts)
 for a fully wired example.

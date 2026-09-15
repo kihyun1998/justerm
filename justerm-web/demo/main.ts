@@ -216,11 +216,21 @@ canvas.addEventListener("blur", () => a11y.onBlur());
 // (#149 wire v9) driving the announce policy (#119), assembled.
 let altScreen = false;
 
-// S16 (#133): the "App mouse" button flips whether the frame advertises mouse
-// tracking (the #129 mouseWantedEvents mask). With it ON, the widget routes a
-// wheel notch to the app (logged via the input sink) instead of scrolling
-// scrollback — the app-vs-local wheel branch, driven by the real frame mask.
-let appMouse = false;
+// S16 (#133) / #902: the "App mouse" button cycles the mouse-tracking mode the frame advertises (the
+// #129 mouseWantedEvents mask). With any mode on, the widget reports presses and wheel notches to the
+// app (logged via the input sink) instead of selecting or scrolling scrollback; ?1002 adds drags and
+// ?1003 bare motion.
+let appMouse = 0;
+/** #902: the tracking modes the App mouse button cycles through, with the mask each one reports. */
+const APP_MOUSE_MODES: ReadonlyArray<{ label: string; mask: number }> = [
+  { label: "OFF", mask: 0 },
+  { label: "?1000", mask: MouseEvents.Down | MouseEvents.Up | MouseEvents.Wheel },
+  { label: "?1002", mask: MouseEvents.Down | MouseEvents.Up | MouseEvents.Wheel | MouseEvents.Drag },
+  {
+    label: "?1003",
+    mask: MouseEvents.Down | MouseEvents.Up | MouseEvents.Wheel | MouseEvents.Drag | MouseEvents.Move,
+  },
+];
 
 // #575: the APPLICATION's cursor blink mode, as core reports it on every frame (wire v4, #81 —
 // written by both DECSCUSR `CSI Ps SP q` and att610 `CSI ?12 h/l`). The widget resolves it against
@@ -758,11 +768,11 @@ function toggleBgAlpha(): void {
 }
 
 function toggleAppMouse(): void {
-  // S16 (#133): flip the frame's mouse-tracking mask. ON → the widget reports a
-  // wheel notch to the app (input sink logs it); OFF → wheel scrolls scrollback.
-  appMouse = !appMouse;
-  appMouseBtn.textContent = `App mouse: ${appMouse ? "ON" : "OFF"}`;
-  console.log(`[demo] appMouse = ${appMouse} (wheel → ${appMouse ? "app (intent)" : "scrollback"})`);
+  // S16 (#133) / #902: step to the next tracking mode; the next frame carries its mask.
+  appMouse = (appMouse + 1) % APP_MOUSE_MODES.length;
+  const mode = APP_MOUSE_MODES[appMouse]!;
+  appMouseBtn.textContent = `App mouse: ${mode.label}`;
+  console.log(`[demo] appMouse = ${mode.label} (mask ${mode.mask})`);
   render(); // re-emit so the next frame carries the new mask
 }
 // #117: push consumer events through the source's event channel (a real backend
@@ -986,9 +996,8 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     displayOffset,
     scrollbackLen: maxOffset(),
     altScreen, // #149: drives the a11y announce policy (Alt screen button)
-    // S16/#129: the wheel-routing mask. App mouse ON = Normal protocol (DOWN|UP|
-    // WHEEL) → the widget sends a wheel notch to the app; OFF = 0 → scrollback.
-    mouseWantedEvents: appMouse ? MouseEvents.Down | MouseEvents.Up | MouseEvents.Wheel : 0,
+    // S16/#129/#902: the pointer-routing mask of the App mouse mode.
+    mouseWantedEvents: APP_MOUSE_MODES[appMouse]!.mask,
     selectionSpans: engine.range(), // S8: the live selection projected onto the view
     matchSpans: searchEngine.matchSpans(top, ROWS), // S9: search matches on the view
     // #429: the ACTIVE match rides its own wire group (also present in matchSpans;
@@ -1074,12 +1083,18 @@ function render(out?: { scrollCount: number }): void {
   updateLinks();
 }
 
-// --- S8 wiring: SelectionController → fake engine, DOM mouse → controller ---
+// --- S8 wiring: SelectionController → fake engine; the widget feeds it presses (#902) ---
+/** #902: presses that became a selection, and pointer reports that reached the app — counted so a
+ * probe can tell "went to the app", "stayed local" and "went nowhere" apart without reading logs. */
+let selectionBeginCount = 0;
+let mouseIntentCount = 0;
 
 // The fake backend behind the write-side seam: apply each command, re-render so
 // the new selection's overlay spans reach the renderer.
 const port: SelectionPort = {
   begin: (r, c, s, ty) => {
+    selectionBeginCount++;
+    console.log(`[sel] begin ${ty} @${c},${r}`); // #902: observable proof of a LOCAL press
     engine.begin(r, c, s, ty);
     render();
   },
@@ -1142,8 +1157,12 @@ const inputSink: InputSink = {
       // Feed printable typed chars to the a11y echo-dedup (#119).
       if (intent.event.key.type === "char") a11y.onKey(intent.event.key.char);
       lastIntentLabel = `key ${JSON.stringify(intent.event.key)}`;
-    } else if (intent.kind === "mouse")
-      console.log(`[input] mouse ${intent.event.button} @${intent.event.col},${intent.event.row}`);
+    } else if (intent.kind === "mouse") {
+      mouseIntentCount++;
+      console.log(
+        `[input] mouse ${intent.event.action} ${intent.event.button} @${intent.event.col},${intent.event.row}`,
+      );
+    }
     else if (intent.kind === "paste") console.log(`[input] paste ${JSON.stringify(intent.text)}`);
     else if (intent.kind === "text") {
       console.log(`[input] text ${JSON.stringify(intent.text)}`); // #116 IME commit
@@ -1162,10 +1181,45 @@ termContainer.appendChild(canvas);
 /** The page's search chord (Ctrl/Cmd+F) — claimed from the terminal, handled by the search box. */
 const isSearchChord = (e: KeyboardEvent): boolean => (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f";
 
+let primaryBuffer = "";
+const controller = new SelectionController(port, getGeometry, {
+  getRows: () => ROWS,
+  isAtBottom: () => displayOffset === 0,
+  // Drag past an edge: positive = scroll toward newer (offset → 0).
+  onScroll: (lines) => {
+    console.log(`[sel] drag-scroll ${lines}`); // #902: observable proof the widget ticks a held drag
+    displayOffset = Math.min(Math.max(displayOffset - lines, 0), maxOffset());
+    render();
+  },
+  onMoveCursor: (c) => console.log(`[alt-click] move cursor to row ${c.row}, col ${c.col}`),
+  onPrimarySelection: (t) => {
+    primaryBuffer = t;
+  },
+  onPaste: () => {
+    if (primaryBuffer) {
+      log.push(`[middle-click paste] ${primaryBuffer.replace(/\n/g, " ⏎ ")}`);
+      render();
+    }
+  },
+});
+
+// #902: count the widget's ticks. The controller ignores a tick with no drag, so a timer the widget
+// failed to stop after the release would scroll nothing and be invisible — only the call count shows it.
+let tickCount = 0;
+const tickController = controller.tick.bind(controller);
+controller.tick = () => {
+  tickCount++;
+  tickController();
+};
+window.__tickCount = () => tickCount;
+
 term = new Terminal(source, renderer, {
   element: termContainer,
   input: inputSink,
   getGeometry,
+  // #902: the widget owns the pointer — it routes each press to the app or to this controller and
+  // follows the gesture itself, so the page binds no mouse listeners for selection.
+  selection: controller,
   // #901: the search chord is this page's, so the widget must not also send it to the shell. The
   // page's own `keydown` listener (below the search box) still opens the box as the event bubbles.
   // `__keyClaim` is the e2e's policy, asked only about the keys the page does not claim itself.
@@ -1227,41 +1281,6 @@ term = new Terminal(source, renderer, {
 });
 term.mount();
 
-let primaryBuffer = "";
-const controller = new SelectionController(port, getGeometry, {
-  getRows: () => ROWS,
-  isAtBottom: () => displayOffset === 0,
-  // Drag past an edge: positive = scroll toward newer (offset → 0).
-  onScroll: (lines) => {
-    displayOffset = Math.min(Math.max(displayOffset - lines, 0), maxOffset());
-    render();
-  },
-  onMoveCursor: (c) => console.log(`[alt-click] move cursor to row ${c.row}, col ${c.col}`),
-  onPrimarySelection: (t) => {
-    primaryBuffer = t;
-  },
-  onPaste: () => {
-    if (primaryBuffer) {
-      log.push(`[middle-click paste] ${primaryBuffer.replace(/\n/g, " ⏎ ")}`);
-      render();
-    }
-  },
-});
-
-let tickTimer: number | undefined;
-canvas.addEventListener("mousedown", (e) => {
-  e.preventDefault();
-  controller.mouseDown(e, e.detail);
-  tickTimer = window.setInterval(() => controller.tick(), 50);
-});
-window.addEventListener("mousemove", (e) => controller.mouseMove(e));
-window.addEventListener("mouseup", (e) => {
-  controller.mouseUp(e);
-  if (tickTimer !== undefined) {
-    clearInterval(tickTimer);
-    tickTimer = undefined;
-  }
-});
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
 window.addEventListener("keydown", (e) => {
@@ -1653,6 +1672,8 @@ interface ContextLossProbe {
 declare global {
   interface Window {
     __searchProbe?: () => SearchProbe;
+    __thumbPressProbe?: () => ThumbPressProbe;
+    __tickCount?: () => number;
     __contextLossProbe?: () => Promise<ContextLossProbe>;
     __rulerLayerProbe?: () => Promise<RulerLayerProbe>;
     __searchRulerProbe?: () => Promise<SearchRulerProbe>;
@@ -2652,8 +2673,8 @@ window.__imeDriftProbe = (): ImeDriftProbe => {
  *    pointer-down there MUST move the anchor again. Keyed on `active` it would stay frozen.
  *
  * The demo can host this at all because a real pointer-down here does not blur the textarea: the
- * canvas `preventDefault`s mousedown, which cancels the focusing steps for the whole dispatch. That
- * is the unprotected consumer shape, and it is the page's ordinary configuration rather than a rig.
+ * widget `preventDefault`s the mousedown it hands to the selection (#902), which cancels the focusing
+ * steps for the whole dispatch. That is the page's ordinary configuration rather than a rig.
  */
 interface ImePointerProbe {
   /** Anchor right after a real `compositionstart` — the frozen reference point. */
@@ -3174,7 +3195,7 @@ function runOriginArm(shape: "declares" | "silent"): OriginDragArm {
   move();
   const hidden = step();
 
-  // The consumer drives this on a timer while the button is down (`demo/main.ts` at 50ms).
+  // A timer drives this while the button is down (`Terminal` at 50ms since #902).
   ctl.tick();
   ctl.tick();
   ctl.tick();
@@ -3191,6 +3212,70 @@ function runOriginArm(shape: "declares" | "silent"): OriginDragArm {
   console.warn = realWarn;
   return { boxWasVisible, pressBegan, windowExists, before, hidden, ticked, shown };
 }
+
+/** What one press did on the page's real widget: pointer reports sent, selections begun, and whether
+ * an ancestor of the widget's element still saw the press. */
+interface PressOutcome {
+  reports: number;
+  selections: number;
+  ancestorSaw: number;
+}
+interface ThumbPressProbe {
+  /** A press on a scrollbar thumb mounted inside the widget's element. */
+  thumb: PressOutcome;
+  /** A press on that scrollbar's track, beside the thumb. */
+  track: PressOutcome;
+  /** Pointer reports from buttonless motion over the track, and over the grid (the control). */
+  trackHoverReports: number;
+  gridHoverReports: number;
+  /** The same press on the grid beside it — the control: it must do something, or `thumb` proves nothing. */
+  grid: PressOutcome;
+}
+/**
+ * #902: a scrollbar mounted INSIDE the widget's element (PenTerm's arrangement; the page's own bar is
+ * on `body`, so it cannot show this) must keep its thumb's press to itself. The press goes through the
+ * page's real `Terminal`, under whatever App mouse mode is current.
+ */
+window.__thumbPressProbe = (): ThumbPressProbe => {
+  const probeBar = new Scrollbar(termContainer, { onScroll: () => {} });
+  probeBar.update({ displayOffset: 0, scrollbackLen: 100, rows: ROWS });
+  const track = termContainer.lastElementChild as HTMLElement;
+  const thumb = track.firstElementChild as HTMLElement;
+  // The thumb covers the top of the track when scrolled to the bottom; this leaves a track strip above.
+  probeBar.update({ displayOffset: 100, scrollbackLen: 100, rows: ROWS });
+  let ancestor = 0;
+  const onAncestor = (): void => void ancestor++;
+  document.body.addEventListener("mousedown", onAncestor);
+  const press = (target: HTMLElement, x: number, y: number): PressOutcome => {
+    const reports = mouseIntentCount;
+    const selections = selectionBeginCount;
+    const saw = ancestor;
+    const at = { clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true };
+    target.dispatchEvent(new MouseEvent("mousedown", { ...at, buttons: 1, detail: 1 }));
+    window.dispatchEvent(new MouseEvent("mouseup", { ...at, buttons: 0 }));
+    return {
+      reports: mouseIntentCount - reports,
+      selections: selectionBeginCount - selections,
+      ancestorSaw: ancestor - saw,
+    };
+  };
+  const t = thumb.getBoundingClientRect();
+  const thumbOutcome = press(thumb, t.left + t.width / 2, t.top + t.height / 2);
+  const k = track.getBoundingClientRect();
+  const trackOutcome = press(track, k.left + k.width / 2, k.bottom - 4);
+  const c = canvas.getBoundingClientRect();
+  const gridOutcome = press(canvas, c.left + 20, c.top + 20);
+  const hover = (target: HTMLElement, x: number, y: number): number => {
+    const reports = mouseIntentCount;
+    target.dispatchEvent(new MouseEvent("mousemove", { clientX: x, clientY: y, buttons: 0, bubbles: true }));
+    return mouseIntentCount - reports;
+  };
+  const trackHoverReports = hover(track, k.left + k.width / 2, k.bottom - 4);
+  const gridHoverReports = hover(canvas, c.left + 20, c.top + 20);
+  document.body.removeEventListener("mousedown", onAncestor);
+  track.remove();
+  return { thumb: thumbOutcome, track: trackOutcome, grid: gridOutcome, trackHoverReports, gridHoverReports };
+};
 
 window.__geometryOriginProbe = (): { silent: OriginDragArm; declares: OriginDragArm } => {
   // The pre-#819 recipe FIRST, as this probe's own control: it must still show the defect, or a

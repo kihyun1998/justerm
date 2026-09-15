@@ -1,0 +1,130 @@
+import { mouseFromDom, MouseEvents, type CellGeometry, type MouseEvent, type MouseEventLike } from "./input";
+
+/**
+ * Whether a press reports to the application rather than acting locally: the application tracks
+ * presses (the DOWN bit of the frame's `mouseWantedEvents` mask, #129) and Shift is not held.
+ * Shift is the force-selection modifier on every platform (#902).
+ */
+export function pressGoesToApp(mouseWantedEvents: number | undefined, ev: Pick<MouseEventLike, "shiftKey">): boolean {
+  return ((mouseWantedEvents ?? 0) & MouseEvents.Down) !== 0 && !ev.shiftKey;
+}
+
+/** The DOM `buttons` bit of the DOM `button` number (left 1, right 2, middle 4, back 8, forward 16). */
+function buttonBit(button: number): number {
+  return button === 1 ? 4 : button === 2 ? 2 : 1 << button;
+}
+
+/** A DOM pointer event as the router reads it: {@link MouseEventLike} plus the click count. */
+export interface PointerEventLike extends MouseEventLike {
+  /** DOM click count (1 = single, 2 = double, …). */
+  detail: number;
+}
+
+/** The local half of a press — the shape {@link import("./selection").SelectionController} has. */
+export interface LocalPointer {
+  /** `forced`: the press is local only because Shift overrode an application that tracks presses. */
+  mouseDown(ev: MouseEventLike, detail: number, forced?: boolean): void;
+  mouseMove(ev: MouseEventLike): void;
+  mouseUp(ev: MouseEventLike): void;
+  tick(): void;
+}
+
+/** What a {@link PointerRouter} reads and drives. */
+export interface PointerRouterDeps {
+  /** The latest frame's `mouseWantedEvents` mask. */
+  mask(): number;
+  /** The cell geometry, or `undefined` when the box cannot be measured (#819). */
+  getGeometry(): CellGeometry | undefined;
+  /** Where a pointer report for the application goes. */
+  send(event: MouseEvent): void;
+  /** Where a press that stays local goes; absent, such a press does nothing. */
+  local?: LocalPointer;
+  /** Start or stop calling the local handler's `tick()` on a timer. */
+  setTicking(on: boolean): void;
+}
+
+/**
+ * Routes pointer events, one press at a time, to the application or to a {@link LocalPointer}.
+ *
+ * The route is decided at the press and holds until the gesture ends. A gesture reported to the
+ * application reports its drag (DRAG bit) and release (UP bit) and ends when no button is held — at
+ * its release, or at a buttonless move or a lone press when that release never arrived; an X10
+ * application (DOWN only) gets the press alone. A primary-button press that stays local hands its
+ * motion and release to the local handler and ticks it meanwhile. Bare motion with no gesture and no
+ * button held is reported under the MOVE bit. Nothing is reported without a measured box, nor for a
+ * press or release of a button the intent cannot name.
+ *
+ * Pure: the widget binds the DOM listeners — {@link down} and {@link hover} on its element,
+ * {@link move} and {@link up} on `window` while {@link active} — and owns the timer.
+ */
+export class PointerRouter {
+  private gesture: "none" | "app" | "local" = "none";
+
+  constructor(private readonly deps: PointerRouterDeps) {}
+
+  /** Whether a press is still being followed to its release. */
+  get active(): boolean {
+    return this.gesture !== "none";
+  }
+
+  /** A press. Returns whether it was acted on, so the caller can cancel its default. */
+  down(ev: PointerEventLike): boolean {
+    // A reported gesture with no other button held is one whose release never arrived.
+    if (this.gesture === "app" && (ev.buttons & ~buttonBit(ev.button)) === 0) this.gesture = "none";
+    if (this.gesture === "app" || (this.gesture === "none" && pressGoesToApp(this.deps.mask(), ev))) {
+      if (!this.report(ev, "press")) return false;
+      this.gesture = "app";
+      return true;
+    }
+    const local = this.deps.local;
+    if (!local) return false;
+    local.mouseDown(ev, ev.detail, (this.deps.mask() & MouseEvents.Down) !== 0);
+    if (ev.button === 0 && this.gesture === "none") {
+      this.gesture = "local";
+      this.deps.setTicking(true);
+    }
+    return true;
+  }
+
+  /** Motion during a gesture. */
+  move(ev: MouseEventLike): void {
+    if (this.gesture === "local") {
+      this.deps.local?.mouseMove(ev);
+      return;
+    }
+    if (this.gesture !== "app") return;
+    if (ev.buttons === 0) {
+      this.gesture = "none"; // its release never arrived
+      return;
+    }
+    if ((this.deps.mask() & MouseEvents.Drag) !== 0) this.report(ev, "motion");
+  }
+
+  /** Motion over the element. */
+  hover(ev: MouseEventLike): void {
+    if (this.gesture !== "none" || ev.buttons !== 0) return;
+    if ((this.deps.mask() & MouseEvents.Move) !== 0) this.report(ev, "motion");
+  }
+
+  /** A release during a gesture. */
+  up(ev: MouseEventLike): void {
+    if (this.gesture === "local") {
+      this.gesture = "none";
+      this.deps.setTicking(false);
+      this.deps.local?.mouseUp(ev);
+      return;
+    }
+    if (this.gesture !== "app") return;
+    if ((this.deps.mask() & MouseEvents.Up) !== 0) this.report(ev, "release");
+    if (ev.buttons === 0) this.gesture = "none";
+  }
+
+  private report(ev: MouseEventLike, action: "press" | "release" | "motion"): boolean {
+    const geom = this.deps.getGeometry();
+    if (!geom) return false;
+    const event = mouseFromDom(ev, action, geom);
+    if (event.button === null && action !== "motion") return false;
+    this.deps.send(event);
+    return true;
+  }
+}

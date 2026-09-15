@@ -140,7 +140,7 @@ function modeForClick(detail: number): SelType {
  * real browser, since `mousemove`/`mouseup` are window-scoped in every wiring
  * we ship. `fit.ts` floors `rows`/`cols` as well, so a container that is not an
  * exact multiple of the cell keeps a remainder strip outside the canvas; whether
- * a *press* there arrives depends on which element the consumer listens on, and
+ * a *press* there arrives depends on which element the presses come from, and
  * this controller does not own that choice.
  *
  * The clamp is deliberately *not* left to the engine, and the reason is
@@ -217,8 +217,13 @@ export class SelectionController {
     this.onPrimarySelection = opts.onPrimarySelection;
   }
 
-  /** A mouse press. `detail` is the DOM click count (1 = single). */
-  mouseDown(ev: MouseEventLike, detail: number): void {
+  /**
+   * A mouse press. `detail` is the DOM click count (1 = single).
+   *
+   * `forced` says the press is local only because Shift overrode an application that tracks the
+   * mouse (#902). Such a press anchors a new selection rather than extending the remembered one.
+   */
+  mouseDown(ev: MouseEventLike, detail: number, forced = false): void {
     // Middle-click pastes the X11 primary buffer — a separate gesture, not a
     // selection. Only the left button drives selection; right/other are ignored.
     if (ev.button === 1) {
@@ -234,7 +239,7 @@ export class SelectionController {
     this.downTimeStamp = ev.timeStamp ?? 0;
     this.dragged = false;
     const { row, col, side } = cellAndSide(ev, geom);
-    if (ev.shiftKey && this.hasSelection) {
+    if (ev.shiftKey && this.hasSelection && !forced) {
       // Shift+click extends the live selection (keep the anchor) — incremental.
       this.port.extend(row, col, side);
     } else {
@@ -299,7 +304,7 @@ export class SelectionController {
     }
   }
 
-  /** One auto-scroll step — the consumer calls this on a timer while the button
+  /** One auto-scroll step — called on a timer while the button
    * is down. Scrolls the viewport by the pending amount and pins the focus to
    * the edge row toward the pointer (xterm `_dragScroll`). No-op in bounds.
    *
@@ -313,7 +318,7 @@ export class SelectionController {
   tick(): void {
     if (!this.dragging || this.dragScrollAmount === 0) return;
     // #819 — the second half of the reset in {@link SelectionController.mouseMove}, and it is not
-    // redundant with it: this timer is the consumer's and fires whether or not the pointer moves,
+    // redundant with it: the timer fires whether or not the pointer moves,
     // so a user holding still while the pane is hidden would never reach that reset. Asking here
     // costs one callback per tick and is what makes "a pane the user cannot see requests nothing"
     // true for a stationary pointer as well as a moving one.
@@ -331,6 +336,8 @@ export class SelectionController {
    * shell to move its cursor to the clicked cell — a feature distinct from block
    * selection (xterm `altClickMovesCursor`). */
   mouseUp(ev: MouseEventLike): void {
+    // A release no press of this controller began is not a click (#902).
+    if (!this.dragging) return;
     this.dragging = false;
     this.dragScrollAmount = 0;
     const elapsed = (ev.timeStamp ?? 0) - this.downTimeStamp;

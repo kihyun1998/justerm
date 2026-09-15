@@ -77,7 +77,10 @@ status.
   is a `Term` method reading injected policy, not a free function over a fixed set — the set itself
   lives in `term.rs` (`DEFAULT_WORD_SEPARATORS`, `set_word_separators`, and the `full_reset` line
   that carries it across RIS)
-- Consumers: justerm-web does pixel→cell and clipboard; justerm-renderer paints the highlight
+- Consumers: justerm-web does pixel→cell and clipboard; justerm-renderer paints the highlight.
+  `SelectionController` binds no listeners — since #902 `Terminal` feeds it through
+  `TerminalOptions.selection`, only the presses the application did not take (see
+  [input encoding](input-encoding.md))
 
 ## Reference behaviour
 
@@ -112,7 +115,7 @@ at a recorded SHA; a paraphrase drops the pin).
   undefined`, because the consumer took the measurement and is the only party that can tell absence
   from a legitimate `0`. This territory holds the site, and it is the one with **state** to unwind —
   `SelectionController.mouseMove` *and* `tick` both reset `dragScrollAmount`, since a refusal that
-  only returned early would latch the last auto-scroll speed and the consumer's timer fires whether
+  only returned early would latch the last auto-scroll speed and the tick timer fires whether
   or not the pointer moves. Distinct from the product ambiguity #680 settled next door, which this
   note draws the boundary against — and #819 is what showed the two are reachable through the *same*
   symptom: #680's `cellHeight > 0` guard passes when the cell comes from the renderer, so the
@@ -166,6 +169,12 @@ Check these after changing this territory:
   right here
 
 ## Known holes / open
+
+- **`SelectionController` remembers a selection core has dropped.** `hasSelection` is set on `begin` and
+  never cleared, while core clears the selection on a screen swap — so a Shift+click after leaving an
+  alt-screen application extends nothing and selects nothing. Seen while working #902, which sidesteps
+  it only for the forced press (that one anchors); the ordinary Shift+click still has it. The
+  controller sees no frames, so repairing it needs a signal it does not receive today.
 
 - **Zero governing records.** The whole §Design model above is unrecorded. *"Why absolute
   coordinates"* and *"what moves the coordinate"* are the kind of thing that gets

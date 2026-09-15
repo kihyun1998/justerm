@@ -124,6 +124,24 @@ describe("SelectionController — drag → selection commands", () => {
       { kind: "extend", row: 3, col: 10, side: "right" },
     ]);
   });
+
+  // #902 — Shift is also the force-selection modifier while the application tracks the mouse, and
+  // there it cannot mean "extend": the engine drops a selection on every screen swap, so the one
+  // this controller remembers is usually gone by the time an app like vim takes the mouse, and an
+  // extend of nothing selects nothing. A forced press anchors a fresh selection instead.
+  it("a forced shift-click anchors a new selection instead of extending the remembered one", () => {
+    const port = new StubSelectionPort();
+    const ctrl = controller(port);
+
+    ctrl.mouseDown(leftHalf(5, 3), 1);
+    ctrl.mouseUp(leftHalf(5, 3));
+    ctrl.mouseDown(ev(10 * 10 + 8, 3 * 20 + 5, { shiftKey: true }), 1, true);
+
+    expect(port.calls).toEqual([
+      { kind: "begin", row: 3, col: 5, side: "left", ty: "char" },
+      { kind: "begin", row: 3, col: 10, side: "right", ty: "char" },
+    ]);
+  });
 });
 
 describe("dragScrollSpeed — distance → scroll lines", () => {
@@ -339,6 +357,23 @@ describe("SelectionController — alt-click cursor move", () => {
 
   const altAt = (col: number, row: number, timeStamp: number) =>
     ev(col * 10 + 2, row * 20 + 5, { altKey: true, timeStamp });
+
+  // #902 — a release that no press of this controller began is not a click. A press it refused (no
+  // box, a non-primary button) or one the widget routed to the application leaves the last
+  // gesture's timestamp behind, and reading it would turn an unrelated Alt release into keystrokes.
+  it("does not move the cursor on a release whose press it never began", () => {
+    const port = new StubSelectionPort();
+    const moves: { row: number; col: number }[] = [];
+    const ctrl = altClickController(port, moves);
+
+    ctrl.mouseDown(altAt(5, 3, 1000), 1);
+    ctrl.mouseUp(altAt(5, 3, 1100));
+    ctrl.mouseDown(ev(62, 65, { altKey: true, button: 2, timeStamp: 1150 }), 1);
+    ctrl.mouseUp(altAt(6, 3, 1200));
+
+    expect(moves).toEqual([{ row: 3, col: 5 }]);
+    expect(port.calls.map((c) => c.kind)).toEqual(["begin", "clear"]);
+  });
 
   it("moves the cursor to the cell on a quick alt-click with no drag", () => {
     const port = new StubSelectionPort();
@@ -799,7 +834,7 @@ describe("SelectionController — a gesture that outlives its element's box requ
     expect(scrolls, "the window this test lives in must exist").toEqual([9]);
 
     geom = undefined; // the pane is hidden while the drag is ALREADY scrolling
-    ctrl.tick(); // ... and the consumer's timer keeps firing, with no further pointer motion
+    ctrl.tick(); // ... and the tick timer keeps firing, with no further pointer motion
     ctrl.tick();
 
     expect(scrolls, "a hidden pane must not go on scrolling").toEqual([9]);

@@ -8,6 +8,8 @@ import {
   type InputSink,
   type NamedKey,
 } from "./input";
+import { PointerRouter, type LocalPointer } from "./pointer";
+import { SCROLLBAR_ATTRIBUTE } from "./scrollbar";
 import { WheelScroller, type ScrollOptions } from "./scroll-control";
 import { CompositionController } from "./composition";
 import { ClipboardController, type ClipboardOptions } from "./clipboard";
@@ -229,7 +231,8 @@ export function rendererNotifyingSink(sink: InputSink, renderer: Renderer): Inpu
  * Wiring the {@link Terminal} needs to be a complete widget, not just a frame
  * pump. Omit it and the widget is the pure source→renderer pump (headless-
  * testable, no DOM); supply it and `mount` also captures input, restarts the
- * cursor blink on typing, tracks focus, and routes the wheel (S16 #133).
+ * cursor blink on typing, tracks focus, and routes the wheel (S16 #133) and
+ * pointer presses (#902).
  */
 export interface TerminalOptions {
   /** The element input listeners attach to (the canvas or a wrapper). Provide it WITH `input` +
@@ -241,18 +244,21 @@ export interface TerminalOptions {
    * textarea the widget mounts inside it, and a pointer-down here focuses *that* through
    * {@link Terminal.focus}. A canvas being unfocusable is therefore not a problem to solve.
    *
-   * **If you do make it (or a child) focusable, cancel the pointer-down's default action.** The
+   * **If you do make it (or a child) focusable, its pointer-down's default must be cancelled.** The
    * browser's focusing steps run after our `mousedown` handler, so an un-cancelled default moves
-   * focus to your element and blurs the textarea — typing and IME both stop. `preventDefault()` on
-   * `mousedown` is the fix, and it is what the demo and xterm.js both do
+   * focus to your element and blurs the textarea — typing and IME both stop. The widget cancels a
+   * press it reports to the application or hands to {@link selection} (#902). Any other press keeps
+   * its default and cancelling it is yours: with no `selection` and an application that tracks
+   * nothing, a report it could not make (no measured box, the back/forward buttons), or a press on a
+   * `Scrollbar` mounted inside the element. xterm.js does the same pairing
    * (`browser/services/MouseService.ts:224-226` — `preventDefault()` then focus). */
   element?: HTMLElement;
-  /** Where normalised input intents go — keys/paste/focus, a wheel notch when the
-   * app tracks the wheel, and cursor keys from a wheel on the alt screen. The
+  /** Where normalised input intents go — keys/paste/focus, pointer and wheel reports
+   * when the app tracks them, and cursor keys from a wheel on the alt screen. The
    * backend feeds them to core's encoders. Required with `element`. */
   input?: InputSink;
   /** Canvas origin + cell size, read per event (it changes on resize) — maps a
-   * wheel notch to cell coords for the app-reporting path. Required with `element`.
+   * pointer event or wheel notch to cell coords. Required with `element`.
    *
    * Answer `undefined` when the box cannot be measured (`display: none`, detached, not yet laid
    * out): an absent box measures as all zeros and `0` is in range for everything derived from it,
@@ -277,6 +283,20 @@ export interface TerminalOptions {
    * everything still lets composed text through; drop intents at {@link input} for that.
    */
   beforeKey?(ev: KeyboardEvent): boolean;
+  /**
+   * What a pointer press does when it stays local — normally the consumer's
+   * {@link import("./selection").SelectionController}, which already has this shape (#902).
+   *
+   * The widget owns the pointer: it listens on {@link element}, decides per press whether the
+   * application gets it (the frame's `mouseWantedEvents` mask, Shift forcing it local), follows the
+   * gesture on `window` to its release, and drives `tick()` while a local drag is held. So hand the
+   * controller over here and **bind no pointer listeners of your own for it**, or every press is
+   * handled twice. A press the widget acts on has its default cancelled, which is what keeps focus on
+   * the input textarea (see {@link element}).
+   *
+   * Omit it and a press the application does not take does nothing locally.
+   */
+  selection?: LocalPointer;
   /** A local scroll request: scroll the viewport to this display offset (lines up
    * from the bottom). Wheel (normal buffer, no app tracking) funnels here; the
    * consumer's scrollbar drag funnels to the SAME callback for one coherent
@@ -310,8 +330,9 @@ export interface TerminalOptions {
  * justerm-renderer / a fake), which is what makes it testable without a backend or a canvas.
  *
  * The DOM attachment in {@link mount} is browser-only glue (not unit-tested, like
- * {@link captureInput}); the decisions it makes — wheel routing ({@link routeWheel})
- * and renderer notification ({@link rendererNotifyingSink}) — are pure and covered.
+ * {@link captureInput}); the decisions it makes — wheel routing ({@link routeWheel}),
+ * pointer routing ({@link PointerRouter}) and renderer notification
+ * ({@link rendererNotifyingSink}) — are pure and covered.
  */
 export class Terminal {
   private unsubscribe: Unsubscribe | undefined;
@@ -443,8 +464,8 @@ export class Terminal {
    * cursor is the real keyboard/IME/clipboard target (a canvas can't receive
    * composition events, #116); keys/paste/focus flow through it via {@link
    * captureInput}, gated by the {@link CompositionController} so an IME owns its
-   * keys, then by the consumer's {@link TerminalOptions.beforeKey}. The element (a container over the canvas) keeps the wheel + a pointer-down
-   * that focuses the textarea. */
+   * keys, then by the consumer's {@link TerminalOptions.beforeKey}. The element (a container over
+   * the canvas) keeps the wheel and the pointer. */
   private attach(o: TerminalOptions): void {
     // The DOM group is all-or-nothing: element requires input + getGeometry.
     const element = o.element;
@@ -463,7 +484,6 @@ export class Terminal {
     this.detach.push(
       captureInput(ta, sink, {
         getGeometry,
-        mouseReporting: () => false,
         beforeKey: (e) => {
           const proceed = composition.keydown(e.keyCode);
           // Clear once idle whether the key was swallowed (229 diff) or finalized a
@@ -515,14 +535,52 @@ export class Terminal {
       ta.removeEventListener("compositionend", onEnd);
     });
 
-    // Pointer-down focuses the textarea (it's pointer-events:none so the canvas
-    // still gets the click for selection) and resets the blink phase.
-    const onDown = (): void => {
+    // Pointer-down focuses the textarea (it's pointer-events:none, so the press lands on the
+    // element) and resets the blink phase, then goes to the application or stays local (#902).
+    let tickTimer: ReturnType<typeof setInterval> | undefined;
+    const setTicking = (on: boolean): void => {
+      clearInterval(tickTimer);
+      tickTimer = on ? setInterval(() => o.selection?.tick(), SELECTION_TICK_MS) : undefined;
+    };
+    const router = new PointerRouter({
+      mask: () => this.mask,
+      getGeometry,
+      send: (event) => sink.send({ kind: "mouse", event }),
+      local: o.selection,
+      setTicking,
+    });
+    const onMove = (e: MouseEvent): void => {
+      router.move(e);
+      if (!router.active) unfollow();
+    };
+    const onUp = (e: MouseEvent): void => {
+      router.up(e);
+      if (!router.active) unfollow();
+    };
+    const unfollow = (): void => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    const onDown = (e: MouseEvent): void => {
       this.focus(); // not `ta.focus()` — routes through the anchor re-sync (#631)
       this.renderer.restartCursorBlink?.();
+      if (onScrollbar(e) || !router.down(e)) return;
+      e.preventDefault();
+      if (!router.active) return;
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    };
+    const onHover = (e: MouseEvent): void => {
+      if (!onScrollbar(e)) router.hover(e);
     };
     element.addEventListener("mousedown", onDown);
-    this.detach.push(() => element.removeEventListener("mousedown", onDown));
+    element.addEventListener("mousemove", onHover);
+    this.detach.push(() => {
+      element.removeEventListener("mousedown", onDown);
+      element.removeEventListener("mousemove", onHover);
+      unfollow();
+      setTicking(false);
+    });
 
     this.scroller = new WheelScroller(o.scroll);
     const onWheel = (e: WheelEvent): void => this.onWheel(e, o);
@@ -733,6 +791,14 @@ export class Terminal {
     this.renderer.dispose?.();
   }
 }
+
+/** Whether a pointer event landed on a scrollbar inside the element rather than on the grid. */
+function onScrollbar(e: MouseEvent): boolean {
+  return e.target instanceof Element && e.target.closest(`[${SCROLLBAR_ATTRIBUTE}]`) !== null;
+}
+
+/** How often a held local drag is asked to auto-scroll past an edge, in ms. */
+const SELECTION_TICK_MS = 50;
 
 /** The hidden `<textarea>` input proxy (#116). Positioned over the cursor so the
  * IME candidate window appears there, but visually invisible and click-through

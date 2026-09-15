@@ -1,5 +1,9 @@
 import type { RulerMark } from "./decorations";
 
+/** The attribute a scrollbar's track carries, so a {@link import("./terminal").Terminal} whose element
+ * contains it does not route a press or motion on it as one on the grid (#902). */
+export const SCROLLBAR_ATTRIBUTE = "data-justerm-scrollbar";
+
 /** The viewport scroll position the scrollbar reads (from the decoded frame). */
 export interface ScrollPosition {
   /** Lines scrolled up from the bottom (0 = following the live screen). */
@@ -160,6 +164,7 @@ export class Scrollbar {
   ) {
     const width = opts.width ?? 14;
     this.track = document.createElement("div");
+    this.track.setAttribute(SCROLLBAR_ATTRIBUTE, ""); // not the grid, to a Terminal around it (#902)
     Object.assign(this.track.style, {
       position: "absolute",
       top: "0",
