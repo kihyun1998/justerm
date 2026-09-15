@@ -3283,3 +3283,30 @@ CPL as each tree's own CUD / CUU plus a return to column one: 4/4 — alacritty'
 clamp. CHT spending the count as repeated walks: 4/4. CHT from a parked cursor keeps the park: 4/4 —
 where `HT` splits 3-1 (#848), alacritty's CHT breaks at the last column instead of consuming the wrap
 as its `put_tab` does.
+
+## A consumer's veto over a key — where it sits against the IME, and who owns the default it leaves (#901, verified 2026-09-15)
+
+The hook `TerminalOptions.beforeKey` models: xterm.js's `attachCustomKeyEventHandler`. Only xterm.js
+has the architecture — alacritty and ghostty take keys from a windowing system, not a DOM event, so
+there is no default action and no hidden textarea to compare.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The contract text: the handler *"returns whether the event should be processed by xterm.js"*, and the consumer is told it may *"stop propagation and/or prevent the default action"* — i.e. cancelling is the consumer's | xterm.js | `typings/xterm.d.ts:1176-1202` @ `699f553` |
+| The handler is asked **first** in `_keyDown`, before `_compositionHelper.keydown` — so a consumer can claim a composition key | xterm.js | `src/browser/CoreBrowserTerminal.ts:849` then `:856` @ `699f553` |
+| A claim returns **before** the widget's own `preventDefault` / `stopPropagation`, which sit at the end of the handled path | xterm.js | `src/browser/CoreBrowserTerminal.ts:849-851` vs `:928-929` @ `699f553` |
+| `paste` is a separate listener on both the textarea and the element, so an un-cancelled paste chord reaches it after a claim | xterm.js | `src/browser/CoreBrowserTerminal.ts:379-380` @ `699f553` |
+| The handler is asked on `keyup` and `keypress` too, not only `keydown` | xterm.js | `src/browser/CoreBrowserTerminal.ts:953`, `:987`; listeners `:414-416` @ `699f553` |
+| **PenTerm, living on that order, re-implements the IME gate inside its handler** (`isComposing || keyCode === 229`) and calls `preventDefault` itself, noting xterm returns ahead of its own cancel | PenTerm (consumer) | `src/blocks/terminal/lib/buildTerminalKeyHandler.ts` |
+
+**Measured, not read** (Chromium headless shell 1228, Playwright trusted key input, a bare
+`<textarea>`): `Control+V` and `Control+Shift+V` each fire `paste` when the `keydown` is not cancelled,
+and neither fires it when the `keydown` is. WebKit — which is what a Tauri consumer runs on macOS — is
+**unmeasured**.
+
+**Where justerm diverges, and the measurement that decided it.** justerm asks the consumer *after*
+the IME gate. The reference's order would make every consumer repeat PenTerm's 229 guard — and that
+guard is not equivalent to the widget's gate: with a consumer asked first but skipping 229, a claimed
+`Enter` during a composition never reaches `CompositionController.keydown`, so the composition is not
+finalized and the committed text is not sent (the #901 e2e reddens on exactly that assertion under
+that mutation). The default-action half follows the reference unchanged.
