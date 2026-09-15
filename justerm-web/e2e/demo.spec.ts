@@ -3243,7 +3243,10 @@ test.describe("pointer routing (#902)", () => {
     await expect.poll(() => scrolls.length, { timeout: 3_000 }).toBeGreaterThan(1);
     await page.mouse.up();
     const atRelease = scrolls.length;
+    const ticksAtRelease = await page.evaluate(() => window.__tickCount!());
+    expect(ticksAtRelease, "control: the widget did tick during the drag").toBeGreaterThan(1);
     await page.waitForTimeout(300);
-    expect(scrolls.length, "no tick after the release").toBe(atRelease);
+    expect(scrolls.length, "no scroll after the release").toBe(atRelease);
+    expect(await page.evaluate(() => window.__tickCount!()), "the timer stopped with the release").toBe(ticksAtRelease);
   });
 });

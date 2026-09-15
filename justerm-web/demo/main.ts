@@ -1203,6 +1203,16 @@ const controller = new SelectionController(port, getGeometry, {
   },
 });
 
+// #902: count the widget's ticks. The controller ignores a tick with no drag, so a timer the widget
+// failed to stop after the release would scroll nothing and be invisible — only the call count shows it.
+let tickCount = 0;
+const tickController = controller.tick.bind(controller);
+controller.tick = () => {
+  tickCount++;
+  tickController();
+};
+window.__tickCount = () => tickCount;
+
 term = new Terminal(source, renderer, {
   element: termContainer,
   input: inputSink,
@@ -1663,6 +1673,7 @@ declare global {
   interface Window {
     __searchProbe?: () => SearchProbe;
     __thumbPressProbe?: () => ThumbPressProbe;
+    __tickCount?: () => number;
     __contextLossProbe?: () => Promise<ContextLossProbe>;
     __rulerLayerProbe?: () => Promise<RulerLayerProbe>;
     __searchRulerProbe?: () => Promise<SearchRulerProbe>;
