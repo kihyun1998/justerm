@@ -72,6 +72,18 @@ Nothing governs the encoding itself.
   focused. Since #902 the widget cancels every press it acts on (reported, or handed to
   `TerminalOptions.selection`); a press it does not act on is still the consumer's to cancel.
   xterm.js has the same pairing (`preventDefault()` then focus).
+- **The textarea's identity is `INPUT_ATTRIBUTE` (`data-justerm-input`), published as a contract**
+  (#903). A host asking *"is the keyboard in a text field?"* reads any focused `<textarea>` as a form
+  field, so a terminal pane looked like typing: global shortcuts stood down and focus claims would not
+  move off it. Neither thing the element already had is an identity — `aria-label` is accessible text
+  and may be localised, and its position under `element` is not promised (PenTerm matched a direct
+  child meanwhile). A data attribute rather than xterm.js's `xterm-helper-textarea` class, because a
+  consumer's CSS cannot collide with it and the widget already marks its scrollbar that way
+  (`data-justerm-scrollbar`, #902). **No accessor on `Terminal`**, unlike xterm.js's `readonly
+  textarea`: the attribute answers both questions a host has — *is this element a terminal's input*
+  (`hasAttribute`) and *where is this widget's* (`element.querySelector`) — and an accessor adds a
+  second contract about when it is `undefined` (before mount, output-only, after dispose). **That was
+  the maintainer's call**, made with the accessor and its lifecycle cost shown side by side.
 - **A composition freezes the anchor for every writer, forced or not** (#637 for the frame stream,
   #649 for the point-of-use re-sync). The predicate is "a candidate window is open" — `isComposing`,
   not the broader `active`, which outlives it by one deferred read and so would swallow the
@@ -143,6 +155,8 @@ Nothing governs the encoding itself.
   contract
 - `justerm-web/src/pointer.ts` — `PointerRouter` (press/drag/release/bare-motion routing) and
   `pressGoesToApp`; `Terminal.attach` binds its listeners and owns the selection tick timer
+- `justerm-web/src/terminal.ts` — `makeHiddenTextarea` (the input target, marked with
+  `INPUT_ATTRIBUTE`) and `Terminal.attach`, which mounts it inside `element`
 - `justerm-web/src/composition.ts` — IME composition, including the backspace-during-composition case
   reported as one delete
 
