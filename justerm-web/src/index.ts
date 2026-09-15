@@ -40,7 +40,14 @@ export type {
 // routes the wheel (app / alt-cursor-keys / scrollback, #129 mask) and pointer presses (#902), restarts the
 // cursor blink on typing, and tracks focus (S16 #133). The routing/notify decisions
 // are pure + exported for reuse.
-export { rendererNotifyingSink, routeWheel, Terminal, wheelGoesToApp, wheelScrollTarget } from "./terminal";
+export {
+  INPUT_ATTRIBUTE,
+  rendererNotifyingSink,
+  routeWheel,
+  Terminal,
+  wheelGoesToApp,
+  wheelScrollTarget,
+} from "./terminal";
 export type { TerminalOptions, WheelAction } from "./terminal";
 // `LocalPointer` is the shape `TerminalOptions.selection` takes (#902) — a SelectionController has it.
 export type { LocalPointer } from "./pointer";

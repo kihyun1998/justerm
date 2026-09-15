@@ -454,3 +454,12 @@ describe("preeditIntent — what a compositionupdate does to the drawn run (#249
     expect(Array.from(preeditIntent("", "한", origin)!.codepoints)).toEqual([]);
   });
 });
+
+describe("INPUT_ATTRIBUTE (#903)", () => {
+  it("is published from the package entry with its documented value", async () => {
+    // Through the entry point, so dropping the export reddens too; the literal is what a consumer
+    // hard-codes, and `e2e/demo.spec.ts` asserts the same literal on the mounted textarea.
+    const { INPUT_ATTRIBUTE } = await import("../src/index");
+    expect(INPUT_ATTRIBUTE).toBe("data-justerm-input");
+  });
+});
