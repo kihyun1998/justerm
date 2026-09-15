@@ -16,7 +16,8 @@ export interface WheelContext {
 }
 
 export interface ScrollOptions {
-  /** Lines per wheel notch multiplier (xterm `scrollSensitivity`, default 1). */
+  /** Lines per wheel notch multiplier (xterm `scrollSensitivity`, default 1). May be fractional: the
+   * scroller still emits whole lines, carrying the remainder into the next notch. */
   scrollSensitivity?: number;
   /** Extra multiplier when a modifier is held (xterm default 5). */
   fastScrollSensitivity?: number;
@@ -24,8 +25,8 @@ export interface ScrollOptions {
 
 /**
  * Turns wheel events into a scrollback line delta, mirroring xterm v6's
- * `CoreMouseService.consumeWheelEvent`. Stateful: trackpad pixel scrolls
- * accumulate sub-line remainders across calls.
+ * `CoreMouseService.consumeWheelEvent`. Stateful: every mode accumulates sub-line
+ * remainders across calls and emits whole lines only.
  */
 /** `WheelEvent.deltaMode` values. */
 const DOM_DELTA_PIXEL = 0;
@@ -34,7 +35,7 @@ const DOM_DELTA_PAGE = 2;
 export class WheelScroller {
   private readonly scrollSensitivity: number;
   private readonly fastScrollSensitivity: number;
-  /** Sub-line remainder carried between pixel (trackpad) wheel events. */
+  /** Sub-line remainder carried between wheel events, whatever their `deltaMode`. */
   private wheelPartialScroll = 0;
 
   constructor(opts: ScrollOptions = {}) {
@@ -42,7 +43,7 @@ export class WheelScroller {
     this.fastScrollSensitivity = opts.fastScrollSensitivity ?? 5;
   }
 
-  /** Lines to scroll (sign = direction, positive = down/newer); `0` = none. */
+  /** Whole lines to scroll (sign = direction, positive = down/newer); `0` = none. */
   consumeWheelEvent(ev: WheelLike, ctx: WheelContext): number {
     // Horizontal (shift) and zero scrolls do nothing — xterm bails first.
     if (ev.deltaY === 0 || ev.shiftKey) {
@@ -55,31 +56,31 @@ export class WheelScroller {
 
     if (ev.deltaMode === DOM_DELTA_PIXEL) {
       amount /= ctx.cellHeight / ctx.dpr;
-      // An unmeasured cell (`cellHeight` 0) or a non-finite `deltaY` makes this
-      // non-finite, and the accumulator below would *keep* it: `Infinity % 1` is
-      // `NaN`, so every later notch is `NaN` too — including after the geometry
-      // recovers, since nothing but `reset()` clears it. Measured in a real
-      // browser, that killed the wheel outright rather than mis-scrolling it
-      // (#675). Bail before the accumulator, so the instance stays usable.
-      if (!Number.isFinite(amount)) return 0;
       // A small delta is a trackpad swipe — damp it so it doesn't fly.
       if (Math.abs(ev.deltaY) < 50) {
         amount *= 0.3;
       }
-      this.wheelPartialScroll += amount;
-      // Emit only whole lines; keep the fractional part for the next event.
-      amount = Math.floor(Math.abs(this.wheelPartialScroll)) * (this.wheelPartialScroll > 0 ? 1 : -1);
-      this.wheelPartialScroll %= 1;
     } else if (ev.deltaMode === DOM_DELTA_PAGE) {
       amount *= ctx.rows;
     }
-    // The second guard, for the branches that never reach the accumulator: LINE
-    // and PAGE can still emit a non-finite count (a non-finite `deltaY`, or a
-    // `rows` that is not a number), and this method's contract is a line count.
-    // Deliberately NOT hoisted into one check on `ctx` at entry: LINE mode never
-    // divides by the cell, so refusing the whole context because `cellHeight` is
-    // 0 would break a scroll that works today (pinned in the tests).
-    return Number.isFinite(amount) ? amount : 0;
+    // An unmeasured cell (`cellHeight` 0), a non-finite `deltaY` or a `rows` that is
+    // not a number makes this non-finite, and the accumulator below would *keep* it:
+    // `Infinity % 1` is `NaN`, so every later notch is `NaN` too — including after the
+    // geometry recovers, since nothing but `reset()` clears it. Measured in a real
+    // browser, that killed the wheel outright rather than mis-scrolling it (#675).
+    // Bail before the accumulator, so the instance stays usable. Deliberately NOT
+    // hoisted into one check on `ctx` at entry: LINE mode never divides by the cell,
+    // so refusing the whole context because `cellHeight` is 0 would break a scroll
+    // that works today (pinned in the tests).
+    if (!Number.isFinite(amount)) return 0;
+    // Every mode emits only whole lines and carries the fraction to the next event,
+    // because the count becomes a display offset for the consumer's scroll (#908).
+    // Toward zero, so a scroll the other way first cancels what is pending; `+ 0`
+    // turns a `-0` into `0`.
+    this.wheelPartialScroll += amount;
+    const lines = Math.trunc(this.wheelPartialScroll) + 0;
+    this.wheelPartialScroll -= lines;
+    return lines;
   }
 
   /** Drop the carried remainder — call on a buffer switch (alt-screen). */

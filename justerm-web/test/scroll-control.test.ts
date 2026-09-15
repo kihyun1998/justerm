@@ -103,6 +103,41 @@ describe("WheelScroller.consumeWheelEvent", () => {
     expect(lines).toBe(24); // 1 × rows
   });
 
+  // The count is a scrollback line delta that ends up in `onScroll`, and a consumer's scroll API
+  // takes a whole line (#908). LINE and PAGE carry a fractional product forward, as PIXEL does.
+  it("emits whole lines in line mode and carries a fractional sensitivity forward", () => {
+    const s = new WheelScroller({ scrollSensitivity: 0.5 });
+    const down = wheel({ deltaY: 3, deltaMode: LINE });
+
+    expect(s.consumeWheelEvent(down, ctx)).toBe(1); // 1.5 → 1, carries .5
+    expect(s.consumeWheelEvent(down, ctx)).toBe(2); // .5 + 1.5 → 2
+
+    const up = wheel({ deltaY: -3, deltaMode: LINE });
+    expect(s.consumeWheelEvent(up, ctx)).toBe(-1); // -1.5 → -1, carries -.5
+    expect(s.consumeWheelEvent(up, ctx)).toBe(-2);
+  });
+
+  it("emits whole lines in page mode", () => {
+    const s = new WheelScroller({ scrollSensitivity: 0.5 });
+    const page = wheel({ deltaY: 1, deltaMode: PAGE });
+
+    expect(s.consumeWheelEvent(page, { ...ctx, rows: 25 })).toBe(12); // 12.5 → 12
+    expect(s.consumeWheelEvent(page, { ...ctx, rows: 25 })).toBe(13); // .5 + 12.5
+  });
+
+  it("drops a sub-line notch until the carried remainder reaches a whole line", () => {
+    const s = new WheelScroller({ scrollSensitivity: 0.4 });
+    const notch = wheel({ deltaY: 1, deltaMode: LINE });
+
+    expect(s.consumeWheelEvent(notch, ctx)).toBe(0); // .4
+    expect(s.consumeWheelEvent(notch, ctx)).toBe(0); // .8
+    expect(s.consumeWheelEvent(notch, ctx)).toBe(1); // 1.2
+
+    // Upward, a sub-line notch is still `0` — not `-0`, which `Object.is` tells apart.
+    const up = new WheelScroller({ scrollSensitivity: 0.4 });
+    expect(up.consumeWheelEvent(wheel({ deltaY: -1, deltaMode: LINE }), ctx)).toBe(0);
+  });
+
   // reset() drops the carried remainder (xterm calls it on buffer activate, so
   // an alt-screen switch starts scroll accumulation clean). Without the reset the
   // third swipe would tip over to 1 (.90 + .45); after it, accumulation restarts.
@@ -161,9 +196,17 @@ describe("WheelScroller — a degenerate context cannot poison the scroller (#67
     expect(s.consumeWheelEvent(wheel({ deltaY: 100, deltaMode: PIXEL }), ctx)).toBe(5);
   });
 
-  // The PAGE branch never touches the accumulator, so it needs the *other* guard:
-  // it emits a non-finite count directly. Without a return-side check this case
-  // stays broken while the pixel one is fixed.
+  it("refuses a non-finite line-mode deltaY without poisoning the carried remainder", () => {
+    const s = new WheelScroller({ scrollSensitivity: 0.5 });
+
+    expect(s.consumeWheelEvent(wheel({ deltaY: NaN, deltaMode: LINE }), ctx)).toBe(0);
+    expect(s.consumeWheelEvent(wheel({ deltaY: -Infinity, deltaMode: LINE }), ctx)).toBe(0);
+    expect(s.consumeWheelEvent(wheel({ deltaY: 3, deltaMode: LINE }), ctx)).toBe(1);
+  });
+
+  // PAGE reaches the accumulator through `rows`, not the cell, so a cell-only guard
+  // would leave this case broken while the pixel one is fixed — and the second call
+  // is what shows the remainder was not poisoned by the first.
   it("refuses a page scroll against a non-finite row count", () => {
     const s = new WheelScroller();
 
@@ -173,7 +216,7 @@ describe("WheelScroller — a degenerate context cannot poison the scroller (#67
 
   // Discriminating control: LINE mode does not read the cell at all, so an
   // unmeasured cell must NOT stop it. An entry-level context guard would fail
-  // here — which is why the guards sit on the output instead.
+  // here — which is why the guard checks the computed amount instead.
   it("still scrolls in line mode when the cell is unmeasured, because it never divides by it", () => {
     const s = new WheelScroller();
 
