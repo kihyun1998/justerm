@@ -188,7 +188,17 @@ fix mentions a shared rule.
   mode now goes through the one accumulator (alacritty and ghostty share one across modes too),
   emitting whole lines toward zero. It accumulates in **lines**, not pixels as those references do,
   because LINE mode must keep working with an unmeasured cell (#675's control), so a line or page
-  remainder does not depend on the cell.
+  remainder does not depend on the cell. A change of `deltaMode` drops the remainder, so a trackpad's
+  leftover cannot shorten or cancel a mouse wheel's notch — the DOM's nearest signal to alacritty
+  clearing its accumulator when a touch gesture starts.
+  **Carrying made a new sub-line case, and which of them the page gets is a maintainer's call, not a
+  derivation.** `Terminal.onWheel` leaves a `none` wheel to native scroll, a policy from #133's wiring
+  with no recorded reason; before #908 only a trackpad's PIXEL delta could land there. Shown three
+  options on 2026-09-15 — (a) consume every notch that fed the accumulator, which also stops a sub-line
+  trackpad swipe chaining to the page; (b) consume only a LINE/PAGE notch carried below a whole line;
+  (c) leave it, so a sensitivity below 1 scrolls the page on alternate mouse notches — the maintainer
+  chose **(b)**. The PIXEL half of the #133 policy is therefore untouched by decision, not by omission,
+  and theirs to revisit. xterm.js's app and alt-screen paths consume a zero-line notch.
   One thing stays deliberately open, recorded where it belongs rather than here: the *staleness* of
   the wheel scroller's retained fraction across a cell change — #630's third instance, a different
   axis of the same field. (Since #908 the field can hold a line-mode remainder too, which is not
