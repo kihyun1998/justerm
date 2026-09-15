@@ -138,6 +138,21 @@ describe("WheelScroller.consumeWheelEvent", () => {
     expect(up.consumeWheelEvent(wheel({ deltaY: -1, deltaMode: LINE }), ctx)).toBe(0);
   });
 
+  // A trackpad (PIXEL) and a mouse wheel (LINE) share the accumulator, so a remainder one device
+  // left behind must not shorten or cancel the other's notch — a change of `deltaMode` starts clean.
+  it("drops the remainder when the deltaMode changes", () => {
+    const s = new WheelScroller();
+
+    expect(s.consumeWheelEvent(wheel({ deltaY: 90, deltaMode: PIXEL }), ctx)).toBe(4); // carries .5
+    expect(s.consumeWheelEvent(wheel({ deltaY: -1, deltaMode: LINE }), ctx)).toBe(-1); // not -0.5 → 0
+    expect(s.consumeWheelEvent(wheel({ deltaY: -3, deltaMode: LINE }), ctx)).toBe(-3);
+
+    const half = new WheelScroller({ scrollSensitivity: 0.5 });
+    const rows25 = { ...ctx, rows: 25 };
+    expect(half.consumeWheelEvent(wheel({ deltaY: 1, deltaMode: LINE }), rows25)).toBe(0); // carries .5
+    expect(half.consumeWheelEvent(wheel({ deltaY: 1, deltaMode: PAGE }), rows25)).toBe(12); // 12.5, not .5 + 12.5
+  });
+
   // reset() drops the carried remainder (xterm calls it on buffer activate, so
   // an alt-screen switch starts scroll accumulation clean). Without the reset the
   // third swipe would tip over to 1 (.90 + .45); after it, accumulation restarts.

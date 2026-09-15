@@ -1166,12 +1166,13 @@ mistake the rows above now prevent:
 
 The odd one out among the rows above: **here the references do not arbitrate, because they share the
 divergence.** justerm's `WheelScroller` mirrors xterm's wheel handling by design (its module doc says
-so), and it inherited the shape rather than drifting from it — so theflow's Step 5 direction rule puts
+so — for the accumulator's guard; since #908 it also accumulates LINE and PAGE, where xterm.js does not),
+and it inherited the shape rather than drifting from it — so theflow's Step 5 direction rule puts
 this on *our own grounds*, not on parity.
 
 | Fact | Reference | Site |
 |---|---|---|
-| The **byte-identical accumulator, with no non-finite guard** — `this._wheelPartialScroll += amount` then `%= 1`, where `Infinity % 1` is `NaN` and nothing clears it but `reset()` | xterm.js | `src/browser/services/MouseService.ts:478` |
+| The **accumulator, with no non-finite guard** — byte-identical to justerm's until #908, which moved LINE and PAGE into it too and emits by `trunc`; xterm.js still accumulates PIXEL only — `this._wheelPartialScroll += amount` then `%= 1`, where `Infinity % 1` is `NaN` and nothing clears it but `reset()` | xterm.js | `src/browser/services/MouseService.ts:478` |
 | Its **only** bail is on an *absent* measurement — `if (cellHeight === undefined || dpr === undefined) return 0` — which does not catch a cell of `0`, the state a hidden or unlaid-out terminal is actually in | xterm.js | `src/browser/services/MouseService.ts:463` |
 | alacritty and ghostty have **no equivalent**: neither turns a wheel delta into lines through a consumer-supplied cell, so there is nothing to compare | — | — |
 

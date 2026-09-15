@@ -688,7 +688,7 @@ test.describe("S16 input + wheel + focus wiring (#133)", () => {
         c.dispatchEvent(
           new WheelEvent("wheel", {
             deltaY: -1, // one line up
-            deltaMode: 1, // LINE — deterministic (no trackpad accumulation)
+            deltaMode: 1, // LINE — deterministic: a whole line per notch at the default sensitivity
             altKey: alt,
             bubbles: true,
             cancelable: true,

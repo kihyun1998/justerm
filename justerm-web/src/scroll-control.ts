@@ -24,9 +24,10 @@ export interface ScrollOptions {
 }
 
 /**
- * Turns wheel events into a scrollback line delta, mirroring xterm v6's
- * `CoreMouseService.consumeWheelEvent`. Stateful: every mode accumulates sub-line
- * remainders across calls and emits whole lines only.
+ * Turns wheel events into a scrollback line delta, after xterm.js's
+ * `MouseService._consumeWheelEvent`. Stateful: every mode accumulates sub-line
+ * remainders across calls and emits whole lines only — where xterm.js returns
+ * LINE and PAGE amounts unrounded (#908).
  */
 /** `WheelEvent.deltaMode` values. */
 const DOM_DELTA_PIXEL = 0;
@@ -37,6 +38,8 @@ export class WheelScroller {
   private readonly fastScrollSensitivity: number;
   /** Sub-line remainder carried between wheel events, whatever their `deltaMode`. */
   private wheelPartialScroll = 0;
+  /** The `deltaMode` the remainder was accumulated in. */
+  private lastDeltaMode: number | undefined;
 
   constructor(opts: ScrollOptions = {}) {
     this.scrollSensitivity = opts.scrollSensitivity ?? 1;
@@ -76,7 +79,12 @@ export class WheelScroller {
     // Every mode emits only whole lines and carries the fraction to the next event,
     // because the count becomes a display offset for the consumer's scroll (#908).
     // Toward zero, so a scroll the other way first cancels what is pending; `+ 0`
-    // turns a `-0` into `0`.
+    // turns a `-0` into `0`. A change of `deltaMode` is a change of device (a trackpad and
+    // a mouse wheel) and starts from zero, so neither shortens the other's notch.
+    if (ev.deltaMode !== this.lastDeltaMode) {
+      this.lastDeltaMode = ev.deltaMode;
+      this.wheelPartialScroll = 0;
+    }
     this.wheelPartialScroll += amount;
     const lines = Math.trunc(this.wheelPartialScroll) + 0;
     this.wheelPartialScroll -= lines;
