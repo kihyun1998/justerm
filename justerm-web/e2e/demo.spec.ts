@@ -3214,7 +3214,7 @@ test.describe("pointer routing (#902)", () => {
         "mousedown",
         (e) => {
           const r = el.getBoundingClientRect();
-          (window as unknown as { rawOffset: number[] }).rawOffset = [e.clientX - r.left, e.clientY - r.top];
+          (window as unknown as { rawOffset: [number, number] }).rawOffset = [e.clientX - r.left, e.clientY - r.top];
         },
         { capture: true, once: true },
       );
@@ -3225,7 +3225,7 @@ test.describe("pointer routing (#902)", () => {
     await page.mouse.up();
 
     await expect.poll(() => rec.reports.length).toBe(2);
-    const [x, y] = await page.evaluate(() => (window as unknown as { rawOffset: number[] }).rawOffset);
+    const [x, y] = await page.evaluate(() => (window as unknown as { rawOffset: [number, number] }).rawOffset);
     expect(Number.isInteger(x) && Number.isInteger(y), `the browser's offset is fractional: ${x},${y}`).toBe(false);
     const m = rec.reports[0]!.match(/^\[input\] mouse press left @\d+,\d+ px=([^,]+),(\S+)$/);
     expect(m, rec.reports[0]).not.toBeNull();
