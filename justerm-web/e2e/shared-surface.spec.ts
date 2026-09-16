@@ -706,7 +706,6 @@ test("a hidden terminal's blink loop presents nothing, and a shown one still doe
   ).toBeGreaterThan(0);
 });
 
-
 // ── #912: a pane nobody clicked ───────────────────────────────────────────────────────────────
 //
 // Focus reached the renderer only as a *change*, and both holders of the flag defaulted to focused

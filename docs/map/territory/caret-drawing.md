@@ -29,6 +29,18 @@ about *how the caret looks* is decided here.
 - **Shapes are rectangles, and a wide lead changes them.** A block caret over a width-2 glyph covers
   the pair, which is why the geometry module reaches for `is_wide_lead` — the caret is one of the few
   renderer concerns that has to know about pair structure.
+- **The caret's redraw is also the overlay's present, and that is a trap rather than a design**
+  (#912). `redrawCursor` is `pushCursor` + `backend.render()`, so it is the only thing on the
+  no-new-frame paths that actually draws; `issueOverlay` merely retains spans and re-packs. Every
+  policy setter here may therefore skip its redraw when there is no caret — **except `setFocused`,
+  which also moves the selection tint**. Guarding it the way its neighbours are guarded adopts the
+  new tint and never paints it, and with the caret hidden (`DECTCEM` off, where a full-screen TUI
+  sits) there is no next present to ride on: `updateCursor`'s clear branch returns before
+  `startBlinkLoop`. Written down because the guard *looks* right from inside this territory — three
+  sibling setters carry it — and the thing that makes it wrong belongs to
+  [selection](selection.md). It was shipped into a branch and caught by an adversarial pass, not by
+  a test: the tint had no coverage anywhere in the package until #912 added
+  `__unfocusedTintProbe`.
 - **Contrast is a separate knob** (`setCursorContrast`). A caret that inverts under a theme can
   become invisible, so its legibility is adjusted independently of the text contrast policy. It
   compares the **caret's own colour against the cell background**, which alacritty does not — it
