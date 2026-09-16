@@ -37,6 +37,29 @@ fn char_select_multi_line_trims_and_joins_with_newline() {
     assert_eq!(term.selection_text().as_deref(), Some("ab\ncd"));
 }
 
+/// A run over two lines whose end column sits LEFT of its start column is not a zero-width run —
+/// columns only compare within one line — so it keeps the wide-pair widening (#454). #914 lets a
+/// zero-width run skip that widening, and its test has to be `same line && from >= to`: without the
+/// line half, this selection's ends are left un-widened and the copy starts inside a glyph.
+///
+/// The ends sit on pairs on purpose. A multi-line run over narrow cells extracts the same text
+/// widened or not, so it cannot tell the two predicates apart — measured: such a test stayed green
+/// with the line half deleted.
+#[test]
+fn char_select_multi_line_with_end_column_left_of_start_keeps_the_pair_widening() {
+    let mut term = Engine::new(80, 24);
+    // Row 0: a=0 漢=1,2 b=3.   Row 1: 漢=0,1 c=2 d=3.
+    term.feed("a漢b\r\n漢cd".as_bytes());
+
+    // Start on row 0's spacer (from = 2), end on row 1's lead, right half (to = 1): from >= to.
+    term.selection_begin(0, 2, Side::Left, SelectionType::Char);
+    term.selection_extend(1, 0, Side::Right);
+
+    // Worked by hand from #454's rule, not read back from the code: an end on a spacer takes the
+    // whole glyph, so row 0 starts at the lead ("漢b"); an end on a lead takes its spacer ("漢").
+    assert_eq!(term.selection_text().as_deref(), Some("漢b\n漢"));
+}
+
 /// A soft wrap (WRAPLINE) joins with no break — and spaces that sit at the wrap
 /// boundary are real content, not trailing blanks, so they survive. "ab  " fills
 /// a width-4 row and wraps into "cd"; the logical line is "ab  cd". Per-row

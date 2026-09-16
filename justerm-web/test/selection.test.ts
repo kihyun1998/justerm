@@ -445,19 +445,26 @@ describe("SelectionController — middle-click paste & primary selection", () =>
   });
 });
 
-describe("SelectionController — primary selection on drag complete", () => {
+describe("SelectionController — primary selection on a settled gesture (#914)", () => {
   const flush = () => new Promise((r) => setTimeout(r, 0));
 
-  // On a completed drag selection the controller offers the text for the X11
-  // primary buffer (xterm `onLinuxMouseSelection`). It reuses the copy path, so
-  // the text is NBSP-normalized and an empty selection is skipped. The consumer
-  // (only on Linux) writes it to the primary buffer.
-  it("offers the selected text for the primary buffer when a drag completes", async () => {
-    const port = new StubSelectionPort();
+  function primaryOf(port: StubSelectionPort): { ctrl: SelectionController; primary: string[] } {
     const primary: string[] = [];
     const ctrl = new SelectionController(port, () => GEOM, {
       onPrimarySelection: (t) => primary.push(t),
     });
+    return { ctrl, primary };
+  }
+
+  // A settled selection offers its text for the X11 primary buffer (xterm
+  // `onLinuxMouseSelection`), whichever gesture settled it. It reuses the copy
+  // path, so the text is NBSP-normalized and an empty selection is skipped —
+  // and that skip is the only guard, which is what lets every gesture through
+  // the same door (#914). The consumer (only on Linux) writes it to primary.
+  // The drag is first here because it is the case that already worked.
+  it("offers the selected text for the primary buffer when a drag completes", async () => {
+    const port = new StubSelectionPort();
+    const { ctrl, primary } = primaryOf(port);
 
     ctrl.mouseDown(leftHalf(2, 1), 1);
     ctrl.mouseMove(rightHalf(6, 1)); // a real drag
@@ -468,21 +475,99 @@ describe("SelectionController — primary selection on drag complete", () => {
     expect(primary).toEqual(["picked text"]);
   });
 
-  // A bare click (no drag) is not a selection — nothing is offered to primary,
-  // so a stray click never clobbers the primary buffer.
-  it("does not offer anything to primary on a bare click", async () => {
+  // The gesture that has no motion at all. A double-click anchors a `word`
+  // selection and a triple-click a `line` one, and both release without the
+  // pointer ever moving — which is the whole case #914 is about.
+  it.each([
+    ["a double-click", 2, "word"],
+    ["a triple-click", 3, "line"],
+  ] as const)("offers the selected text after %s", async (_name, detail, ty) => {
     const port = new StubSelectionPort();
-    const primary: string[] = [];
-    const ctrl = new SelectionController(port, () => GEOM, {
-      onPrimarySelection: (t) => primary.push(t),
-    });
+    const { ctrl, primary } = primaryOf(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), detail);
+    port.textValue = "clicked text";
+    ctrl.mouseUp(leftHalf(2, 1));
+    await flush();
+
+    // The gesture really did select — the guard is about the report, not the selection.
+    expect(port.calls).toContainEqual({ kind: "begin", row: 1, col: 2, side: "left", ty });
+    expect(primary).toEqual(["clicked text"]);
+  });
+
+  // Shift+click extends the live selection without any motion either. xterm's
+  // incremental-click path ends in the same `refresh(true)` as every other press.
+  it("offers the selected text after a shift+click extends an existing selection", async () => {
+    const port = new StubSelectionPort();
+    const { ctrl, primary } = primaryOf(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), 1); // anchor
+    ctrl.mouseMove(rightHalf(4, 1));
+    port.textValue = "first";
+    ctrl.mouseUp(rightHalf(4, 1));
+    await flush();
+
+    ctrl.mouseDown(ev(8 * 10 + 8, 1 * 20 + 5, { shiftKey: true }), 1); // extend, no motion
+    port.textValue = "first and more";
+    ctrl.mouseUp(ev(8 * 10 + 8, 1 * 20 + 5, { shiftKey: true }));
+    await flush();
+
+    expect(primary).toEqual(["first", "first and more"]);
+  });
+
+  // A bare click never clobbers the primary buffer — and this is the assertion
+  // that changed shape in #914. It used to hold because the controller checked
+  // whether the pointer had moved; it now holds because the *engine* reports a
+  // collapsed selection as empty text, which is what all three references gate
+  // on. The stub is set to what a real backend returns here: `selection_text`
+  // resolves a begin-only anchor to a zero-width range.
+  it("offers nothing to primary on a bare click, because the engine reports no text", async () => {
+    const port = new StubSelectionPort();
+    const { ctrl, primary } = primaryOf(port);
 
     ctrl.mouseDown(leftHalf(2, 1), 1);
-    port.textValue = "should not leak";
+    port.textValue = ""; // a collapsed selection, as core reports it
     ctrl.mouseUp(leftHalf(2, 1));
     await flush();
 
     expect(primary).toEqual([]);
+  });
+
+  // The alt-click that moves the cursor trades the selection for a cursor move
+  // and returns before the primary path — it must keep doing so now that the
+  // motion flag no longer guards that path.
+  it("offers nothing to primary when a quick alt-click moves the cursor", async () => {
+    const port = new StubSelectionPort();
+    const primary: string[] = [];
+    const moved: { row: number; col: number }[] = [];
+    const ctrl = new SelectionController(port, () => GEOM, {
+      onPrimarySelection: (t) => primary.push(t),
+      onMoveCursor: (c) => moved.push(c),
+      isAtBottom: () => true,
+    });
+
+    ctrl.mouseDown(ev(2 * 10 + 2, 1 * 20 + 5, { altKey: true, timeStamp: 0 }), 1);
+    port.textValue = "should not leak";
+    ctrl.mouseUp(ev(2 * 10 + 2, 1 * 20 + 5, { altKey: true, timeStamp: 10 }));
+    await flush();
+
+    expect(moved).toEqual([{ row: 1, col: 2 }]);
+    expect(primary).toEqual([]);
+  });
+
+  // The copy path's NBSP normalization applies to a click selection too — it is
+  // the same path, and asserting it only on the drag would leave the claim
+  // resting on the gesture that already worked.
+  it("normalizes NBSP in the text offered after a double-click", async () => {
+    const port = new StubSelectionPort();
+    const { ctrl, primary } = primaryOf(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), 2);
+    port.textValue = `a${String.fromCharCode(0xa0)}b`;
+    ctrl.mouseUp(leftHalf(2, 1));
+    await flush();
+
+    expect(primary).toEqual(["a b"]);
   });
 });
 
@@ -986,5 +1071,205 @@ describe("SelectionController.clear — the typing drop (#913)", () => {
 
     c.clear();
     expect(port.calls).toEqual([]);
+  });
+});
+
+// The second selection-out signal (#914). Every reference keeps it apart from the commit signal
+// above: xterm.js `onSelectionChange` is `IEvent<void>` beside `onLinuxMouseSelection`
+// (`IEvent<string>`), and ghostty notifies `.selection_changed` from `setSelection` while
+// committing through `setSelectionAndCopy`. It carries no text on purpose — `SelectionPort.text()`
+// round-trips to the backend, so a text-carrying signal at this firing rate is a round-trip per
+// pointer move.
+describe("SelectionController — the selection-changed signal (#914)", () => {
+  function changed(port: StubSelectionPort, opts: Record<string, unknown> = {}) {
+    let changes = 0;
+    const ctrl = new SelectionController(port, () => GEOM, {
+      onSelectionChange: () => changes++,
+      ...opts,
+    });
+    return { ctrl, count: () => changes };
+  }
+
+  it.each([
+    ["a drag", 1, true],
+    ["a double-click", 2, false],
+    ["a triple-click", 3, false],
+  ] as const)("reports a change for %s", (_name, detail, withMotion) => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), detail);
+    if (withMotion) ctrl.mouseMove(rightHalf(6, 1));
+    ctrl.mouseUp(withMotion ? rightHalf(6, 1) : leftHalf(2, 1));
+
+    expect(count()).toBeGreaterThan(0);
+  });
+
+  // The clear is the transition the commit signal structurally cannot deliver — it skips empty
+  // selections, which is exactly what a cleared one is.
+  it("reports a change when typing drops the selection", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), 1);
+    ctrl.mouseMove(rightHalf(6, 1));
+    ctrl.mouseUp(rightHalf(6, 1));
+    const before = count();
+    ctrl.clear();
+
+    expect(count()).toBe(before + 1);
+  });
+
+  // `clear()` is guarded on there being a selection, and the signal must not fire where the
+  // controller did nothing — otherwise a consumer sees a change per keystroke for the pane's life.
+  it("reports nothing when clear() no-ops because there is no selection", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port);
+
+    ctrl.clear();
+
+    expect(count()).toBe(0);
+    expect(port.calls).toEqual([]); // control: the controller really did nothing
+  });
+
+  // The alt-click cursor move drops the empty block selection begun at the press.
+  it("reports a change when the alt-click cursor move drops its selection", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port, { onMoveCursor: () => {}, isAtBottom: () => true });
+
+    ctrl.mouseDown(ev(52, 65, { altKey: true, timeStamp: 0 }), 1);
+    const afterPress = count();
+    ctrl.mouseUp(ev(52, 65, { altKey: true, timeStamp: 10 }));
+
+    expect(port.calls).toContainEqual({ kind: "clear" }); // control: it really cleared
+    expect(count()).toBe(afterPress + 1);
+  });
+
+  // The signal carries no text, and must not go and fetch any: at this firing rate a query per
+  // change is a backend round-trip per pointer move.
+  it("never queries the engine for text", () => {
+    const port = new StubSelectionPort();
+    let textCalls = 0;
+    const realText = port.text.bind(port);
+    port.text = () => {
+      textCalls++;
+      return realText();
+    };
+    const { ctrl } = changed(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), 2);
+    ctrl.mouseMove(rightHalf(6, 1));
+    ctrl.mouseUp(rightHalf(6, 1));
+    ctrl.clear();
+
+    expect(textCalls).toBe(0);
+  });
+
+  // De-dup granularity. xterm compares the resolved endpoints before firing; `mouseMove` here runs
+  // on every pointer event, so without this the signal fires per pixel.
+  it("reports one change for two moves inside one cell, and another when the cell changes", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), 1);
+    const afterPress = count();
+    ctrl.mouseMove(ev(6 * 10 + 2, 1 * 20 + 5)); // cell 6, left half
+    ctrl.mouseMove(ev(6 * 10 + 3, 1 * 20 + 7)); // same cell, same side — a different pixel
+    expect(count()).toBe(afterPress + 1);
+
+    ctrl.mouseMove(ev(6 * 10 + 8, 1 * 20 + 5)); // same cell, RIGHT half — a different anchor
+    expect(count()).toBe(afterPress + 2);
+
+    ctrl.mouseMove(ev(7 * 10 + 8, 1 * 20 + 5)); // a different cell
+    expect(count()).toBe(afterPress + 3);
+  });
+
+  // The de-dup must not cover `tick()`. On an auto-scroll drag the pointer is held still outside
+  // the viewport, so `tick` extends to `(edgeRow, lastCol, lastSide)` — all three identical every
+  // tick — while the selection genuinely grows, because the content scrolls underneath it. A
+  // coordinate-keyed de-dup applied here would silence the signal for the whole drag-scroll.
+  it("reports a change on every auto-scroll tick, though the extend coordinate never changes", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port, { getRows: () => 24, onScroll: () => {} });
+
+    ctrl.mouseDown(leftHalf(2, 1), 1);
+    ctrl.mouseMove(ev(65, 600, { buttons: 1 })); // below the 480px viewport → auto-scroll armed
+    const armed = count();
+    ctrl.tick();
+    ctrl.tick();
+    ctrl.tick();
+
+    // The window this test lives in has to exist, or it passes by never auto-scrolling at all.
+    const extends_ = port.calls.filter((c) => c.kind === "extend");
+    expect(extends_.slice(-3)).toEqual([extends_.at(-1), extends_.at(-1), extends_.at(-1)]);
+    expect(count()).toBe(armed + 3);
+  });
+
+  // A real double-click is not a fresh `detail: 2` press — the DOM sends detail 1, then 2, then 3
+  // at the same pixel, so each press re-anchors the SAME cell with a larger type. The tests above
+  // build a fresh controller per case and never enter that sequence; this one does, on one
+  // controller, which is the window a key of `(row, col, side)` alone was blind in.
+  it("reports each press of a real double- and triple-click, though they share one cell", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port);
+    const seen: number[] = [];
+
+    for (const detail of [1, 2, 3]) {
+      ctrl.mouseDown(leftHalf(2, 1), detail);
+      ctrl.mouseUp(leftHalf(2, 1));
+      seen.push(count());
+    }
+
+    // The window exists: three begins on one cell, each a different type.
+    expect(port.calls.map((c) => (c.kind === "begin" ? c.ty : c.kind))).toEqual(["char", "word", "line"]);
+    expect(seen).toEqual([1, 2, 3]);
+  });
+
+  // The de-dup baseline must not survive the gesture that set it. A press landing on exactly the
+  // half-cell where the previous drag's focus rested collapses that selection to a new anchor — a
+  // change — though its coordinate equals the last one reported.
+  it("reports a press that collapses the previous selection onto the cell where it ended", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), 1);
+    ctrl.mouseMove(rightHalf(6, 1));
+    ctrl.mouseUp(rightHalf(6, 1));
+    const afterDrag = count();
+    ctrl.mouseDown(rightHalf(6, 1), 1);
+    ctrl.mouseUp(rightHalf(6, 1));
+
+    expect(port.calls.at(-1)).toEqual({ kind: "begin", row: 1, col: 6, side: "right", ty: "char" });
+    expect(count()).toBe(afterDrag + 1);
+  });
+
+  // The alt-click move drops its selection at the port, so the controller must stop believing in
+  // it: otherwise the next keystroke's `clear()` passes its "is there one?" guard and sends a
+  // second clear and a change for a selection already gone.
+  it("does not report a second clear when typing follows an alt-click cursor move", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port, { onMoveCursor: () => {}, isAtBottom: () => true });
+
+    ctrl.mouseDown(ev(52, 65, { altKey: true, timeStamp: 0 }), 1);
+    ctrl.mouseUp(ev(52, 65, { altKey: true, timeStamp: 10 }));
+    const afterMove = count();
+    ctrl.clear();
+
+    expect(port.calls.filter((c) => c.kind === "clear")).toHaveLength(1);
+    expect(count()).toBe(afterMove);
+  });
+
+  it("works unchanged when no consumer wants the signal", () => {
+    const port = new StubSelectionPort();
+    const ctrl = new SelectionController(port, () => GEOM);
+
+    ctrl.mouseDown(leftHalf(2, 1), 1);
+    ctrl.mouseMove(rightHalf(6, 1));
+    ctrl.mouseUp(rightHalf(6, 1));
+
+    expect(port.calls).toEqual([
+      { kind: "begin", row: 1, col: 2, side: "left", ty: "char" },
+      { kind: "extend", row: 1, col: 6, side: "right" },
+    ]);
   });
 });

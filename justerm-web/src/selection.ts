@@ -194,6 +194,13 @@ export class SelectionController {
   private readonly onPaste: () => void;
   /** Undefined when no consumer wants primary — then the text query is skipped. */
   private readonly onPrimarySelection: ((text: string) => void) | undefined;
+  private readonly onSelectionChange: () => void;
+  /** The selection this controller last began, as `type|row,col,side` — the half of its identity
+   * that a later extend keeps. Empty while there is none. */
+  private anchor = "";
+  /** The selection last reported to {@link onSelectionChange}, as `anchor|focus`. Empty means the
+   * last report was of no selection, or nothing has been reported. */
+  private reported = "";
 
   constructor(
     private readonly port: SelectionPort,
@@ -205,6 +212,7 @@ export class SelectionController {
       isAtBottom?: () => boolean;
       onPaste?: () => void;
       onPrimarySelection?: (text: string) => void;
+      onSelectionChange?: () => void;
     } = {},
   ) {
     this.onScroll = opts.onScroll ?? (() => {});
@@ -215,6 +223,25 @@ export class SelectionController {
     this.isAtBottom = opts.isAtBottom ?? (() => true);
     this.onPaste = opts.onPaste ?? (() => {});
     this.onPrimarySelection = opts.onPrimarySelection;
+    this.onSelectionChange = opts.onSelectionChange ?? (() => {});
+  }
+
+  /**
+   * Announce that the selection changed, at most once per distinct selection. `focus` is the cell
+   * just sent to the port as the selection's moving end; omitted for a change that has no stable
+   * identity — a clear, or an auto-scroll step — which always reports.
+   *
+   * The identity is the whole selection, `type|anchor|focus`, never the pointer's cell: a real
+   * triple-click re-anchors one cell three times with a growing type, and a press can collapse the
+   * last selection onto the very cell where it ended. An auto-scroll step has no identity because
+   * {@link SelectionController.tick} extends to the same edge cell every tick while the selection
+   * grows under it.
+   */
+  private reportChange(focus?: { row: number; col: number; side: Side }): void {
+    const key = focus && this.anchor ? `${this.anchor}|${focus.row},${focus.col},${focus.side}` : "";
+    if (key && key === this.reported) return;
+    this.reported = key;
+    this.onSelectionChange();
   }
 
   /**
@@ -229,7 +256,9 @@ export class SelectionController {
   clear(): void {
     if (!this.hasSelection || this.dragging) return;
     this.hasSelection = false;
+    this.anchor = "";
     this.port.clear();
+    this.reportChange();
   }
 
   /**
@@ -263,8 +292,10 @@ export class SelectionController {
       const ty = detail === 1 && ev.altKey ? "block" : modeForClick(detail);
       this.port.begin(row, col, side, ty);
       this.hasSelection = true;
+      this.anchor = `${ty}|${row},${col},${side}`;
     }
     this.dragging = true;
+    this.reportChange({ row, col, side });
   }
 
   /** Pointer motion. Extends the focus only while a drag is live. When the
@@ -316,6 +347,7 @@ export class SelectionController {
         : 0;
     if (this.dragScrollAmount === 0) {
       this.port.extend(row, col, side);
+      this.reportChange({ row, col, side });
     }
   }
 
@@ -344,6 +376,8 @@ export class SelectionController {
     this.onScroll(this.dragScrollAmount);
     const edgeRow = this.dragScrollAmount > 0 ? Math.max(0, this.getRows() - 1) : 0;
     this.port.extend(edgeRow, this.lastCol, this.lastSide);
+    // Anchorless on purpose — see {@link SelectionController.reportChange}.
+    this.reportChange();
   }
 
   /** A mouse release. Ends the drag; the selection itself stays (for copy).
@@ -365,15 +399,25 @@ export class SelectionController {
       // their-producer.md`, reason 1). A cell we could not compute would become shell keystrokes.
       const geom = this.getGeometry();
       if (!geom) return;
-      // The empty block selection begun on mousedown is not real — drop it.
+      // The empty block selection begun on mousedown is not real — drop it, and stop believing in
+      // it, or the next keystroke's `clear()` would drop it a second time.
+      this.hasSelection = false;
+      this.anchor = "";
       this.port.clear();
+      this.reportChange();
       const { row, col } = cellAndSide(ev, geom);
       this.onMoveCursor({ row, col });
       return;
     }
-    // A real drag selection (not a bare click) feeds the X11 primary buffer.
-    // Reuses the copy path → NBSP-normalized, empty selections skipped.
-    if (this.onPrimarySelection && this.dragged && this.hasSelection) {
+    // A settled selection feeds the X11 primary buffer, whatever gesture made it — a drag, a
+    // double- or triple-click, a shift+click extend.
+    //
+    // **The guard is not written here.** `copySelection` skips null and empty, and the engine
+    // reports a collapsed (never-extended) anchor as empty text, so a bare click offers nothing
+    // without this line testing for it. `hasSelection` beside it is presently unreachable-false
+    // and is a belt, not the guard. Why it is this shape, and why `dragged` is not consulted:
+    // `docs/map/territory/selection.md` § Design model (#914).
+    if (this.onPrimarySelection && this.hasSelection) {
       const sink = this.onPrimarySelection;
       void copySelection(this.port, async (text) => sink(text));
     }

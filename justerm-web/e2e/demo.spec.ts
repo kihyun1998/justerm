@@ -3668,3 +3668,43 @@ test.describe("pointer routing (#902)", () => {
     expect(await page.evaluate(() => window.__tickCount!()), "the timer stopped with the release").toBe(ticksAtRelease);
   });
 });
+
+// #914: both selection-out signals, driven through the REAL stack. The unit tests call
+// `SelectionController` directly; a press in the widget actually arrives via `Terminal` ->
+// `PointerRouter` -> `LocalPointer`, so a router that swallowed the gesture would leave every
+// unit test green. The demo exposes `__selectionProbe` for exactly that reason (the shape
+// `__tickCount` established in #902).
+//
+// What this does NOT prove: the text. The demo's port answers from `FakeSelectionEngine`, not from
+// core, so whether a given gesture's selection is empty is the fake's answer — a core that returned
+// text for a bare click (the wide-glyph case) would pass here unseen.
+test("a double-click selection reaches primary and reports a change (#914)", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#term").waitFor();
+  const probe = () => page.evaluate(() => window.__selectionProbe!());
+  const box = (await page.locator("#term").boundingBox())!;
+
+  // Control 1 — the instrument reads zero before anything is selected, so a later non-zero is
+  // this gesture's and not a pane that arrives with a selection.
+  expect(await probe()).toEqual({ changes: 0, primary: "" });
+
+  // The gesture #914 is about: a double-click that never moves the pointer. Pre-#914 this put
+  // NOTHING in primary, and there was no change signal at all to observe.
+  await page.mouse.dblclick(box.x + 30, box.y + 40);
+  await expect.poll(async () => (await probe()).primary).not.toBe("");
+  const afterClick = await probe();
+  // At least TWO: the browser sends the double-click as a detail-1 press and then a detail-2 press
+  // on the same cell, and the second is a new (word) selection. `> 0` was satisfied by the first
+  // press alone, which is how a de-dup keyed on the pointer's cell passed this test while dropping
+  // every word and line selection.
+  expect(afterClick.changes).toBeGreaterThanOrEqual(2);
+
+  // Control 2 — the gesture that already worked still works, and moves BOTH signals on, so the
+  // assertions above are not satisfied by a probe that latched on the first event it saw.
+  await page.mouse.move(box.x + 30, box.y + 80);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 220, box.y + 80, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(async () => (await probe()).primary).not.toBe(afterClick.primary);
+  expect((await probe()).changes).toBeGreaterThan(afterClick.changes);
+});

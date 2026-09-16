@@ -3415,3 +3415,72 @@ paths where `ybase === ydisp` and the guard makes them no-ops.
 **keybinding**, and has nothing to do with scroll-on-user-input. A `Scroll::Bottom` grep reaches it
 first and reading only that line yields the opposite conclusion — that alacritty does this only on a
 bound key.
+
+## Two selection-out signals, and what actually guards the committing one (#914, verified 2026-09-16)
+
+### All three gate the commit on emptiness, and none of them on whether the pointer moved
+
+The question was whether feeding the X11 primary buffer is a *drag* behaviour. It is not — every
+reference lets an **empty selection** be the thing that makes a bare click silent, and nothing in
+this corpus tracks "did the pointer move" for this purpose at all.
+
+⚠ **They do not agree on *when* the commit fires, and this section once said they did.** alacritty
+and ghostty commit on the release. xterm.js commits on the **press** (`:499`) and again on every
+drag move that changes the end (`_handleMouseMove`, `:680-684`); its `_handleMouseUp` (`:722-744`)
+fires only the change event. justerm commits on the release, which is alacritty's timing.
+
+| | where the commit fires | the guard |
+|---|---|---|
+| xterm.js | `refresh(true)` at the end of **every** `_handleMouseDown` (`src/browser/services/SelectionService.ts:499`), *after* the `event.detail === 1 / 2 / 3` dispatch at `:490-495` — so a double- and a triple-click reach it exactly as a drag does | `onLinuxMouseSelection` fires only inside `if (selectionText.length)` (`:286-291`), under `Browser.isLinux` |
+| alacritty | every left/right release: `self.ctx.copy_selection(ClipboardType::Selection)` (`alacritty/src/input/mod.rs:719-722`), commented *"Copy selection on release, to prevent flooding the display server"* | `copy_selection` filters it out — `selection_to_string().filter(\|s\| !s.is_empty())` (`alacritty/src/event.rs:745-748`) |
+| ghostty | the release path (`src/Surface.zig:3869-3875`), right-click word/link select (`:4088`, `:4094`) and the select-all binding (`:5453`), all via `setSelectionAndCopy` | the release arm is gated on a selection *existing* (`if (prev_) \|prev\|`), never on motion |
+
+**Why this matters more than a 3–0 tally.** justerm's drag-only flag and the reference's emptiness
+test are **observationally identical on both cases justerm had tests for** — a completed drag is
+non-empty so both report, a bare single click collapses so both stay silent — and they diverge on
+exactly the case with no test, the double- and triple-click. `copySelection` already carried the
+emptiness half, so #914 on the web side was the removal of the motion term, not a new guard.
+
+### …and all three decide emptiness from the endpoints, before any wide-pair handling runs
+
+This is the half the tally above hides, and it is where justerm was not like them. An emptiness
+guard is only as good as the emptiness it is handed, and justerm decided it on the **text after**
+the #454 pair widening — so a never-extended press on the inner half of a wide glyph (the lead's
+right half, or the spacer's left) resolved to that glyph, measured `"漢"` for Char and Block. The
+motion flag had been hiding it; removing the flag turned it into a click that overwrites primary.
+
+| | where emptiness is decided | and where the pair handling runs |
+|---|---|---|
+| alacritty | `is_empty` — `start == end`, or adjacent cells with sides Right→Left on one line (`alacritty_terminal/src/selection.rs:201-206`); `range_simple` / `range_block` return `None` on it first (`:332`, `:362`) | after, in the reader: *"Include wide char when trailing spacer is selected"* (`alacritty_terminal/src/term/mod.rs:583-585`) |
+| xterm.js | a single click sets `selectionEnd = undefined` (`SelectionService.ts:555`), so the resolved end is the start | the spacer fix-ups apply to a range that already has two ends |
+| ghostty | a single click in cell mode creates **no** selection — `pressSelection` returns `.cell => null` (`src/terminal/SelectionGesture.zig:688`) | never reached |
+
+alacritty's second disjunct is exactly justerm's zero-width case, so the core fix copies its test:
+`same line && from >= to`, before widening. **The line half is load-bearing** — without it a
+multi-line run whose end column is left of its start is read as zero-width and loses its widening;
+a narrow-cell test cannot see that, because such a run extracts the same text widened or not.
+
+### The commit signal and the change signal are two events, and the split is load-bearing
+
+| | commit — carries text | change — every mutation, carries **nothing** |
+|---|---|---|
+| xterm.js | `onLinuxMouseSelection: IEvent<string>` (`SelectionService.ts:113-114`) | `onSelectionChange: IEvent<void>` (`:117-118`), de-duped against the previous endpoints in `_fireEventIfSelectionChanged` (`:746-776`); also fired by `clearSelection` (`:369`), `selectAll` (`:373`), `selectLines` (`:379`) and the programmatic `setSelection(col,row,length)` behind `terminal.select()` (`:811-817`) |
+| ghostty | `setSelectionAndCopy` — *"For committing selection gestures (mouse release, select-all binding)"* (`src/Surface.zig:2374-2382`) | `setSelection` → `.selection_changed` — *"All selection mutations route through here rather than `screen.select` directly so the notification fires consistently"* — de-duped by an explicit `changed` comparison that counts the set↔`null` transition (`:2347-2371`) |
+
+**Both key the change on the selection, not on the pointer.** xterm compares the resolved
+`finalSelectionStart` / `finalSelectionEnd` (`:746-767`); ghostty compares whole selections,
+`break :changed !sel.eql(prev)` (`src/Surface.zig:2354-2358`). A key of the pointer's cell alone is
+blind to two gestures that are ordinary: a triple-click re-anchors **one cell three times** with a
+growing type (the DOM delivers detail 1, 2, 3 at one pixel), and a press can collapse the last
+selection onto the very cell where it ended. justerm keys on `type | anchor | focus`.
+
+The change signal carries **no text in either reference**, and justerm has a sharper reason to copy
+that than either of them has: their selection text is a synchronous buffer read, while
+`SelectionPort.text()` round-trips to the backend in frame mode. A text-carrying signal at this
+firing rate would be a round-trip per pointer move.
+
+⚠ **`hasSelection` is not a cheap stand-in for the text.** The obvious saving — hand the consumer a
+boolean so it need not ask — was measured and dropped: the controller's flag is set at `begin`, so a
+bare click that selected nothing leaves it `true` while the engine reports empty text. A consumer
+trusting it would enable a Copy action with nothing to copy on **every click**. Making it true means
+asking the engine, which is the round-trip the boolean existed to avoid.

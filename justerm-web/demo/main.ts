@@ -1201,6 +1201,7 @@ termContainer.appendChild(canvas);
 const isSearchChord = (e: KeyboardEvent): boolean => (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f";
 
 let primaryBuffer = "";
+let selectionChanges = 0;
 const controller = new SelectionController(port, getGeometry, {
   getRows: () => ROWS,
   isAtBottom: () => displayOffset === 0,
@@ -1213,6 +1214,11 @@ const controller = new SelectionController(port, getGeometry, {
   onMoveCursor: (c) => console.log(`[alt-click] move cursor to row ${c.row}, col ${c.col}`),
   onPrimarySelection: (t) => {
     primaryBuffer = t;
+  },
+  // #914: the second selection-out signal. Counted rather than logged because the point of the
+  // proof is the *rate* as well as the fact — a de-dup that fired per pixel would still log.
+  onSelectionChange: () => {
+    selectionChanges++;
   },
   onPaste: () => {
     if (primaryBuffer) {
@@ -1231,6 +1237,10 @@ controller.tick = () => {
   tickController();
 };
 window.__tickCount = () => tickCount;
+
+// #914: proves both selection-out signals survive the REAL stack — Terminal -> PointerRouter ->
+// LocalPointer — which a unit test driving the controller directly cannot reach.
+window.__selectionProbe = () => ({ changes: selectionChanges, primary: primaryBuffer });
 
 term = new Terminal(source, renderer, {
   element: termContainer,
@@ -1700,6 +1710,7 @@ declare global {
     __searchProbe?: () => SearchProbe;
     __thumbPressProbe?: () => ThumbPressProbe;
     __tickCount?: () => number;
+    __selectionProbe?: () => { changes: number; primary: string };
     __contextLossProbe?: () => Promise<ContextLossProbe>;
     __rulerLayerProbe?: () => Promise<RulerLayerProbe>;
     __searchRulerProbe?: () => Promise<SearchRulerProbe>;

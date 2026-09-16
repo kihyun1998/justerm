@@ -388,6 +388,19 @@ impl Term {
                 end_line,
                 to,
             } => {
+                // An empty run stays empty. The pair rule widens a range that *includes* half a
+                // pair, and a zero-width one includes no cell — but its single column can still sit
+                // between a lead and its spacer, where widening would conjure the glyph out of a
+                // press that selected nothing (#914). Tested before any pair handling, from the
+                // endpoints alone, as every reference decides it.
+                if start_line == end_line && from >= to {
+                    return Some(Resolved::Linear {
+                        start_line,
+                        from,
+                        end_line,
+                        to,
+                    });
+                }
                 // Both ends move OUTWARD, each on its own line: a Linear run's two ends can sit
                 // on different rows, and a pair never spans rows.
                 let from = self.pair_start(start_line, from);
@@ -484,7 +497,9 @@ impl Term {
                     // The same per-row widening `selection_range` applies, and for the same reason:
                     // these two are the pair of observables #454 exists to keep in agreement, so a
                     // rule applied to one of them alone would rebuild the defect on the other.
-                    let (lo, hi) = if hi > 0 {
+                    // `to > from` is the guard `selection_range`'s Block arm already had; without it
+                    // here an empty rectangle painted nothing and copied the glyph under it (#914).
+                    let (lo, hi) = if hi > 0 && to > from {
                         (self.pair_start(line, from), self.pair_end(line, hi - 1) + 1)
                     } else {
                         (from, hi)
