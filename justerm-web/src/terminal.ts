@@ -736,7 +736,13 @@ export class Terminal {
     // established cannot answer it.
     const at = intent.origin;
     const caretCol = this.renderer.setPreedit?.(at.col, at.row, intent.codepoints);
-    if (caretCol === undefined) return; // a preedit-blind renderer: nothing drawn, nothing to aim at
+    // A preedit-blind renderer: nothing drawn, nothing to aim at. Only a consumer-supplied
+    // `Renderer` reaches this — the shipped `JustermRenderer` adapter returns `col` when its backend
+    // has no `setPreedit` binding, so on a renderer older than #249 `preeditEnd` becomes the ORIGIN
+    // and the #911 handoff quietly degrades to the frame stream's answer. Benign (it is what the
+    // widget did before #911) but silent, and the two packages release on separate tracks (#918,
+    // closed `not_planned`).
+    if (caretCol === undefined) return;
     // Keep a non-empty run's end for the next composition to latch from (#911). Skipped for the
     // clearing call at `compositionend`, whose caret column is the origin again, not the end.
     if (intent.codepoints.length > 0) this.preeditEnd = { col: caretCol, row: at.row };
