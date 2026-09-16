@@ -29,6 +29,30 @@ about *how the caret looks* is decided here.
 - **Shapes are rectangles, and a wide lead changes them.** A block caret over a width-2 glyph covers
   the pair, which is why the geometry module reaches for `is_wide_lead` — the caret is one of the few
   renderer concerns that has to know about pair structure.
+- **Focus-in re-anchors the blink phase, because an unfocused caret is parked rather than stopped**
+  (#912). The gate makes `isVisible` return solid while blurred, but the phase clock keeps running
+  underneath it from the last cursor move — so a focus that does not re-anchor flips straight to
+  whichever half of the 600 ms cycle it lands on, and half the time that is OFF: the caret vanishes
+  at the instant the user arrives. Phase only, never the idle clock, which is the
+  `restart` / `restartFromInput` split — focus is not typing.
+  **The transition is #912's own making**: before it the renderer assumed focus, so a *first* focus
+  was not a transition at all, and the pointer path hides the rest (`onDown` restarts the blink
+  immediately after focusing). Tab and the public `Terminal.focus()` do not, and the second is the
+  documented way to restore focus after a dialog or the accessible view. Reachable only where
+  something asked the caret to blink, which is not the shipped default but *is* a live setting in
+  the first consumer.
+- **The caret's redraw is also the overlay's present, and that is a trap rather than a design**
+  (#912). `redrawCursor` is `pushCursor` + `backend.render()`, so it is the only thing on the
+  no-new-frame paths that actually draws; `issueOverlay` merely retains spans and re-packs. Every
+  policy setter here may therefore skip its redraw when there is no caret — **except `setFocused`,
+  which also moves the selection tint**. Guarding it the way its neighbours are guarded adopts the
+  new tint and never paints it, and with the caret hidden (`DECTCEM` off, where a full-screen TUI
+  sits) there is no next present to ride on: `updateCursor`'s clear branch returns before
+  `startBlinkLoop`. Written down because the guard *looks* right from inside this territory — three
+  sibling setters carry it — and the thing that makes it wrong belongs to
+  [selection](selection.md). It was shipped into a branch and caught by an adversarial pass, not by
+  a test: the tint had no coverage anywhere in the package until #912 added
+  `__unfocusedTintProbe`.
 - **Contrast is a separate knob** (`setCursorContrast`). A caret that inverts under a theme can
   become invisible, so its legibility is adjusted independently of the text contrast policy. It
   compares the **caret's own colour against the cell background**, which alacritty does not — it
@@ -58,6 +82,11 @@ recorded SHA; a paraphrase drops the pin).
 
 - [Cursor blink — who decides](../../agents/reference-facts.md#cursor-blink--who-decides-575-verified-2026-07-28)
   — the policy resolution this territory receives the result of
+- [The INITIAL focus state — who establishes it](../../agents/reference-facts.md#the-initial-focus-state--who-establishes-it-912-verified-2026-09-16)
+  — the row above settles what focus *gates*; this one settles where the flag starts, which is the
+  gap #912 fell into. Its sharpest row is the **counter-example**: ghostty starts focused on purpose,
+  and reading the corpus as unanimous would have hidden that the shared rule is a correction path
+  rather than a value
 - [Cursor policy knobs — where each reference puts them](../../agents/reference-facts.md#cursor-policy-knobs--where-each-reference-puts-them-580-verified-2026-08-10)
   — the thickness and contrast constants, pinned, plus what each reference exposes. Its sharpest row
   is a *negative* one: alacritty's contrast guard is a compile-time constant with no config path, so
@@ -78,6 +107,9 @@ its own existence — the fact held here and was invisible from here.
 
 ## Blast radius
 
+- [widget lifecycle](widget-lifecycle.md) — the focus gate's *initial* value is a mount-time
+  question, not a drawing one, and it is answered there (#912). A caret that blinks in a pane nobody
+  clicked is this territory's symptom of a rule that belongs one layer out
 - [caret report](caret-report.md) — the engine-side half; everything drawn here comes from those five
   scalars and nothing else
 - [cell geometry](cell-geometry.md) — thickness and rects are expressed in cell dimensions, so a

@@ -1782,6 +1782,11 @@ test("a ruler mark is centred on its line and the track clips the overhang (#500
 // nowhere to run until this slice: the demo emitted no cursor fields, so no cursor was ever drawn.
 test("a steady cursor stays put and a blinking one leaves the cell (#575)", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+  // Focus first (#912). A caret only blinks in a FOCUSED terminal, and since #912 a terminal nobody
+  // has clicked is unfocused rather than assumed focused — so without this the caret is solid for a
+  // reason that has nothing to do with the mode under test, and the control below goes red. This
+  // test relied on the old assumption; its #592 sibling below already clicked for the same reason.
+  await page.locator("#term").dispatchEvent("mousedown"); // focus the hidden textarea
 
   const p = await readAsyncProbe(page, "__cursorBlinkProbe");
 
@@ -1811,6 +1816,11 @@ test("the cursor stops blinking after an idle period, and input revives it (#593
   page,
 }) => {
   await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+  // Focus first (#912). A caret only blinks in a FOCUSED terminal, and since #912 a terminal nobody
+  // has clicked is unfocused rather than assumed focused — so without this the caret is solid for a
+  // reason that has nothing to do with the mode under test, and the control below goes red. This
+  // test relied on the old assumption; its #592 sibling below already clicked for the same reason.
+  await page.locator("#term").dispatchEvent("mousedown"); // focus the hidden textarea
 
   const p = await readAsyncProbe(page, "__blinkIdleProbe");
 

@@ -130,6 +130,8 @@ class Pane {
   private rows = 0;
   private tick = 0;
   private pushes = 0;
+  private selection: number[] | undefined;
+  private cursorHidden = false;
 
   constructor(
     readonly name: string,
@@ -140,6 +142,28 @@ class Pane {
   setGrid(cols: number, rows: number): void {
     this.cols = cols;
     this.rows = rows;
+  }
+
+  /**
+   * A live selection on the next frame — viewport `(row, left, right)` triples, both columns
+   * inclusive (#108). `undefined` clears it.
+   *
+   * Opt-in, and default-off on purpose: this page's frames are the baseline a dozen pixel
+   * assertions above are written against, and a selection painted by default would move every one
+   * of them. Added by #912, whose tint half had no way to be observed at all.
+   */
+  setSelection(triples: number[] | undefined): void {
+    this.selection = triples;
+  }
+
+  /**
+   * Emit frames with the caret hidden — what `DECTCEM` off / `curs_set(0)` produces, and the state
+   * every full-screen TUI sits in. Opt-in for the same reason as {@link setSelection}: #801 made a
+   * cursor part of this page's baseline deliberately, and removing it by default would take the
+   * blink machinery out from under the probe that measures it.
+   */
+  setCursorHidden(hidden: boolean): void {
+    this.cursorHidden = hidden;
   }
 
   /** Advance the content by one step. Separate from {@link frame} so a probe can re-push the SAME
@@ -210,9 +234,10 @@ class Pane {
       // which is the machinery `__hiddenBlinkProbe` measures. Blink authority stays the
       // application's (`cursorBlink: false`), so nothing here blinks unless a probe overrides it and
       // no existing assertion on this page moves.
+      selectionSpans: this.selection ?? [],
       cursorRow: 0,
       cursorCol: 0,
-      cursorVisible: true,
+      cursorVisible: !this.cursorHidden,
       cursorShape: 0,
       cursorBlink: false,
     };
@@ -628,9 +653,103 @@ export interface SurfaceSnapshot {
   b: PaneSnapshot;
 }
 
+/** What a freshly mounted widget told its renderer about focus — see `window.__mountFocusProbe`. */
+interface MountFocusReport {
+  /** `setFocused` arguments seen from construction up to the end of `mount()`, in order. */
+  atMount: boolean[];
+  /** …and after a real `focus` event on the widget's hidden textarea. The positive control: it
+   * proves the recorder is on the call path, so an empty `atMount` means "never told" rather than
+   * "never watched". */
+  afterFocus: boolean[];
+  /** Whether the widget actually mounted a textarea to focus — an absent one would make
+   * `afterFocus` empty for a reason that has nothing to do with #912. */
+  textareaFound: boolean;
+  /** Intent kinds the consumer's `InputSink` saw during `mount()`. Mounting is not a user action, so
+   * establishing focus must not fabricate one — `sink.send({kind:"focus"})` would reach the renderer
+   * just as well and is the plausible wrong way to do this, since the sink wraps it. */
+  intentsAtMount: string[];
+}
+
 declare global {
   interface Window {
     __surfaceProbe?: () => SurfaceSnapshot;
+    /**
+     * Mount a **fresh** `Terminal` against a recording renderer and report what it was told about
+     * focus before anything was focused (#912).
+     *
+     * The renderer here is a plain object satisfying the `Renderer` port rather than a
+     * `JustermRenderer`, and that is the whole point: since #912 the first-party renderer *also*
+     * starts unfocused, so a behavioural check on a real one passes whichever half of the fix is
+     * present. A consumer-supplied renderer that assumes focus is the case only the `attach()` call
+     * can rescue, and this is the probe that can see it.
+     *
+     * Off to the side of the page — its own detached-but-laid-out container, its own source, and no
+     * surface at all. It borrows nothing from the two panes, so it cannot move any assertion above.
+     */
+    __mountFocusProbe?: () => MountFocusReport;
+    /**
+     * The OTHER half of #912: the selection tint a pane nobody clicked is painted with, and whether
+     * a focus flip is actually presented when there is no caret to redraw.
+     *
+     * Pane B is given a selection and a **hidden caret** — `DECTCEM` off, the state every
+     * full-screen TUI sits in — because that is the state where `setFocused` changes the overlay and
+     * nothing else: `issueOverlay` only retains and re-packs, so the present has to come from
+     * `setFocused` itself. The samples are read **without presenting**, which is the whole
+     * instrument: `window.__pixelAt` calls `surface.present()` first and would paper over exactly
+     * the defect this measures.
+     */
+    /**
+     * Focus a pane whose blink phase has been free-running, and report whether the caret is on
+     * screen at that instant (#912).
+     *
+     * An unfocused caret is parked solid, so the phase clock keeps running underneath it — anchored
+     * by the last cursor move, which on this page is the frame push. Waiting past one half-cycle
+     * puts it in the OFF half, so a `setFocused(true)` that does not re-anchor draws nothing and the
+     * caret disappears at the moment the user arrives.
+     */
+    __focusPhaseProbe?: () => Promise<{
+      contextLost: boolean;
+      /** The caret cell with the pane unfocused — parked solid, so the caret is there. */
+      whileUnfocused: string;
+      /** The same cell immediately after focusing, one half-cycle into the free-running phase. */
+      onFocus: string;
+      /** The pane background, for telling "caret drawn" from "caret cleared". */
+      background: string;
+      /** How far into the cycle the focus landed, in ms — the OFF half is 600..1199. */
+      elapsedMs: number;
+    }>;
+    __unfocusedTintProbe?: () => Promise<{
+      /** Whether the GL context died mid-probe — headless SwiftShader does this on its own (#580),
+       * and every pixel then reads `0,0,0,0`, which is an environment failure and not a defect. */
+      contextLost: boolean;
+      /** An unselected cell, so a tint can be told from the pane's own background. */
+      plain: string;
+      /** The selected cell as a pane nobody has clicked paints it. */
+      neverFocused: string;
+      /** The same cell straight after `setFocused(true)`, with NO present of our own. */
+      afterFocusNoPresent: string;
+      /** …and after forcing one. What the pixel should have been. */
+      afterFocusPresented: string;
+    }>;
+    /**
+     * Let pane B blink **without ever focusing it**, then focus it and measure again (#912).
+     *
+     * The user-visible half of the same bug, in the arrangement it was reported from: several panes
+     * on screen, a caret blinking in the ones nobody clicked. Counted the way `__hiddenBlinkProbe`
+     * counts — presents on the raw backend, which is what `blinkTick` calls — because the caret's
+     * phase has no DOM proxy.
+     *
+     * **It must be the first thing to touch pane B on a fresh page.** "Never focused" is a state the
+     * probe cannot restore: calling `setFocused(false)` would measure the focus *gate*, which has
+     * worked since #115, rather than the state a pane is born in.
+     */
+    __unfocusedBlinkProbe?: () => Promise<{
+      presentsNeverFocused: number;
+      presentsOnceFocused: number;
+      windowMs: number;
+      wrapperSeesRender: number;
+      reducedMotion: boolean;
+    }>;
     /**
      * Hide pane B through the DOM, hold it hidden across a re-fit, then show it again — and report
      * what a rebuild would have cost (#801).
@@ -913,6 +1032,255 @@ window.__densityProbe = (dpr: number): { before: DensitySample; after: DensitySa
 };
 
 const textareaCount = (): number => document.querySelectorAll("textarea").length;
+
+window.__unfocusedBlinkProbe = async (): Promise<{
+  presentsNeverFocused: number;
+  presentsOnceFocused: number;
+  windowMs: number;
+  wrapperSeesRender: number;
+  reducedMotion: boolean;
+}> => {
+  stopTimers();
+  const settle = (): Promise<void> =>
+    new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  const windowMs = 2100; // three cursor phase flips at 600 ms — `__hiddenBlinkProbe`'s margin
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  // Count on the RAW backend: `blinkTick` calls `backend.render()` directly, bypassing the surface.
+  const raw = surface.rendererBackend() as unknown as { render: () => void };
+  const underlying = raw.render.bind(raw);
+  let presents = 0;
+  raw.render = (): void => {
+    presents++;
+    underlying();
+  };
+
+  try {
+    // Blink authority first, THEN the frame: the loop is started by `updateCursor`, which runs on a
+    // decoded frame and starts it only when this terminal actually blinks. **No `setFocused` here**
+    // — that is the variable.
+    b.renderer.setCursorBlink(true);
+    b.pane.advance();
+    b.pane.push();
+    await settle();
+
+    // Assert the instrument before asserting with it: `surface.present()` reaches `backend.render()`
+    // synchronously, so this moves the counter by exactly one. A wrapper off the call path would
+    // otherwise report zero everywhere and read as a pass.
+    presents = 0;
+    surface.present();
+    const wrapperSeesRender = presents;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    presents = 0;
+    await wait(windowMs);
+    const presentsNeverFocused = presents;
+
+    // The positive control, same pane and same window: focus is the ONLY thing that changed, so a
+    // count that stays at zero here means the caret was never going to blink and the reading above
+    // proves nothing.
+    b.renderer.setFocused(true);
+    await settle();
+
+    presents = 0;
+    await wait(windowMs);
+    const presentsOnceFocused = presents;
+
+    return {
+      presentsNeverFocused,
+      presentsOnceFocused,
+      windowMs,
+      wrapperSeesRender,
+      reducedMotion,
+    };
+  } finally {
+    raw.render = underlying;
+    b.renderer.setCursorBlink(undefined);
+    b.renderer.setFocused(false);
+  }
+};
+
+window.__focusPhaseProbe = async (): Promise<{
+  contextLost: boolean;
+  whileUnfocused: string;
+  onFocus: string;
+  background: string;
+  elapsedMs: number;
+}> => {
+  stopTimers();
+  const settle = (): Promise<void> =>
+    new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  // Blink authority first: with the application steady the caret never flips and this measures
+  // nothing. That is the shipped default, so the glitch reaches only a consumer who turned blinking
+  // on — which penterm exposes as a live setting.
+  b.renderer.setCursorBlink(true);
+  b.pane.advance();
+  b.pane.push(); // the cursor's first appearance anchors the phase (`updateCursor` → `restart`)
+  const anchoredAt = performance.now();
+  await settle();
+
+  const context = gl()!;
+  const rect = rectOf(b);
+  const cell = b.renderer.cellSize();
+  // The caret sits at (0,0) on this page. Sample one cell to its right for the background: same row,
+  // so a row-height rounding error cannot make the two disagree for the wrong reason.
+  const caretAt = (col: number): string =>
+    pixelAt(
+      context,
+      Math.round(rect.x + col * cell.width) + 2,
+      Math.round(rect.y) + 2,
+    );
+
+  try {
+    surface.present();
+    const background = caretAt(2); // blank cell on the caret's row
+    const whileUnfocused = caretAt(0);
+
+    // Into the OFF half of the 600ms cycle, measured from the anchor rather than assumed.
+    await wait(Math.max(0, anchoredAt + 900 - performance.now()));
+    const elapsedMs = performance.now() - anchoredAt;
+
+    b.renderer.setFocused(true);
+    surface.present();
+    const onFocus = caretAt(0);
+
+    return { contextLost: context.isContextLost(), whileUnfocused, onFocus, background, elapsedMs };
+  } finally {
+    b.renderer.setFocused(false);
+    b.renderer.setCursorBlink(undefined);
+  }
+};
+
+window.__unfocusedTintProbe = async (): Promise<{
+  contextLost: boolean;
+  plain: string;
+  neverFocused: string;
+  afterFocusNoPresent: string;
+  afterFocusPresented: string;
+}> => {
+  stopTimers();
+  const settle = (): Promise<void> =>
+    new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+
+  // Row 1 is "step N" — a handful of glyphs, then U+0020 to the end of the row. Selecting columns
+  // well past that keeps every sampled pixel a tinted BACKGROUND rather than glyph ink, which is
+  // what makes one pixel a colour and not a coin flip.
+  const ROW = 1;
+  const SEL_FROM = 12;
+  const SEL_TO = 16;
+  const PLAIN_COL = 2; // inside the selected row but outside the selection
+
+  b.pane.setSelection([ROW, SEL_FROM, SEL_TO]);
+  b.pane.setCursorHidden(true);
+  b.pane.push();
+  await settle();
+  // Present the BASELINE by hand. On a shared surface `JustermRenderer.render()` schedules a frame
+  // rather than presenting, so without this the first two samples read a bare `0,0,0,0` buffer —
+  // measured, and it is only the post-flip sample that has to be present-free.
+  surface.present();
+
+  const context = gl()!;
+  const rect = rectOf(b);
+  const cell = b.renderer.cellSize();
+  // Corner inset, the convention every pixel probe on this page uses.
+  const at = (col: number): string =>
+    pixelAt(
+      context,
+      Math.round(rect.x + col * cell.width) + 2,
+      Math.round(rect.y + ROW * cell.height) + 2,
+    );
+
+  try {
+    const plain = at(PLAIN_COL);
+    const neverFocused = at(SEL_FROM + 1);
+
+    // The flip. No `surface.present()` here, deliberately — `setFocused` owes the present, because
+    // with the caret hidden there is no `redrawCursor` to carry one and no next frame to ride on.
+    b.renderer.setFocused(true);
+    const afterFocusNoPresent = at(SEL_FROM + 1);
+
+    surface.present();
+    const afterFocusPresented = at(SEL_FROM + 1);
+
+    return {
+      contextLost: context.isContextLost(),
+      plain,
+      neverFocused,
+      afterFocusNoPresent,
+      afterFocusPresented,
+    };
+  } finally {
+    b.renderer.setFocused(false);
+    b.pane.setSelection(undefined);
+    b.pane.setCursorHidden(false);
+    b.pane.push();
+  }
+};
+
+window.__mountFocusProbe = (): MountFocusReport => {
+  const atMount: boolean[] = [];
+  const afterFocus: boolean[] = [];
+  const intentsAtMount: string[] = [];
+  let seen = atMount;
+  let recordIntents = true;
+
+  // A renderer that ASSUMES FOCUS, which is what the port used to permit and what the first-party
+  // one did until #912. It records instead of drawing; `applyFrame`/`render` are the two required
+  // members and this probe pushes no frames, so they stay empty.
+  const recorder = {
+    applyFrame: (): void => {},
+    render: (): void => {},
+    setFocused: (focused: boolean): void => {
+      seen.push(focused);
+    },
+  };
+
+  // Laid out, because `attach()` mounts a real textarea into it and a `display: none` host would
+  // refuse the focus below for an unrelated reason. Off-screen rather than hidden, for the same.
+  const host = document.createElement("div");
+  Object.assign(host.style, {
+    position: "absolute",
+    left: "-10000px",
+    top: "0",
+    width: "200px",
+    height: "100px",
+  });
+  document.body.appendChild(host);
+
+  const term = new Terminal(new StubFrameSource(), recorder, {
+    element: host,
+    input: {
+      send: (intent): void => {
+        if (recordIntents) intentsAtMount.push(intent.kind);
+      },
+    },
+    getGeometry: () => ({
+      originX: 0,
+      originY: 0,
+      cellWidth: 8,
+      cellHeight: 16,
+      cols: 20,
+      rows: 5,
+    }),
+  });
+
+  try {
+    term.mount();
+
+    // Everything from here is the control. A real `focus` on the textarea the widget mounted must
+    // reach the same recorder, or `atMount` is unreadable.
+    seen = afterFocus;
+    recordIntents = false;
+    const ta = host.querySelector("textarea");
+    ta?.focus();
+    return { atMount, afterFocus, textareaFound: ta !== null, intentsAtMount };
+  } finally {
+    term.dispose();
+    host.remove();
+  }
+};
 
 window.__teardownProbe = (order: "terminals-first" | "surface-only"): TeardownReport => {
   stopTimers();

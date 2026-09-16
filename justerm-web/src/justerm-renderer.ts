@@ -766,8 +766,21 @@ export class JustermRenderer implements Renderer {
    */
   private hidden = false;
   /** Focus gates the selection colour (focused → `selectionBg`, blurred → the dimmer
-   * `selectionInactiveBg`) and the blink (blurred → solid). xterm's two selection colours (#115). */
-  private focused = true;
+   * `selectionInactiveBg`) and the blink (blurred → solid). xterm's two selection colours (#115).
+   *
+   * **Starts unfocused** (#912). A renderer is told about focus *changes*, so a terminal that is
+   * never focused is never told anything — and the previous `true` therefore stood for the life of
+   * every pane the user had not clicked.
+   *
+   * The default is only half of it: {@link Terminal} also reports once at mount, and the reference
+   * tally says why both are needed rather than either — the corpus splits 2-1 and what the three
+   * share is a *correction path*, not a value. See
+   * `docs/agents/reference-facts.md` § "The INITIAL focus state — who establishes it".
+   *
+   * It also fails safe in the direction the old default did not: a focused terminal that reads as
+   * blurred recovers on the first keystroke, while a blurred one that reads as focused never
+   * recovered. */
+  private focused = false;
   /** The current frame's overlay spans, retained so a focus flip (no new frame) can re-issue
    * `setOverlay` with the active/inactive tint. Empty ⇔ nothing highlighted. */
   // Annotated bare (`Uint32Array<ArrayBufferLike>`) so `asU32`'s buffer-agnostic result assigns
@@ -2105,14 +2118,42 @@ export class JustermRenderer implements Renderer {
 
   /** Focus gates the blink (blurred → solid) and the selection tint (active ↔ inactive, #115).
    * No frame changed on a focus flip, so re-issue `setOverlay` with the retained spans + the new
-   * tint (the renderer re-packs the retained grid) and redraw the cursor. */
+   * tint (the renderer re-packs the retained grid) and redraw the cursor.
+   *
+   * **This setter is the one that changes something other than the cursor, and the present is
+   * therefore not the cursor's to own** (#912). `issueOverlay` only *retains* spans and re-packs —
+   * `redrawCursor` is what calls `backend.render()`, which is why {@link setTheme} pairs the two and
+   * says so. Guarding the redraw on there being a cursor, the way {@link setCursorBlink} and
+   * {@link setComposing} legitimately do, therefore drops the tint flip on the floor whenever the
+   * application has hidden the caret (`cursorCommand` → `clear`): the retained spans exist exactly
+   * so a focus flip with **no new frame** can be drawn, and on an idle hidden-caret terminal there
+   * may be no next present at all — `updateCursor`'s clear branch returns before `startBlinkLoop`.
+   * So: redraw the caret when there is one, and otherwise present iff the tint actually moved.
+   *
+   * The guard is still worth having for the mount-time call, which lands before the first frame and
+   * before the first fit; there it takes neither branch, because `focused` starts `false` and so the
+   * tint does not move either. */
   setFocused(focused: boolean): void {
     this.blink.setFocused(focused);
-    if (this.focused !== focused) {
+    const changed = this.focused !== focused;
+    if (changed) {
       this.focused = focused;
       this.issueOverlay();
+      // **Arriving at a terminal must not hide its caret** (#912). While unfocused the caret is
+      // parked solid, but the phase clock has been free-running since the last cursor move — so
+      // without this, focus-in flips straight to whichever half of the 600ms cycle it happens to
+      // land on, and half the time that is OFF: the caret vanishes at the moment you arrive. Before
+      // #912 the renderer assumed focus, so this transition was not reachable on a FIRST focus and
+      // the pointer path hid the rest (`onDown` restarts the blink right after focusing). Tab and
+      // the public `Terminal.focus()` do not.
+      //
+      // Phase only — focus is not typing, so the idle clock (#593) is deliberately untouched, which
+      // is the `restart` / `restartFromInput` split. xterm.js re-shows the caret from its own focus
+      // handler for the same reason (`browser/CoreBrowserTerminal.ts:309`, `_showCursor()`).
+      if (focused) this.blink.restart(now());
     }
-    this.redrawCursor();
+    if (this.cursor) this.redrawCursor();
+    else if (changed) this.backend.render();
   }
 
   /**

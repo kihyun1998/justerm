@@ -520,6 +520,18 @@ export class Terminal {
     const ta = makeHiddenTextarea();
     element.appendChild(ta);
     this.textarea = ta;
+    // Establish the renderer's focus state before any focus event (#912). `sink` carries focus
+    // *changes*, so a terminal nobody clicks is never described at all — and a renderer that assumed
+    // focus blinked its caret and painted the active selection tint for the life of the pane.
+    //
+    // Unconditionally `false`, not `document.activeElement === ta`: `ta` was created two lines up and
+    // appended, so it cannot be the active element. Reporting through the renderer rather than
+    // through `sink` on purpose — `sink` is the *input* intent stream, and a mount is not a user
+    // action; a consumer that encodes focus reports would otherwise write bytes to the PTY at mount.
+    //
+    // The references and the 2-1 split behind taking BOTH this call and an unfocused default are in
+    // `docs/agents/reference-facts.md` § "The INITIAL focus state — who establishes it".
+    this.renderer.setFocused?.(false);
     const composition = new CompositionController(ta, sink);
     this.composition = composition;
 

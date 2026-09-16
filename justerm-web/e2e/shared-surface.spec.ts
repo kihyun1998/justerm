@@ -31,7 +31,10 @@ type AsyncProbe =
   | "__restoreDensityProbe"
   | "__contractOnlyDensityProbe"
   | "__hideShowProbe"
-  | "__hiddenBlinkProbe";
+  | "__hiddenBlinkProbe"
+  | "__unfocusedBlinkProbe"
+  | "__unfocusedTintProbe"
+  | "__focusPhaseProbe";
 
 /** This page's typed alias over the shared park-and-harvest helper (#731; extracted in #776). */
 const readAsyncProbe = <K extends AsyncProbe>(
@@ -131,6 +134,12 @@ const expectContextAlive = (s: { contextLost: boolean }): void => {
 const BG_A = "27,42,74,255"; // 0x1b2a4a
 const BG_B = "18,58,36,255"; // 0x123a24
 const UNPAINTED = "0,0,0,0";
+
+/** The adapter's default selection tints (`justerm-renderer.ts` — `selectionBg` `0x45475a`,
+ * `selectionInactiveBg` `0x30313d`), which this page does not override. Portable for the same reason
+ * `BG_A`/`BG_B` are: a colour a consumer chose, not a number derived from a font. */
+const SELECTION_ACTIVE = "69,71,90,255"; // 0x45475a
+const SELECTION_INACTIVE = "48,49,61,255"; // 0x30313d
 
 test("two grids draw on one canvas, each in its own rect, with the buffer bare between them", async ({
   page,
@@ -696,4 +705,124 @@ test("a hidden terminal's blink loop presents nothing, and a shown one still doe
     r.presentsWhileShown,
     `the same terminal, shown, must still blink — otherwise the zero above proves nothing (window ${r.windowMs}ms)`,
   ).toBeGreaterThan(0);
+});
+
+// ── #912: a pane nobody clicked ───────────────────────────────────────────────────────────────
+//
+// Focus reached the renderer only as a *change*, and both holders of the flag defaulted to focused
+// — so a terminal that was never focused behaved as if it were, blinking its caret and painting the
+// active selection tint. It is a multi-pane bug by nature (with one terminal the user focuses it
+// almost immediately), which is why its proof lives on this page rather than on `demo/index.html`.
+//
+// The two tests below are NOT the same claim twice. The first measures what a user sees, and either
+// half of the fix alone produces it. The second measures the half that a behavioural check cannot
+// see: what the *port* promises a consumer-supplied renderer.
+
+test("a pane nobody focused does not blink, and the same pane does once focused (#912)", async ({
+  page,
+}) => {
+  test.setTimeout(30_000);
+  // `beforeEach` navigates, and nothing before this line touches pane B. That matters: "never
+  // focused" is the variable, and a click anywhere in it would set the state this test is about
+  // rather than observe it.
+  const r = await readAsyncProbe(page, "__unfocusedBlinkProbe");
+
+  expect(r.wrapperSeesRender, "the present counter must actually be on the call path").toBe(1);
+  expect(r.reducedMotion, "a reduced-motion environment parks the blink solid and proves nothing").toBe(
+    false,
+  );
+
+  expect(
+    r.presentsNeverFocused,
+    "a pane the user has never clicked must not blink its caret",
+  ).toBe(0);
+  // The control. Focus is the only thing that changed between the two windows, so without this the
+  // zero above is indistinguishable from a caret that was never going to blink at all.
+  expect(
+    r.presentsOnceFocused,
+    `the same pane, focused, must blink — otherwise the zero above proves nothing (window ${r.windowMs}ms)`,
+  ).toBeGreaterThan(0);
+});
+
+test("mounting tells the renderer its focus state before any focus event (#912)", async ({
+  page,
+}) => {
+  const r = await page.evaluate(() => window.__mountFocusProbe!());
+
+  expect(r.textareaFound, "the widget must have mounted the textarea this control focuses").toBe(true);
+  // The control is read FIRST: it is what makes an empty `atMount` mean "never told" instead of
+  // "never watched". A recorder off the call path reports nothing in both fields.
+  expect(
+    r.afterFocus,
+    "a real focus must reach this recorder, or the reading below is unreadable",
+  ).toEqual([true]);
+
+  // The claim. `false` and not merely "something": a renderer that assumes focus — which is what the
+  // port permitted, and what the first-party one did until #912 — is CORRECTED by mounting, and the
+  // correction arrives before any focus event rather than on the first blur.
+  expect(r.atMount, "mount must establish the focus state, not wait for a change").toEqual([false]);
+
+  // …and it reaches the renderer WITHOUT fabricating an input intent. `sink` wraps the renderer, so
+  // `sink.send({kind:"focus"})` would satisfy the assertion above while telling the consumer the
+  // user did something they did not — and a consumer that encodes focus reports would write bytes
+  // to the PTY at mount. xterm.js emits its report only from the real focus/blur handlers
+  // (`browser/CoreBrowserTerminal.ts:305,329` @ 699f553); `open()` establishes nothing.
+  expect(r.intentsAtMount, "mounting is not a user action and must not look like one").toEqual([]);
+});
+
+test("a pane nobody focused paints the INACTIVE selection tint, and a focus flip is presented (#912)", async ({
+  page,
+}) => {
+  // The second surface #912 named, and the one that had no coverage at all — which is how a first
+  // attempt at this fix broke it. The caret is hidden here (`DECTCEM` off, where every full-screen
+  // TUI sits), so the overlay is the ONLY thing `setFocused` changes and the present is its own to
+  // owe: `issueOverlay` retains and re-packs, it does not draw.
+  const r = await readAsyncProbe(page, "__unfocusedTintProbe");
+  expectContextAlive(r);
+
+  // The instrument, stated as the value it must be rather than as "not the other one": an unpainted
+  // buffer reads `0,0,0,0` and would satisfy every inequality below while proving nothing.
+  expect(r.plain, "pane B must be painted, and this cell must be outside the selection").toBe(BG_B);
+
+  // #912's tint half: a pane nobody has clicked paints the INACTIVE tint. The adapter's default
+  // `selectionInactiveBg`, written out for the reason the two background constants are — a colour
+  // the consumer chose is portable, unlike anything derived from a font.
+  expect(r.neverFocused, "a pane nobody clicked must use the inactive tint").toBe(SELECTION_INACTIVE);
+
+  // Positive control: focus really does move this pixel. Read after a forced present, so it says
+  // "the tint differs" without yet saying anything about who presented it.
+  expect(r.afterFocusPresented, "focus must change the selection tint").toBe(SELECTION_ACTIVE);
+
+  // THE CLAIM, and it is about the present rather than the colour: with no caret to redraw,
+  // `setFocused` still has to put the new tint on the screen. Read with no present of our own, so a
+  // renderer that only re-packed leaves the OLD tint standing here.
+  expect(
+    r.afterFocusNoPresent,
+    "a focus flip with no caret must still be presented, not left for a frame that may never come",
+  ).toBe(r.afterFocusPresented);
+});
+
+test("focusing a pane shows its caret rather than hiding it for half a cycle (#912)", async ({
+  page,
+}) => {
+  // A transition #912 created in practice. An unfocused caret is parked SOLID, so the phase clock
+  // runs on underneath it; before #912 the renderer assumed focus, so a first focus was never a
+  // transition at all. The pointer path is covered already (`onDown` restarts the blink right after
+  // focusing) — Tab and the public `Terminal.focus()` are not, and `Terminal.focus()` is the
+  // documented way to restore focus after a dialog or the accessible view.
+  const r = await readAsyncProbe(page, "__focusPhaseProbe");
+  expectContextAlive(r);
+
+  // The instrument: the caret has to be visible while unfocused, or "visible after focusing" is not
+  // a claim about focus at all.
+  expect(r.whileUnfocused, "an unfocused caret is parked solid, so it must be drawn").not.toBe(
+    r.background,
+  );
+  // …and the focus must genuinely land in the OFF half, or the assertion below passes for free.
+  expect(r.elapsedMs, "the focus must land in the OFF half of the 600ms cycle").toBeGreaterThan(600);
+  expect(r.elapsedMs).toBeLessThan(1200);
+
+  // THE CLAIM: arriving at the terminal shows the caret. Without the phase re-anchor this reads as
+  // the background — the caret blinks out at the instant the user focuses.
+  expect(r.onFocus, "focusing must not hide the caret").toBe(r.whileUnfocused);
 });
