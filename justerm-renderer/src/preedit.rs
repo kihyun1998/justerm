@@ -37,9 +37,15 @@ pub struct Range {
 /// **Per-char `unicode-width`, the same crate and version `justerm-core` uses** — and the same
 /// known defect, deliberately (ADR-0028): a VS16 or ZWJ sequence measures its parts, so an emoji
 /// presentation selector reads width-1 here just as it does in the engine (#295/#297/#300). Both
-/// references have it too, per codepoint (ghostty) or per char (alacritty). A preedit is re-drawn
-/// on every keystroke and dies at commit, so a one-cell error self-corrects; a third answer at
-/// this one site would be the divergence.
+/// references have it too, per codepoint (ghostty) or per char (alacritty). A third answer at this
+/// one site would be the divergence.
+///
+/// **The "it self-corrects at commit" half of that argument died with #911** and is removed rather
+/// than softened. `caret_col`'s answer no longer ends at commit: `justerm-web` carries it across
+/// `compositionend` as the next composition's origin, so a one-cell width error there displaces
+/// every following syllable of a burst instead of one frame of one run. What still holds is the
+/// part that was doing the work — this and the engine answer from the same crate, so a width the
+/// widget hands back agrees with the width core will echo.
 pub fn is_wide(cp: u32) -> bool {
     char::from_u32(cp)
         .and_then(UnicodeWidthChar::width)

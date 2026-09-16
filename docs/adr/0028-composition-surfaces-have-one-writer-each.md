@@ -239,6 +239,85 @@ then **jumped to row 9 on the next keystroke**, taking the drawn run with it.
 Corollary, from measurement 3: the preedit view's lifetime is owned by the composition events alone
 and may not assume the commit has reached the grid. At every syllable boundary it has not.
 
+**And the origin is latched from the composition that ended, not from the frame stream (#911).** The
+clause above is about *when* the origin is read; this is about *what it is read from*, and the first
+implementation got the second half wrong while getting the first half right. `cursorAnchor` is written
+only by the frame subscription, so it is never fresher than the last frame the engine sent — and
+measurement 3 says that at the latch the previous syllable has not been **sent** yet, let alone
+echoed. So the latch was taking the cell the previous syllable is about to occupy, and every syllable
+of continuous Korean drew over the one just committed: *"typing 안 then 녕 replaces 안 with 녕"*.
+
+The correction reads the previous composition's own **run end** — `setPreedit`'s returned caret
+column — whenever a commit is still in flight, and the frame stream otherwise. Three things make it
+that value rather than an arithmetic advance:
+
+- **The widget has no `wcwidth`.** `Renderer.setPreedit` returns the caret column precisely because
+  the widget cannot compute it, and a Korean syllable is two cells rather than one code unit. An
+  advance computed here would be a second width oracle in the consumer, disagreeing with the renderer
+  at the right edge, where the run shifts left instead of clipping (D5).
+- **"A commit is in flight" is a predicate that already exists and is already pinned.**
+  `CompositionController.active`, read before `compositionStart()`, is exactly that state — and
+  `composition.test.ts` already pins that it is `true` there in continuous CJK and `false` otherwise,
+  for #649's sake. `composing` is the wrong one here for the mirror of #649's reason.
+- **The handoff is consumed at the latch, which scopes it to one composition.** A composition that
+  draws nothing leaves no run end, so the latch after it falls back to the frame stream rather than
+  reaching past it — reaching further back is unbounded in age, and the coordinate it would find can
+  be a row that has since scrolled away. That is a bounded wrong in place of an unbounded one, and it
+  is the reason the line exists; it is gated by the probe's *aborted composition* arm.
+
+**The caret column is one past the run only while a cell past it exists, and D5 below is where that
+stops being true.** At the right edge `caret_col` steps back onto the last glyph's lead and `range`
+shifts the run left, so the handoff names a column *inside* the run and the next syllable lands on the
+one just committed — #911's own symptom, surviving at the margin. The row is the run's, so a commit
+that wraps leaves it a line high. Both are recorded rather than fixed because the honest answer is
+column 0 of the next row, which needs the grid width and `DECAWM`: engine state the widget does not
+hold, and the boundary says it may not guess at. Neither is a regression — the frame stream is
+equally wrong at the margin — and the first implementation described the return as "one past the
+run's last cell" in three places while D5, five paragraphs down, already said otherwise.
+
+**The premise, stated because it is the thing that can be wrong: the committed text leaves the
+engine's cursor at the drawn run's end.** It holds wherever the application echoes what it is sent,
+which is every shell and every editor, and it is what the reported defect was about. It does **not**
+hold for an application that echoes nothing — a password prompt, `read -s` — where the cursor never
+moves and the old value was right by accident; there the origin now walks right by one syllable per
+commit until the burst ends and the frame stream answers again. That is a bounded, self-limiting wrong
+in the rare case traded for a guaranteed one in the common case.
+
+**This one is a product judgement the maintainer made on 2026-09-16 (#911), not a derivation**, and a
+better derivation does not retire it. What they were shown: that the premise holds for every echoing
+application and fails for a non-echoing prompt; that in the failing case the old code was right by
+accident; that the wrong is bounded by one uninterrupted burst and snaps back when the frame stream
+answers again; and that all three references sidestep the question entirely by never latching. They
+chose to keep it. It is theirs to reverse.
+
+The premise is falsifiable and is tested: the `#911` e2e advances the
+engine's cursor by one syllable through a real frame and requires the origin latched from
+`cursorAnchor` to land on the cell the origin latched from the run end predicted.
+
+**Rejected alternative: send the pending commit synchronously at `compositionstart`, before
+latching.** The issue proposed it as the smaller fix and it is not a fix at all — recorded so it is
+not re-proposed. `cursorAnchor` has exactly one write site, the frame subscription, so *sending* an
+intent moves nothing; only the echo does, and that is a round trip through the consumer's transport,
+the PTY and the application. Measurement 3 puts `compositionend` and the next `compositionstart` in
+the same millisecond, and no round trip completes there. Flushing changes whether the text has left,
+never where the origin is.
+
+**No reference can arbitrate this, because none of them has the defect to solve — and that now
+includes the one that shares this layer's shape.** ghostty computes
+`preedit_range` from `state.cursor.viewport` inside `rebuildCells` (`src/renderer/generic.zig:2369-2381`
+@ `e6e26e1`) and alacritty passes a fresh `point` into `draw_ime_preview` on every `draw`
+(`alacritty/src/display/mod.rs:960`, `:1129` @ `852e971`) — both re-read the live cursor per frame and
+latch nothing, so an echo landing a frame later simply corrects them. **xterm.js is the one to ask
+here** — a browser widget, a hidden textarea, an echo that arrives asynchronously, the same shape as
+this layer — and it does not latch either: `updateCompositionElements` positions from
+`bufferService.buffer.x`/`.y`, the live cursor, on every call, and re-runs itself once through
+`setTimeout(0)` because *"the IME events across browsers are not consistently triggered"*
+(`src/browser/input/CompositionHelper.ts:245`, `:250-252`, `:280-282` @ `699f553`). So it carries
+#911's symptom too, and heals it on the next render rather than ruling it out. **Latching is what converts
+"eventually right" into "wrong for the composition's whole life"**, and the latch is this record's own
+(D4, above), taken for #637's reasons which neither reference shares. The rule here is derived from
+those reasons, not counted off the references.
+
 **D5 — Browser ownership governs position and extent. It does not govern visibility.**
 A composition may decide *where* things are and *how far they reach*; it may not reveal something the
 application asked to hide. Concretely: the caret's position rides the end of the preedit run (that is

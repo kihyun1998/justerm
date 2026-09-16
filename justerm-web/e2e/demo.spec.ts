@@ -104,6 +104,7 @@ type AsyncProbe =
   | "__bgAlphaProbe"
   | "__blinkIdleProbe"
   | "__composeCaretProbe"
+  | "__preeditOriginProbe"
   | "__contextLossProbe"
   | "__cursorBlinkProbe"
   | "__disposeProbe"
@@ -2897,6 +2898,83 @@ test("the in-progress composition is drawn, and the caret rides its end (#249)",
   // this is a six-cell move, not a nudge.
   expect(p.anchorComposing).not.toBe(p.anchorIdle);
   expect(p.anchorEnded).toBe(p.anchorIdle);
+});
+
+// #911 / ADR-0028 D4: the origin a composition latches must account for the commit the widget is
+// still holding. In continuous CJK `compositionend` and the next `compositionstart` land in the same
+// millisecond and the commit leaves one deferred read later, so at the latch the frame stream has
+// not been told about the previous syllable — let alone echoed it — and `cursorAnchor` still points
+// at the cell that syllable occupies.
+//
+// Only e2e can see this, and for a second reason beyond #249's: the origin advances by the run's
+// DISPLAY WIDTH, which the widget cannot compute (`Renderer.setPreedit` returns the caret column
+// precisely because the widget has no `wcwidth`). A unit test would have to supply that width from a
+// fake renderer — a fixture drawn by the same hand it is meant to gate, on the exact axis under test.
+test("a continuous burst starts each syllable where the last one ended (#911)", async ({ page }) => {
+  await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+  await page.locator("#term").dispatchEvent("mousedown"); // focus the hidden textarea
+
+  const p = await readAsyncProbe(page, "__preeditOriginProbe");
+
+  /**
+   * Where the caret is, which is one cell past the run's end (ADR-0028 D5) and therefore names the
+   * origin: a one-syllable run puts it at `origin + 2`.
+   *
+   * Read as the most-inked cell rather than by comparing against `idle`. A composition moves TWO
+   * things — the run arrives and the caret leaves the cursor cell — so "differs from idle" also
+   * fires on the cell the caret vacated, which is the origin the previous syllable used and exactly
+   * the wrong answer here. The caret is a filled inverted cell against glyphs that are strokes, so
+   * it is the maximum by a structural margin and not a font accident (measured: 157-171 against
+   * 82 for a composed Hangul cell).
+   */
+  const caretCell = (strip: number[]): number => {
+    const at = strip.indexOf(Math.max(...strip));
+    // The strip is eight cells and the caret must be inside it. A fourth syllable would put the
+    // caret at index 8, off the end, and every assertion below would then silently read a cell of
+    // the run instead of failing — a proof that stops discriminating without stopping passing.
+    expect(at, `the caret fell off the sampled strip: ${strip}`).toBeLessThan(strip.length - 1);
+    return at;
+  };
+
+  // The demo's cursor is a CONSTANT (`CURSOR_ROW`/`CURSOR_COL`), so the frame stream reports the
+  // same cell throughout. That is what makes this an origin measurement rather than a race: any
+  // advance seen here came from the widget accounting for its own pending commits, because there is
+  // nothing else in the page that could have moved it.
+  //
+  // Two cells per syllable, not one: 안 is wide, which is the step a code-unit advance gets wrong.
+  expect(caretCell(p.burst[0]!), `first syllable, idle=${p.idle} got=${p.burst[0]}`).toBe(2);
+  expect(caretCell(p.burst[1]!), `second syllable, idle=${p.idle} got=${p.burst[1]}`).toBe(4);
+  expect(caretCell(p.burst[2]!), `third syllable, idle=${p.idle} got=${p.burst[2]}`).toBe(6);
+
+  // The harm itself, stated where the user sees it: the second syllable does not land on the cell
+  // the first one took. Compared against `idle` and not against the previous strip, so it says the
+  // cell was RESTORED rather than merely that it changed.
+  expect(p.burst[1]![1], `the first syllable's trailing cell, idle=${p.idle} got=${p.burst[1]}`)
+    .toBe(p.idle[1]);
+
+  // And the run stops at the caret. Without this the readings above would be satisfied by a repaint
+  // that happened to put its brightest cell in the right place.
+  expect(p.burst[1]!.slice(5)).toEqual(p.idle.slice(5));
+
+  // CONTROL — once the commits have drained there is nothing in flight, so the origin comes from the
+  // frame stream again and lands back at the cursor. Without this the three readings above would be
+  // satisfied just as well by a widget that counts compositions and walks right forever.
+  expect(caretCell(p.settled), `after the burst drained, got=${p.settled}`).toBe(2);
+
+  // A composition that drew nothing hands on no run end, so the latch after it goes back to the
+  // frame stream. Reaching past it for the last run that DID draw would latch a coordinate with no
+  // bound on its age — a row that has since scrolled away. This arm's own commit is in flight, so
+  // the fallback is what produces the reading rather than there being nothing to choose from.
+  expect(caretCell(p.afterAbort), `after a composition that drew nothing, got=${p.afterAbort}`)
+    .toBe(2);
+
+  // THE PREMISE, compared against the thing it predicts. Every reading above latches from the run
+  // end; this one latches from `cursorAnchor` after the engine's cursor has really been advanced by
+  // one syllable, so it is the other branch of `preeditLatch` answering the same question. The fix
+  // claims the run end is where the commit will leave the cursor — that claim is only falsifiable
+  // where the two branches can be made to answer about the same state, which is here.
+  expect(caretCell(p.echoed), `after a real one-syllable echo, got=${p.echoed}`)
+    .toBe(caretCell(p.burst[1]!));
 });
 
 /**

@@ -7,6 +7,7 @@ import {
   wheelGoesToApp,
   wheelScrollTarget,
   preeditIntent,
+  preeditLatch,
 } from "../src/terminal";
 import { StubFrameSource } from "../src/frame-source";
 import { MouseEvents, StubInputSink } from "../src/input";
@@ -452,6 +453,46 @@ describe("preeditIntent — what a compositionupdate does to the drawn run (#249
     // syllable would stay on screen for the life of the widget.
     expect(preeditIntent("", "한", origin)).toBeDefined();
     expect(Array.from(preeditIntent("", "한", origin)!.codepoints)).toEqual([]);
+  });
+});
+
+/**
+ * The origin a composition latches, when the widget is still holding the previous one's commit.
+ *
+ * `cursorAnchor` is written only by the frame stream, so it is never fresher than the last frame the
+ * engine sent — and in continuous CJK the previous syllable has not even been SENT at the moment
+ * this runs, let alone echoed. That makes it the one case where the frame stream is known to be
+ * wrong rather than merely possibly stale, and the previous run's end is what accounts for it.
+ *
+ * What this cannot see is the wiring: which predicate feeds `commitPending`, and when `lastRunEnd`
+ * is captured. Both need a DOM, and the unit suite runs in `environment: "node"` — the blind spot
+ * the composition invariant note records as measured (swap `active` for `composing` and all of this
+ * stays green). The e2e `#911` test is what gates those.
+ */
+describe("preeditLatch — where a composition starts when a commit is in flight (#911)", () => {
+  const cursor = { col: 0, row: 5 };
+  const runEnd = { col: 2, row: 5 };
+
+  it("takes the previous run's end while that commit is still in flight", () => {
+    expect(preeditLatch(cursor, runEnd, true)).toEqual(runEnd);
+  });
+
+  it("takes the frame stream's cursor once nothing is in flight", () => {
+    // The echo has landed by now, so the frame IS the better answer — and the only one that follows
+    // an application that moved the cursor somewhere the run's end cannot predict.
+    expect(preeditLatch(cursor, runEnd, false)).toEqual(cursor);
+  });
+
+  it("falls back to the cursor when the composition that just ended drew nothing", () => {
+    // A start and an end with no update in between leaves no run end. Reaching further back for one
+    // would latch a run that may be arbitrarily old — a row that has since scrolled away.
+    expect(preeditLatch(cursor, undefined, true)).toEqual(cursor);
+  });
+
+  it("has nothing to latch before the first frame", () => {
+    expect(preeditLatch(undefined, undefined, false)).toBeUndefined();
+    // And a pending commit does not invent one: `preeditIntent` draws nothing without an origin.
+    expect(preeditLatch(undefined, undefined, true)).toBeUndefined();
   });
 });
 
