@@ -184,7 +184,7 @@ fn a_match_clamped_onto_a_trailing_spacer_covers_the_whole_glyph() {
 // `alacritty_terminal/src/selection.rs:332`, `:362` @ `852e971`) ahead of the spacer widening at
 // `term/mod.rs:583`; xterm.js leaves `selectionEnd` undefined on a single click
 // (`SelectionService.ts:555` @ `699f553`), so the resolved end is the start; ghostty creates no
-// selection at all for a single click (`SelectionGesture.zig:688` @ `e6e26e1`).
+// selection at all for a single click (`src/terminal/SelectionGesture.zig:688` @ `e6e26e1`, `.cell => null`).
 // ---------------------------------------------------------------------------
 
 /// Each case is one of the two inner halves — the lead's right half and the spacer's left half — the
