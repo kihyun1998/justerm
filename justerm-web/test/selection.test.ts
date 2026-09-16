@@ -445,8 +445,16 @@ describe("SelectionController — middle-click paste & primary selection", () =>
   });
 });
 
-describe("SelectionController — primary selection on drag complete", () => {
+describe("SelectionController — primary selection on a settled gesture (#914)", () => {
   const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  function primaryOf(port: StubSelectionPort): { ctrl: SelectionController; primary: string[] } {
+    const primary: string[] = [];
+    const ctrl = new SelectionController(port, () => GEOM, {
+      onPrimarySelection: (t) => primary.push(t),
+    });
+    return { ctrl, primary };
+  }
 
   // On a completed drag selection the controller offers the text for the X11
   // primary buffer (xterm `onLinuxMouseSelection`). It reuses the copy path, so
@@ -454,10 +462,7 @@ describe("SelectionController — primary selection on drag complete", () => {
   // (only on Linux) writes it to the primary buffer.
   it("offers the selected text for the primary buffer when a drag completes", async () => {
     const port = new StubSelectionPort();
-    const primary: string[] = [];
-    const ctrl = new SelectionController(port, () => GEOM, {
-      onPrimarySelection: (t) => primary.push(t),
-    });
+    const { ctrl, primary } = primaryOf(port);
 
     ctrl.mouseDown(leftHalf(2, 1), 1);
     ctrl.mouseMove(rightHalf(6, 1)); // a real drag
@@ -468,21 +473,99 @@ describe("SelectionController — primary selection on drag complete", () => {
     expect(primary).toEqual(["picked text"]);
   });
 
-  // A bare click (no drag) is not a selection — nothing is offered to primary,
-  // so a stray click never clobbers the primary buffer.
-  it("does not offer anything to primary on a bare click", async () => {
+  // The gesture that has no motion at all. A double-click anchors a `word`
+  // selection and a triple-click a `line` one, and both release without the
+  // pointer ever moving — which is the whole case #914 is about.
+  it.each([
+    ["a double-click", 2, "word"],
+    ["a triple-click", 3, "line"],
+  ] as const)("offers the selected text after %s", async (_name, detail, ty) => {
     const port = new StubSelectionPort();
-    const primary: string[] = [];
-    const ctrl = new SelectionController(port, () => GEOM, {
-      onPrimarySelection: (t) => primary.push(t),
-    });
+    const { ctrl, primary } = primaryOf(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), detail);
+    port.textValue = "clicked text";
+    ctrl.mouseUp(leftHalf(2, 1));
+    await flush();
+
+    // The gesture really did select — the guard is about the report, not the selection.
+    expect(port.calls).toContainEqual({ kind: "begin", row: 1, col: 2, side: "left", ty });
+    expect(primary).toEqual(["clicked text"]);
+  });
+
+  // Shift+click extends the live selection without any motion either. xterm's
+  // incremental-click path ends in the same `refresh(true)` as every other press.
+  it("offers the selected text after a shift+click extends an existing selection", async () => {
+    const port = new StubSelectionPort();
+    const { ctrl, primary } = primaryOf(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), 1); // anchor
+    ctrl.mouseMove(rightHalf(4, 1));
+    port.textValue = "first";
+    ctrl.mouseUp(rightHalf(4, 1));
+    await flush();
+
+    ctrl.mouseDown(ev(8 * 10 + 8, 1 * 20 + 5, { shiftKey: true }), 1); // extend, no motion
+    port.textValue = "first and more";
+    ctrl.mouseUp(ev(8 * 10 + 8, 1 * 20 + 5, { shiftKey: true }));
+    await flush();
+
+    expect(primary).toEqual(["first", "first and more"]);
+  });
+
+  // A bare click never clobbers the primary buffer — and this is the assertion
+  // that changed shape in #914. It used to hold because the controller checked
+  // whether the pointer had moved; it now holds because the *engine* reports a
+  // collapsed selection as empty text, which is what all three references gate
+  // on. The stub is set to what a real backend returns here: `selection_text`
+  // resolves a begin-only anchor to a zero-width range.
+  it("offers nothing to primary on a bare click, because the engine reports no text", async () => {
+    const port = new StubSelectionPort();
+    const { ctrl, primary } = primaryOf(port);
 
     ctrl.mouseDown(leftHalf(2, 1), 1);
-    port.textValue = "should not leak";
+    port.textValue = ""; // a collapsed selection, as core reports it
     ctrl.mouseUp(leftHalf(2, 1));
     await flush();
 
     expect(primary).toEqual([]);
+  });
+
+  // The alt-click that moves the cursor trades the selection for a cursor move
+  // and returns before the primary path — it must keep doing so now that the
+  // motion flag no longer guards that path.
+  it("offers nothing to primary when a quick alt-click moves the cursor", async () => {
+    const port = new StubSelectionPort();
+    const primary: string[] = [];
+    const moved: { row: number; col: number }[] = [];
+    const ctrl = new SelectionController(port, () => GEOM, {
+      onPrimarySelection: (t) => primary.push(t),
+      onMoveCursor: (c) => moved.push(c),
+      isAtBottom: () => true,
+    });
+
+    ctrl.mouseDown(ev(2 * 10 + 2, 1 * 20 + 5, { altKey: true, timeStamp: 0 }), 1);
+    port.textValue = "should not leak";
+    ctrl.mouseUp(ev(2 * 10 + 2, 1 * 20 + 5, { altKey: true, timeStamp: 10 }));
+    await flush();
+
+    expect(moved).toEqual([{ row: 1, col: 2 }]);
+    expect(primary).toEqual([]);
+  });
+
+  // The copy path's NBSP normalization applies to a click selection too — it is
+  // the same path, and asserting it only on the drag would leave the claim
+  // resting on the gesture that already worked.
+  it("normalizes NBSP in the text offered after a double-click", async () => {
+    const port = new StubSelectionPort();
+    const { ctrl, primary } = primaryOf(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), 2);
+    port.textValue = `a${String.fromCharCode(0xa0)}b`;
+    ctrl.mouseUp(leftHalf(2, 1));
+    await flush();
+
+    expect(primary).toEqual(["a b"]);
   });
 });
 
