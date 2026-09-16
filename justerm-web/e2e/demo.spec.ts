@@ -105,6 +105,7 @@ type AsyncProbe =
   | "__blinkIdleProbe"
   | "__composeCaretProbe"
   | "__preeditOriginProbe"
+  | "__scrolledPreeditProbe"
   | "__contextLossProbe"
   | "__cursorBlinkProbe"
   | "__disposeProbe"
@@ -3058,6 +3059,61 @@ test("a continuous burst starts each syllable where the last one ended (#911)", 
   // where the two branches can be made to answer about the same state, which is here.
   expect(caretCell(p.echoed), `after a real one-syllable echo, got=${p.echoed}`)
     .toBe(caretCell(p.burst[1]!));
+});
+
+// #921 / ADR-0028 D4 — the origin a composition latches has to be a cell the cursor is ACTUALLY at.
+// While the view is scrolled up core reports `cursor_visible: false` (#48, a drawing decision), and
+// the widget used to gate its retained cursor cell on that bit — so the anchor froze for the whole
+// excursion while the cursor went on moving. A composition begun on the way back latched the frozen
+// cell and, because the origin never moves again (D4), drew the entire composition there.
+//
+// The middle condition is the one the issue body left out and this test isolates: with the cursor
+// stationary the frozen anchor is accidentally right. `noExcursion` holds the cursor motion and the
+// composition fixed and removes only the excursion, so a reading that came from the motion alone
+// cannot be mistaken for a reading that came from the freeze.
+test("a composition begun after a scrolled-up excursion starts at the live cell (#921)", async ({
+  page,
+}) => {
+  await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+  await page.locator("#term").dispatchEvent("mousedown"); // focus the hidden textarea
+
+  const p = await readAsyncProbe(page, "__scrolledPreeditProbe");
+
+  // The caret is the maximum by a structural margin — a filled inverted cell against glyphs that
+  // are strokes — and it rides one cell past the run's end (ADR-0028 D5), so a one-syllable run
+  // names its own origin. Same reading as the #911 probe above, for the same reason.
+  const caretCell = (strip: number[]): number => {
+    const at = strip.indexOf(Math.max(...strip));
+    expect(at, `the caret fell off the sampled strip: ${strip}`).toBeLessThan(strip.length - 1);
+    return at;
+  };
+
+  // BOTH PRECONDITIONS, asserted rather than assumed. Without the first the demo's fake never
+  // produces the state under test; without the second the synthetic `keyCode: 229` failed to reach
+  // the snap and the reading below would come from a view that simply never came back.
+  expect(p.hiddenWhileAway, "the fake must report the caret hidden while scrolled up").toBe(true);
+  expect(p.snappedBack, "the IME-swallowed keydown must have requested the bottom (#913)").toBe(true);
+
+  // CONTROL FIRST: the cursor moved four cells, so a composition starting now draws at +4 and the
+  // caret lands at +6. This is the same measurement as the arm below with the excursion removed —
+  // if it ever stops holding, the arm below is measuring the probe, not the widget.
+  expect(caretCell(p.noExcursion), `control, no excursion: idle=${p.idle} got=${p.noExcursion}`)
+    .toBe(6);
+
+  // THE THIRD CONDITION, which the issue's body omitted: an excursion alone does not do it. With
+  // the cursor stationary the frozen cell is still the right cell, so this reads 2 both before and
+  // after the fix — it is a side condition on the fix, and the reason the arm below needs its own
+  // cursor motion to mean anything.
+  expect(
+    caretCell(p.excursionNoMotion),
+    `an excursion with a stationary cursor: idle=${p.idle} got=${p.excursionNoMotion}`,
+  ).toBe(2);
+
+  // THE CLAIM. Before the fix this reads 2 — the cell the cursor left when the view went away.
+  expect(
+    caretCell(p.afterExcursion),
+    `after an excursion the cursor moved during: idle=${p.idle} got=${p.afterExcursion}`,
+  ).toBe(6);
 });
 
 /**

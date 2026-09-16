@@ -468,7 +468,12 @@ export class Terminal {
   /** The cursor cell the latest frame reported, retained so the anchor can be re-synced at a
    * point of use without waiting for a frame (#631). Not cleared when the cursor hides: an
    * application can hide the caret and the user can still open an IME, and re-anchoring at the
-   * last known cell beats leaving the anchor wherever the geometry used to put it. */
+   * last known cell beats leaving the anchor wherever the geometry used to put it.
+   *
+   * **Written by {@link Terminal.track}, with the rest of the retained frame state, and never from
+   * inside a writer that can decline (#921).** The same sentence above is why: if the caret hiding
+   * must not take the anchor away, it must not take its freshness away either, and a guard placed
+   * in front of the assignment does exactly that one step further in. */
   private cursorAnchor: TextareaAnchor | undefined;
   /** The composition text currently drawn (#249). Held to drop the settling `compositionupdate`
    * a real IME emits once per syllable with unchanged data — see {@link Terminal.showPreedit}. */
@@ -592,12 +597,26 @@ export class Terminal {
     o.onScroll(0);
   }
 
-  /** Retain the scroll/routing state each frame carries; drop the wheel remainder
+  /** Retain the state each frame carries — scroll, routing, and the cursor cell the IME anchor is
+   * placed from; drop the wheel remainder
    * on a buffer switch (alt-screen), so a fresh screen doesn't inherit a stale
-   * trackpad fraction. Ours, not xterm.js's: its `MouseService.reset()` runs only on a
+   * trackpad fraction.
+   *
+   * **Every write here is unconditional on purpose (#921).** What a frame says about *drawing* —
+   * `cursorVisible` is `cursor.visible && display_offset == 0`, a decision about a caret that would
+   * otherwise ink over scrollback (#48) — never decides whether the widget keeps what that frame
+   * *said*. The coordinates stay true while the caret is hidden and are exactly the cell the cursor
+   * holds once the view returns, which is pinned on the producing side in
+   * `justerm-core/tests/cursor_coordinate_while_hidden.rs`. Ours, not xterm.js's: its `MouseService.reset()` runs only on a
    * terminal reset (`CoreBrowserTerminal.reset`, 699f553), never on a buffer switch. */
   private track(frame: DecodedFrame): void {
     this.mask = frame.mouseWantedEvents ?? 0;
+    // The IME anchor's cell (#921). Here, with the other retained state, rather than inside
+    // `positionTextarea` below — retention is unconditional and the DOM write is not, and holding
+    // both in one function is what let a *drawing* guard sit in front of a *data* assignment.
+    if (frame.cursorRow !== undefined) {
+      this.cursorAnchor = { col: frame.cursorCol ?? 0, row: frame.cursorRow };
+    }
     this.displayOffset = frame.displayOffset ?? 0;
     this.scrollbackLen = frame.scrollbackLen ?? 0;
     this.rows = frame.rows;
@@ -775,7 +794,11 @@ export class Terminal {
 
   /** Move the hidden textarea over the cursor cell so the IME candidate window
    * appears there (xterm's updateCompositionElements). Geometry from the same
-   * source the input uses; skipped when the cursor is absent/hidden.
+   * source the input uses; **the DOM write** is skipped when the cursor is absent/hidden — the
+   * retained cell it would have been written from is {@link Terminal.track}'s and is kept either
+   * way (#921). xterm.js bails on the same question (`_syncTextArea`, `!isCursorInViewport`) and
+   * can afford to bail on both at once because it holds no retained cell at all: it positions from
+   * the live `buffer.x`/`.y` every time, so a skipped write is one skipped write.
    *
    * Only touches the DOM (a layout read via `getGeometry` + two style writes) when the cursor
    * actually moved, not on every output frame. That cache is keyed on the *coordinate*, so it
@@ -783,7 +806,6 @@ export class Terminal {
   private positionTextarea(frame: DecodedFrame): void {
     if (frame.cursorRow === undefined || frame.cursorVisible === false) return;
     const cursor = { col: frame.cursorCol ?? 0, row: frame.cursorRow };
-    this.cursorAnchor = cursor;
     this.applyTextareaAnchor(textareaMove(cursor, this.textareaCell, false, this.composition?.composing ?? false));
   }
 

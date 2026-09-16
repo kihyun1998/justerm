@@ -45,8 +45,10 @@ reading that one. The same shape as an absolute-index walk being rediscovered th
   on. The rejected half is recorded below under *what is not part of this fact*
 - [widget lifecycle](../territory/widget-lifecycle.md) — the anchor is re-read at the moments something
   reads it (composition start #631, focus), and frozen for **every** writer while a composition is open
-  (#637 the frame stream, #649 the forced re-sync). `Terminal.focus`, `syncTextareaAnchor`,
-  `positionTextarea`, `textareaMove` in `justerm-web/src/terminal.ts`
+  (#637 the frame stream, #649 the forced re-sync) — while the *retained cell* those writers place
+  from is kept on every frame regardless, in `Terminal.track` with the rest of the frame state
+  (#921). `Terminal.focus`, `syncTextareaAnchor`, `positionTextarea`, `textareaMove`, `track` in
+  `justerm-web/src/terminal.ts`
 - [accessibility](../territory/accessibility.md) — `AccessibilityController.onKey` must push a
   committed IME text intent **per code point**, because one commit arrives as a single multi-unit
   intent while `dedupTyped` drains one code point per echoed output char (#153 G9). And the textarea is
@@ -79,6 +81,18 @@ composition it never saw, so nothing throws and no test on the core side can fai
   committed (#911). The fix takes the previous composition's own run end while a commit is in flight;
   the general shape is that **a consumer holding unsent input cannot read its own echo for a
   coordinate**, and the only surfaces that can answer are the ones that know what it is holding.
+- **The latch turns any staleness in its source into a composition-long wrong, so a defect that is
+  not about compositions at all surfaces as one (#921).** The anchor stopped being updated while the
+  view was scrolled up, because the widget gated its *retained* cursor cell on `cursorVisible` — a
+  bit core sets for **drawing** (`cursor.visible && display_offset == 0`, #48). Nothing in that has
+  anything to do with an IME. But D4 latches the origin once and never re-reads it, so a source that
+  was stale for one instant became a preedit drawn at the wrong cell for the composition's entire
+  life. **The general form: every writer of the anchor is a composition surface, whatever it thinks
+  it is about** — which is the fourth distinct way the anchor has been wrong at the latch (#631
+  geometry, #637 the frame stream, #911 unsent input, #921 a frozen source), and the first with no
+  composition in its causal chain. Measured in a browser rather than traced: with the cursor moved
+  four cells during the excursion, the composition's caret landed at the cell the view left rather
+  than the cell the cursor holds, while the same sequence without the excursion landed correctly.
 - **Reading a two-question predicate as one question.** The guard is keyed on
   `CompositionController.composing` (`isComposing`), *not* `active` (`isComposing ||
   isSendingComposition`). `active` outlives the candidate window by one deferred commit read, and a

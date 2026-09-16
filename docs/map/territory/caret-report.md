@@ -30,6 +30,14 @@ though one is derived from the other.
   reset a blink that no reference ties to input.
 - **Hidden while scrolled up.** The frame reports `cursor_visible && display_offset == 0`: a caret
   drawn on a frozen viewport would sit at a position the user is not looking at.
+- **That bit gates the DRAWING and nothing else — `cursor_row`/`cursor_col` stay true while it is
+  false.** They are grid coordinates sampled in the same `Term::frame` body and they do not move with
+  `display_offset`, so what the wire carries while the caret is hidden is already the cell the cursor
+  occupies once the view returns to the bottom. **A consumer that reads the bit as "this coordinate
+  is not usable" discards an answer it was handed**, and silently: nothing errors, and with a
+  stationary cursor the value it keeps instead is accidentally right. That is #921, where the IME
+  anchor froze for a whole scrolled-up excursion. Pinned on this side by
+  `justerm-core/tests/cursor_coordinate_while_hidden.rs`, because the consumer's fix depends on it.
 - **Position rides the header**, not the cell content, because the caret moves on almost every frame
   and a consumer cannot derive it from cell damage.
 - **The engine has no caret primitive.** How it is drawn — cell inversion, a native overlay quad — is
