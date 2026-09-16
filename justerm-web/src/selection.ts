@@ -194,6 +194,10 @@ export class SelectionController {
   private readonly onPaste: () => void;
   /** Undefined when no consumer wants primary — then the text query is skipped. */
   private readonly onPrimarySelection: ((text: string) => void) | undefined;
+  private readonly onSelectionChange: () => void;
+  /** The anchor last reported to {@link onSelectionChange}, as `row,col,side`, so a pointer that
+   * moves within one cell reports once. Empty means nothing has been reported yet. */
+  private reportedAt = "";
 
   constructor(
     private readonly port: SelectionPort,
@@ -205,6 +209,7 @@ export class SelectionController {
       isAtBottom?: () => boolean;
       onPaste?: () => void;
       onPrimarySelection?: (text: string) => void;
+      onSelectionChange?: () => void;
     } = {},
   ) {
     this.onScroll = opts.onScroll ?? (() => {});
@@ -215,6 +220,27 @@ export class SelectionController {
     this.isAtBottom = opts.isAtBottom ?? (() => true);
     this.onPaste = opts.onPaste ?? (() => {});
     this.onPrimarySelection = opts.onPrimarySelection;
+    this.onSelectionChange = opts.onSelectionChange ?? (() => {});
+  }
+
+  /**
+   * Announce that the selection moved, at most once per anchor cell. `at` is the anchor just sent
+   * to the port, or `undefined` for a change that has no anchor — a clear, or an auto-scroll step.
+   *
+   * An anchorless change always reports. That is not a shortcut: on an auto-scroll drag the pointer
+   * is held still outside the viewport, so {@link SelectionController.tick} extends to the same
+   * `(edgeRow, lastCol, lastSide)` every tick while the selection grows under it, and keying those
+   * ticks on the anchor would report the first and silence the rest of the drag.
+   */
+  private reportChange(at?: { row: number; col: number; side: Side }): void {
+    if (at) {
+      const key = `${at.row},${at.col},${at.side}`;
+      if (key === this.reportedAt) return;
+      this.reportedAt = key;
+    } else {
+      this.reportedAt = "";
+    }
+    this.onSelectionChange();
   }
 
   /**
@@ -230,6 +256,7 @@ export class SelectionController {
     if (!this.hasSelection || this.dragging) return;
     this.hasSelection = false;
     this.port.clear();
+    this.reportChange();
   }
 
   /**
@@ -265,6 +292,9 @@ export class SelectionController {
       this.hasSelection = true;
     }
     this.dragging = true;
+    // The de-dup baseline is set here, at the press, rather than inherited: `lastCol` / `lastSide`
+    // are written only by `mouseMove`, so at this point they still hold the previous gesture's.
+    this.reportChange({ row, col, side });
   }
 
   /** Pointer motion. Extends the focus only while a drag is live. When the
@@ -316,6 +346,7 @@ export class SelectionController {
         : 0;
     if (this.dragScrollAmount === 0) {
       this.port.extend(row, col, side);
+      this.reportChange({ row, col, side });
     }
   }
 
@@ -344,6 +375,8 @@ export class SelectionController {
     this.onScroll(this.dragScrollAmount);
     const edgeRow = this.dragScrollAmount > 0 ? Math.max(0, this.getRows() - 1) : 0;
     this.port.extend(edgeRow, this.lastCol, this.lastSide);
+    // Anchorless on purpose — see {@link SelectionController.reportChange}.
+    this.reportChange();
   }
 
   /** A mouse release. Ends the drag; the selection itself stays (for copy).
@@ -367,6 +400,7 @@ export class SelectionController {
       if (!geom) return;
       // The empty block selection begun on mousedown is not real — drop it.
       this.port.clear();
+      this.reportChange();
       const { row, col } = cellAndSide(ev, geom);
       this.onMoveCursor({ row, col });
       return;
@@ -377,6 +411,11 @@ export class SelectionController {
     // collapsed anchor the engine reports as empty text, offers nothing without being tested for
     // here. `dragged` is deliberately not consulted — it answers "did the pointer move", which is a
     // different question and the one that made a click selection unreportable (#914).
+    //
+    // `hasSelection` is presently unreachable-false at this line and dropping it reddens nothing:
+    // the release above returns unless a press began, every press past the box check leaves it
+    // true, and `clear()` — its only writer of `false` — refuses while a drag is live. Kept as the
+    // belt for a future path that clears mid-gesture, but it is not what makes a bare click silent.
     if (this.onPrimarySelection && this.hasSelection) {
       const sink = this.onPrimarySelection;
       void copySelection(this.port, async (text) => sink(text));

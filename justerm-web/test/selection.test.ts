@@ -1071,3 +1071,149 @@ describe("SelectionController.clear — the typing drop (#913)", () => {
     expect(port.calls).toEqual([]);
   });
 });
+
+// The second selection-out signal (#914). Every reference keeps it apart from the commit signal
+// above: xterm.js `onSelectionChange` is `IEvent<void>` beside `onLinuxMouseSelection`
+// (`IEvent<string>`), and ghostty notifies `.selection_changed` from `setSelection` while
+// committing through `setSelectionAndCopy`. It carries no text on purpose — `SelectionPort.text()`
+// round-trips to the backend, so a text-carrying signal at this firing rate is a round-trip per
+// pointer move.
+describe("SelectionController — the selection-changed signal (#914)", () => {
+  function changed(port: StubSelectionPort, opts: Record<string, unknown> = {}) {
+    let changes = 0;
+    const ctrl = new SelectionController(port, () => GEOM, {
+      onSelectionChange: () => changes++,
+      ...opts,
+    });
+    return { ctrl, count: () => changes };
+  }
+
+  it.each([
+    ["a drag", 1, true],
+    ["a double-click", 2, false],
+    ["a triple-click", 3, false],
+  ] as const)("reports a change for %s", (_name, detail, withMotion) => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), detail);
+    if (withMotion) ctrl.mouseMove(rightHalf(6, 1));
+    ctrl.mouseUp(withMotion ? rightHalf(6, 1) : leftHalf(2, 1));
+
+    expect(count()).toBeGreaterThan(0);
+  });
+
+  // The clear is the transition the commit signal structurally cannot deliver — it skips empty
+  // selections, which is exactly what a cleared one is.
+  it("reports a change when typing drops the selection", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), 1);
+    ctrl.mouseMove(rightHalf(6, 1));
+    ctrl.mouseUp(rightHalf(6, 1));
+    const before = count();
+    ctrl.clear();
+
+    expect(count()).toBe(before + 1);
+  });
+
+  // `clear()` is guarded on there being a selection, and the signal must not fire where the
+  // controller did nothing — otherwise a consumer sees a change per keystroke for the pane's life.
+  it("reports nothing when clear() no-ops because there is no selection", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port);
+
+    ctrl.clear();
+
+    expect(count()).toBe(0);
+    expect(port.calls).toEqual([]); // control: the controller really did nothing
+  });
+
+  // The alt-click cursor move drops the empty block selection begun at the press.
+  it("reports a change when the alt-click cursor move drops its selection", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port, { onMoveCursor: () => {}, isAtBottom: () => true });
+
+    ctrl.mouseDown(ev(52, 65, { altKey: true, timeStamp: 0 }), 1);
+    const afterPress = count();
+    ctrl.mouseUp(ev(52, 65, { altKey: true, timeStamp: 10 }));
+
+    expect(port.calls).toContainEqual({ kind: "clear" }); // control: it really cleared
+    expect(count()).toBe(afterPress + 1);
+  });
+
+  // The signal carries no text, and must not go and fetch any: at this firing rate a query per
+  // change is a backend round-trip per pointer move.
+  it("never queries the engine for text", () => {
+    const port = new StubSelectionPort();
+    let textCalls = 0;
+    const realText = port.text.bind(port);
+    port.text = () => {
+      textCalls++;
+      return realText();
+    };
+    const { ctrl } = changed(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), 2);
+    ctrl.mouseMove(rightHalf(6, 1));
+    ctrl.mouseUp(rightHalf(6, 1));
+    ctrl.clear();
+
+    expect(textCalls).toBe(0);
+  });
+
+  // De-dup granularity. xterm compares the resolved endpoints before firing; `mouseMove` here runs
+  // on every pointer event, so without this the signal fires per pixel.
+  it("reports one change for two moves inside one cell, and another when the cell changes", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), 1);
+    const afterPress = count();
+    ctrl.mouseMove(ev(6 * 10 + 2, 1 * 20 + 5)); // cell 6, left half
+    ctrl.mouseMove(ev(6 * 10 + 3, 1 * 20 + 7)); // same cell, same side — a different pixel
+    expect(count()).toBe(afterPress + 1);
+
+    ctrl.mouseMove(ev(6 * 10 + 8, 1 * 20 + 5)); // same cell, RIGHT half — a different anchor
+    expect(count()).toBe(afterPress + 2);
+
+    ctrl.mouseMove(ev(7 * 10 + 8, 1 * 20 + 5)); // a different cell
+    expect(count()).toBe(afterPress + 3);
+  });
+
+  // The de-dup must not cover `tick()`. On an auto-scroll drag the pointer is held still outside
+  // the viewport, so `tick` extends to `(edgeRow, lastCol, lastSide)` — all three identical every
+  // tick — while the selection genuinely grows, because the content scrolls underneath it. A
+  // coordinate-keyed de-dup applied here would silence the signal for the whole drag-scroll.
+  it("reports a change on every auto-scroll tick, though the extend coordinate never changes", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port, { getRows: () => 24, onScroll: () => {} });
+
+    ctrl.mouseDown(leftHalf(2, 1), 1);
+    ctrl.mouseMove(ev(65, 600, { buttons: 1 })); // below the 480px viewport → auto-scroll armed
+    const armed = count();
+    ctrl.tick();
+    ctrl.tick();
+    ctrl.tick();
+
+    // The window this test lives in has to exist, or it passes by never auto-scrolling at all.
+    const extends_ = port.calls.filter((c) => c.kind === "extend");
+    expect(extends_.slice(-3)).toEqual([extends_.at(-1), extends_.at(-1), extends_.at(-1)]);
+    expect(count()).toBe(armed + 3);
+  });
+
+  it("works unchanged when no consumer wants the signal", () => {
+    const port = new StubSelectionPort();
+    const ctrl = new SelectionController(port, () => GEOM);
+
+    ctrl.mouseDown(leftHalf(2, 1), 1);
+    ctrl.mouseMove(rightHalf(6, 1));
+    ctrl.mouseUp(rightHalf(6, 1));
+
+    expect(port.calls).toEqual([
+      { kind: "begin", row: 1, col: 2, side: "left", ty: "char" },
+      { kind: "extend", row: 1, col: 6, side: "right" },
+    ]);
+  });
+});
