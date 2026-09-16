@@ -93,6 +93,16 @@ composition it never saw, so nothing throws and no test on the core side can fai
   composition in its causal chain. Measured in a browser rather than traced: with the cursor moved
   four cells during the excursion, the composition's caret landed at the cell the view left rather
   than the cell the cursor holds, while the same sequence without the excursion landed correctly.
+- **Writing a grid coordinate where a viewport one is required (#921).** The engine names the cursor
+  by its row in the **grid**; the renderer draws the **viewport**, and the two differ by
+  `display_offset` — at offset `d` a grid row `r` is on screen only while `r < rows - d`, and it is
+  shown at row `r + d`. A composition is where this surfaces, because a preedit is the one thing
+  drawn from a coordinate the engine gave for something else. Measured: a run whose cell was being
+  shown on row 35 was drawn on row 33. The mapping now lives in the widget, with the frame's offset
+  rather than the widget's requested one — #913 advances the latter to 0 the moment an
+  IME-swallowed key asks for the bottom, while the screen still shows the scrolled frame. **The
+  sibling writer still has it**: `syncTextareaAnchor` at `compositionstart` writes the raw grid row,
+  overwritten one event later by the first update, which is #917's window and its measurement.
 - **Reading a two-question predicate as one question.** The guard is keyed on
   `CompositionController.composing` (`isComposing`), *not* `active` (`isComposing ||
   isSendingComposition`). `active` outlives the candidate window by one deferred commit read, and a

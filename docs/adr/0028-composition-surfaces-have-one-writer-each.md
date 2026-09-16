@@ -331,6 +331,17 @@ this layer — and it does not latch either: `updateCompositionElements` positio
 (D4, above), taken for #637's reasons which neither reference shares. The rule here is derived from
 those reasons, not counted off the references.
 
+**D5 also covers the drawn run, which it was not applied to until #921 (2026-09-16).** The clause
+below is written about the caret and its reason is not the caret's: *frames keep arriving and each
+one carries the engine's cursor, which cannot know about a preedit.* The run has the same exposure
+one surface over — its origin is a **grid** row while the renderer draws the **viewport**, so a
+scroll moves the row out from under a run that was written once and never re-aimed. Measured: with
+the cursor at grid row 33 of 37 and the view up 2, the run was drawn on viewport row 33 while row
+35 was showing that cell. The run is now re-asserted per frame like the caret, mapped through the
+frame's display offset, and withheld when the mapped row is off the bottom until a frame can place
+it. **Nothing about the decision changed** — this is the clause reaching the surface it always
+covered, recorded because "does D5 include the run?" is otherwise re-derived, and was.
+
 **D5 — Browser ownership governs position and extent. It does not govern visibility.**
 A composition may decide *where* things are and *how far they reach*; it may not reveal something the
 application asked to hide. Concretely: the caret's position rides the end of the preedit run (that is

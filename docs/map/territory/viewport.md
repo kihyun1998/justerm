@@ -111,6 +111,11 @@ ADR-0013 assumes — who holds the scroll position at all — is still uncompare
   gating a *retained coordinate* on `cursorVisible`, a bit about **drawing**, so the retention moved
   to `Terminal.track` where every other frame-derived value already lives ungated. Adjacent to #917,
   which is untouched — a different root (two surfaces disagreeing at the latch, not a stale source).
+  **Its follow-up found the sharper half**: the origin is a *grid* row and the renderer draws the
+  *viewport*, so a run drawn during an excursion landed `display_offset` rows above its own cell
+  (measured: drawn on row 33 while row 35 showed the cell) and, written once, kept that row while
+  the view moved. Now mapped and re-asserted per frame — ADR-0028 D5's clause reaching the surface
+  it always covered.
 - **`scrollsToBottomOnInput` excludes bare modifiers, not "keys that write nothing".** `keyOf` maps
   every unrecognised DOM key name to a `char`, so `ContextMenu`, `Pause`, `BrowserBack`, `Copy` and
   the rest of the non-writing tail still snap. The widget cannot ask the real question — core owns
