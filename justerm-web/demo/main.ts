@@ -4391,6 +4391,15 @@ window.__scrolledPreeditProbe = async (): Promise<ScrolledPreeditProbe> => {
 
   const settle = (): Promise<unknown> => new Promise((r) => setTimeout(r, 0));
 
+  // Pad until there is really something to scroll into, as this file's other scrolled probes do
+  // (`__rulerAnchorProbe` and its two siblings). Without it `maxOffset()` is 0 this early in the
+  // page's life, and the arm below would hand the widget `{ displayOffset: 3, scrollbackLen: 0 }` —
+  // a pair `Term::frame` cannot produce and no wheel gesture on this page could reach. The code
+  // under test only asks `displayOffset !== 0`, so the readings would be identical either way; the
+  // point is that a probe should stage a state the engine can actually be in.
+  const savedLen = log.length;
+  while (maxOffset() < 3) log.push(`scrolled-preedit pad ${log.length}`);
+
   probeCursorCol = CURSOR_COL;
   displayOffset = 0;
   const idle = strip();
@@ -4399,9 +4408,14 @@ window.__scrolledPreeditProbe = async (): Promise<ScrolledPreeditProbe> => {
   displayOffset = 3; // the user wheels up
   render();
   const hiddenWhileAway = viewportFrame().cursorVisible === false;
-  // Output arrives while the user is away and moves the cursor. A real engine emits these frames
-  // — measured in `justerm-core/tests/cursor_coordinate_while_hidden.rs` — while this demo's own
-  // append is throttled at `displayOffset !== 0`, so the probe supplies the frame the engine would.
+  // Output arrives while the user is away and moves the cursor. **Whether such a frame is SENT is
+  // the consumer's cadence, not the engine's**, and the two artifacts answer different halves:
+  // `justerm-core/tests/cursor_coordinate_while_hidden.rs` shows the header stays live while the
+  // caret is hidden, and penterm's `NativeEngine` shows a consumer sending it — `feed` sets
+  // `dirty` unconditionally and `tick` encodes `engine.frame()` whenever `dirty`, with no
+  // `display_offset` term. Core's *damage* is empty while scrolled up (`docs/architecture.md`), so
+  // a consumer that skips a send on empty damage would not, and this demo is exactly that consumer
+  // (`appendTick` renders only at offset 0). Hence the probe supplies the frame.
   probeCursorCol = CURSOR_COL + 4;
   render();
   // The echo is deferred, which is what frame mode's round trip through the consumer, the PTY and
@@ -4450,6 +4464,7 @@ window.__scrolledPreeditProbe = async (): Promise<ScrolledPreeditProbe> => {
 
   probeCursorCol = CURSOR_COL;
   displayOffset = 0;
+  log.length = savedLen;
   render();
   return { idle, afterExcursion, noExcursion, excursionNoMotion, hiddenWhileAway, snappedBack };
 };

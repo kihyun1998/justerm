@@ -401,7 +401,7 @@ describe("textareaMove — the mid-composition guard (#637)", () => {
 
   it("refuses a FORCED re-sync too, so a pointer-down cannot re-anchor mid-composition (#649)", () => {
     // `element` mousedown → onDown → Terminal.focus() → syncTextareaAnchor(force: true). The retained
-    // cursor cell keeps advancing during a composition (positionTextarea latches it before the guard),
+    // cursor cell keeps advancing during a composition (`track` retains it unconditionally, #921),
     // so a forced move here lands on exactly the superseded cell #637 exists to stop using.
     expect(textareaMove({ col: 2, row: 8 }, "2,5", true, true)).toBeUndefined();
   });

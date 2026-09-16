@@ -452,7 +452,8 @@ portable here, for a reason that has nothing to do with the feature.
 
 ### The IME anchor: nobody caches it, and xterm shares our staleness (#631, verified 2026-07-30; #637 adjudicated 2026-07-30; #649 measured 2026-07-31)
 
-Read this before touching `Terminal.positionTextarea` or adding another reader of the cell. The
+Read this before touching `Terminal.positionTextarea` (the DOM write) or `Terminal.track` (which
+retains the cell itself since #921), or adding another reader of the cell. The
 headline is a **negative** result about the reference, which is why it is worth a section: the
 obvious assumption — "xterm must invalidate this properly, go copy that" — is false, and copying the
 *visible* half of what xterm does (no cache, re-read per frame) imports a cost xterm does not pay.

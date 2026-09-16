@@ -46,6 +46,45 @@ fn the_coordinate_keeps_moving_while_the_caret_is_hidden() {
     );
 }
 
+/// The OTHER term of the predicate. `cursor_visible` is a conjunction, and until #921 the consumer
+/// consulted the whole of it — so the scrolled-up tests above, which only ever move
+/// `display_offset`, cannot see a regression in the `cursor.visible` half. They stay green against
+/// a `cursor_row` that is zeroed whenever DECTCEM is off, and the consumer that now retains on
+/// every frame would anchor the IME at row 0 for the life of any application that hides its caret.
+#[test]
+fn the_coordinate_survives_dectcem_too() {
+    let mut t = scrolled_engine();
+    t.feed(b"[?25l"); // DECTCEM off: the application hides its caret, at the bottom
+    t.feed(
+        b"
+xyz",
+    );
+    let hidden = t.frame();
+    assert!(
+        !hidden.cursor_visible,
+        "precondition: hidden by DECTCEM, not by the scroll — display_offset is 0 here",
+    );
+    assert_eq!(
+        hidden.display_offset, 0,
+        "this arm must not be the scrolled one"
+    );
+
+    // Showing the caret again changes the bit and nothing else.
+    t.feed(b"[?25h");
+    let shown = t.frame();
+    assert!(shown.cursor_visible);
+    assert_eq!(
+        (hidden.cursor_row, hidden.cursor_col),
+        (shown.cursor_row, shown.cursor_col),
+        "the cell reported while DECTCEM-hidden is the cell reported once it is shown",
+    );
+    assert_eq!(
+        (shown.cursor_row, shown.cursor_col),
+        (4, 3),
+        "and it is where `xyz` actually left the cursor, not a value that happens to match",
+    );
+}
+
 #[test]
 fn the_coordinate_reported_while_hidden_is_the_one_true_after_the_snap() {
     let mut t = scrolled_engine();

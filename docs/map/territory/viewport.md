@@ -105,8 +105,9 @@ ADR-0013 assumes — who holds the scroll position at all — is still uncompare
   lens, it needed a *third* condition nobody had stated: the cursor must have **moved** while the
   view was away. `cursor_row`/`cursor_col` are grid coordinates that do not move with
   `display_offset`, so with a stationary cursor the frozen cell is still the right cell — which is
-  why "scroll up, then type Korean" is not on its own a reproduction, and why the demo's own
-  `cursorDrift` was needed to build one. The fix was not a scroll question at all: the widget was
+  why "scroll up, then type Korean" is not on its own a reproduction, and why the repro has to move
+  the cursor during the excursion for the reading to mean anything. The fix was not a scroll
+  question at all: the widget was
   gating a *retained coordinate* on `cursorVisible`, a bit about **drawing**, so the retention moved
   to `Terminal.track` where every other frame-derived value already lives ungated. Adjacent to #917,
   which is untouched — a different root (two surfaces disagreeing at the latch, not a stale source).

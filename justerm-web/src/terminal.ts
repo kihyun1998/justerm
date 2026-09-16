@@ -805,6 +805,11 @@ export class Terminal {
    * cannot see a cell-size change — {@link Terminal.syncTextareaAnchor} is the path that can. */
   private positionTextarea(frame: DecodedFrame): void {
     if (frame.cursorRow === undefined || frame.cursorVisible === false) return;
+    // Built from the FRAME, not read back from {@link Terminal.cursorAnchor}, although `track` has
+    // just written that from this same frame. Reading the retained cell would make this function
+    // correct only while it runs after `track` in the subscription; deriving it here means the two
+    // cannot be put out of order. The retained cell has exactly one writer either way, which is the
+    // property #921 was about — this is about not acquiring a reader with an ordering condition.
     const cursor = { col: frame.cursorCol ?? 0, row: frame.cursorRow };
     this.applyTextareaAnchor(textareaMove(cursor, this.textareaCell, false, this.composition?.composing ?? false));
   }
@@ -871,8 +876,9 @@ export class Terminal {
     this.preeditText = text;
     if (!intent) return;
     // The ORIGIN is latched at `compositionstart`, never re-read here. `cursorAnchor` is reassigned
-    // by every frame (`positionTextarea`, ahead of the guard), so reading it per update would let an
-    // output frame relocate the whole run on the next keystroke — #637's harm through a new
+    // by every frame (`track`, which retains it unconditionally and is not a writer that can decline
+    // — #921), so reading it per update would let an output frame relocate the whole run on the
+    // next keystroke — #637's harm through a new
     // entrance, measured: with unsolicited output running, the anchor held at row 5 while the
     // composition was open and then jumped to row 9 on the following keystroke.
     //
