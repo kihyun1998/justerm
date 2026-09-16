@@ -195,9 +195,12 @@ export class SelectionController {
   /** Undefined when no consumer wants primary — then the text query is skipped. */
   private readonly onPrimarySelection: ((text: string) => void) | undefined;
   private readonly onSelectionChange: () => void;
-  /** The anchor last reported to {@link onSelectionChange}, as `row,col,side`, so a pointer that
-   * moves within one cell reports once. Empty means nothing has been reported yet. */
-  private reportedAt = "";
+  /** The selection this controller last began, as `type|row,col,side` — the half of its identity
+   * that a later extend keeps. Empty while there is none. */
+  private anchor = "";
+  /** The selection last reported to {@link onSelectionChange}, as `anchor|focus`. Empty means the
+   * last report was of no selection, or nothing has been reported. */
+  private reported = "";
 
   constructor(
     private readonly port: SelectionPort,
@@ -224,22 +227,20 @@ export class SelectionController {
   }
 
   /**
-   * Announce that the selection moved, at most once per anchor cell. `at` is the anchor just sent
-   * to the port, or `undefined` for a change that has no anchor — a clear, or an auto-scroll step.
+   * Announce that the selection changed, at most once per distinct selection. `focus` is the cell
+   * just sent to the port as the selection's moving end; omitted for a change that has no stable
+   * identity — a clear, or an auto-scroll step — which always reports.
    *
-   * An anchorless change always reports. That is not a shortcut: on an auto-scroll drag the pointer
-   * is held still outside the viewport, so {@link SelectionController.tick} extends to the same
-   * `(edgeRow, lastCol, lastSide)` every tick while the selection grows under it, and keying those
-   * ticks on the anchor would report the first and silence the rest of the drag.
+   * The identity is the whole selection, `type|anchor|focus`, never the pointer's cell: a real
+   * triple-click re-anchors one cell three times with a growing type, and a press can collapse the
+   * last selection onto the very cell where it ended. An auto-scroll step has no identity because
+   * {@link SelectionController.tick} extends to the same edge cell every tick while the selection
+   * grows under it.
    */
-  private reportChange(at?: { row: number; col: number; side: Side }): void {
-    if (at) {
-      const key = `${at.row},${at.col},${at.side}`;
-      if (key === this.reportedAt) return;
-      this.reportedAt = key;
-    } else {
-      this.reportedAt = "";
-    }
+  private reportChange(focus?: { row: number; col: number; side: Side }): void {
+    const key = focus && this.anchor ? `${this.anchor}|${focus.row},${focus.col},${focus.side}` : "";
+    if (key && key === this.reported) return;
+    this.reported = key;
     this.onSelectionChange();
   }
 
@@ -255,6 +256,7 @@ export class SelectionController {
   clear(): void {
     if (!this.hasSelection || this.dragging) return;
     this.hasSelection = false;
+    this.anchor = "";
     this.port.clear();
     this.reportChange();
   }
@@ -290,10 +292,9 @@ export class SelectionController {
       const ty = detail === 1 && ev.altKey ? "block" : modeForClick(detail);
       this.port.begin(row, col, side, ty);
       this.hasSelection = true;
+      this.anchor = `${ty}|${row},${col},${side}`;
     }
     this.dragging = true;
-    // The de-dup baseline is set here, at the press, rather than inherited: `lastCol` / `lastSide`
-    // are written only by `mouseMove`, so at this point they still hold the previous gesture's.
     this.reportChange({ row, col, side });
   }
 
@@ -398,7 +399,10 @@ export class SelectionController {
       // their-producer.md`, reason 1). A cell we could not compute would become shell keystrokes.
       const geom = this.getGeometry();
       if (!geom) return;
-      // The empty block selection begun on mousedown is not real — drop it.
+      // The empty block selection begun on mousedown is not real — drop it, and stop believing in
+      // it, or the next keystroke's `clear()` would drop it a second time.
+      this.hasSelection = false;
+      this.anchor = "";
       this.port.clear();
       this.reportChange();
       const { row, col } = cellAndSide(ev, geom);

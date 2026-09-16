@@ -1205,6 +1205,60 @@ describe("SelectionController — the selection-changed signal (#914)", () => {
     expect(count()).toBe(armed + 3);
   });
 
+  // A real double-click is not a fresh `detail: 2` press — the DOM sends detail 1, then 2, then 3
+  // at the same pixel, so each press re-anchors the SAME cell with a larger type. The tests above
+  // build a fresh controller per case and never enter that sequence; this one does, on one
+  // controller, which is the window a key of `(row, col, side)` alone was blind in.
+  it("reports each press of a real double- and triple-click, though they share one cell", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port);
+    const seen: number[] = [];
+
+    for (const detail of [1, 2, 3]) {
+      ctrl.mouseDown(leftHalf(2, 1), detail);
+      ctrl.mouseUp(leftHalf(2, 1));
+      seen.push(count());
+    }
+
+    // The window exists: three begins on one cell, each a different type.
+    expect(port.calls.map((c) => (c.kind === "begin" ? c.ty : c.kind))).toEqual(["char", "word", "line"]);
+    expect(seen).toEqual([1, 2, 3]);
+  });
+
+  // The de-dup baseline must not survive the gesture that set it. A press landing on exactly the
+  // half-cell where the previous drag's focus rested collapses that selection to a new anchor — a
+  // change — though its coordinate equals the last one reported.
+  it("reports a press that collapses the previous selection onto the cell where it ended", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port);
+
+    ctrl.mouseDown(leftHalf(2, 1), 1);
+    ctrl.mouseMove(rightHalf(6, 1));
+    ctrl.mouseUp(rightHalf(6, 1));
+    const afterDrag = count();
+    ctrl.mouseDown(rightHalf(6, 1), 1);
+    ctrl.mouseUp(rightHalf(6, 1));
+
+    expect(port.calls.at(-1)).toEqual({ kind: "begin", row: 1, col: 6, side: "right", ty: "char" });
+    expect(count()).toBe(afterDrag + 1);
+  });
+
+  // The alt-click move drops its selection at the port, so the controller must stop believing in
+  // it: otherwise the next keystroke's `clear()` passes its "is there one?" guard and sends a
+  // second clear and a change for a selection already gone.
+  it("does not report a second clear when typing follows an alt-click cursor move", () => {
+    const port = new StubSelectionPort();
+    const { ctrl, count } = changed(port, { onMoveCursor: () => {}, isAtBottom: () => true });
+
+    ctrl.mouseDown(ev(52, 65, { altKey: true, timeStamp: 0 }), 1);
+    ctrl.mouseUp(ev(52, 65, { altKey: true, timeStamp: 10 }));
+    const afterMove = count();
+    ctrl.clear();
+
+    expect(port.calls.filter((c) => c.kind === "clear")).toHaveLength(1);
+    expect(count()).toBe(afterMove);
+  });
+
   it("works unchanged when no consumer wants the signal", () => {
     const port = new StubSelectionPort();
     const ctrl = new SelectionController(port, () => GEOM);
