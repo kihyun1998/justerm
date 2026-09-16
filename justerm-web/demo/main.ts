@@ -1117,6 +1117,7 @@ const port: SelectionPort = {
     render();
   },
   clear: () => {
+    console.log("[sel] clear"); // #913: observable proof that typing dropped the selection
     engine.clear();
     render();
   },

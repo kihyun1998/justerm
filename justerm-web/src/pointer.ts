@@ -27,6 +27,9 @@ export interface LocalPointer {
   mouseMove(ev: MouseEventLike): void;
   mouseUp(ev: MouseEventLike): void;
   tick(): void;
+  /** Drop the selection because the user typed (#913). Optional: a consumer on the older shape
+   * keeps working and simply does not drop its selection. */
+  clear?(): void;
 }
 
 /** What a {@link PointerRouter} reads and drives. */

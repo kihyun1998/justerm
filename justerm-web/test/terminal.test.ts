@@ -5,6 +5,7 @@ import {
   routeWheel,
   textareaMove,
   wheelGoesToApp,
+  isUserInput,
   scrollsToBottomOnInput,
   wheelScrollTarget,
   preeditIntent,
@@ -584,5 +585,20 @@ describe("scrollsToBottomOnInput", () => {
   it("snaps on a non-finite offset, where the wheel router refuses", () => {
     expect(scrollsToBottomOnInput(key("a"), NaN)).toBe(true);
     expect(scrollsToBottomOnInput(key("a"), Infinity)).toBe(true);
+  });
+
+  // The selection drop shares `isUserInput` with the snap and NOTHING else. If it ever
+  // inherited the offset guard, a selection would survive typing whenever the user is
+  // already at the bottom — which is almost always, so the bug would read as "clear on
+  // input does not work" rather than as an edge case.
+  it("separates being input from being scrolled up", () => {
+    expect(isUserInput(key("a"))).toBe(true);
+    expect(scrollsToBottomOnInput(key("a"), 0)).toBe(false);
+    expect(isUserInput({ kind: "paste", text: "ls" })).toBe(true);
+    expect(isUserInput({ kind: "text", text: "가" })).toBe(true);
+    expect(isUserInput({ kind: "imeKey", key: "ㅎ" })).toBe(true);
+    expect(isUserInput(key("Shift"))).toBe(false);
+    expect(isUserInput({ kind: "imeKey", key: "Shift" })).toBe(false);
+    expect(isUserInput({ kind: "focus", focused: true })).toBe(false);
   });
 });

@@ -44,6 +44,7 @@ export {
   INPUT_ATTRIBUTE,
   rendererNotifyingSink,
   routeWheel,
+  isUserInput,
   scrollsToBottomOnInput,
   Terminal,
   wheelGoesToApp,

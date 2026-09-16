@@ -3360,6 +3360,35 @@ test.describe("pointer routing (#902)", () => {
     expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("TEXTAREA");
   });
 
+  // #913. Unlike the snap, this is NOT conditional on being scrolled up — the view here is at the
+  // bottom, which is the case that would silently do nothing if the selection drop ever inherited
+  // the snap's offset guard.
+  test("typing drops a live selection, wherever the view is (#913)", async ({ page }) => {
+    const cleared: string[] = [];
+    page.on("console", (m) => {
+      if (m.text() === "[sel] clear") cleared.push(m.text());
+    });
+    await focusableElement(page);
+    const rec = recordPointer(page);
+    const a = await gridPoint(page, 30, 30);
+    const b = await gridPoint(page, 200, 30);
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    await page.mouse.move(b.x, b.y, { steps: 4 });
+    await page.mouse.up();
+    await expect.poll(() => rec.selections.length).toBeGreaterThan(0);
+    cleared.length = 0;
+
+    await page.keyboard.press("a");
+    await expect.poll(() => cleared.length).toBe(1);
+
+    // A second key must not re-clear: the controller guards on having a selection, and without
+    // that guard every keystroke sends a clear to the backend for the life of the pane.
+    await page.keyboard.press("b");
+    await page.waitForTimeout(200);
+    expect(cleared.length).toBe(1);
+  });
+
   test("?1000: a press and its release go to the app, the drag between them does not, nothing is selected", async ({ page }) => {
     await appMouse(page, "?1000");
     await focusableElement(page);

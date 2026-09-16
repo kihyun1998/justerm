@@ -151,7 +151,18 @@ function isBareModifier(key: Key): boolean {
  * something computed from the argument.
  */
 export function scrollsToBottomOnInput(signal: InputScrollSignal, displayOffset: number): boolean {
-  if (displayOffset === 0) return false;
+  return isUserInput(signal) && displayOffset !== 0;
+}
+
+/**
+ * Whether this signal is the user providing input at all (#913) — the question the snap and the
+ * selection drop share, and **all** they share. Only the snap asks where the view is; a selection
+ * is dropped wherever it was, which is what both references do (xterm.js fires `onUserInput`
+ * outside its `scrollOnUserInput` guard; alacritty's `on_terminal_input_start` clears before it
+ * tests `display_offset`). Splitting them is not a refactor — bundling the offset guard would
+ * leave a selection alive exactly when the user is already at the bottom, which is most of the time.
+ */
+export function isUserInput(signal: InputScrollSignal): boolean {
   switch (signal.kind) {
     case "key":
       return !isBareModifier(signal.event.key);
@@ -562,14 +573,18 @@ export class Terminal {
     return {
       send: (intent) => {
         // Before forwarding, as xterm.js fires its scroll request before `onData`.
-        this.requestBottom(intent, o);
+        this.onUserInput(intent, o);
         inner.send(intent);
       },
     };
   }
 
-  /** Ask the consumer for the live edge if this signal calls for it (#913). */
-  private requestBottom(signal: InputScrollSignal, o: TerminalOptions): void {
+  /** What user input does locally: drop the selection, and return the view to the bottom (#913). */
+  private onUserInput(signal: InputScrollSignal, o: TerminalOptions): void {
+    if (!isUserInput(signal)) return;
+    // Unconditional — see {@link isUserInput}. Optional on the port, so a consumer on the older
+    // `LocalPointer` shape keeps working and simply does not drop its selection.
+    o.selection?.clear?.();
     if (!o.onScroll || !scrollsToBottomOnInput(signal, this.displayOffset)) return;
     // Optimistically advance, as the wheel's scroll case does: frame mode's echo is an
     // async round-trip, so without it every keystroke re-requests the same scroll.
@@ -642,7 +657,7 @@ export class Terminal {
           // Swallowed by the IME: no intent will ever be sent for this key, so the sink
           // below cannot see it — and the user is typing (#913). The gate also swallows
           // bare Shift/Ctrl/Alt/CapsLock mid-composition, hence the key travels with it.
-          if (!proceed) this.requestBottom({ kind: "imeKey", key: e.key }, o);
+          if (!proceed) this.onUserInput({ kind: "imeKey", key: e.key }, o);
           return proceed && (o.beforeKey?.(e) ?? true);
         },
       }),
