@@ -218,6 +218,21 @@ export class SelectionController {
   }
 
   /**
+   * Drop the selection because the user typed (#913). Guarded on there being one, as xterm.js's
+   * own `onUserInput` listener is — this runs on every keystroke, and an unguarded version would
+   * send a clear to the backend per key for the whole life of the pane.
+   *
+   * A live drag is left alone deliberately: its `mouseUp` still owns the gesture's end, and the
+   * only way to be mid-drag and typing is a held button, where dropping the anchor would leave
+   * the next `mouseMove` extending a selection that no longer has one.
+   */
+  clear(): void {
+    if (!this.hasSelection || this.dragging) return;
+    this.hasSelection = false;
+    this.port.clear();
+  }
+
+  /**
    * A mouse press. `detail` is the DOM click count (1 = single).
    *
    * `forced` says the press is local only because Shift overrode an application that tracks the

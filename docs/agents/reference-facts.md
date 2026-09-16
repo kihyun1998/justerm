@@ -3353,3 +3353,63 @@ demo's `beforeKey` claimed it); the HUD read `last keyCode 70 (key="f") isCompos
 out as a text intent, the letter arrives as an ordinary key, and the claim leaves no key intent behind.
 The 229 case does not arise here. **What this does not cover:** a Shift chord (Shift is inside Korean
 composition, for tense consonants, so it need not finalize) and other IMEs. The browser was not recorded.
+
+## Scroll-on-user-input — both references snap, and xterm.js does it at two sites (#913, verified 2026-09-16)
+
+**The case this decides:** whether returning the viewport to the bottom when the user types is the
+terminal layer's job or the embedding app's, and exactly which input counts.
+
+### Where each one does it, and what guards it
+
+| | xterm.js `699f5537b0232e444cb98261b8b3991c3cfecb5e` | alacritty `852e971cddfabe222d2d5bcda466e130f53af207` |
+|---|---|---|
+| site | `CoreService.triggerDataEvent(data, wasUserInput)` — `src/common/services/CoreService.ts:82` | `on_terminal_input_start()` — `alacritty/src/event.rs:1359` |
+| guard | `buffer.ybase !== buffer.ydisp` | `display_offset() != 0` |
+| key | `src/browser/CoreBrowserTerminal.ts:1011` | `alacritty/src/input/keyboard.rs:99` |
+| IME commit | `src/browser/input/CompositionHelper.ts:157,199,228,230,232` | the same text path |
+| paste | `src/browser/Clipboard.ts:57` | `alacritty/src/event.rs:1377` (bracketed) and `:1391` (not) |
+| bare modifier | returns before the call | explicit `if !is_modifier_key` — `keyboard.rs:133-141` |
+| opt-out | `scrollOnUserInput`, default `true` (`OptionsService.ts:37`) | none; unconditional |
+
+Both are in the terminal layer, not the surrounding application. That convergence is what the routing
+argument rests on; neither erects it alone.
+
+### The selection is dropped at the same moment, and it is NOT behind the scroll guard
+
+The two behaviours share only *"is this user input?"*. xterm.js fires `_onUserInput` **outside** the
+`scrollOnUserInput` block that precedes it (`CoreService.ts:82-89`; the comment on the second `if`
+reads *"so listeners can react as well (eg. clear selection)"*), and `SelectionService` listens to it
+and clears only `if (this.hasSelection)` (`SelectionService.ts:139-143`). alacritty calls
+`self.clear_selection()` before it tests `display_offset()` at all (`event.rs:1359-1365`). So a
+selection is dropped wherever the view is, while only the scroll asks whether there is anywhere to go.
+Bundling the two — the obvious reading if you meet the scroll first — disables clear-on-typing for a
+user already at the bottom, which is the common case rather than an edge one.
+
+### The second xterm.js site, which is the one that is easy to miss
+
+`CoreBrowserTerminal._keyDown` snaps **in the branch where the composition helper swallowed the
+keydown** (`src/browser/CoreBrowserTerminal.ts:856-859`) — before any bytes exist and possibly before
+any ever do. So xterm's rule is not only *"input was written"*; a key the IME took counts too. A grep
+for `scrollOnUserInput` finds this line, and reading only the `CoreService` one yields a rule that is
+narrower than the reference's actual behaviour. justerm follows it (maintainer's call, 2026-09-16):
+our IME gate produces no intent there, so the signal is a separate `imeKey` kind.
+
+**Where justerm diverges deliberately:** xterm's `CompositionHelper.keydown` also swallows keyCodes
+16/17/18/20, so in that reference a bare Shift pressed mid-composition **does** snap while the same key
+outside a composition does not. `scrollsToBottomOnInput` applies the modifier test on both key paths
+instead — a rule that a bare modifier is not input has to hold on both or it is not a rule.
+
+### What the mouse half does not settle
+
+xterm passes `wasUserInput: true` for a mouse report on its non-default encoding path
+(`src/browser/services/MouseService.ts:538`) and `triggerBinaryEvent` — which never snaps — on the
+default one, so which encoder is active decides whether a mouse report moves the viewport. alacritty
+does not route mouse reports through `on_terminal_input_start` at all. Two of its own paths disagreeing
+is an artifact rather than a rule, so this corpus does not support snapping on mouse, and justerm does
+not. `MouseService.ts:289,337` and `SelectionService.ts:738` also pass `true`, but both are alt-screen
+paths where `ybase === ydisp` and the guard makes them no-ops.
+
+⚠ **Not the anchor:** `alacritty/src/input/mod.rs:393` is `Action::ScrollToBottom`, an explicit
+**keybinding**, and has nothing to do with scroll-on-user-input. A `Scroll::Bottom` grep reaches it
+first and reading only that line yields the opposite conclusion — that alacritty does this only on a
+bound key.

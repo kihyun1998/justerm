@@ -1117,6 +1117,7 @@ const port: SelectionPort = {
     render();
   },
   clear: () => {
+    console.log("[sel] clear"); // #913: observable proof that typing dropped the selection
     engine.clear();
     render();
   },
@@ -1242,9 +1243,15 @@ term = new Terminal(source, renderer, {
   // by the widget already; this just applies the requested offset.
   ...(bootScrollSensitivity === null ? {} : { scroll: { scrollSensitivity: Number(bootScrollSensitivity) } }),
   onScroll: (offset) => {
-    displayOffset = offset;
-    console.log(`[wheel] scroll → displayOffset ${offset}`); // observable signal (e2e/live proxy)
-    render();
+    console.log(`[scroll] → displayOffset ${offset}`); // observable signal (e2e/live proxy)
+    // The REQUEST is logged above; applying it is what `__deferScrollEcho` can postpone (#913).
+    const apply = (): void => {
+      displayOffset = offset;
+      render();
+    };
+    const defer = window.__deferScrollEcho;
+    if (defer === undefined) apply();
+    else setTimeout(apply, defer);
   },
   // #117: fire-and-forget consumer notifications. A real backend drains core events
   // and pushes them through the source's event channel; the demo pushes them from the
@@ -1739,6 +1746,14 @@ declare global {
     __setLineHeight?: (lh: number) => void;
     /** #901: a consumer key policy the e2e installs; the demo's `beforeKey` asks it last. */
     __keyClaim?: (e: KeyboardEvent) => boolean;
+    /**
+     * #913: delay (ms) before the demo APPLIES a scroll it was asked for, leaving the request
+     * itself immediate. The demo otherwise echoes synchronously, which a frame-mode consumer
+     * never does — and that difference is not cosmetic: it is the whole window in which the
+     * widget's own tracked offset is the only thing that knows a scroll was already requested.
+     * Unset = apply immediately, which is every other test.
+     */
+    __deferScrollEcho?: number;
   }
 }
 

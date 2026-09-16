@@ -37,18 +37,20 @@ export type {
   ClipboardReport,
 } from "./clipboard";
 // Terminal — the frame→renderer pump; with TerminalOptions it also captures input,
-// routes the wheel (app / alt-cursor-keys / scrollback, #129 mask) and pointer presses (#902), restarts the
-// cursor blink on typing, and tracks focus (S16 #133). The routing/notify decisions
-// are pure + exported for reuse.
+// routes the wheel (app / alt-cursor-keys / scrollback, #129 mask) and pointer presses (#902), returns
+// the view to the bottom on user input (#913), restarts the cursor blink on typing, and tracks focus
+// (S16 #133). The routing/notify decisions are pure + exported for reuse.
 export {
   INPUT_ATTRIBUTE,
   rendererNotifyingSink,
   routeWheel,
+  isUserInput,
+  scrollsToBottomOnInput,
   Terminal,
   wheelGoesToApp,
   wheelScrollTarget,
 } from "./terminal";
-export type { TerminalOptions, WheelAction } from "./terminal";
+export type { InputScrollSignal, TerminalOptions, WheelAction } from "./terminal";
 // `LocalPointer` is the shape `TerminalOptions.selection` takes (#902) — a SelectionController has it.
 export type { LocalPointer } from "./pointer";
 export { JustermRenderer } from "./justerm-renderer";

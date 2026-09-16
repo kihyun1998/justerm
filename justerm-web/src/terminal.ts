@@ -5,7 +5,9 @@ import {
   MouseEvents,
   wheelMouseFromDom,
   type CellGeometry,
+  type Intent,
   type InputSink,
+  type Key,
   type NamedKey,
 } from "./input";
 import { PointerRouter, type LocalPointer } from "./pointer";
@@ -98,6 +100,80 @@ export function routeWheel(
   const target = wheelScrollTarget(lines, displayOffset, scrollbackLen);
   if (target === null) return { kind: "none" };
   return { kind: "scroll", displayOffset: target };
+}
+
+/**
+ * DOM `KeyboardEvent.key` values that name a modifier. `keyOf` maps every key it does
+ * not recognise to a `char`, so a bare modifier press arrives as `Char("Shift")` and is
+ * indistinguishable from typing without this list.
+ */
+const MODIFIER_KEYS: ReadonlySet<string> = new Set([
+  "Alt",
+  "AltGraph",
+  "CapsLock",
+  "Control",
+  "Fn",
+  "FnLock",
+  "Hyper",
+  "Meta",
+  "NumLock",
+  "ScrollLock",
+  "Shift",
+  "Super",
+  "Symbol",
+  "SymbolLock",
+]);
+
+/**
+ * What the input path saw, for the scroll-on-user-input decision: an {@link Intent} on its
+ * way to the application, or `imeKey` — a keydown the IME gate swallowed, which produces no
+ * intent at all. `imeKey` carries its DOM `KeyboardEvent.key` because the gate swallows bare
+ * modifiers too, and they are not input on either path.
+ */
+export type InputScrollSignal = Intent | { kind: "imeKey"; key: string };
+
+/** A bare modifier press. `keyOf` maps it to a `char` carrying the DOM key name. */
+function isBareModifier(key: Key): boolean {
+  return key.type === "char" && MODIFIER_KEYS.has(key.char);
+}
+
+/**
+ * Whether user input should bring the viewport back to the bottom (#913).
+ *
+ * Counts: a key, committed IME text, a paste, and a keydown the IME gate swallowed — a bare
+ * modifier on either of the two key paths excepted. Does not: focus and mouse intents. A key
+ * vetoed by `TerminalOptions.beforeKey` never becomes an {@link Intent}, so it cannot reach
+ * here as one.
+ *
+ * `displayOffset` is the only state this needs — `0` already means the live edge, on the
+ * alt screen included, so there is no screen to ask about. A non-finite offset snaps:
+ * unlike {@link wheelScrollTarget}, the requested offset is the constant `0` rather than
+ * something computed from the argument.
+ */
+export function scrollsToBottomOnInput(signal: InputScrollSignal, displayOffset: number): boolean {
+  return isUserInput(signal) && displayOffset !== 0;
+}
+
+/**
+ * Whether this signal is the user providing input at all (#913) — the question the snap and the
+ * selection drop share, and **all** they share. Only the snap asks where the view is; a selection
+ * is dropped wherever it was, which is what both references do (xterm.js fires `onUserInput`
+ * outside its `scrollOnUserInput` guard; alacritty's `on_terminal_input_start` clears before it
+ * tests `display_offset`). Splitting them is not a refactor — bundling the offset guard would
+ * leave a selection alive exactly when the user is already at the bottom, which is most of the time.
+ */
+export function isUserInput(signal: InputScrollSignal): boolean {
+  switch (signal.kind) {
+    case "key":
+      return !isBareModifier(signal.event.key);
+    case "imeKey":
+      return !MODIFIER_KEYS.has(signal.key);
+    case "text":
+    case "paste":
+      return true;
+    default:
+      return false;
+  }
 }
 
 /** Where the hidden textarea is anchored, in cells — the cursor cell a frame reported. */
@@ -324,9 +400,11 @@ export interface TerminalOptions {
    */
   selection?: LocalPointer;
   /** A local scroll request: scroll the viewport to this display offset (lines up
-   * from the bottom). Wheel (normal buffer, no app tracking) funnels here; the
-   * consumer's scrollbar drag funnels to the SAME callback for one coherent
-   * request. Omit to disable local scrolling. The backend applies it → a frame. */
+   * from the bottom). Three producers funnel to the SAME callback for one coherent
+   * request: the wheel (normal buffer, no app tracking), the consumer's scrollbar
+   * drag, and — since #913 — user input arriving while the view is scrolled up,
+   * which always asks for `0`. Omit to disable local scrolling **and the input
+   * snap with it**. The backend applies it → a frame. */
   onScroll?(displayOffset: number): void;
   /** Wheel scroll tuning (xterm `scrollSensitivity`). */
   scroll?: ScrollOptions;
@@ -357,8 +435,10 @@ export interface TerminalOptions {
  *
  * The DOM attachment in {@link mount} is browser-only glue (not unit-tested, like
  * {@link captureInput}); the decisions it makes — wheel routing ({@link routeWheel}),
- * pointer routing ({@link PointerRouter}) and renderer notification
- * ({@link rendererNotifyingSink}) — are pure and covered.
+ * pointer routing ({@link PointerRouter}), the input snap
+ * ({@link scrollsToBottomOnInput}) and renderer notification
+ * ({@link rendererNotifyingSink}) — are pure and covered. The *wiring* between them is not:
+ * `attach` needs a DOM, so the node suite cannot reach it and the browser proofs carry it.
  */
 export class Terminal {
   private unsubscribe: Unsubscribe | undefined;
@@ -488,6 +568,30 @@ export class Terminal {
     }
   }
 
+  /** Wraps the consumer's sink so input that counts returns the view to the bottom (#913). */
+  private scrollOnUserInput(inner: InputSink, o: TerminalOptions): InputSink {
+    return {
+      send: (intent) => {
+        // Before forwarding, as xterm.js fires its scroll request before `onData`.
+        this.onUserInput(intent, o);
+        inner.send(intent);
+      },
+    };
+  }
+
+  /** What user input does locally: drop the selection, and return the view to the bottom (#913). */
+  private onUserInput(signal: InputScrollSignal, o: TerminalOptions): void {
+    if (!isUserInput(signal)) return;
+    // Unconditional — see {@link isUserInput}. Optional on the port, so a consumer on the older
+    // `LocalPointer` shape keeps working and simply does not drop its selection.
+    o.selection?.clear?.();
+    if (!o.onScroll || !scrollsToBottomOnInput(signal, this.displayOffset)) return;
+    // Optimistically advance, as the wheel's scroll case does: frame mode's echo is an
+    // async round-trip, so without it every keystroke re-requests the same scroll.
+    this.displayOffset = 0;
+    o.onScroll(0);
+  }
+
   /** Retain the scroll/routing state each frame carries; drop the wheel remainder
    * on a buffer switch (alt-screen), so a fresh screen doesn't inherit a stale
    * trackpad fraction. Ours, not xterm.js's: its `MouseService.reset()` runs only on a
@@ -516,7 +620,12 @@ export class Terminal {
     const input = o.input;
     const getGeometry = o.getGeometry;
     if (!element || !input || !getGeometry) return;
-    const sink = rendererNotifyingSink(input, this.renderer);
+    // #913 — the snap wraps the consumer's sink, so everything reaching it has already
+    // survived the IME gate and `beforeKey`. It is NOT every intent the consumer receives:
+    // `onWheel` sends its app report and its alt-screen cursor keys straight to `o.input`,
+    // past both wrappers. Unreachable for the snap (an alt screen is always at offset 0),
+    // but the bypass is real and the next reader needs it to be stated correctly.
+    const sink = rendererNotifyingSink(this.scrollOnUserInput(input, o), this.renderer);
     const ta = makeHiddenTextarea();
     element.appendChild(ta);
     this.textarea = ta;
@@ -545,6 +654,10 @@ export class Terminal {
           // Clear once idle whether the key was swallowed (229 diff) or finalized a
           // composition (Enter, proceed=true) — both leave committed text behind.
           this.clearTextareaWhenIdle();
+          // Swallowed by the IME: no intent will ever be sent for this key, so the sink
+          // below cannot see it — and the user is typing (#913). The gate also swallows
+          // bare Shift/Ctrl/Alt/CapsLock mid-composition, hence the key travels with it.
+          if (!proceed) this.onUserInput({ kind: "imeKey", key: e.key }, o);
           return proceed && (o.beforeKey?.(e) ?? true);
         },
       }),

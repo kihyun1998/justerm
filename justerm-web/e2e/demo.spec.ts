@@ -513,7 +513,7 @@ test("asymmetric spanning selection (row → documentElement) still clamps (#217
 
 // #133 (S16): the widget wires input + wheel + focus. Headless can't see the beamterm
 // caret paint, but every routing DECISION has a DOM/console proxy the demo exposes: the
-// input sink logs intents (`[input] …`), the local scroll logs `[wheel] scroll → …`, the
+// input sink logs intents (`[input] …`), the local scroll logs `[scroll] → …`, the
 // scrollbar thumb `top` is the scroll DOM-state, and `document.activeElement` is the focus
 // DOM-state. These lock the live-MCP proof as regression gates (the DECISIONS are also
 // unit-tested; this is the real DOM glue the node suite can't run). A wheel is dispatched
@@ -567,12 +567,85 @@ test.describe("S16 input + wheel + focus wiring (#133)", () => {
     expect(intents.some((l) => l.includes('[input] key {"type":"char","char":"a"}'))).toBe(true);
   });
 
+  // #913. The DECISION is unit-tested exhaustively (`scrollsToBottomOnInput`); what only a
+  // real browser can show is that a keydown on the hidden textarea reaches it at all — the
+  // node suite has no DOM and so cannot run `attach`, where the sink is wrapped.
+  test("typing while scrolled up returns the view to the bottom (#913)", async ({ page }) => {
+    const scrolls: number[] = [];
+    page.on("console", (m) => {
+      const n = m.text().match(/\[scroll\] → displayOffset (\d+)/);
+      if (n) scrolls.push(Number(n[1]));
+    });
+    await page.evaluate(() => window.__seedRows!(150));
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    // The precondition is ASSERTED, not assumed: at displayOffset 0 the snap is a no-op by
+    // design, so a test that never actually scrolled up would pass without exercising it.
+    await wheelNotch(page, -6);
+    await expect.poll(() => scrolls.at(-1) ?? 0).toBeGreaterThan(0);
+    scrolls.length = 0;
+    await page.keyboard.press("a");
+    await expect.poll(() => scrolls).toContain(0);
+  });
+
+  // ONCE, not once per keystroke — and this needs the async echo a frame-mode consumer has.
+  // The demo normally applies a scroll synchronously, so the widget's tracked offset is
+  // refreshed by the echo before the next key and the dedup line is dead code here: with the
+  // demo's default timing this test passes whether or not that line exists. `__deferScrollEcho`
+  // opens the window the line was written for, which is the only state where it can be observed.
+  test("a burst of keystrokes requests the bottom once, not once per key (#913)", async ({
+    page,
+  }) => {
+    const scrolls: number[] = [];
+    page.on("console", (m) => {
+      const n = m.text().match(/\[scroll\] → displayOffset (\d+)/);
+      if (n) scrolls.push(Number(n[1]));
+    });
+    await page.evaluate(() => window.__seedRows!(150));
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    // Scroll up while the echo is still synchronous, so the precondition settles everywhere
+    // before the window is opened; otherwise a late echo re-raises the offset mid-burst.
+    await wheelNotch(page, -6);
+    await expect.poll(() => scrolls.at(-1) ?? 0).toBeGreaterThan(0);
+    await page.evaluate(() => {
+      window.__deferScrollEcho = 400;
+    });
+    scrolls.length = 0;
+    await page.keyboard.press("a");
+    await page.keyboard.press("b");
+    await page.keyboard.press("c");
+    await page.waitForTimeout(150); // inside the deferred echo, so only the widget can dedup
+    expect(scrolls).toEqual([0]);
+  });
+
+  // The side condition, in the same browser: a bare modifier is not input, so it must not
+  // move a view the user deliberately scrolled up. Without this, a snap wired to fire on
+  // every keydown passes the test above.
+  test("a bare modifier does not move a scrolled-up view (#913)", async ({ page }) => {
+    const scrolls: number[] = [];
+    page.on("console", (m) => {
+      const n = m.text().match(/\[scroll\] → displayOffset (\d+)/);
+      if (n) scrolls.push(Number(n[1]));
+    });
+    await page.evaluate(() => window.__seedRows!(150));
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    await wheelNotch(page, -6);
+    await expect.poll(() => scrolls.at(-1) ?? 0).toBeGreaterThan(0);
+    scrolls.length = 0;
+    await page.keyboard.press("Shift");
+    await page.waitForTimeout(250);
+    expect(scrolls).toEqual([]);
+    // ...and the same key press with a character behind it DOES snap, so the emptiness
+    // above is the modifier's doing and not a dead console listener.
+    await page.keyboard.press("b");
+    await expect.poll(() => scrolls).toContain(0);
+  });
+
   test("wheel scrolls scrollback (normal buffer): thumb moves up, offset climbs", async ({
     page,
   }) => {
     const scrolls: number[] = [];
     page.on("console", (m) => {
-      const n = m.text().match(/\[wheel\] scroll → displayOffset (\d+)/);
+      const n = m.text().match(/\[scroll\] → displayOffset (\d+)/);
       if (n) scrolls.push(Number(n[1]));
     });
     // Measure `before` while the view is still FOLLOWING the bottom, so `displayOffset` is 0 and
@@ -621,7 +694,7 @@ test.describe("S16 input + wheel + focus wiring (#133)", () => {
     const scrolls: string[] = [];
     page.on("console", (m) => {
       if (m.text().includes("[input] mouse")) intents.push(m.text());
-      if (m.text().includes("[wheel] scroll")) scrolls.push(m.text());
+      if (m.text().includes("[scroll]")) scrolls.push(m.text());
     });
     await expect.poll(() => thumbTop(page), { timeout: 15_000 }).toBeLessThan(90);
     await page.getByRole("button", { name: "App mouse: OFF" }).click();
@@ -637,7 +710,7 @@ test.describe("S16 input + wheel + focus wiring (#133)", () => {
     const scrolls: string[] = [];
     page.on("console", (m) => {
       if (m.text().includes("[input] key")) intents.push(m.text());
-      if (m.text().includes("[wheel] scroll")) scrolls.push(m.text());
+      if (m.text().includes("[scroll]")) scrolls.push(m.text());
     });
     await page.getByRole("button", { name: "Alt screen: OFF" }).click();
     await wheelNotch(page, -3); // up
@@ -654,7 +727,7 @@ test.describe("S16 input + wheel + focus wiring (#133)", () => {
     const signals: string[] = [];
     page.on("console", (m) => {
       const t = m.text();
-      if (t.includes("[input] mouse") || t.includes("[input] key") || t.includes("[wheel]")) {
+      if (t.includes("[input] mouse") || t.includes("[input] key") || t.includes("[scroll]")) {
         signals.push(t);
       }
     });
@@ -679,7 +752,7 @@ test.describe("S16 input + wheel + focus wiring (#133)", () => {
   test("Alt+wheel fast-scrolls 5× a normal notch (#246)", async ({ page }) => {
     const scrolls: number[] = [];
     page.on("console", (m) => {
-      const n = m.text().match(/\[wheel\] scroll → displayOffset (\d+)/);
+      const n = m.text().match(/\[scroll\] → displayOffset (\d+)/);
       if (n) scrolls.push(Number(n[1]));
     });
     const notch = (alt: boolean) =>
@@ -2000,7 +2073,7 @@ test.describe("a fractional scrollSensitivity (#908)", () => {
   }) => {
     const scrolls: string[] = [];
     page.on("console", (m) => {
-      if (m.text().startsWith("[wheel] scroll")) scrolls.push(m.text());
+      if (m.text().startsWith("[scroll]")) scrolls.push(m.text());
     });
     const seeded = await page.evaluate(() => window.__seedRows!(150));
     expect(seeded.scrollbackLen, "a scroll needs history to move into").toBeGreaterThan(5);
@@ -2026,7 +2099,7 @@ test.describe("a fractional scrollSensitivity (#908)", () => {
     expect(scrolls).toEqual([]);
     expect(await notch(-1, 1), "the second half: a whole line").toBe(true);
     await expect.poll(() => scrolls.length).toBe(1);
-    expect(scrolls[0]).toBe("[wheel] scroll → displayOffset 1");
+    expect(scrolls[0]).toBe("[scroll] → displayOffset 1");
 
     // Control: a small trackpad delta moves no whole line either, and still reaches the page.
     expect(await notch(-5, 0), "a sub-line pixel delta chains to the page as before").toBe(false);
@@ -2729,7 +2802,7 @@ test("a pointer-down mid-composition leaves the IME anchor frozen (#649)", async
 test("a wheel survives an unmeasured cell instead of latching NaN (#675)", async ({ page }) => {
   const offsets: string[] = [];
   page.on("console", (m) => {
-    const n = m.text().match(/\[wheel\] scroll → displayOffset (\S+)/);
+    const n = m.text().match(/\[scroll\] → displayOffset (\S+)/);
     if (n?.[1] !== undefined) offsets.push(n[1]);
   });
   const notch = () =>
@@ -3285,6 +3358,35 @@ test.describe("pointer routing (#902)", () => {
     await expect.poll(() => rec.selections.length).toBeGreaterThan(0);
     expect(rec.reports).toEqual([]);
     expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("TEXTAREA");
+  });
+
+  // #913. Unlike the snap, this is NOT conditional on being scrolled up — the view here is at the
+  // bottom, which is the case that would silently do nothing if the selection drop ever inherited
+  // the snap's offset guard.
+  test("typing drops a live selection, wherever the view is (#913)", async ({ page }) => {
+    const cleared: string[] = [];
+    page.on("console", (m) => {
+      if (m.text() === "[sel] clear") cleared.push(m.text());
+    });
+    await focusableElement(page);
+    const rec = recordPointer(page);
+    const a = await gridPoint(page, 30, 30);
+    const b = await gridPoint(page, 200, 30);
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    await page.mouse.move(b.x, b.y, { steps: 4 });
+    await page.mouse.up();
+    await expect.poll(() => rec.selections.length).toBeGreaterThan(0);
+    cleared.length = 0;
+
+    await page.keyboard.press("a");
+    await expect.poll(() => cleared.length).toBe(1);
+
+    // A second key must not re-clear: the controller guards on having a selection, and without
+    // that guard every keystroke sends a clear to the backend for the life of the pane.
+    await page.keyboard.press("b");
+    await page.waitForTimeout(200);
+    expect(cleared.length).toBe(1);
   });
 
   test("?1000: a press and its release go to the app, the drag between them does not, nothing is selected", async ({ page }) => {

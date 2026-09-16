@@ -947,3 +947,44 @@ describe("SelectionController — a gesture that outlives its element's box requ
     expect(pastes).toBe(1);
   });
 });
+
+// --- #913: the widget drops a selection when the user types. The controller owns the
+// "is there one?" guard, because it is the only party that knows. ---
+
+describe("SelectionController.clear — the typing drop (#913)", () => {
+  it("clears a live selection once, then stays quiet", () => {
+    const port = new StubSelectionPort();
+    const c = controller(port);
+    c.mouseDown(leftHalf(2, 1), 1);
+    c.mouseMove(rightHalf(6, 1));
+    c.mouseUp(rightHalf(6, 1));
+    port.calls.length = 0;
+
+    c.clear();
+    expect(port.calls).toEqual([{ kind: "clear" }]);
+
+    // The guard: this runs on every keystroke, so an unguarded version would send a clear
+    // to the backend per key for the whole life of the pane.
+    c.clear();
+    expect(port.calls).toEqual([{ kind: "clear" }]);
+  });
+
+  it("does nothing when there is no selection to drop", () => {
+    const port = new StubSelectionPort();
+    controller(port).clear();
+    expect(port.calls).toEqual([]);
+  });
+
+  // A held drag still owns its gesture: dropping the anchor mid-drag would leave the next
+  // mouseMove extending a selection that no longer has one.
+  it("leaves a drag in progress alone", () => {
+    const port = new StubSelectionPort();
+    const c = controller(port);
+    c.mouseDown(leftHalf(2, 1), 1);
+    c.mouseMove(rightHalf(6, 1));
+    port.calls.length = 0;
+
+    c.clear();
+    expect(port.calls).toEqual([]);
+  });
+});

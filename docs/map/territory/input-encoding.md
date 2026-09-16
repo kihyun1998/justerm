@@ -204,6 +204,11 @@ application misbehaves.
   part of the accessibility surface, so a change to focus handling reaches both
 - [selection](selection.md) — mouse intents drive selection when the application has *not* asked for
   mouse events; the wanted-events mask is what decides which
+- [viewport](viewport.md) — since #913 an input intent can also **move the view**: typing while
+  scrolled up asks the consumer for the live edge. So a change to what becomes an intent, to the IME
+  gate, or to `beforeKey`'s verdict now changes when the viewport moves, and the two paths are not
+  symmetric — a key the IME **swallows** produces no intent at all yet still snaps, so it is handled
+  at the gate rather than at the sink
 
 ## Known holes / open
 
