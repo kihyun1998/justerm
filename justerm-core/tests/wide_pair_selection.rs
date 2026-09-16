@@ -168,3 +168,133 @@ fn a_match_clamped_onto_a_trailing_spacer_covers_the_whole_glyph() {
         "the clamp lands on the spacer; the span takes the pair"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #914 — an empty selection stays empty, whatever glyph it collapsed onto.
+//
+// The rule above is *"a range that includes one half of a pair includes both"*. A press that is
+// never extended resolves to a zero-width range — `[c+1, c+1)` for a Right-side anchor on a lead —
+// which includes no cell, so neither half is in it and the rule has nothing to act on. The widening
+// ran anyway, and turned a bare click on the inner half of any wide glyph into a one-glyph
+// selection. That was a highlight nobody asked for until #914 made a settled selection feed the X11
+// primary buffer, where it became a click that overwrites what the user had copied.
+//
+// All three references decide emptiness from the endpoints before any pair handling can run:
+// alacritty's `range_simple` / `range_block` return `None` on `is_empty()` (`start == end`,
+// `alacritty_terminal/src/selection.rs:332`, `:362` @ `852e971`) ahead of the spacer widening at
+// `term/mod.rs:583`; xterm.js leaves `selectionEnd` undefined on a single click
+// (`SelectionService.ts:555` @ `699f553`), so the resolved end is the start; ghostty creates no
+// selection at all for a single click (`SelectionGesture.zig:688` @ `e6e26e1`).
+// ---------------------------------------------------------------------------
+
+/// Each case is one of the two inner halves — the lead's right half and the spacer's left half — the
+/// only anchors whose zero-width range sits *between* the two cells of the pair. The outer halves
+/// already collapsed to an empty range before the widening, which is why a narrow-cell test never
+/// saw this.
+const INNER_HALVES: [(usize, Side); 2] = [(0, Side::Right), (1, Side::Left)];
+
+#[test]
+fn a_char_press_on_the_inner_half_of_a_wide_glyph_selects_nothing() {
+    for (col, side) in INNER_HALVES {
+        let mut e = Engine::new(4, 2);
+        e.feed("漢ab".as_bytes());
+
+        // The window exists: the same anchor, once extended past itself, IS inside the pair and
+        // takes the whole glyph. Without this the assertions below would pass on a grid where the
+        // glyph never landed as a pair at all.
+        e.selection_begin(0, col, side, SelectionType::Char);
+        e.selection_extend(0, 2, Side::Left);
+        assert_eq!(
+            e.selection_text().as_deref(),
+            Some("漢"),
+            "col {col} {side:?}: pair window"
+        );
+
+        e.selection_begin(0, col, side, SelectionType::Char);
+        assert_eq!(
+            spans(&e),
+            vec![],
+            "col {col} {side:?}: a bare press paints nothing"
+        );
+        assert_eq!(
+            e.selection_text().as_deref(),
+            Some(""),
+            "col {col} {side:?}: and copies nothing — still an (empty) selection, not none"
+        );
+    }
+}
+
+#[test]
+fn a_block_press_on_the_inner_half_of_a_wide_glyph_selects_nothing_on_both_observables() {
+    for (col, side) in INNER_HALVES {
+        let mut e = Engine::new(4, 2);
+        e.feed("漢ab".as_bytes());
+
+        e.selection_begin(0, col, side, SelectionType::Block);
+        e.selection_extend(0, 2, Side::Left);
+        assert_eq!(
+            e.selection_text().as_deref(),
+            Some("漢"),
+            "col {col} {side:?}: pair window"
+        );
+
+        e.selection_begin(0, col, side, SelectionType::Block);
+        // The two observables #454 exists to keep in agreement. Before #914 they did not: the range
+        // already refused an empty rectangle while the text widened it into the glyph.
+        assert_eq!(
+            spans(&e),
+            vec![],
+            "col {col} {side:?}: the highlight is empty"
+        );
+        assert_eq!(
+            e.selection_text().as_deref(),
+            Some(""),
+            "col {col} {side:?}: and so is the copy"
+        );
+    }
+}
+
+/// Hangul is the case a Korean user meets on every click, so it is pinned by name rather than
+/// trusted to follow from the CJK ideograph above.
+#[test]
+fn a_bare_press_on_hangul_selects_nothing() {
+    for (col, side) in INNER_HALVES {
+        let mut e = Engine::new(4, 2);
+        e.feed("한ab".as_bytes());
+
+        e.selection_begin(0, col, side, SelectionType::Char);
+        e.selection_extend(0, 2, Side::Left);
+        assert_eq!(
+            e.selection_text().as_deref(),
+            Some("한"),
+            "col {col} {side:?}: pair window"
+        );
+
+        e.selection_begin(0, col, side, SelectionType::Char);
+        assert_eq!(
+            e.selection_text().as_deref(),
+            Some(""),
+            "col {col} {side:?}"
+        );
+    }
+}
+
+/// A press that is not empty keeps the rule. Word and Line resolve past their own anchor by
+/// definition, so a double- or triple-click on a wide glyph still takes it — the fix narrows
+/// nothing but the zero-width case.
+#[test]
+fn a_word_or_line_press_on_a_wide_glyph_still_selects_it() {
+    for ty in [SelectionType::Word, SelectionType::Line] {
+        for (col, side) in INNER_HALVES {
+            let mut e = Engine::new(4, 2);
+            e.feed("漢ab".as_bytes());
+
+            e.selection_begin(0, col, side, ty);
+            assert_eq!(
+                e.selection_text().as_deref(),
+                Some("漢ab"),
+                "{ty:?} col {col} {side:?}"
+            );
+        }
+    }
+}
