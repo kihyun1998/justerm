@@ -309,6 +309,10 @@ export function preeditIntent(
  * `environment: "node"`. It is the run's END rather than a width because the widget has no
  * `wcwidth` — see {@link Renderer.setPreedit}, whose return exists for that reason.
  */
+/** The clearing call's payload — a run of no cells. Named because `new Uint32Array(0)` at a call
+ * site reads as an accident rather than as "stop drawing this". */
+const EMPTY_PREEDIT = new Uint32Array(0);
+
 export function preeditLatch(
   cursorAnchor: TextareaAnchor | undefined,
   lastRunEnd: TextareaAnchor | undefined,
@@ -475,6 +479,16 @@ export class Terminal {
    * must not take the anchor away, it must not take its freshness away either, and a guard placed
    * in front of the assignment does exactly that one step further in. */
   private cursorAnchor: TextareaAnchor | undefined;
+  /** The `displayOffset` of the frame the renderer has actually been given — **not**
+   * {@link Terminal.displayOffset}, which `onUserInput` advances to 0 optimistically ahead of the
+   * echo (#913). Anything mapping a grid coordinate onto what the user is looking at has to use
+   * this one: the screen shows the last frame applied, not the scroll the widget has requested. */
+  private frameOffset = 0;
+  /** The viewport row the open composition's run is currently drawn at, or `undefined` when it is
+   * not drawn — because nothing is composing, or because its cell is off the bottom of the
+   * viewport. The re-assert below compares against it so a composition over a still view costs
+   * nothing. */
+  private preeditPaintedRow: number | undefined;
   /** The composition text currently drawn (#249). Held to drop the settling `compositionupdate`
    * a real IME emits once per syllable with unchanged data — see {@link Terminal.showPreedit}. */
   private preeditText = "";
@@ -546,6 +560,7 @@ export class Terminal {
       this.renderer.render();
       this.track(frame);
       this.positionTextarea(frame);
+      this.repaintPreedit();
     });
     if (this.options?.element) this.attach(this.options);
     // Consumer events (#117) — independent of the DOM group; wire whenever the
@@ -618,6 +633,7 @@ export class Terminal {
       this.cursorAnchor = { col: frame.cursorCol ?? 0, row: frame.cursorRow };
     }
     this.displayOffset = frame.displayOffset ?? 0;
+    this.frameOffset = this.displayOffset;
     this.scrollbackLen = frame.scrollbackLen ?? 0;
     this.rows = frame.rows;
     const alt = frame.altScreen ?? false;
@@ -887,8 +903,38 @@ export class Terminal {
     // knows both halves: the EXTENT (live, from the run) and the ORIGIN (fixed, from where the user
     // started typing). Re-asking the frame stream for the origin is asking the one source #637
     // established cannot answer it.
-    const at = intent.origin;
-    const caretCol = this.renderer.setPreedit?.(at.col, at.row, intent.codepoints);
+    this.paintPreedit(intent.codepoints, intent.origin);
+  }
+
+  /**
+   * Draw the run at the viewport row its origin cell is **shown at**, or not at all.
+   *
+   * The origin is a GRID row — core samples `cursor_row` from `self.cursor` with no
+   * `display_offset` term — while the renderer draws the **viewport**. At offset `d` a grid row `r`
+   * is on screen only while `r < rows - d`, and it is shown at viewport row `r + d`. Measured
+   * before this mapping existed: with `gridRow` 33, `rows` 37 and the view up 2, the run landed on
+   * viewport row 33 while its own cell was being shown on row 35.
+   *
+   * **Off the bottom, it waits rather than drawing somewhere wrong**, and waiting costs nothing
+   * because {@link Terminal.repaintPreedit} re-asserts on the next frame that can place it. Both
+   * references resolve it the same way and neither suppresses permanently: xterm skips the
+   * positioning while `!isCursorInViewport` and re-runs `updateCompositionElements` on every render
+   * plus once through `setTimeout(0)`; alacritty maps the point through the display offset and
+   * drops it only when that viewport line is off screen.
+   */
+  private paintPreedit(codepoints: Uint32Array, at: TextareaAnchor): void {
+    const row = at.row + this.frameOffset;
+    if (row >= this.rows) {
+      // Clear what is drawn, if anything — a view scrolled away mid-composition must not leave the
+      // run sitting on scrollback. `preeditEnd` is deliberately untouched: the handoff to the next
+      // composition (#911) is about where the run ENDED, which the viewport cannot change.
+      if (this.preeditPaintedRow !== undefined) {
+        this.renderer.setPreedit?.(at.col, this.preeditPaintedRow, EMPTY_PREEDIT);
+        this.preeditPaintedRow = undefined;
+      }
+      return;
+    }
+    const caretCol = this.renderer.setPreedit?.(at.col, row, codepoints);
     // A preedit-blind renderer: nothing drawn, nothing to aim at. Only a consumer-supplied
     // `Renderer` reaches this — the shipped `JustermRenderer` adapter returns `col` when its backend
     // has no `setPreedit` binding, so on a renderer older than #249 `preeditEnd` becomes the ORIGIN
@@ -896,10 +942,35 @@ export class Terminal {
     // widget did before #911) but silent, and the two packages release on separate tracks (#918,
     // closed `not_planned`).
     if (caretCol === undefined) return;
+    this.preeditPaintedRow = codepoints.length > 0 ? row : undefined;
     // Keep a non-empty run's end for the next composition to latch from (#911). Skipped for the
     // clearing call at `compositionend`, whose caret column is the origin again, not the end.
-    if (intent.codepoints.length > 0) this.preeditEnd = { col: caretCol, row: at.row };
-    this.writeTextareaAnchor(caretCol, at.row);
+    //
+    // A GRID row, like the origin it will become — the viewport is a property of the moment it is
+    // drawn, not of where the text was typed.
+    if (codepoints.length > 0) this.preeditEnd = { col: caretCol, row: at.row };
+    this.writeTextareaAnchor(caretCol, row);
+  }
+
+  /**
+   * Re-assert the open composition's run against the frame just applied.
+   *
+   * **This is ADR-0028 D5's rule, which the run needed as much as the caret and was not given.** The
+   * record already says position is re-asserted on *every* frame rather than only when the
+   * composition changes, and gives the reason: frames keep arriving and not one of them knows a
+   * preedit exists. A run written once therefore keeps whatever row it was given while the view
+   * moves out from under it — the same clause, unapplied to the neighbouring surface.
+   *
+   * Cheap by construction: it compares the row it *would* paint against the one it did, so a
+   * composition over a still view does nothing at all, and the renderer re-packs every frame
+   * regardless.
+   */
+  private repaintPreedit(): void {
+    const at = this.preeditOrigin;
+    if (!at || this.preeditText.length === 0) return;
+    const want = at.row + this.frameOffset;
+    if ((want < this.rows ? want : undefined) === this.preeditPaintedRow) return;
+    this.paintPreedit(Uint32Array.from(this.preeditText, (c) => c.codePointAt(0) ?? 0), at);
   }
 
   /** Put the textarea on a cell. The write itself, with no cache and no decision — see
