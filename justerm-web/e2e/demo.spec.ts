@@ -3674,6 +3674,10 @@ test.describe("pointer routing (#902)", () => {
 // `PointerRouter` -> `LocalPointer`, so a router that swallowed the gesture would leave every
 // unit test green. The demo exposes `__selectionProbe` for exactly that reason (the shape
 // `__tickCount` established in #902).
+//
+// What this does NOT prove: the text. The demo's port answers from `FakeSelectionEngine`, not from
+// core, so whether a given gesture's selection is empty is the fake's answer — a core that returned
+// text for a bare click (the wide-glyph case) would pass here unseen.
 test("a double-click selection reaches primary and reports a change (#914)", async ({ page }) => {
   await page.goto("/");
   await page.locator("#term").waitFor();
@@ -3689,7 +3693,11 @@ test("a double-click selection reaches primary and reports a change (#914)", asy
   await page.mouse.dblclick(box.x + 30, box.y + 40);
   await expect.poll(async () => (await probe()).primary).not.toBe("");
   const afterClick = await probe();
-  expect(afterClick.changes).toBeGreaterThan(0);
+  // At least TWO: the browser sends the double-click as a detail-1 press and then a detail-2 press
+  // on the same cell, and the second is a new (word) selection. `> 0` was satisfied by the first
+  // press alone, which is how a de-dup keyed on the pointer's cell passed this test while dropping
+  // every word and line selection.
+  expect(afterClick.changes).toBeGreaterThanOrEqual(2);
 
   // Control 2 — the gesture that already worked still works, and moves BOTH signals on, so the
   // assertions above are not satisfied by a probe that latched on the first event it saw.
