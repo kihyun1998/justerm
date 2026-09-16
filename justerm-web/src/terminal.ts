@@ -397,9 +397,17 @@ export class Terminal {
    * composition's life: the frame stream keeps reassigning {@link Terminal.cursorAnchor}, and a
    * composition that re-read it would walk to wherever the application's output went. */
   private preeditOrigin: TextareaAnchor | undefined;
-  /** Where the open composition's run currently ends (#911) — the renderer's caret column, one past
-   * its last cell. Set by every non-empty update and read by the NEXT `compositionstart`, which is
-   * where the composition that just ended hands its end over.
+  /** Where the open composition's run currently ends (#911) — the renderer's caret column. Set by
+   * every non-empty update and read by the NEXT `compositionstart`, which is where the composition
+   * that just ended hands its end over.
+   *
+   * **It is one past the run only while there IS a cell past it.** At the right edge `caret_col`
+   * steps back onto the last glyph's lead (ADR-0028 D5) and `range` shifts the run left, so there
+   * the handoff names a column inside the run and the next syllable lands on the previous one —
+   * #911's own symptom, unfixed at the margin. The row is the run's, so a commit that WRAPS leaves
+   * it on the line above. Neither is a regression (the frame stream is equally wrong there), and
+   * neither is answerable here: the real destination is column 0 of the next row, which needs the
+   * grid width and `DECAWM` — engine state this widget does not hold and must not guess at.
    *
    * Consumed at that latch, which is what scopes it to a single composition: a composition that
    * draws nothing (a start and an end with no update in between) leaves it undefined, so the latch
@@ -546,8 +554,9 @@ export class Terminal {
       //
       // `active`, not `composing`: read before `compositionStart()` below, it is exactly "a commit is
       // still queued behind its deferred read", which is the state in which `cursorAnchor` cannot yet
-      // describe where this composition begins (#911). `composition.test.ts` pins that it is true at
-      // this instant in continuous CJK and false otherwise.
+      // describe where this composition begins (#911). `composition.test.ts` pins the CONTROLLER's
+      // value at this instant — true in continuous CJK, false otherwise; the wiring that reads it
+      // here needs a DOM and is gated by the #911 e2e instead.
       this.preeditOrigin = preeditLatch(this.cursorAnchor, this.preeditEnd, composition.active);
       this.preeditEnd = undefined;
       composition.compositionStart();

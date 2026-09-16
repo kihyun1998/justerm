@@ -2927,7 +2927,14 @@ test("a continuous burst starts each syllable where the last one ended (#911)", 
    * it is the maximum by a structural margin and not a font accident (measured: 157-171 against
    * 82 for a composed Hangul cell).
    */
-  const caretCell = (strip: number[]): number => strip.indexOf(Math.max(...strip));
+  const caretCell = (strip: number[]): number => {
+    const at = strip.indexOf(Math.max(...strip));
+    // The strip is eight cells and the caret must be inside it. A fourth syllable would put the
+    // caret at index 8, off the end, and every assertion below would then silently read a cell of
+    // the run instead of failing — a proof that stops discriminating without stopping passing.
+    expect(at, `the caret fell off the sampled strip: ${strip}`).toBeLessThan(strip.length - 1);
+    return at;
+  };
 
   // The demo's cursor is a CONSTANT (`CURSOR_ROW`/`CURSOR_COL`), so the frame stream reports the
   // same cell throughout. That is what makes this an origin measurement rather than a race: any
@@ -2960,6 +2967,14 @@ test("a continuous burst starts each syllable where the last one ended (#911)", 
   // the fallback is what produces the reading rather than there being nothing to choose from.
   expect(caretCell(p.afterAbort), `after a composition that drew nothing, got=${p.afterAbort}`)
     .toBe(2);
+
+  // THE PREMISE, compared against the thing it predicts. Every reading above latches from the run
+  // end; this one latches from `cursorAnchor` after the engine's cursor has really been advanced by
+  // one syllable, so it is the other branch of `preeditLatch` answering the same question. The fix
+  // claims the run end is where the commit will leave the cursor — that claim is only falsifiable
+  // where the two branches can be made to answer about the same state, which is here.
+  expect(caretCell(p.echoed), `after a real one-syllable echo, got=${p.echoed}`)
+    .toBe(caretCell(p.burst[1]!));
 });
 
 /**

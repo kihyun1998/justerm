@@ -269,6 +269,18 @@ const CURSOR_COL = 2;
 let cursorShape = 0;
 
 /**
+ * #911 — the column the emitted frames put the cursor at, so a probe can deliver an ECHO.
+ *
+ * `CURSOR_COL` everywhere else, and every other probe depends on that (see `CURSOR_ROW`'s note).
+ * This exists because the origin a composition latches is a PREDICTION of where the committed text
+ * will leave the engine's cursor, and with a constant cursor no arm of any test can compare the
+ * prediction against the thing predicted — the page has no backend, so nothing ever echoes.
+ * `__preeditOriginProbe` moves it by exactly one syllable and restores it, the same discipline
+ * `__cursorBlinkProbe` follows with `cursorBlink`.
+ */
+let probeCursorCol = CURSOR_COL;
+
+/**
  * #637 — unsolicited output that MOVES the cursor while an IME composition is open.
  *
  * Opt-in and off by default, because a *stationary* cursor is load-bearing everywhere else on this
@@ -1045,7 +1057,7 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     // #575: the cursor rides every frame, like core emits it. `cursorBlink` is the application's
     // half of the blink decision; the widget resolves it against its consumer override.
     cursorRow: cursorDrift ? driftRow : CURSOR_ROW, // #637: drift is opt-in, see `cursorDrift`
-    cursorCol: CURSOR_COL,
+    cursorCol: probeCursorCol, // CURSOR_COL, except while `__preeditOriginProbe` delivers an echo
     cursorVisible: cursorShown,
     cursorShape, // block by default; `__cursorPolicyProbe` swaps in a bar (#580)
     cursorBlink,
@@ -4194,6 +4206,10 @@ interface PreeditOriginProbe {
   /** The same reading again, but with a composition that DREW NOTHING (a start and an end with no
    * update) immediately before it — whose own commit is what is in flight. */
   afterAbort: number[];
+  /** The same reading for a composition that starts with NOTHING in flight, after the engine's
+   * cursor has actually been advanced by one syllable. This is where the prediction gets compared
+   * against the thing it predicts: it must land on the same cell `burst[1]` did. */
+  echoed: number[];
 }
 
 window.__preeditOriginProbe = async (): Promise<PreeditOriginProbe> => {
@@ -4262,7 +4278,22 @@ window.__preeditOriginProbe = async (): Promise<PreeditOriginProbe> => {
   syllable("녕", `${value}안녕`);
   const afterAbort = strip();
   ta.dispatchEvent(new CompositionEvent("compositionend", { data: "녕" }));
+
+  // The premise the whole fix rests on, made falsifiable: the run end is claimed to be where the
+  // committed text will leave the ENGINE's cursor. So advance the engine's cursor by exactly one
+  // syllable, let it reach the widget as a real frame, and start a composition with nothing in
+  // flight — this arm latches from `cursorAnchor`, the OTHER branch, and must agree with the arm
+  // that latched from the run end. Without it every reading in this probe comes from the same
+  // branch and the prediction is never compared with anything.
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  probeCursorCol = CURSOR_COL + 2;
+  render(); // the echo has to REACH the widget as a frame; moving the variable is not the echo
+  syllable("안", `${value}안녕안`);
+  const echoed = strip();
+  ta.dispatchEvent(new CompositionEvent("compositionend", { data: "안" }));
+  probeCursorCol = CURSOR_COL;
   render();
 
-  return { idle, burst, settled, afterAbort };
+  return { idle, burst, settled, afterAbort, echoed };
 };
