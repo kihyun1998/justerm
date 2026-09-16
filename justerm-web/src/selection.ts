@@ -406,16 +406,13 @@ export class SelectionController {
       return;
     }
     // A settled selection feeds the X11 primary buffer, whatever gesture made it — a drag, a
-    // double- or triple-click, a shift+click extend. Reuses the copy path → NBSP-normalized, and
-    // **that is also the guard**: `copySelection` skips null and empty, so a bare click, whose
-    // collapsed anchor the engine reports as empty text, offers nothing without being tested for
-    // here. `dragged` is deliberately not consulted — it answers "did the pointer move", which is a
-    // different question and the one that made a click selection unreportable (#914).
+    // double- or triple-click, a shift+click extend.
     //
-    // `hasSelection` is presently unreachable-false at this line and dropping it reddens nothing:
-    // the release above returns unless a press began, every press past the box check leaves it
-    // true, and `clear()` — its only writer of `false` — refuses while a drag is live. Kept as the
-    // belt for a future path that clears mid-gesture, but it is not what makes a bare click silent.
+    // **The guard is not written here.** `copySelection` skips null and empty, and the engine
+    // reports a collapsed (never-extended) anchor as empty text, so a bare click offers nothing
+    // without this line testing for it. `hasSelection` beside it is presently unreachable-false
+    // and is a belt, not the guard. Why it is this shape, and why `dragged` is not consulted:
+    // `docs/map/territory/selection.md` § Design model (#914).
     if (this.onPrimarySelection && this.hasSelection) {
       const sink = this.onPrimarySelection;
       void copySelection(this.port, async (text) => sink(text));

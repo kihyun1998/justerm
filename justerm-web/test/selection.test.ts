@@ -456,10 +456,12 @@ describe("SelectionController — primary selection on a settled gesture (#914)"
     return { ctrl, primary };
   }
 
-  // On a completed drag selection the controller offers the text for the X11
-  // primary buffer (xterm `onLinuxMouseSelection`). It reuses the copy path, so
-  // the text is NBSP-normalized and an empty selection is skipped. The consumer
-  // (only on Linux) writes it to the primary buffer.
+  // A settled selection offers its text for the X11 primary buffer (xterm
+  // `onLinuxMouseSelection`), whichever gesture settled it. It reuses the copy
+  // path, so the text is NBSP-normalized and an empty selection is skipped —
+  // and that skip is the only guard, which is what lets every gesture through
+  // the same door (#914). The consumer (only on Linux) writes it to primary.
+  // The drag is first here because it is the case that already worked.
   it("offers the selected text for the primary buffer when a drag completes", async () => {
     const port = new StubSelectionPort();
     const { ctrl, primary } = primaryOf(port);
