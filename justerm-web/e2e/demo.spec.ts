@@ -585,12 +585,35 @@ test.describe("S16 input + wheel + focus wiring (#133)", () => {
     scrolls.length = 0;
     await page.keyboard.press("a");
     await expect.poll(() => scrolls).toContain(0);
-    // ONCE, not once per keystroke. `requestBottom` advances its own tracked offset because
-    // frame mode's echo is an async round-trip; delete that line and every subsequent
-    // keystroke is another consumer round-trip, which no other assertion here would notice.
+  });
+
+  // ONCE, not once per keystroke — and this needs the async echo a frame-mode consumer has.
+  // The demo normally applies a scroll synchronously, so the widget's tracked offset is
+  // refreshed by the echo before the next key and the dedup line is dead code here: with the
+  // demo's default timing this test passes whether or not that line exists. `__deferScrollEcho`
+  // opens the window the line was written for, which is the only state where it can be observed.
+  test("a burst of keystrokes requests the bottom once, not once per key (#913)", async ({
+    page,
+  }) => {
+    const scrolls: number[] = [];
+    page.on("console", (m) => {
+      const n = m.text().match(/\[scroll\] → displayOffset (\d+)/);
+      if (n) scrolls.push(Number(n[1]));
+    });
+    await page.evaluate(() => window.__seedRows!(150));
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    // Scroll up while the echo is still synchronous, so the precondition settles everywhere
+    // before the window is opened; otherwise a late echo re-raises the offset mid-burst.
+    await wheelNotch(page, -6);
+    await expect.poll(() => scrolls.at(-1) ?? 0).toBeGreaterThan(0);
+    await page.evaluate(() => {
+      window.__deferScrollEcho = 400;
+    });
+    scrolls.length = 0;
+    await page.keyboard.press("a");
     await page.keyboard.press("b");
     await page.keyboard.press("c");
-    await page.waitForTimeout(250);
+    await page.waitForTimeout(150); // inside the deferred echo, so only the widget can dedup
     expect(scrolls).toEqual([0]);
   });
 
