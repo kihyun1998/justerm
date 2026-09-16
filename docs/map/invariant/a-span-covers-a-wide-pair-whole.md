@@ -20,6 +20,15 @@ only the ones a user drags:
 4. **The caret.** A block cursor is a one- or two-cell span like any other, and an application can
    put the cursor on a spacer with an ordinary `CUB` / `CHA`.
 
+**A range that includes no cell is not widened** (#914). The rule acts on a range that *includes* a
+half, and a zero-width one — a press never extended — includes nothing, even when its single column
+sits between a lead and its spacer. Widening it anyway conjured the glyph out of a bare click: a
+highlight nobody asked for, and once a settled selection fed the X11 primary buffer, a click that
+overwrote it. So emptiness is decided **from the endpoints, before** any pair handling — for a
+linear run `same line && from >= to`, for a rectangle `to <= from` — exactly as all three references
+order it. The line half is load-bearing: a multi-line run whose end column is left of its start is
+not empty and keeps its widening.
+
 **Both cells must agree before they are treated as a pair.** A lead pairs only with a spacer to its
 right and a spacer only with a lead to its left, and neither ever pairs across a row. This is not
 defensive coding: a lead standing alone in the last column is a **legal buffer state**

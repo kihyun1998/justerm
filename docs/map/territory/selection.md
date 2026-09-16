@@ -42,24 +42,42 @@ status.
   Both references do this at the same moment
   ([`reference-facts.md` § scroll-on-user-input](../../agents/reference-facts.md#scroll-on-user-input--both-references-snap-and-xtermjs-does-it-at-two-sites-913-verified-2026-09-16)).
 - **The widget reports a settled selection on two signals, not one, and they are guarded
-  differently** (#914). `onPrimarySelection` **commits** — it fires when a gesture ends and carries
-  the text; `onSelectionChange` **notifies** — it fires on every mutation and carries nothing.
-  Three things about the pair are easy to get wrong and are why it is written down:
+  differently** (#914). `onPrimarySelection` **commits** — it fires on the release and carries
+  the text; `onSelectionChange` **notifies** — it fires on each selection command and carries
+  nothing. Five things about the pair are easy to get wrong and are why it is written down:
   - **The commit is guarded on the selection being empty, never on the pointer having moved.** It
     was the latter until #914, which made a double- or triple-click — a real word/line selection
     that releases without motion — unreportable. The emptiness test is not written at the call site
-    at all: `copySelection` skips `null` and `""`, and core resolves a `begin` that was never
-    extended to a zero-width range, so a bare click stays silent by arithmetic rather than by a
-    flag. The `hasSelection` term still standing beside it is presently unreachable-false and
-    reddens no test; it is a belt, not the guard.
+    at all: `copySelection` skips `null` and `""`, and core resolves a never-extended `begin` to a
+    zero-width run, so a bare click stays silent by arithmetic rather than by a flag. The
+    `hasSelection` term still standing beside it is presently unreachable-false and reddens no test;
+    it is a belt, not the guard.
+  - **That arithmetic was false on a wide glyph until the same change fixed core, and the web half
+    is unsafe without it.** `resolve` applied the #454 pair widening to a zero-width run whose one
+    column sat between a lead and its spacer, so a bare press on either inner half returned the
+    glyph — and the Block arm disagreed with itself, `selection_range` refusing the empty rectangle
+    while `selection_text` widened it. The motion flag had been hiding that; removing it made the
+    click overwrite primary. Core now decides emptiness from the endpoints before widening
+    (`same line && from >= to`), as all three references do. **So a web build carrying #914 must
+    not ship against a core without it** — see
+    [a span covers a wide pair whole](../invariant/a-span-covers-a-wide-pair-whole.md).
   - **The change signal carries no text on purpose.** `SelectionPort.text()` round-trips to the
     backend in frame mode, so a text-carrying signal at per-cell firing rate is a round-trip per
     pointer move. Passing the controller's `hasSelection` instead was measured and rejected: it is
     set at `begin`, so it reads `true` after a bare click that selected nothing.
-  - **Its de-dup is keyed on the anchor cell, and `tick()` is deliberately outside that key.** On an
-    auto-scroll drag the pointer is held still outside the viewport, so every tick extends to the
-    same `(edgeRow, lastCol, lastSide)` while the selection grows under it — keying those on the
-    anchor reports the first tick and silences the rest of the drag.
+  - **Its de-dup is keyed on the selection — `type | anchor | focus` — never the pointer's cell,
+    and `tick()` is outside the key.** A first version keyed on the cell and passed every test while
+    silencing every word and line selection: a real triple-click re-anchors *one* cell three times
+    with a growing type, and the tests built a fresh controller per case, so they never pressed
+    twice. An auto-scroll tick has no stable identity — the pointer is held still outside the
+    viewport and every tick extends to the same `(edgeRow, lastCol, lastSide)` while the selection
+    grows under it.
+  - **It can report a change that altered no text, and a consumer is expected to debounce.** The
+    controller sees commands, not the engine's resolved selection: a bare click in a pane with
+    nothing selected replaces nothing with nothing and still reports, and a tick reports even when
+    the scroll is pinned at a boundary. Both references compare resolved selections and so do not;
+    matching them would need the engine's answer, which is the round-trip the signal exists to
+    avoid. The one real consumer already debounces (PenTerm's copy-on-select, 150 ms).
 
   Both references keep the same two-event split
   ([`reference-facts.md` § two selection-out signals](../../agents/reference-facts.md#two-selection-out-signals-and-what-actually-guards-the-committing-one-914-verified-2026-09-16)).
@@ -214,7 +232,22 @@ Check these after changing this territory:
   field is set at `begin`, so a bare click that selected nothing leaves it `true` while the engine
   reports empty text — measured, not reasoned. That is every click, not an alt-screen aftermath.
   It is why the change signal #914 added carries no state (a boolean payload would have published
-  this defect), and why nothing in that change reads the field to decide anything.
+  this defect), and why that signal never reads the field. #914 did close one smaller way it lied:
+  the alt-click cursor move dropped its selection at the port and left the flag `true`, so the next
+  keystroke's `clear()` dropped it a second time — that branch now clears the flag too.
+- **Neither selection-out signal hears about a selection the widget did not make.** Two paths change
+  the engine's selection without passing through `SelectionController`, so a consumer listening to
+  `onSelectionChange` (#914) is not told:
+  - **core drops it** — on a screen swap, or a shrinking resize on the alt screen. Same root as the
+    hole above: the controller sees no frames. xterm.js does report this one, because its selection
+    service owns the buffer-activate listener.
+  - **an assistive-technology text selection** — the widget's accessibility layer calls
+    `a11ySelectionToPort`, which drives `port.begin` / `extend` / `clear` directly, and the
+    `selectionPort` option tells a real consumer to pass the same port the mouse uses (the demo
+    passes a logging stub instead, so it does not show this). xterm.js
+    routes the same path through `terminal.select(...)`, which reaches its change event. Found by
+    #914's completeness lens, not acted on there: it needs `a11ySelectionToPort` to take a reporter,
+    which is a change to a second published function.
 
 - **Zero governing records.** The whole §Design model above is unrecorded. *"Why absolute
   coordinates"* and *"what moves the coordinate"* are the kind of thing that gets
