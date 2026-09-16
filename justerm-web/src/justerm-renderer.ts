@@ -770,11 +770,16 @@ export class JustermRenderer implements Renderer {
    *
    * **Starts unfocused** (#912). A renderer is told about focus *changes*, so a terminal that is
    * never focused is never told anything — and the previous `true` therefore stood for the life of
-   * every pane the user had not clicked. Both references start here too: xterm.js
-   * `CoreBrowserService.ts:14` (`_isFocused = false`) @ `699f553`, alacritty `term/mod.rs:440`
-   * (`is_focused: Default::default()`) @ `852e971`. It also fails safe in the direction the old
-   * default did not: a focused terminal that reads as blurred recovers on the first keystroke, while
-   * a blurred one that reads as focused never recovered. */
+   * every pane the user had not clicked.
+   *
+   * The default is only half of it: {@link Terminal} also reports once at mount, and the reference
+   * tally says why both are needed rather than either — the corpus splits 2-1 and what the three
+   * share is a *correction path*, not a value. See
+   * `docs/agents/reference-facts.md` § "The INITIAL focus state — who establishes it".
+   *
+   * It also fails safe in the direction the old default did not: a focused terminal that reads as
+   * blurred recovers on the first keystroke, while a blurred one that reads as focused never
+   * recovered. */
   private focused = false;
   /** The current frame's overlay spans, retained so a focus flip (no new frame) can re-issue
    * `setOverlay` with the active/inactive tint. Empty ⇔ nothing highlighted. */

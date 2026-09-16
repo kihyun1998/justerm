@@ -41,6 +41,28 @@ obligation. The rest depend on a consumer remembering, and the measurement below
   consumer-constructed addon from `Terminal.dispose()`, and this repo's other injected port already
   worked this way through the `Unsubscribe` it returns. See
   [reference behaviour](#reference-behaviour).
+- **State that only ever arrives as a *change* has to be established by whoever owns the
+  transitions, and `mount()` is where that happens** (#912). Focus reaches the renderer as
+  focus/blur intents, so a terminal nobody clicks is never described at all — and until #912 both
+  holders of the flag assumed focus, which blinked the caret and painted the *active* selection tint
+  in every pane the user had not touched. Reported from PenTerm with several panes on screen.
+
+  **Measured before generalising, because the obvious rule over-reaches.** The `Renderer` port has
+  exactly two members carrying pushed boolean state, and only one has this hole: a composition
+  cannot be in progress at mount (`setComposing` is driven by a browser event that has not fired),
+  while focus can already be anywhere. Every other initial value already had a path — the options
+  ones are applied by `create`. So this is one fact with one instance, not a cross-cutting
+  invariant, and it is written here rather than promoted.
+
+  **Both halves, because they close different holes**, and the references say why the pair matters
+  more than the value: the corpus splits 2-1 on the default and what all three share is a
+  *correction path*, so a default alone is not a contract
+  ([reference facts](../../agents/reference-facts.md#the-initial-focus-state--who-establishes-it-912-verified-2026-09-16)).
+  The unfocused default is the only half that reaches a `Terminal` built without `element`, which
+  never attaches; the `attach()` call is the only half that reaches a consumer-supplied `Renderer`,
+  whose own default nobody here controls. It reports to the renderer directly rather than through
+  the input sink — a mount is not a user action, and a consumer that encodes focus reports would
+  otherwise write bytes to the PTY at mount.
 - **`Terminal.dispose()` is end of life, not unmount.** `mount()` after it throws. Declared rather
   than left open because the alternative was already broken: `textareaCell` and `cursorAnchor`
   survive disposal (a remounted widget parks the IME candidate window at the previous mount's anchor;

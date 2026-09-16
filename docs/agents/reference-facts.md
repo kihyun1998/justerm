@@ -347,6 +347,28 @@ implies (core reports the mechanism, the consumer holds the policy) and it needs
 | **Negative result: xterm.js has no preedit rule for the caret.** Its only `isComposing` guard near the cursor is `_syncTextArea`, which stops *moving the hidden textarea* mid-composition — an IME-disturbance guard, unrelated to the caret | xterm.js | `browser/CoreBrowserTerminal.ts:337-339` |
 | ⚠ **Measured, not read (#592, real browser, 2026-07-28)**: composition driven through the hidden textarea, cursor cell and a content cell sampled 5x over 1.4s. With the application silent — the default since #575 — the caret shows **one** distinct colour (already solid) and no content cell changes; with the application asking to blink, the caret shows **two**. So justerm-web adopted alacritty's suppression as a **no-op in the common case**, biting only where an application explicitly asked to blink. ghostty's stronger form was **rejected**: revealing a DECTCEM-hidden caret would invert `cursorCommand`'s contract for a rare case | justerm-web | `justerm-web/src/cursor.ts` `setComposing`, decision recorded on #592 |
 
+### The INITIAL focus state — who establishes it (#912, verified 2026-09-16)
+
+The row above settles what focus *gates*. It says nothing about where the flag starts, and that is
+the gap #912 fell into: `justerm-web` learned focus only as a *change*, so a terminal nobody clicked
+was never described at all and an assumed `true` stood for the life of the pane.
+
+**The corpus does not vote 3-0, and the split is the useful part.** Two references start unfocused
+and one deliberately starts focused — but all three pair their default with a path that *always*
+runs, so the rule they actually share is **someone establishes the state; a default alone is not a
+contract**. What a web widget cannot borrow is ghostty's optimistic half: a native surface exists
+because a user opened a window, while N panes can be mounted into a page at once with nothing
+guaranteed to correct any of them.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **Starts unfocused**, and is corrected only by real DOM focus/blur listeners on the textarea | xterm.js | `browser/services/CoreBrowserService.ts:14`, listeners at `:36-37` |
+| ⚠ **The read is ANDed with the window's own focus** — a focused textarea inside an unfocused window reads unfocused, re-derived once per microtask. **justerm-web does not do this**: a background window keeps the active selection tint and a blinking caret. Collected, not filed | xterm.js | `browser/services/CoreBrowserService.ts:57` |
+| **`open()` establishes nothing**, and the focus *report* (`CSI I` / `CSI O`) is emitted only from the real focus/blur handlers — mounting is not treated as a focus event | xterm.js | `browser/CoreBrowserTerminal.ts:305` (focus), `:329` (blur) |
+| **Starts unfocused** (`Default::default()` on a `bool`), set from the windowing system's focus event | alacritty | `alacritty_terminal/src/term/mod.rs:440`, driven at `alacritty/src/event.rs:1985` |
+| ⚠ **Counter-example, and a reasoned one: ghostty starts FOCUSED** — *"If we're not initially focused then apprts can call focusCallback to let us know"*. Its renderer says the same in one comment: `.focus = 1, // assume focused initially`. This is an optimistic default **plus a named correction path**, not an absent one | ghostty | `src/Surface.zig:155` (and `:153-154` for the comment), `src/renderer/generic.zig:768` |
+| **justerm-web takes the other pairing**: a pessimistic default (`CursorBlink.focused`, `JustermRenderer.focused`) **and** a guaranteed correction — `Terminal.attach()` reports once before any focus event. Two halves because they close different holes: the default covers a `Terminal` built without `element`, which never attaches; the call covers a consumer-supplied `Renderer` whose own default nobody controls | justerm-web | `justerm-web/src/terminal.ts` `attach`, `src/renderer.ts` `setFocused` doc |
+
 ### A device-pixel-ratio change — who notices, and what they do about it (#325, verified 2026-08-10)
 
 Only xterm.js has this problem: alacritty and ghostty own their OS window and are told about a scale

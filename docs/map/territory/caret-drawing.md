@@ -58,6 +58,11 @@ recorded SHA; a paraphrase drops the pin).
 
 - [Cursor blink — who decides](../../agents/reference-facts.md#cursor-blink--who-decides-575-verified-2026-07-28)
   — the policy resolution this territory receives the result of
+- [The INITIAL focus state — who establishes it](../../agents/reference-facts.md#the-initial-focus-state--who-establishes-it-912-verified-2026-09-16)
+  — the row above settles what focus *gates*; this one settles where the flag starts, which is the
+  gap #912 fell into. Its sharpest row is the **counter-example**: ghostty starts focused on purpose,
+  and reading the corpus as unanimous would have hidden that the shared rule is a correction path
+  rather than a value
 - [Cursor policy knobs — where each reference puts them](../../agents/reference-facts.md#cursor-policy-knobs--where-each-reference-puts-them-580-verified-2026-08-10)
   — the thickness and contrast constants, pinned, plus what each reference exposes. Its sharpest row
   is a *negative* one: alacritty's contrast guard is a compile-time constant with no config path, so
@@ -78,6 +83,9 @@ its own existence — the fact held here and was invisible from here.
 
 ## Blast radius
 
+- [widget lifecycle](widget-lifecycle.md) — the focus gate's *initial* value is a mount-time
+  question, not a drawing one, and it is answered there (#912). A caret that blinks in a pane nobody
+  clicked is this territory's symptom of a rule that belongs one layer out
 - [caret report](caret-report.md) — the engine-side half; everything drawn here comes from those five
   scalars and nothing else
 - [cell geometry](cell-geometry.md) — thickness and rects are expressed in cell dimensions, so a

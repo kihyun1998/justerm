@@ -159,9 +159,9 @@ describe("CursorBlink", () => {
 
   // #912 — a terminal that was NEVER focused used to blink, because focus arrives as a *change* and
   // no change had happened yet. Reported with several PenTerm panes on screen: the caret blinked in
-  // panes the user had never clicked. Both references start here too (xterm.js
-  // `browser/services/CoreBrowserService.ts:14` `_isFocused = false` @ 699f553; alacritty
-  // `alacritty_terminal/src/term/mod.rs:440` `is_focused: Default::default()` @ 852e971).
+  // panes the user had never clicked. The corpus splits 2-1 on the default and agrees on the rule
+  // behind it — see `docs/agents/reference-facts.md` § "The INITIAL focus state — who establishes
+  // it", which is also why the widget reports at mount rather than relying on this value alone.
   it("starts unfocused, so a terminal nobody has clicked shows a solid caret (#912)", () => {
     const blink = new CursorBlink();
     blink.setAppBlink(true); // the application asked to blink — the only way this is observable
