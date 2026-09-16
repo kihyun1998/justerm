@@ -27,6 +27,14 @@ export interface Renderer {
    * drives it from focus/blur intents so the caret + selection reflect focus —
    * without this the blink and active tint persist after the page loses focus.
    * Optional: a renderer with no cursor/selection may omit it.
+   *
+   * **`mount()` calls this once with `false` before any focus event** (#912), so an implementation
+   * need not choose an initial value — and one that starts focused is corrected rather than left
+   * blinking in a pane the user never clicked. It arrives **before the first frame and before the
+   * first fit**: an implementation that presents from here must tolerate having no cursor and an
+   * unsized surface. Only the widget's DOM group establishes it; a `Terminal` built without
+   * `element` never attaches, so a renderer used that way still owns its own default — which is
+   * why the first-party one starts unfocused too.
    */
   setFocused?(focused: boolean): void;
   /**

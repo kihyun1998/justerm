@@ -42,7 +42,9 @@ export const BLINK_IDLE_TIMEOUT = 5 * 60 * 1000;
  */
 export class CursorBlink {
   private lastRestart = 0;
-  private focused = true;
+  /** **Starts unfocused** (#912) — see {@link setFocused}. The widget reports focus *changes*, so a
+   * terminal nobody has clicked is never told anything, and a `true` here blinked its caret forever. */
+  private focused = false;
   private reducedMotion = false;
   private appBlink = false;
   private override: boolean | undefined = undefined;

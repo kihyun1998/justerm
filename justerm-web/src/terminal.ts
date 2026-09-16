@@ -520,6 +520,17 @@ export class Terminal {
     const ta = makeHiddenTextarea();
     element.appendChild(ta);
     this.textarea = ta;
+    // Establish the renderer's focus state before any focus event (#912). `sink` carries focus
+    // *changes*, so a terminal nobody clicks is never described at all — and a renderer that assumed
+    // focus blinked its caret and painted the active selection tint for the life of the pane.
+    //
+    // Unconditionally `false`, not `document.activeElement === ta`: `ta` was created two lines up and
+    // appended, so it cannot be the active element. Reporting through the renderer rather than
+    // through `sink` on purpose — `sink` is the *input* intent stream, and a mount is not a user
+    // action. xterm.js draws the same line: its focus report is emitted only from the real
+    // focus/blur handlers (`CoreBrowserTerminal.ts:305,329` @ `699f553`) while `open()` establishes
+    // nothing, the state simply starting `false` in its service.
+    this.renderer.setFocused?.(false);
     const composition = new CompositionController(ta, sink);
     this.composition = composition;
 

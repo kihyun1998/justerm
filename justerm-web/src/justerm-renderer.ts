@@ -766,8 +766,16 @@ export class JustermRenderer implements Renderer {
    */
   private hidden = false;
   /** Focus gates the selection colour (focused → `selectionBg`, blurred → the dimmer
-   * `selectionInactiveBg`) and the blink (blurred → solid). xterm's two selection colours (#115). */
-  private focused = true;
+   * `selectionInactiveBg`) and the blink (blurred → solid). xterm's two selection colours (#115).
+   *
+   * **Starts unfocused** (#912). A renderer is told about focus *changes*, so a terminal that is
+   * never focused is never told anything — and the previous `true` therefore stood for the life of
+   * every pane the user had not clicked. Both references start here too: xterm.js
+   * `CoreBrowserService.ts:14` (`_isFocused = false`) @ `699f553`, alacritty `term/mod.rs:440`
+   * (`is_focused: Default::default()`) @ `852e971`. It also fails safe in the direction the old
+   * default did not: a focused terminal that reads as blurred recovers on the first keystroke, while
+   * a blurred one that reads as focused never recovered. */
+  private focused = false;
   /** The current frame's overlay spans, retained so a focus flip (no new frame) can re-issue
    * `setOverlay` with the active/inactive tint. Empty ⇔ nothing highlighted. */
   // Annotated bare (`Uint32Array<ArrayBufferLike>`) so `asU32`'s buffer-agnostic result assigns
@@ -2105,14 +2113,19 @@ export class JustermRenderer implements Renderer {
 
   /** Focus gates the blink (blurred → solid) and the selection tint (active ↔ inactive, #115).
    * No frame changed on a focus flip, so re-issue `setOverlay` with the retained spans + the new
-   * tint (the renderer re-packs the retained grid) and redraw the cursor. */
+   * tint (the renderer re-packs the retained grid) and redraw the cursor.
+   *
+   * The redraw is guarded on there *being* a cursor, like every sibling policy setter
+   * ({@link setCursorBlink}, {@link setComposing}, {@link setCursorBlinkTimeout}): since #912 the
+   * widget establishes focus at mount, which is before the first frame and before the first fit —
+   * and `redrawCursor` presents, so an unsized canvas would be a GL call with nothing to draw. */
   setFocused(focused: boolean): void {
     this.blink.setFocused(focused);
     if (this.focused !== focused) {
       this.focused = focused;
       this.issueOverlay();
     }
-    this.redrawCursor();
+    if (this.cursor) this.redrawCursor();
   }
 
   /**

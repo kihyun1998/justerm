@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { CursorBlink } from "../src/cursor";
 
+/**
+ * A `CursorBlink` that has been told it is focused.
+ *
+ * Since #912 the default is UNfocused, because the widget only ever reports focus *changes* and a
+ * terminal nobody clicks is never described at all. Every test below whose subject is the blink
+ * *phase* therefore has to establish focus first — without it the focus gate answers "solid" and the
+ * test measures that gate instead of the thing it is named after. Eleven tests here were written
+ * against the old default and each one reddened on the flip, which is what made the precondition
+ * worth naming once rather than repeating.
+ */
+const focusedBlink = (): CursorBlink => {
+  const blink = new CursorBlink();
+  blink.setFocused(true);
+  return blink;
+};
+
 // #575 — the widget used to blink unconditionally and never read the frame's blink mode, so an
 // application asking for a STEADY cursor (`CSI 2 q`, `CSI ?12 l`) got a blinking one. Blinking is
 // now resolved from two inputs, mirroring the two references (both pinned trees, read 2026-07-28):
@@ -29,7 +45,7 @@ describe("CursorBlink", () => {
   // The application's intent arrives on every frame as `cursorBlink` (wire v4, #81), written by
   // BOTH DECSCUSR (`term.rs:2938`) and att610 `?12 h/l` (`term.rs:4505-4506`).
   it("follows the application's blink mode", () => {
-    const blink = new CursorBlink();
+    const blink = focusedBlink();
 
     blink.setAppBlink(true);
     expect([blink.isVisible(0), blink.isVisible(600), blink.isVisible(1200)]).toEqual([true, false, true]);
@@ -45,7 +61,7 @@ describe("CursorBlink", () => {
   // terminfo's own `cnorm=\E[?12l\E[?25h` carries a blink-off. So merely quitting vim pins the
   // cursor steady for the rest of the session, with no way back. `undefined` = follow the app.
   it("lets a consumer force blinking on, against the application", () => {
-    const blink = new CursorBlink();
+    const blink = focusedBlink();
     blink.setAppBlink(false); // the app (or terminfo's cnorm) said steady
 
     blink.setBlinkOverride(true);
@@ -65,7 +81,7 @@ describe("CursorBlink", () => {
   // Clearing the override returns authority to the application rather than latching the last
   // forced value — the `??` semantics, not a copy.
   it("returns authority to the application when the override is cleared", () => {
-    const blink = new CursorBlink();
+    const blink = focusedBlink();
     blink.setAppBlink(true);
     blink.setBlinkOverride(false);
     expect(blink.isVisible(600)).toBe(true); // forced steady
@@ -78,7 +94,7 @@ describe("CursorBlink", () => {
   // xterm BLINK_INTERVAL = 600ms: the cursor shows for the first interval, hides for the next, and
   // so on. Time is injected so the state is testable without real timers.
   it("toggles visibility every 600ms", () => {
-    const blink = new CursorBlink();
+    const blink = focusedBlink();
     blink.setAppBlink(true);
 
     expect([blink.isVisible(0), blink.isVisible(599), blink.isVisible(600), blink.isVisible(1200)]).toEqual(
@@ -112,7 +128,7 @@ describe("CursorBlink", () => {
   // Typing or moving the cursor restarts the animation: the cursor shows at once and the interval
   // resets from that moment, so it never blinks off right after input (xterm restartBlinkAnimation).
   it("shows immediately and resets the phase on restart", () => {
-    const blink = new CursorBlink();
+    const blink = focusedBlink();
     blink.setAppBlink(true);
     expect(blink.isVisible(600)).toBe(false); // would be hidden mid-blink
 
@@ -127,8 +143,11 @@ describe("CursorBlink", () => {
   // isCursorVisible = true and clears the interval; alacritty gates on `is_focused`,
   // `alacritty/src/event.rs:1643`).
   it("stays solid while unfocused", () => {
-    const blink = new CursorBlink();
+    // Both directions, and both from an EXPLICIT focus — since #912 an unfocused `CursorBlink` is
+    // also the freshly-built one, so a test that only blurred would pass without the gate existing.
+    const blink = focusedBlink();
     blink.setAppBlink(true);
+    expect(blink.isVisible(600)).toBe(false); // focused → blinking, the control for the line below
 
     blink.setFocused(false);
     expect(blink.isVisible(600)).toBe(true); // would blink off if focused
@@ -136,6 +155,24 @@ describe("CursorBlink", () => {
 
     blink.setFocused(true);
     expect(blink.isVisible(600)).toBe(false); // focused again → blinks
+  });
+
+  // #912 — a terminal that was NEVER focused used to blink, because focus arrives as a *change* and
+  // no change had happened yet. Reported with several PenTerm panes on screen: the caret blinked in
+  // panes the user had never clicked. Both references start here too (xterm.js
+  // `browser/services/CoreBrowserService.ts:14` `_isFocused = false` @ 699f553; alacritty
+  // `alacritty_terminal/src/term/mod.rs:440` `is_focused: Default::default()` @ 852e971).
+  it("starts unfocused, so a terminal nobody has clicked shows a solid caret (#912)", () => {
+    const blink = new CursorBlink();
+    blink.setAppBlink(true); // the application asked to blink — the only way this is observable
+
+    // 600ms is the OFF half of the phase: a *focused* blinking caret is hidden here.
+    expect([blink.isVisible(600), blink.isVisible(1800)]).toEqual([true, true]);
+
+    // Positive control, same clock and same instance: the phase really is off at 600ms, so the
+    // solid reading above is the focus gate and not a broken instrument.
+    blink.setFocused(true);
+    expect([blink.isVisible(600), blink.isVisible(1800)]).toEqual([false, false]);
   });
 });
 
@@ -151,7 +188,7 @@ describe("CursorBlink — idle timeout (#593)", () => {
   const MIN = 60_000;
 
   it("blinks normally while the idle timeout has not elapsed", () => {
-    const blink = new CursorBlink();
+    const blink = focusedBlink();
     blink.setAppBlink(true);
 
     expect([blink.isVisible(0), blink.isVisible(600), blink.isVisible(1200)]).toEqual([true, false, true]);
@@ -162,7 +199,7 @@ describe("CursorBlink — idle timeout (#593)", () => {
   // exactly xterm.js's (key/text intents + pointer-down), so matching the reference we are
   // structurally identical to is the least arbitrary default available. It is an option regardless.
   it("defaults to five minutes, and goes solid once that passes with no input", () => {
-    const blink = new CursorBlink();
+    const blink = focusedBlink();
     blink.setAppBlink(true);
 
     // Just inside: still blinking (5min is an exact multiple of 600ms, so this phase is 'off').
@@ -173,7 +210,7 @@ describe("CursorBlink — idle timeout (#593)", () => {
   });
 
   it("is configurable, and a keystroke restarts the idle clock", () => {
-    const blink = new CursorBlink();
+    const blink = focusedBlink();
     blink.setAppBlink(true);
     blink.setIdleTimeout(10_000);
 
@@ -190,7 +227,7 @@ describe("CursorBlink — idle timeout (#593)", () => {
   // references reset their clock on *user input* only. Feeding the move into the idle clock would
   // mean a terminal running any live TUI never idles out, which is broader than either reference.
   it("a cursor move restarts the phase but NOT the idle clock", () => {
-    const blink = new CursorBlink();
+    const blink = focusedBlink();
     blink.setAppBlink(true);
     blink.setIdleTimeout(10_000);
 
@@ -203,7 +240,7 @@ describe("CursorBlink — idle timeout (#593)", () => {
 
   // alacritty's `blink_timeout: 0` disables the timeout entirely (`config/cursor.rs:64-70`).
   it("a timeout of 0 disables the idle stop", () => {
-    const blink = new CursorBlink();
+    const blink = focusedBlink();
     blink.setAppBlink(true);
     blink.setIdleTimeout(0);
 
@@ -250,7 +287,7 @@ describe("CursorBlink — IME composition (#592)", () => {
   });
 
   it("resumes blinking when the composition ends", () => {
-    const blink = new CursorBlink();
+    const blink = focusedBlink();
     blink.setAppBlink(true);
     blink.setComposing(true);
     expect(blink.isVisible(600)).toBe(true); // suppressed
