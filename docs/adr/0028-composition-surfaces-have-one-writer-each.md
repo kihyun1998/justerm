@@ -275,6 +275,19 @@ hold, and the boundary says it may not guess at. Neither is a regression — the
 equally wrong at the margin — and the first implementation described the return as "one past the
 run's last cell" in three places while D5, five paragraphs down, already said otherwise.
 
+**What a fix at the margin would have to settle, recorded because the finding is cheap to
+rediscover and the answer is not (#916, closed `not_planned`).** Measured 2026-09-16, with a positive
+control in the same grep: `cols` is on the wire (`justerm-web/src/types.ts:30`), and
+autowrap/`DECAWM` is on it **nowhere** — 0 hits across `serialize.rs`, the decoder and `types.ts`,
+while the same pattern finds `Term::autowrap` in core (`justerm-core/src/term.rs:144`, `?7`, default
+on) and the same file yields 4 hits for `cursor_col`. So the widget can know the width and cannot
+know whether the line wraps. Two ways out, and they land in different crates: put the mode on the
+frame, which is a wire decision governed by ADR-0020; or let the renderer answer *"where does a run
+starting here actually end"*, since `preedit::range` already owns the right-edge shift — which makes
+it a published `justerm-renderer` surface on its own release track. **Neither is worth spending until
+the reach is measured**: composing CJK with the cursor within one syllable of the right margin,
+frequency unknown.
+
 **The premise, stated because it is the thing that can be wrong: the committed text leaves the
 engine's cursor at the drawn run's end.** It holds wherever the application echoes what it is sent,
 which is every shell and every editor, and it is what the reported defect was about. It does **not**
