@@ -130,6 +130,9 @@ returns zero hits instead of an error — see Step 7 "What a worktree breaks".
 `InputHandler.ts`, 3.7K lines: the registry shows, handler bodies like
 `setOrReportIndexedColor` get cut).
 
+**This table is the old 4-tree pin set.** The current sources and pins are
+[`thegraph.md`](thegraph.md) § References, which `cite.mjs --pins` reads.
+
 | Reference | Path | Pinned SHA (2026-07-24) |
 |---|---|---|
 | alacritty | `../.refs/alacritty` (sparse: `alacritty_terminal`, `alacritty/src`) | `852e971cddfabe222d2d5bcda466e130f53af207` |
