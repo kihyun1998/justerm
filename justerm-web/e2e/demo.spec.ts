@@ -2953,6 +2953,13 @@ test("a continuous burst starts each syllable where the last one ended (#911)", 
   // frame stream again and lands back at the cursor. Without this the three readings above would be
   // satisfied just as well by a widget that counts compositions and walks right forever.
   expect(caretCell(p.settled), `after the burst drained, got=${p.settled}`).toBe(2);
+
+  // A composition that drew nothing hands on no run end, so the latch after it goes back to the
+  // frame stream. Reaching past it for the last run that DID draw would latch a coordinate with no
+  // bound on its age — a row that has since scrolled away. This arm's own commit is in flight, so
+  // the fallback is what produces the reading rather than there being nothing to choose from.
+  expect(caretCell(p.afterAbort), `after a composition that drew nothing, got=${p.afterAbort}`)
+    .toBe(2);
 });
 
 /**

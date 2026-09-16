@@ -88,6 +88,12 @@ Nothing governs the encoding itself.
   #649 for the point-of-use re-sync). The predicate is "a candidate window is open" — `isComposing`,
   not the broader `active`, which outlives it by one deferred read and so would swallow the
   `compositionstart` re-sync in continuous CJK.
+- **A composition's origin comes from the composition before it, not from the frame stream, whenever
+  a commit is still in flight** (#911, ADR-0028 D4). The frame stream is not merely behind at that
+  instant — the committed text has not been sent yet — so the value read is the previous composition's
+  own run end, which is `setPreedit`'s returned caret column and not an advance computed here (the
+  widget has no `wcwidth`). The predicate is `active`, the mirror of the bullet above: the window
+  #649 had to keep the guard OUT of is exactly the window this has to act IN.
 - **An IME confirmation is a raw text intent**, not a paste — bracketed-paste markers would tell the
   application something untrue about where the text came from.
 - **A consumer claims a key through `TerminalOptions.beforeKey`, asked after the IME gate** (#901).

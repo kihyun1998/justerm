@@ -239,6 +239,41 @@ then **jumped to row 9 on the next keystroke**, taking the drawn run with it.
 Corollary, from measurement 3: the preedit view's lifetime is owned by the composition events alone
 and may not assume the commit has reached the grid. At every syllable boundary it has not.
 
+**And the origin is latched from the composition that ended, not from the frame stream (#911).** The
+clause above is about *when* the origin is read; this is about *what it is read from*, and the first
+implementation got the second half wrong while getting the first half right. `cursorAnchor` is written
+only by the frame subscription, so it is never fresher than the last frame the engine sent — and
+measurement 3 says that at the latch the previous syllable has not been **sent** yet, let alone
+echoed. So the latch was taking the cell the previous syllable is about to occupy, and every syllable
+of continuous Korean drew over the one just committed: *"typing 안 then 녕 replaces 안 with 녕"*.
+
+The correction reads the previous composition's own **run end** — `setPreedit`'s returned caret
+column, one past its last cell — whenever a commit is still in flight, and the frame stream otherwise.
+Three things make it that value rather than an arithmetic advance:
+
+- **The widget has no `wcwidth`.** `Renderer.setPreedit` returns the caret column precisely because
+  the widget cannot compute it, and a Korean syllable is two cells rather than one code unit. An
+  advance computed here would be a second width oracle in the consumer, disagreeing with the renderer
+  at the right edge, where the run shifts left instead of clipping (D5).
+- **"A commit is in flight" is a predicate that already exists and is already pinned.**
+  `CompositionController.active`, read before `compositionStart()`, is exactly that state — and
+  `composition.test.ts` already pins that it is `true` there in continuous CJK and `false` otherwise,
+  for #649's sake. `composing` is the wrong one here for the mirror of #649's reason.
+- **The handoff is consumed at the latch, which scopes it to one composition.** A composition that
+  draws nothing leaves no run end, so the latch after it falls back to the frame stream rather than
+  reaching past it — reaching further back is unbounded in age, and the coordinate it would find can
+  be a row that has since scrolled away. That is a bounded wrong in place of an unbounded one, and it
+  is the reason the line exists; it is gated by the probe's *aborted composition* arm.
+
+**Neither reference can arbitrate this, because neither has the defect to solve.** ghostty computes
+`preedit_range` from `state.cursor.viewport` inside `rebuildCells` (`src/renderer/generic.zig:2369-2381`
+@ `e6e26e1`) and alacritty passes a fresh `point` into `draw_ime_preview` on every `draw`
+(`alacritty/src/display/mod.rs:960`, `:1129` @ `852e971`) — both re-read the live cursor per frame and
+latch nothing, so an echo landing a frame later simply corrects them. **Latching is what converts
+"eventually right" into "wrong for the composition's whole life"**, and the latch is this record's own
+(D4, above), taken for #637's reasons which neither reference shares. The rule here is derived from
+those reasons, not counted off the references.
+
 **D5 — Browser ownership governs position and extent. It does not govern visibility.**
 A composition may decide *where* things are and *how far they reach*; it may not reveal something the
 application asked to hide. Concretely: the caret's position rides the end of the preedit run (that is

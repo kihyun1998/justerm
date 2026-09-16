@@ -71,6 +71,14 @@ composition it never saw, so nothing throws and no test on the core side can fai
   focus after a dialog) delivered exactly the superseded cell the guard existed to withhold (#649).
   The lesson generalises past this anchor: **a guard placed on one writer is not a rule about the
   state.** Both entrances are now closed at the single seam they share.
+- **A surface acting on the widget's OWN unsent state, not merely on a late frame.** The three above
+  are all "the frame is behind"; this one is sharper. At `compositionstart` in continuous CJK the
+  committed text has not left the widget at all — it goes out one deferred read later (#116) — so
+  `cursorAnchor` is not *possibly* stale, it is **known** to be describing the cell that text is
+  about to take. Latching the preedit's origin from it drew every Korean syllable over the one just
+  committed (#911). The fix takes the previous composition's own run end while a commit is in flight;
+  the general shape is that **a consumer holding unsent input cannot read its own echo for a
+  coordinate**, and the only surfaces that can answer are the ones that know what it is holding.
 - **Reading a two-question predicate as one question.** The guard is keyed on
   `CompositionController.composing` (`isComposing`), *not* `active` (`isComposing ||
   isSendingComposition`). `active` outlives the candidate window by one deferred commit read, and a

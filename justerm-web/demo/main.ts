@@ -4191,6 +4191,9 @@ interface PreeditOriginProbe {
   burst: number[][];
   /** The same reading for a composition started once the burst's commits have drained. */
   settled: number[];
+  /** The same reading again, but with a composition that DREW NOTHING (a start and an end with no
+   * update) immediately before it — whose own commit is what is in flight. */
+  afterAbort: number[];
 }
 
 window.__preeditOriginProbe = async (): Promise<PreeditOriginProbe> => {
@@ -4248,7 +4251,18 @@ window.__preeditOriginProbe = async (): Promise<PreeditOriginProbe> => {
   syllable("안", `${value}안`);
   const settled = strip();
   ta.dispatchEvent(new CompositionEvent("compositionend", { data: "안" }));
+
+  // An IME can open and close a composition without ever emitting an update. Such a composition has
+  // no run end of its own, and the one before it may be arbitrarily old — so the latch after it must
+  // fall back to the frame stream rather than reach past it. Its own commit read IS in flight here
+  // (no `await` between its end and the next start), so the fallback is the only thing producing it.
+  await new Promise((r) => setTimeout(r, 0));
+  ta.dispatchEvent(new CompositionEvent("compositionstart"));
+  ta.dispatchEvent(new CompositionEvent("compositionend", { data: "" }));
+  syllable("녕", `${value}안녕`);
+  const afterAbort = strip();
+  ta.dispatchEvent(new CompositionEvent("compositionend", { data: "녕" }));
   render();
 
-  return { idle, burst, settled };
+  return { idle, burst, settled, afterAbort };
 };
