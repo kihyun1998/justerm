@@ -281,8 +281,16 @@ which is every shell and every editor, and it is what the reported defect was ab
 hold for an application that echoes nothing — a password prompt, `read -s` — where the cursor never
 moves and the old value was right by accident; there the origin now walks right by one syllable per
 commit until the burst ends and the frame stream answers again. That is a bounded, self-limiting wrong
-in the rare case traded for a guaranteed one in the common case, and it is **the maintainer's trade to
-reverse**, not a derivation. The premise is falsifiable and is tested: the `#911` e2e advances the
+in the rare case traded for a guaranteed one in the common case.
+
+**This one is a product judgement the maintainer made on 2026-09-16 (#911), not a derivation**, and a
+better derivation does not retire it. What they were shown: that the premise holds for every echoing
+application and fails for a non-echoing prompt; that in the failing case the old code was right by
+accident; that the wrong is bounded by one uninterrupted burst and snaps back when the frame stream
+answers again; and that all three references sidestep the question entirely by never latching. They
+chose to keep it. It is theirs to reverse.
+
+The premise is falsifiable and is tested: the `#911` e2e advances the
 engine's cursor by one syllable through a real frame and requires the origin latched from
 `cursorAnchor` to land on the cell the origin latched from the run end predicted.
 
