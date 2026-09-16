@@ -1243,7 +1243,7 @@ term = new Terminal(source, renderer, {
   ...(bootScrollSensitivity === null ? {} : { scroll: { scrollSensitivity: Number(bootScrollSensitivity) } }),
   onScroll: (offset) => {
     displayOffset = offset;
-    console.log(`[wheel] scroll → displayOffset ${offset}`); // observable signal (e2e/live proxy)
+    console.log(`[scroll] → displayOffset ${offset}`); // observable signal (e2e/live proxy)
     render();
   },
   // #117: fire-and-forget consumer notifications. A real backend drains core events

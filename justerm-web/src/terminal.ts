@@ -5,7 +5,9 @@ import {
   MouseEvents,
   wheelMouseFromDom,
   type CellGeometry,
+  type Intent,
   type InputSink,
+  type Key,
   type NamedKey,
 } from "./input";
 import { PointerRouter, type LocalPointer } from "./pointer";
@@ -98,6 +100,67 @@ export function routeWheel(
   const target = wheelScrollTarget(lines, displayOffset, scrollbackLen);
   if (target === null) return { kind: "none" };
   return { kind: "scroll", displayOffset: target };
+}
+
+/**
+ * DOM `KeyboardEvent.key` values that name a modifier. `keyOf` maps every key it does
+ * not recognise to a `char`, so a bare modifier press arrives as `Char("Shift")` and is
+ * indistinguishable from typing without this list.
+ */
+const MODIFIER_KEYS: ReadonlySet<string> = new Set([
+  "Alt",
+  "AltGraph",
+  "CapsLock",
+  "Control",
+  "Fn",
+  "FnLock",
+  "Hyper",
+  "Meta",
+  "NumLock",
+  "ScrollLock",
+  "Shift",
+  "Super",
+  "Symbol",
+  "SymbolLock",
+]);
+
+/**
+ * What the input path saw, for the scroll-on-user-input decision: an {@link Intent} on
+ * its way to the application, or `imeKey` — a keydown the IME gate swallowed, which
+ * produces no intent at all.
+ */
+export type InputScrollSignal = Intent | { kind: "imeKey" };
+
+/** Whether a key writes input at all; a bare modifier does not. */
+function keyIsInput(key: Key): boolean {
+  return key.type !== "char" || !MODIFIER_KEYS.has(key.char);
+}
+
+/**
+ * Whether user input should bring the viewport back to the bottom (#913).
+ *
+ * Counts: a key that is not a bare modifier, committed IME text, a paste, and a keydown
+ * the IME gate swallowed. Does not: focus and mouse intents. A key vetoed by the IME gate
+ * or by `TerminalOptions.beforeKey` never becomes an {@link Intent}, so it cannot reach
+ * here as one.
+ *
+ * `displayOffset` is the only state this needs — `0` already means the live edge, on the
+ * alt screen included, so there is no screen to ask about. A non-finite offset snaps:
+ * unlike {@link wheelScrollTarget}, the requested offset is the constant `0` rather than
+ * something computed from the argument.
+ */
+export function scrollsToBottomOnInput(signal: InputScrollSignal, displayOffset: number): boolean {
+  if (displayOffset === 0) return false;
+  switch (signal.kind) {
+    case "key":
+      return keyIsInput(signal.event.key);
+    case "text":
+    case "paste":
+    case "imeKey":
+      return true;
+    default:
+      return false;
+  }
 }
 
 /** Where the hidden textarea is anchored, in cells — the cursor cell a frame reported. */
@@ -492,6 +555,26 @@ export class Terminal {
    * on a buffer switch (alt-screen), so a fresh screen doesn't inherit a stale
    * trackpad fraction. Ours, not xterm.js's: its `MouseService.reset()` runs only on a
    * terminal reset (`CoreBrowserTerminal.reset`, 699f553), never on a buffer switch. */
+  /** Wraps the consumer's sink so input that counts returns the view to the bottom (#913). */
+  private scrollOnUserInput(inner: InputSink, o: TerminalOptions): InputSink {
+    return {
+      send: (intent) => {
+        // Before forwarding, as xterm.js fires its scroll request before `onData`.
+        this.requestBottom(intent, o);
+        inner.send(intent);
+      },
+    };
+  }
+
+  /** Ask the consumer for the live edge if this signal calls for it (#913). */
+  private requestBottom(signal: InputScrollSignal, o: TerminalOptions): void {
+    if (!o.onScroll || !scrollsToBottomOnInput(signal, this.displayOffset)) return;
+    // Optimistically advance, as the wheel's scroll case does: frame mode's echo is an
+    // async round-trip, so without it every keystroke re-requests the same scroll.
+    this.displayOffset = 0;
+    o.onScroll(0);
+  }
+
   private track(frame: DecodedFrame): void {
     this.mask = frame.mouseWantedEvents ?? 0;
     this.displayOffset = frame.displayOffset ?? 0;
@@ -516,7 +599,9 @@ export class Terminal {
     const input = o.input;
     const getGeometry = o.getGeometry;
     if (!element || !input || !getGeometry) return;
-    const sink = rendererNotifyingSink(input, this.renderer);
+    // #913 — the snap wraps the consumer's sink INSIDE the renderer-notifying one, so it
+    // sees exactly the intents the consumer is about to receive and nothing else.
+    const sink = rendererNotifyingSink(this.scrollOnUserInput(input, o), this.renderer);
     const ta = makeHiddenTextarea();
     element.appendChild(ta);
     this.textarea = ta;
@@ -545,6 +630,9 @@ export class Terminal {
           // Clear once idle whether the key was swallowed (229 diff) or finalized a
           // composition (Enter, proceed=true) — both leave committed text behind.
           this.clearTextareaWhenIdle();
+          // Swallowed by the IME: no intent will ever be sent for this key, so the sink
+          // below cannot see it — and the user is typing (#913).
+          if (!proceed) this.requestBottom({ kind: "imeKey" }, o);
           return proceed && (o.beforeKey?.(e) ?? true);
         },
       }),

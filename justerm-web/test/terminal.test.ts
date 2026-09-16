@@ -5,6 +5,7 @@ import {
   routeWheel,
   textareaMove,
   wheelGoesToApp,
+  scrollsToBottomOnInput,
   wheelScrollTarget,
   preeditIntent,
   preeditLatch,
@@ -502,5 +503,81 @@ describe("INPUT_ATTRIBUTE (#903)", () => {
     // hard-codes, and `e2e/demo.spec.ts` asserts the same literal on the mounted textarea.
     const { INPUT_ATTRIBUTE } = await import("../src/index");
     expect(INPUT_ATTRIBUTE).toBe("data-justerm-input");
+  });
+});
+
+// --- #913: scroll-on-user-input. Typing while scrolled up must bring the view
+// back to the bottom, the decision both references put in the terminal layer
+// (xterm.js `scrollOnUserInput`, alacritty `on_terminal_input_start`). Pure, so
+// the whole matrix is covered here rather than through a DOM. ---
+
+describe("scrollsToBottomOnInput", () => {
+  const key = (char: string): Intent => ({
+    kind: "key",
+    event: { key: { type: "char", char }, mods: 0, action: "press" },
+  });
+
+  it("snaps for a typed character while scrolled up", () => {
+    expect(scrollsToBottomOnInput(key("a"), 5)).toBe(true);
+    expect(scrollsToBottomOnInput(key("가"), 5)).toBe(true);
+  });
+
+  it("snaps for a named key and a function key", () => {
+    const enter: Intent = { kind: "key", event: { key: { type: "enter" }, mods: 0, action: "press" } };
+    const f5: Intent = { kind: "key", event: { key: { type: "f", n: 5 }, mods: 0, action: "press" } };
+    expect(scrollsToBottomOnInput(enter, 5)).toBe(true);
+    expect(scrollsToBottomOnInput(f5, 5)).toBe(true);
+  });
+
+  it("snaps for committed IME text and for a paste", () => {
+    expect(scrollsToBottomOnInput({ kind: "text", text: "가" }, 5)).toBe(true);
+    expect(scrollsToBottomOnInput({ kind: "paste", text: "ls\n" }, 5)).toBe(true);
+  });
+
+  // xterm.js snaps in the branch where its composition helper SWALLOWED the keydown
+  // (CoreBrowserTerminal `_keyDown`) — no bytes are written and may never be, yet the
+  // user is typing. Our IME gate produces no intent at all there, so the signal is
+  // its own kind. Maintainer's call, 2026-09-16.
+  it("snaps for a key the IME gate swallowed, which produces no intent", () => {
+    expect(scrollsToBottomOnInput({ kind: "imeKey" }, 5)).toBe(true);
+  });
+
+  it("does not snap for a bare modifier", () => {
+    for (const m of ["Shift", "Control", "Alt", "Meta", "AltGraph", "CapsLock", "NumLock", "ScrollLock", "Super", "Hyper", "Fn", "FnLock", "Symbol", "SymbolLock"]) {
+      expect(scrollsToBottomOnInput(key(m), 5), m).toBe(false);
+    }
+  });
+
+  it("does not snap for focus or mouse intents", () => {
+    expect(scrollsToBottomOnInput({ kind: "focus", focused: true }, 5)).toBe(false);
+    expect(
+      scrollsToBottomOnInput(
+        { kind: "mouse", event: { button: "left", action: "press", col: 1, row: 1, mods: 0, px: 4, py: 8 } },
+        5,
+      ),
+    ).toBe(false);
+  });
+
+  // The guard both references have (`ybase !== ydisp` / `display_offset() != 0`).
+  // Without it every keystroke is a consumer round-trip in frame mode.
+  it("requests nothing when the view is already at the bottom", () => {
+    expect(scrollsToBottomOnInput(key("a"), 0)).toBe(false);
+    expect(scrollsToBottomOnInput({ kind: "text", text: "가" }, 0)).toBe(false);
+    expect(scrollsToBottomOnInput({ kind: "paste", text: "ls" }, 0)).toBe(false);
+    expect(scrollsToBottomOnInput({ kind: "imeKey" }, 0)).toBe(false);
+  });
+
+  // The alt screen needs NO branch: core reports offset 0 there, so it is a no-op by
+  // construction. Asserted so a future `altScreen` argument reads as a regression.
+  it("is a no-op on the alt screen without naming it", () => {
+    expect(scrollsToBottomOnInput(key("a"), 0)).toBe(false);
+  });
+
+  // `wheelScrollTarget` refuses a poisoned offset because its OUTPUT is computed from
+  // it (#675). Here the output is the constant 0, so there is nothing to poison, and
+  // refusing would strand the user exactly as #913 describes.
+  it("snaps on a non-finite offset, where the wheel router refuses", () => {
+    expect(scrollsToBottomOnInput(key("a"), NaN)).toBe(true);
+    expect(scrollsToBottomOnInput(key("a"), Infinity)).toBe(true);
   });
 });
