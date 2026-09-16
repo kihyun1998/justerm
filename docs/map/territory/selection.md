@@ -31,6 +31,16 @@ prose, and prose is not a decision record.
 With no record, everything below was **read out of the code** — which is itself this territory's
 status.
 
+- **Typing drops the selection, and it is the widget that decides so** (#913). `LocalPointer` gained
+  an **optional** `clear()` — optional so a consumer on the older shape keeps compiling and simply
+  does not drop — which `Terminal` calls for any user input. Two things about it are easy to get
+  wrong and are the reason it is written down: it is **not** gated on the viewport (the snap that
+  ships with it is, and bundling them would leave a selection alive whenever the user is already at
+  the bottom, which is most of the time), and the *"is there one?"* guard lives in the controller
+  rather than the widget, because the widget cannot see selection state. A live drag is skipped
+  deliberately — dropping the anchor mid-gesture leaves the next `mouseMove` extending nothing.
+  Both references do this at the same moment
+  ([`reference-facts.md` § scroll-on-user-input](../../agents/reference-facts.md#scroll-on-user-input--both-references-snap-and-xtermjs-does-it-at-two-sites-913-verified-2026-09-16)).
 - **Anchors are absolute buffer coordinates** — `BufferPoint { line, col }`, where `line` indexes
   `[scrollback ++ screen]` from the oldest line. Not viewport coordinates.
 - **Why absolute**: it is invariant under a top-anchored scroll. A line evicted into scrollback grows
@@ -170,11 +180,14 @@ Check these after changing this territory:
 
 ## Known holes / open
 
-- **`SelectionController` remembers a selection core has dropped.** `hasSelection` is set on `begin` and
-  never cleared, while core clears the selection on a screen swap — so a Shift+click after leaving an
+- **`SelectionController` remembers a selection core has dropped.** `hasSelection` is set on `begin`,
+  while core clears the selection on a screen swap — so a Shift+click after leaving an
   alt-screen application extends nothing and selects nothing. Seen while working #902, which sidesteps
   it only for the forced press (that one anchors); the ordinary Shift+click still has it. The
   controller sees no frames, so repairing it needs a signal it does not receive today.
+  **#913 narrowed this and did not close it**: the sentence used to read *"and never cleared"*, which
+  stopped being true when `clear()` arrived — but its one caller is user input, so the field is still
+  wrong for exactly the trigger described here, a screen swap the controller never hears about.
 
 - **Zero governing records.** The whole §Design model above is unrecorded. *"Why absolute
   coordinates"* and *"what moves the coordinate"* are the kind of thing that gets

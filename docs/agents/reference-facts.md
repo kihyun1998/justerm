@@ -3374,6 +3374,17 @@ terminal layer's job or the embedding app's, and exactly which input counts.
 Both are in the terminal layer, not the surrounding application. That convergence is what the routing
 argument rests on; neither erects it alone.
 
+### The selection is dropped at the same moment, and it is NOT behind the scroll guard
+
+The two behaviours share only *"is this user input?"*. xterm.js fires `_onUserInput` **outside** the
+`scrollOnUserInput` block that precedes it (`CoreService.ts:82-89`; the comment on the second `if`
+reads *"so listeners can react as well (eg. clear selection)"*), and `SelectionService` listens to it
+and clears only `if (this.hasSelection)` (`SelectionService.ts:139-143`). alacritty calls
+`self.clear_selection()` before it tests `display_offset()` at all (`event.rs:1359-1365`). So a
+selection is dropped wherever the view is, while only the scroll asks whether there is anywhere to go.
+Bundling the two — the obvious reading if you meet the scroll first — disables clear-on-typing for a
+user already at the bottom, which is the common case rather than an edge one.
+
 ### The second xterm.js site, which is the one that is easy to miss
 
 `CoreBrowserTerminal._keyDown` snaps **in the branch where the composition helper swallowed the
