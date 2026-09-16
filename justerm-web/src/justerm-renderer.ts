@@ -2120,17 +2120,28 @@ export class JustermRenderer implements Renderer {
    * No frame changed on a focus flip, so re-issue `setOverlay` with the retained spans + the new
    * tint (the renderer re-packs the retained grid) and redraw the cursor.
    *
-   * The redraw is guarded on there *being* a cursor, like every sibling policy setter
-   * ({@link setCursorBlink}, {@link setComposing}, {@link setCursorBlinkTimeout}): since #912 the
-   * widget establishes focus at mount, which is before the first frame and before the first fit —
-   * and `redrawCursor` presents, so an unsized canvas would be a GL call with nothing to draw. */
+   * **This setter is the one that changes something other than the cursor, and the present is
+   * therefore not the cursor's to own** (#912). `issueOverlay` only *retains* spans and re-packs —
+   * `redrawCursor` is what calls `backend.render()`, which is why {@link setTheme} pairs the two and
+   * says so. Guarding the redraw on there being a cursor, the way {@link setCursorBlink} and
+   * {@link setComposing} legitimately do, therefore drops the tint flip on the floor whenever the
+   * application has hidden the caret (`cursorCommand` → `clear`): the retained spans exist exactly
+   * so a focus flip with **no new frame** can be drawn, and on an idle hidden-caret terminal there
+   * may be no next present at all — `updateCursor`'s clear branch returns before `startBlinkLoop`.
+   * So: redraw the caret when there is one, and otherwise present iff the tint actually moved.
+   *
+   * The guard is still worth having for the mount-time call, which lands before the first frame and
+   * before the first fit; there it takes neither branch, because `focused` starts `false` and so the
+   * tint does not move either. */
   setFocused(focused: boolean): void {
     this.blink.setFocused(focused);
-    if (this.focused !== focused) {
+    const tintMoved = this.focused !== focused;
+    if (tintMoved) {
       this.focused = focused;
       this.issueOverlay();
     }
     if (this.cursor) this.redrawCursor();
+    else if (tintMoved) this.backend.render();
   }
 
   /**

@@ -32,7 +32,8 @@ type AsyncProbe =
   | "__contractOnlyDensityProbe"
   | "__hideShowProbe"
   | "__hiddenBlinkProbe"
-  | "__unfocusedBlinkProbe";
+  | "__unfocusedBlinkProbe"
+  | "__unfocusedTintProbe";
 
 /** This page's typed alias over the shared park-and-harvest helper (#731; extracted in #776). */
 const readAsyncProbe = <K extends AsyncProbe>(
@@ -132,6 +133,12 @@ const expectContextAlive = (s: { contextLost: boolean }): void => {
 const BG_A = "27,42,74,255"; // 0x1b2a4a
 const BG_B = "18,58,36,255"; // 0x123a24
 const UNPAINTED = "0,0,0,0";
+
+/** The adapter's default selection tints (`justerm-renderer.ts` — `selectionBg` `0x45475a`,
+ * `selectionInactiveBg` `0x30313d`), which this page does not override. Portable for the same reason
+ * `BG_A`/`BG_B` are: a colour a consumer chose, not a number derived from a font. */
+const SELECTION_ACTIVE = "69,71,90,255"; // 0x45475a
+const SELECTION_INACTIVE = "48,49,61,255"; // 0x30313d
 
 test("two grids draw on one canvas, each in its own rect, with the buffer bare between them", async ({
   page,
@@ -761,4 +768,36 @@ test("mounting tells the renderer its focus state before any focus event (#912)"
   // to the PTY at mount. xterm.js emits its report only from the real focus/blur handlers
   // (`browser/CoreBrowserTerminal.ts:305,329` @ 699f553); `open()` establishes nothing.
   expect(r.intentsAtMount, "mounting is not a user action and must not look like one").toEqual([]);
+});
+
+test("a pane nobody focused paints the INACTIVE selection tint, and a focus flip is presented (#912)", async ({
+  page,
+}) => {
+  // The second surface #912 named, and the one that had no coverage at all — which is how a first
+  // attempt at this fix broke it. The caret is hidden here (`DECTCEM` off, where every full-screen
+  // TUI sits), so the overlay is the ONLY thing `setFocused` changes and the present is its own to
+  // owe: `issueOverlay` retains and re-packs, it does not draw.
+  const r = await readAsyncProbe(page, "__unfocusedTintProbe");
+  expectContextAlive(r);
+
+  // The instrument, stated as the value it must be rather than as "not the other one": an unpainted
+  // buffer reads `0,0,0,0` and would satisfy every inequality below while proving nothing.
+  expect(r.plain, "pane B must be painted, and this cell must be outside the selection").toBe(BG_B);
+
+  // #912's tint half: a pane nobody has clicked paints the INACTIVE tint. The adapter's default
+  // `selectionInactiveBg`, written out for the reason the two background constants are — a colour
+  // the consumer chose is portable, unlike anything derived from a font.
+  expect(r.neverFocused, "a pane nobody clicked must use the inactive tint").toBe(SELECTION_INACTIVE);
+
+  // Positive control: focus really does move this pixel. Read after a forced present, so it says
+  // "the tint differs" without yet saying anything about who presented it.
+  expect(r.afterFocusPresented, "focus must change the selection tint").toBe(SELECTION_ACTIVE);
+
+  // THE CLAIM, and it is about the present rather than the colour: with no caret to redraw,
+  // `setFocused` still has to put the new tint on the screen. Read with no present of our own, so a
+  // renderer that only re-packed leaves the OLD tint standing here.
+  expect(
+    r.afterFocusNoPresent,
+    "a focus flip with no caret must still be presented, not left for a frame that may never come",
+  ).toBe(r.afterFocusPresented);
 });

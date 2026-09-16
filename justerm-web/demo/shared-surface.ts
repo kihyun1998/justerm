@@ -130,6 +130,8 @@ class Pane {
   private rows = 0;
   private tick = 0;
   private pushes = 0;
+  private selection: number[] | undefined;
+  private cursorHidden = false;
 
   constructor(
     readonly name: string,
@@ -140,6 +142,28 @@ class Pane {
   setGrid(cols: number, rows: number): void {
     this.cols = cols;
     this.rows = rows;
+  }
+
+  /**
+   * A live selection on the next frame — viewport `(row, left, right)` triples, both columns
+   * inclusive (#108). `undefined` clears it.
+   *
+   * Opt-in, and default-off on purpose: this page's frames are the baseline a dozen pixel
+   * assertions above are written against, and a selection painted by default would move every one
+   * of them. Added by #912, whose tint half had no way to be observed at all.
+   */
+  setSelection(triples: number[] | undefined): void {
+    this.selection = triples;
+  }
+
+  /**
+   * Emit frames with the caret hidden — what `DECTCEM` off / `curs_set(0)` produces, and the state
+   * every full-screen TUI sits in. Opt-in for the same reason as {@link setSelection}: #801 made a
+   * cursor part of this page's baseline deliberately, and removing it by default would take the
+   * blink machinery out from under the probe that measures it.
+   */
+  setCursorHidden(hidden: boolean): void {
+    this.cursorHidden = hidden;
   }
 
   /** Advance the content by one step. Separate from {@link frame} so a probe can re-push the SAME
@@ -210,9 +234,10 @@ class Pane {
       // which is the machinery `__hiddenBlinkProbe` measures. Blink authority stays the
       // application's (`cursorBlink: false`), so nothing here blinks unless a probe overrides it and
       // no existing assertion on this page moves.
+      selectionSpans: this.selection ?? [],
       cursorRow: 0,
       cursorCol: 0,
-      cursorVisible: true,
+      cursorVisible: !this.cursorHidden,
       cursorShape: 0,
       cursorBlink: false,
     };
@@ -663,6 +688,30 @@ declare global {
      */
     __mountFocusProbe?: () => MountFocusReport;
     /**
+     * The OTHER half of #912: the selection tint a pane nobody clicked is painted with, and whether
+     * a focus flip is actually presented when there is no caret to redraw.
+     *
+     * Pane B is given a selection and a **hidden caret** — `DECTCEM` off, the state every
+     * full-screen TUI sits in — because that is the state where `setFocused` changes the overlay and
+     * nothing else: `issueOverlay` only retains and re-packs, so the present has to come from
+     * `setFocused` itself. The samples are read **without presenting**, which is the whole
+     * instrument: `window.__pixelAt` calls `surface.present()` first and would paper over exactly
+     * the defect this measures.
+     */
+    __unfocusedTintProbe?: () => Promise<{
+      /** Whether the GL context died mid-probe — headless SwiftShader does this on its own (#580),
+       * and every pixel then reads `0,0,0,0`, which is an environment failure and not a defect. */
+      contextLost: boolean;
+      /** An unselected cell, so a tint can be told from the pane's own background. */
+      plain: string;
+      /** The selected cell as a pane nobody has clicked paints it. */
+      neverFocused: string;
+      /** The same cell straight after `setFocused(true)`, with NO present of our own. */
+      afterFocusNoPresent: string;
+      /** …and after forcing one. What the pixel should have been. */
+      afterFocusPresented: string;
+    }>;
+    /**
      * Let pane B blink **without ever focusing it**, then focus it and measure again (#912).
      *
      * The user-visible half of the same bug, in the arrangement it was reported from: several panes
@@ -1028,6 +1077,72 @@ window.__unfocusedBlinkProbe = async (): Promise<{
     raw.render = underlying;
     b.renderer.setCursorBlink(undefined);
     b.renderer.setFocused(false);
+  }
+};
+
+window.__unfocusedTintProbe = async (): Promise<{
+  contextLost: boolean;
+  plain: string;
+  neverFocused: string;
+  afterFocusNoPresent: string;
+  afterFocusPresented: string;
+}> => {
+  stopTimers();
+  const settle = (): Promise<void> =>
+    new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+
+  // Row 1 is "step N" — a handful of glyphs, then U+0020 to the end of the row. Selecting columns
+  // well past that keeps every sampled pixel a tinted BACKGROUND rather than glyph ink, which is
+  // what makes one pixel a colour and not a coin flip.
+  const ROW = 1;
+  const SEL_FROM = 12;
+  const SEL_TO = 16;
+  const PLAIN_COL = 2; // inside the selected row but outside the selection
+
+  b.pane.setSelection([ROW, SEL_FROM, SEL_TO]);
+  b.pane.setCursorHidden(true);
+  b.pane.push();
+  await settle();
+  // Present the BASELINE by hand. On a shared surface `JustermRenderer.render()` schedules a frame
+  // rather than presenting, so without this the first two samples read a bare `0,0,0,0` buffer —
+  // measured, and it is only the post-flip sample that has to be present-free.
+  surface.present();
+
+  const context = gl()!;
+  const rect = rectOf(b);
+  const cell = b.renderer.cellSize();
+  // Corner inset, the convention every pixel probe on this page uses.
+  const at = (col: number): string =>
+    pixelAt(
+      context,
+      Math.round(rect.x + col * cell.width) + 2,
+      Math.round(rect.y + ROW * cell.height) + 2,
+    );
+
+  try {
+    const plain = at(PLAIN_COL);
+    const neverFocused = at(SEL_FROM + 1);
+
+    // The flip. No `surface.present()` here, deliberately — `setFocused` owes the present, because
+    // with the caret hidden there is no `redrawCursor` to carry one and no next frame to ride on.
+    b.renderer.setFocused(true);
+    const afterFocusNoPresent = at(SEL_FROM + 1);
+
+    surface.present();
+    const afterFocusPresented = at(SEL_FROM + 1);
+
+    return {
+      contextLost: context.isContextLost(),
+      plain,
+      neverFocused,
+      afterFocusNoPresent,
+      afterFocusPresented,
+    };
+  } finally {
+    b.renderer.setFocused(false);
+    b.pane.setSelection(undefined);
+    b.pane.setCursorHidden(false);
+    b.pane.push();
   }
 };
 
