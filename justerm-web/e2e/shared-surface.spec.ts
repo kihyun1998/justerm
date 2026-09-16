@@ -33,7 +33,8 @@ type AsyncProbe =
   | "__hideShowProbe"
   | "__hiddenBlinkProbe"
   | "__unfocusedBlinkProbe"
-  | "__unfocusedTintProbe";
+  | "__unfocusedTintProbe"
+  | "__focusPhaseProbe";
 
 /** This page's typed alias over the shared park-and-harvest helper (#731; extracted in #776). */
 const readAsyncProbe = <K extends AsyncProbe>(
@@ -799,4 +800,29 @@ test("a pane nobody focused paints the INACTIVE selection tint, and a focus flip
     r.afterFocusNoPresent,
     "a focus flip with no caret must still be presented, not left for a frame that may never come",
   ).toBe(r.afterFocusPresented);
+});
+
+test("focusing a pane shows its caret rather than hiding it for half a cycle (#912)", async ({
+  page,
+}) => {
+  // A transition #912 created in practice. An unfocused caret is parked SOLID, so the phase clock
+  // runs on underneath it; before #912 the renderer assumed focus, so a first focus was never a
+  // transition at all. The pointer path is covered already (`onDown` restarts the blink right after
+  // focusing) — Tab and the public `Terminal.focus()` are not, and `Terminal.focus()` is the
+  // documented way to restore focus after a dialog or the accessible view.
+  const r = await readAsyncProbe(page, "__focusPhaseProbe");
+  expectContextAlive(r);
+
+  // The instrument: the caret has to be visible while unfocused, or "visible after focusing" is not
+  // a claim about focus at all.
+  expect(r.whileUnfocused, "an unfocused caret is parked solid, so it must be drawn").not.toBe(
+    r.background,
+  );
+  // …and the focus must genuinely land in the OFF half, or the assertion below passes for free.
+  expect(r.elapsedMs, "the focus must land in the OFF half of the 600ms cycle").toBeGreaterThan(600);
+  expect(r.elapsedMs).toBeLessThan(1200);
+
+  // THE CLAIM: arriving at the terminal shows the caret. Without the phase re-anchor this reads as
+  // the background — the caret blinks out at the instant the user focuses.
+  expect(r.onFocus, "focusing must not hide the caret").toBe(r.whileUnfocused);
 });

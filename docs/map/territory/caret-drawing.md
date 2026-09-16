@@ -29,6 +29,18 @@ about *how the caret looks* is decided here.
 - **Shapes are rectangles, and a wide lead changes them.** A block caret over a width-2 glyph covers
   the pair, which is why the geometry module reaches for `is_wide_lead` — the caret is one of the few
   renderer concerns that has to know about pair structure.
+- **Focus-in re-anchors the blink phase, because an unfocused caret is parked rather than stopped**
+  (#912). The gate makes `isVisible` return solid while blurred, but the phase clock keeps running
+  underneath it from the last cursor move — so a focus that does not re-anchor flips straight to
+  whichever half of the 600 ms cycle it lands on, and half the time that is OFF: the caret vanishes
+  at the instant the user arrives. Phase only, never the idle clock, which is the
+  `restart` / `restartFromInput` split — focus is not typing.
+  **The transition is #912's own making**: before it the renderer assumed focus, so a *first* focus
+  was not a transition at all, and the pointer path hides the rest (`onDown` restarts the blink
+  immediately after focusing). Tab and the public `Terminal.focus()` do not, and the second is the
+  documented way to restore focus after a dialog or the accessible view. Reachable only where
+  something asked the caret to blink, which is not the shipped default but *is* a live setting in
+  the first consumer.
 - **The caret's redraw is also the overlay's present, and that is a trap rather than a design**
   (#912). `redrawCursor` is `pushCursor` + `backend.render()`, so it is the only thing on the
   no-new-frame paths that actually draws; `issueOverlay` merely retains spans and re-packs. Every

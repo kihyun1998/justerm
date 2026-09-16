@@ -2135,13 +2135,25 @@ export class JustermRenderer implements Renderer {
    * tint does not move either. */
   setFocused(focused: boolean): void {
     this.blink.setFocused(focused);
-    const tintMoved = this.focused !== focused;
-    if (tintMoved) {
+    const changed = this.focused !== focused;
+    if (changed) {
       this.focused = focused;
       this.issueOverlay();
+      // **Arriving at a terminal must not hide its caret** (#912). While unfocused the caret is
+      // parked solid, but the phase clock has been free-running since the last cursor move — so
+      // without this, focus-in flips straight to whichever half of the 600ms cycle it happens to
+      // land on, and half the time that is OFF: the caret vanishes at the moment you arrive. Before
+      // #912 the renderer assumed focus, so this transition was not reachable on a FIRST focus and
+      // the pointer path hid the rest (`onDown` restarts the blink right after focusing). Tab and
+      // the public `Terminal.focus()` do not.
+      //
+      // Phase only — focus is not typing, so the idle clock (#593) is deliberately untouched, which
+      // is the `restart` / `restartFromInput` split. xterm.js re-shows the caret from its own focus
+      // handler for the same reason (`browser/CoreBrowserTerminal.ts:309`, `_showCursor()`).
+      if (focused) this.blink.restart(now());
     }
     if (this.cursor) this.redrawCursor();
-    else if (tintMoved) this.backend.render();
+    else if (changed) this.backend.render();
   }
 
   /**

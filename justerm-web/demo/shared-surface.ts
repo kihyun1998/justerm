@@ -698,6 +698,26 @@ declare global {
      * instrument: `window.__pixelAt` calls `surface.present()` first and would paper over exactly
      * the defect this measures.
      */
+    /**
+     * Focus a pane whose blink phase has been free-running, and report whether the caret is on
+     * screen at that instant (#912).
+     *
+     * An unfocused caret is parked solid, so the phase clock keeps running underneath it — anchored
+     * by the last cursor move, which on this page is the frame push. Waiting past one half-cycle
+     * puts it in the OFF half, so a `setFocused(true)` that does not re-anchor draws nothing and the
+     * caret disappears at the moment the user arrives.
+     */
+    __focusPhaseProbe?: () => Promise<{
+      contextLost: boolean;
+      /** The caret cell with the pane unfocused — parked solid, so the caret is there. */
+      whileUnfocused: string;
+      /** The same cell immediately after focusing, one half-cycle into the free-running phase. */
+      onFocus: string;
+      /** The pane background, for telling "caret drawn" from "caret cleared". */
+      background: string;
+      /** How far into the cycle the focus landed, in ms — the OFF half is 600..1199. */
+      elapsedMs: number;
+    }>;
     __unfocusedTintProbe?: () => Promise<{
       /** Whether the GL context died mid-probe — headless SwiftShader does this on its own (#580),
        * and every pixel then reads `0,0,0,0`, which is an environment failure and not a defect. */
@@ -1077,6 +1097,59 @@ window.__unfocusedBlinkProbe = async (): Promise<{
     raw.render = underlying;
     b.renderer.setCursorBlink(undefined);
     b.renderer.setFocused(false);
+  }
+};
+
+window.__focusPhaseProbe = async (): Promise<{
+  contextLost: boolean;
+  whileUnfocused: string;
+  onFocus: string;
+  background: string;
+  elapsedMs: number;
+}> => {
+  stopTimers();
+  const settle = (): Promise<void> =>
+    new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  // Blink authority first: with the application steady the caret never flips and this measures
+  // nothing. That is the shipped default, so the glitch reaches only a consumer who turned blinking
+  // on — which penterm exposes as a live setting.
+  b.renderer.setCursorBlink(true);
+  b.pane.advance();
+  b.pane.push(); // the cursor's first appearance anchors the phase (`updateCursor` → `restart`)
+  const anchoredAt = performance.now();
+  await settle();
+
+  const context = gl()!;
+  const rect = rectOf(b);
+  const cell = b.renderer.cellSize();
+  // The caret sits at (0,0) on this page. Sample one cell to its right for the background: same row,
+  // so a row-height rounding error cannot make the two disagree for the wrong reason.
+  const caretAt = (col: number): string =>
+    pixelAt(
+      context,
+      Math.round(rect.x + col * cell.width) + 2,
+      Math.round(rect.y) + 2,
+    );
+
+  try {
+    surface.present();
+    const background = caretAt(2); // blank cell on the caret's row
+    const whileUnfocused = caretAt(0);
+
+    // Into the OFF half of the 600ms cycle, measured from the anchor rather than assumed.
+    await wait(Math.max(0, anchoredAt + 900 - performance.now()));
+    const elapsedMs = performance.now() - anchoredAt;
+
+    b.renderer.setFocused(true);
+    surface.present();
+    const onFocus = caretAt(0);
+
+    return { contextLost: context.isContextLost(), whileUnfocused, onFocus, background, elapsedMs };
+  } finally {
+    b.renderer.setFocused(false);
+    b.renderer.setCursorBlink(undefined);
   }
 };
 

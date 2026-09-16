@@ -253,6 +253,20 @@ than of any one collaborator.
   path self-gated; `TextBlink.isVisible` has no focus gate at all. The path that made it reachable is
   the one `justerm-web`'s README points at — `hide()` called directly for `visibility: hidden`, where
   no observer fires and focus is kept.
+- **Focus is defined by the element alone, and nothing says that is the whole definition.** The
+  widget drives `setFocused` from the hidden textarea's focus/blur events, so a terminal whose
+  textarea is still `document.activeElement` while the *window* is not the user's active window
+  keeps blinking and keeps the **active** selection tint — the same harm #912 removed, one state
+  later, and one `rAF` does not park because the page is still visible. xterm.js ANDs its read with
+  `ownerDocument.hasFocus()` and re-derives it once per microtask
+  ([reference facts](../../agents/reference-facts.md#the-initial-focus-state--who-establishes-it-912-verified-2026-09-16)).
+  **Unmeasured, and the instrument is the reason**: two independent attempts during #912 failed the
+  same way — headless Chromium reports neither a `blur` on the focused textarea nor a change in
+  `document.hasFocus()` when another tab is selected, while a positive control (moving focus to
+  another element) does log `blur`. So the recorder is on the call path and headless simply does not
+  model window deactivation. Settling it needs a headed browser with two real OS windows, reading
+  the blur log and `document.hasFocus()` in one turn. Recorded rather than filed, because a gap
+  whose measurement failed is a gap in the evidence and not yet a defect.
 - **No reference comparison** for teardown composition, which is the one thing a widget library is
   usually judged on by its consumers. (Its *scheduling* half now has one — see below.)
 - **The widget still cannot be constructed in a test.** `vitest.config.ts` runs the `node`
