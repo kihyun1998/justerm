@@ -923,6 +923,10 @@ export class Terminal {
    * drops it only when that viewport line is off screen.
    */
   private paintPreedit(codepoints: Uint32Array, at: TextareaAnchor): void {
+    // `rows` is 0 until the first frame, which would make every row read as off screen. Unreachable
+    // rather than handled: the origin is latched from `cursorAnchor`, which no frame has written
+    // yet, so `preeditIntent` declines on "no origin, no push" before anything reaches here. Stated
+    // because giving the origin a default would quietly turn that into a preedit that never draws.
     const row = at.row + this.frameOffset;
     if (row >= this.rows) {
       // Clear what is drawn, if anything — a view scrolled away mid-composition must not leave the
@@ -950,6 +954,11 @@ export class Terminal {
     // drawn, not of where the text was typed.
     if (codepoints.length > 0) this.preeditEnd = { col: caretCol, row: at.row };
     this.writeTextareaAnchor(caretCol, row);
+    // A composition that spent its whole life off screen therefore hands on no end, and the next
+    // one falls back to the frame stream — D4's own "a composition that draws nothing leaves no run
+    // end" clause, reached by a second route. The fallback is the bounded wrong that clause already
+    // chose over an unbounded one; it needs a view that never returns to the bottom to happen at
+    // all, which needs a consumer that did not wire `onScroll`.
   }
 
   /**
