@@ -105,6 +105,8 @@ type AsyncProbe =
   | "__blinkIdleProbe"
   | "__composeCaretProbe"
   | "__preeditOriginProbe"
+  | "__scrolledPreeditProbe"
+  | "__preeditViewportProbe"
   | "__contextLossProbe"
   | "__cursorBlinkProbe"
   | "__disposeProbe"
@@ -3058,6 +3060,126 @@ test("a continuous burst starts each syllable where the last one ended (#911)", 
   // where the two branches can be made to answer about the same state, which is here.
   expect(caretCell(p.echoed), `after a real one-syllable echo, got=${p.echoed}`)
     .toBe(caretCell(p.burst[1]!));
+});
+
+// #921 / ADR-0028 D4 — the origin a composition latches has to be a cell the cursor is ACTUALLY at.
+// While the view is scrolled up core reports `cursor_visible: false` (#48, a drawing decision), and
+// the widget used to gate its retained cursor cell on that bit — so the anchor froze for the whole
+// excursion while the cursor went on moving. A composition begun on the way back latched the frozen
+// cell and, because the origin never moves again (D4), drew the entire composition there.
+//
+// The middle condition is the one the issue body left out and this test isolates: with the cursor
+// stationary the frozen anchor is accidentally right. `noExcursion` holds the cursor motion and the
+// composition fixed and removes only the excursion, so a reading that came from the motion alone
+// cannot be mistaken for a reading that came from the freeze.
+// The origin is a GRID row and the renderer draws the VIEWPORT, and nothing maps between them.
+// At `display_offset = d` a grid row `r` is on screen only while `r < rows - d`, and it is shown at
+// viewport row `r + d` — so a run drawn during an excursion lands `d` rows above its own cell, or
+// off the bottom of the screen. ADR-0028 D5 already says position is re-asserted on EVERY frame and
+// gives the reason (frames keep arriving and none of them knows about a preedit); the run was
+// written once and never re-aimed, which is the same clause going unapplied.
+test("a composition draws on the viewport row its cell is shown at, or not at all", async ({
+  page,
+}) => {
+  await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+  await page.locator("#term").dispatchEvent("mousedown");
+
+  const p = await readAsyncProbe(page, "__preeditViewportProbe");
+  const changed = (a: number[], b: number[]): number[] =>
+    b.map((v, i) => (v === a[i] ? -1 : i)).filter((i) => i >= 0);
+
+  // ARM 1 — the mapped row is on screen. The run must land there, and NOT at the raw grid row.
+  const mapped = p.gridRow + p.offsetOnScreen;
+  expect(mapped, "precondition: the mapped row is on screen").toBeLessThan(p.rows);
+  expect(
+    changed(p.idleOnScreen, p.composingOnScreen),
+    `rows that changed, gridRow=${p.gridRow} offset=${p.offsetOnScreen} rows=${p.rows}`,
+  ).toEqual([mapped]);
+  // The same claim through a channel with no glyph in it: the anchor the widget wrote. Two readings
+  // of one mapping — a pixel one that can be fooled by what happens to be on the row, and a DOM one
+  // that cannot.
+  expect(p.pendingTrace.anchorRowOnScreen, "the anchor the widget wrote, on screen").toBe(mapped);
+
+  // ARM 2 — the mapped row is off the bottom. There is no cell on screen to draw into, so nothing
+  // may change: not the raw grid row, not anything else. Deferred to the frame that can place it,
+  // which is what both references do (xterm re-runs `updateCompositionElements` per render;
+  // alacritty drops the point when its viewport line is off-screen).
+  expect(p.gridRow + p.offsetOffScreen, "precondition: the mapped row is off screen")
+    .toBeGreaterThanOrEqual(p.rows);
+  expect(
+    changed(p.idleOffScreen, p.composingOffScreen),
+    `rows that changed with the cell off screen, gridRow=${p.gridRow} offset=${p.offsetOffScreen}`,
+  ).toEqual([]);
+  // And the anchor did not go there either. This is the reading with teeth: the renderer ignores a
+  // row outside the grid, so a missing guard is invisible in pixels — the textarea is where an
+  // unguarded write shows up, and where the OS would then look for the candidate window.
+  expect(
+    p.pendingTrace.anchorRowOffScreenAfter,
+    `the anchor must not follow the run off screen (was ${p.pendingTrace.anchorRowOffScreenBefore})`,
+  ).toBe(p.pendingTrace.anchorRowOffScreenBefore);
+
+  // ARM 3 — the mapping reads the FRAME's offset, not the widget's. #913 advances the widget's own
+  // `displayOffset` to 0 the moment an IME-swallowed keydown asks for the bottom, while the echo is
+  // a round trip away and the screen still shows the scrolled frame. Reading the widget's
+  // intention here would put the run back on the raw grid row — over scrollback — for the length of
+  // that round trip. This arm is the only place the two values differ, so without it
+  // `this.frameOffset` and `this.displayOffset` are interchangeable and the field is unproven.
+  expect(
+    changed(p.idlePending, p.composingPending),
+    `rows changed in the optimistic window, gridRow=${p.gridRow} offset=${p.offsetOnScreen} trace=${JSON.stringify(p.pendingTrace)}`,
+  ).toEqual([mapped]);
+  expect(p.pendingTrace.anchorRowPending, "the anchor the widget wrote, mid-request").toBe(mapped);
+  // The demo really did hold its offset across the window, so the two readings above differ from
+  // each other only by which offset the WIDGET used.
+  expect(
+    [p.pendingTrace.beforeIdle, p.pendingTrace.afterKeydown, p.pendingTrace.afterCompose],
+    "the demo's own offset must not have moved inside the window",
+  ).toEqual([p.offsetOnScreen, p.offsetOnScreen, p.offsetOnScreen]);
+});
+
+test("a composition begun after a scrolled-up excursion starts at the live cell (#921)", async ({
+  page,
+}) => {
+  await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+  await page.locator("#term").dispatchEvent("mousedown"); // focus the hidden textarea
+
+  const p = await readAsyncProbe(page, "__scrolledPreeditProbe");
+
+  // The caret is the maximum by a structural margin — a filled inverted cell against glyphs that
+  // are strokes — and it rides one cell past the run's end (ADR-0028 D5), so a one-syllable run
+  // names its own origin. Same reading as the #911 probe above, for the same reason.
+  const caretCell = (strip: number[]): number => {
+    const at = strip.indexOf(Math.max(...strip));
+    expect(at, `the caret fell off the sampled strip: ${strip}`).toBeLessThan(strip.length - 1);
+    return at;
+  };
+
+  // BOTH PRECONDITIONS, asserted rather than assumed. Without the first the demo's fake never
+  // produces the state under test; without the second the synthetic `keyCode: 229` failed to reach
+  // the snap and the reading below would come from a view that simply never came back.
+  expect(p.hiddenWhileAway, "the fake must report the caret hidden while scrolled up").toBe(true);
+  expect(p.snappedBack, "the IME-swallowed keydown must have requested the bottom (#913)").toBe(true);
+
+  // CONTROL FIRST: the cursor moved four cells, so a composition starting now draws at +4 and the
+  // caret lands at +6. This is the same measurement as the arm below with the excursion removed —
+  // if it ever stops holding, the arm below is measuring the probe, not the widget.
+  expect(caretCell(p.noExcursion), `control, no excursion: idle=${p.idle} got=${p.noExcursion}`)
+    .toBe(6);
+
+  // THE THIRD CONDITION, which the issue's body omitted: an excursion alone does not do it. With
+  // the cursor stationary the frozen cell is still the right cell, so this reads 2 both before and
+  // after the fix — it is a side condition on the fix, and the reason the arm below needs its own
+  // cursor motion to mean anything.
+  expect(
+    caretCell(p.excursionNoMotion),
+    `an excursion with a stationary cursor: idle=${p.idle} got=${p.excursionNoMotion}`,
+  ).toBe(2);
+
+  // THE CLAIM. Before the fix this reads 2 — the cell the cursor left when the view went away.
+  expect(
+    caretCell(p.afterExcursion),
+    `after an excursion the cursor moved during: idle=${p.idle} got=${p.afterExcursion}`,
+  ).toBe(6);
 });
 
 /**

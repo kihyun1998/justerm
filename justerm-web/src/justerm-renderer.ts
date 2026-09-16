@@ -388,6 +388,12 @@ export interface RendererBackend extends SurfaceBackend {
   /** The in-progress IME composition, or an empty run to clear it (#249). Returns the caret /
    * anchor column — one past the run, after any right-edge shift.
    *
+   * **`row` is a VIEWPORT row**, like everything else this renderer is handed — it draws the window
+   * the user is looking at. It is *not* the grid row core reports the cursor at: those agree only
+   * while `display_offset` is 0, and the caller owes the mapping. Saying so here because not saying
+   * so is where #921's follow-up came from — the widget passed the origin's grid row straight
+   * through, and with the view up 2 the run was drawn on row 33 while row 35 was showing its cell.
+   *
    * **Optional because the published package decides, not this file.** `justerm-web` consumes
    * `justerm-renderer` from npm, so a binding added in the repo is absent at runtime — and from the
    * `.d.ts` — until a `renderer-v*` tag publishes it. Required here would make the widget
@@ -2015,6 +2021,9 @@ export class JustermRenderer implements Renderer {
    */
   /**
    * Draw the composition into the grid and report where the caret belongs (#249, ADR-0028).
+   *
+   * `row` is a **viewport** row — see the binding's own doc. The caller maps the composition's grid
+   * origin through the display offset and withholds the call when the result is off screen (#921).
    *
    * Presents immediately rather than waiting for the next frame: a composition produces no frames
    * at all — the engine never sees it — so there is nothing else to ride on. The cursor is re-pushed

@@ -100,11 +100,22 @@ ADR-0013 assumes — who holds the scroll position at all — is still uncompare
   two references converging plus a first-principles argument about which layer holds the state; the
   maintainer's calls inside it (that an IME-swallowed keydown counts, 2026-09-16) are recorded on the
   issue and nowhere else.
-- **A composition that begins while scrolled up draws its preedit at a stale cell.** While
-  `display_offset > 0` core reports `cursor_visible: false`, so `positionTextarea` early-returns and
-  `cursorAnchor` stops updating; the snap then moves the view to the bottom while `compositionstart`
-  latches that stale anchor, and the anchor is frozen for the composition's life. Found by #913's
-  lens, traced but not measured in a browser. Adjacent to #917.
+- ~~**A composition that begins while scrolled up draws its preedit at a stale cell.**~~ **Closed by
+  #921 (2026-09-16), and the correction to the hole is the part worth keeping.** Traced from #913's
+  lens, it needed a *third* condition nobody had stated: the cursor must have **moved** while the
+  view was away. `cursor_row`/`cursor_col` are grid coordinates that do not move with
+  `display_offset`, so with a stationary cursor the frozen cell is still the right cell — which is
+  why "scroll up, then type Korean" is not on its own a reproduction, and why the repro has to move
+  the cursor during the excursion for the reading to mean anything. The fix was not a scroll
+  question at all: the widget was
+  gating a *retained coordinate* on `cursorVisible`, a bit about **drawing**, so the retention moved
+  to `Terminal.track` where every other frame-derived value already lives ungated. Adjacent to #917,
+  which is untouched — a different root (two surfaces disagreeing at the latch, not a stale source).
+  **Its follow-up found the sharper half**: the origin is a *grid* row and the renderer draws the
+  *viewport*, so a run drawn during an excursion landed `display_offset` rows above its own cell
+  (measured: drawn on row 33 while row 35 showed the cell) and, written once, kept that row while
+  the view moved. Now mapped and re-asserted per frame — ADR-0028 D5's clause reaching the surface
+  it always covered.
 - **`scrollsToBottomOnInput` excludes bare modifiers, not "keys that write nothing".** `keyOf` maps
   every unrecognised DOM key name to a `char`, so `ContextMenu`, `Pause`, `BrowserBack`, `Copy` and
   the rest of the non-writing tail still snap. The widget cannot ask the real question — core owns

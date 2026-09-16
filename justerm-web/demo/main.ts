@@ -1058,7 +1058,11 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     // half of the blink decision; the widget resolves it against its consumer override.
     cursorRow: cursorDrift ? driftRow : CURSOR_ROW, // #637: drift is opt-in, see `cursorDrift`
     cursorCol: probeCursorCol, // CURSOR_COL, except while `__preeditOriginProbe` delivers an echo
-    cursorVisible: cursorShown,
+    // Core couples these: `cursor_visible: self.cursor.visible && self.display_offset == 0`
+    // (#48 — a cell-invert caret would ink over scrollback). Modelled here because a fake that
+    // reports the caret visible while scrolled up cannot produce #921's precondition at all, and
+    // an instrument that cannot see the defect reports the same thing as a fixed codebase.
+    cursorVisible: cursorShown && displayOffset === 0,
     cursorShape, // block by default; `__cursorPolicyProbe` swaps in a bar (#580)
     cursorBlink,
     ...(out && out.scrollCount > 0
@@ -1713,6 +1717,8 @@ declare global {
     __spacingProbe?: () => SpacingProbe;
     __preeditProbe?: () => PreeditProbe;
     __preeditOriginProbe?: () => Promise<PreeditOriginProbe>;
+    __scrolledPreeditProbe?: () => Promise<ScrolledPreeditProbe>;
+    __preeditViewportProbe?: () => Promise<PreeditViewportProbe>;
     __imeAnchorProbe?: () => ImeAnchorProbe;
     __imeDriftProbe?: () => ImeDriftProbe;
     __imePointerProbe?: () => ImePointerProbe;
@@ -4311,4 +4317,340 @@ window.__preeditOriginProbe = async (): Promise<PreeditOriginProbe> => {
   render();
 
   return { idle, burst, settled, afterAbort, echoed };
+};
+
+/**
+ * #921 — where a composition's run is drawn when the view was scrolled up and the cursor MOVED
+ * while it was away.
+ *
+ * The condition is a product of three things, and the middle one is what the issue's own body
+ * left out: the view is away, *the cursor moved meanwhile*, and the first input on the way back
+ * is a `compositionstart`. With the cursor stationary the frozen anchor is accidentally right,
+ * which is why an excursion alone proves nothing and the control arm below exists.
+ *
+ * Only e2e can see it, for the same reason as #911's probe: the origin is read out of the drawn
+ * run, and the widget has no `wcwidth` to compute it with.
+ */
+interface ScrolledPreeditProbe {
+  /** Ink per cell, eight cells from the cursor, nothing composing, at the bottom. */
+  idle: number[];
+  /** The same cells with a composition open, begun right after a scroll-up excursion. */
+  afterExcursion: number[];
+  /** CONTROL — the identical sequence with NO excursion: the cursor moves at the bottom. Isolates
+   * the excursion from the cursor motion, which move together in the arm above. */
+  noExcursion: number[];
+  /** The same sequence WITH an excursion but with the cursor stationary throughout. The freeze is
+   * invisible here, because the cell it froze at is still the right one — which is the third
+   * condition the issue's body omitted, and the reason the two arms above are not enough. */
+  excursionNoMotion: number[];
+  /** PRECONDITION — what the frame said while the view was away. A fake reporting the caret
+   * visible there would make the arm above a test of nothing. */
+  hiddenWhileAway: boolean;
+  /** PRECONDITION — the IME-swallowed keydown really did reach the snap (#913). If the synthetic
+   * `keyCode: 229` failed to take, no scroll is requested and the reading below is produced by a
+   * view that never came back, not by a stale anchor. */
+  snappedBack: boolean;
+}
+
+/**
+ * Which VIEWPORT row a composition's run actually lands on while the view is scrolled up.
+ *
+ * `preeditOrigin.row` is a GRID row — core samples `cursor_row` from `self.cursor` with no
+ * `display_offset` term — while the renderer draws the viewport. At offset `d` a grid row `r` is on
+ * screen only while `r < rows - d`, and it appears at viewport row `r + d`. Nothing in the widget
+ * performs that mapping, so a run drawn during an excursion lands `d` rows above where its own cell
+ * is being shown, or off the bottom of the screen entirely.
+ *
+ * Read as a COLUMN of cells at one x, because the question is *which row*. Compared against an idle
+ * column taken at the same offset, so the scrolled content is the baseline and only the run is the
+ * difference.
+ */
+interface PreeditViewportProbe {
+  /** Grid row the cursor was parked at, and the offsets the two arms used. */
+  gridRow: number;
+  rows: number;
+  offsetOnScreen: number;
+  offsetOffScreen: number;
+  /** Ink per viewport row at the run's column, with the view scrolled and nothing composing. */
+  idleOnScreen: number[];
+  /** The same column with a composition open — the mapped row `gridRow + offsetOnScreen` must be
+   * the one that changed, and the raw `gridRow` must not have. */
+  composingOnScreen: number[];
+  /** The same pair for an offset that puts the mapped row off the bottom: nothing may change. */
+  idleOffScreen: number[];
+  composingOffScreen: number[];
+  /** The same pair read INSIDE the window where the widget has optimistically advanced its own
+   * `displayOffset` to 0 (#913) but the echo has not landed, so the screen still shows the scrolled
+   * frame. The mapping must use the frame's offset, not the widget's intention. */
+  idlePending: number[];
+  composingPending: number[];
+  /** Diagnostics for arm 3: the demo's own offset at each step, and the log length, so a reading
+   * that moved for a reason other than the mapping can be told apart from one that did not. */
+  pendingTrace: {
+    beforeIdle: number;
+    afterKeydown: number;
+    afterCompose: number;
+    logLen: number[];
+    /** The row the widget itself wrote the anchor at, read back off the textarea rather than out of
+     * the framebuffer — a direct reading of the mapping, with no glyph in the way. */
+    anchorRowOnScreen: number;
+    anchorRowPending: number;
+    /** The anchor before and immediately after a composition opens with its cell off the bottom.
+     * Read with no frame in between: `column()` renders, and that frame's re-assert repairs a wrong
+     * first paint before any pixel can show it. The DOM anchor is the only channel that sees the
+     * paint the widget actually made. */
+    anchorRowOffScreenBefore: number;
+    anchorRowOffScreenAfter: number;
+  };
+}
+
+window.__preeditViewportProbe = async (): Promise<PreeditViewportProbe> => {
+  const gl = canvas.getContext("webgl2")!;
+  const { width: cw, height: ch } = renderer.cellSize();
+  const ta = document.querySelector("textarea")!;
+  const COL = 3;
+  // Near the bottom, so a small offset maps it onto the screen and a larger one walks it off.
+  const gridRow = ROWS - 4;
+  const offsetOnScreen = 2; // gridRow + 2 = ROWS - 2 → on screen
+  const offsetOffScreen = 6; // gridRow + 6 = ROWS + 2 → off the bottom
+
+  const savedLen = log.length;
+  const savedDrift = cursorDrift;
+  const savedRow = driftRow;
+  while (maxOffset() < offsetOffScreen) log.push(`preedit-viewport pad ${log.length}`);
+  // **Stop the 300 ms tick for the duration.** `cursorDrift` is the only way to put the cursor on a
+  // chosen row, and it is #637's mechanism: the same tick that appends a line also does
+  // `driftRow = (driftRow + 1) % ROWS`. Measured the hard way — this probe read the run one row
+  // lower than its first arm, and the anchor read back off the textarea said 36 where the arm said
+  // 35, because the fixture had moved between them. A probe whose subject drifts is measuring the
+  // drift.
+  window.clearInterval(appendTimer);
+  cursorDrift = true;
+  driftRow = gridRow;
+  probeCursorCol = COL;
+
+  /** Ink per viewport row at `COL`. The run is two cells wide, so one column through its lead
+   * carries it; a 2-D read per cell, for `__preeditProbe`'s reason. */
+  const column = (): number[] => {
+    render();
+    const rows: number[] = [];
+    for (let r = 0; r < ROWS; r++) {
+      const px = new Uint8Array(4 * Math.round(cw) * Math.round(ch));
+      const y = gl.drawingBufferHeight - 1 - Math.round((r + 1) * ch) + 1;
+      gl.readPixels(Math.round(COL * cw), y, Math.round(cw), Math.round(ch), gl.RGBA, gl.UNSIGNED_BYTE, px);
+      let ink = 0;
+      for (let i = 0; i < px.length; i += 4) {
+        const r0 = px[i] ?? 0;
+        const g0 = px[i + 1] ?? 0;
+        const b0 = px[i + 2] ?? 0;
+        if (r0 > 60 || g0 > 60 || b0 > 60) ink++;
+      }
+      rows.push(ink);
+    }
+    return rows;
+  };
+  const settle = (): Promise<unknown> => new Promise((r) => setTimeout(r, 0));
+  const startOnly = (): void => {
+    ta.dispatchEvent(new CompositionEvent("compositionstart"));
+  };
+  const updateOnly = (): void => {
+    ta.dispatchEvent(new CompositionEvent("compositionupdate", { data: "안" }));
+  };
+  const compose = (): void => {
+    startOnly();
+    updateOnly();
+  };
+  const endCompose = (): void => {
+    ta.dispatchEvent(new CompositionEvent("compositionend", { data: "" }));
+    ta.value = "";
+  };
+
+  const anchorRow = (): number => Math.round(parseFloat(ta.style.top || "0") / ch);
+  displayOffset = offsetOnScreen;
+  const idleOnScreen = column();
+  compose();
+  const anchorRowOnScreen = anchorRow(); // BEFORE any further render — see the field docs
+  const composingOnScreen = column();
+  endCompose();
+  await settle();
+
+  displayOffset = offsetOffScreen;
+  const idleOffScreen = column();
+  startOnly();
+  const anchorRowOffScreenBefore = anchorRow();
+  updateOnly();
+  const anchorRowOffScreenAfter = anchorRow();
+  const composingOffScreen = column();
+  endCompose();
+  await settle();
+
+  // ARM 3 — the optimistic window. An IME-swallowed keydown asks for the bottom (#913) and the
+  // widget advances its OWN offset to 0 at once; the echo is deferred, so what is on screen is
+  // still the scrolled frame. Read before the echo lands: a mapping computed from the widget's
+  // intention would put the run back on the raw grid row, over scrollback.
+  displayOffset = offsetOnScreen;
+  const logLen: number[] = [log.length];
+  const beforeIdle = displayOffset;
+  const idlePending = column();
+  logLen.push(log.length);
+  window.__deferScrollEcho = 0;
+  ta.dispatchEvent(new KeyboardEvent("keydown", { keyCode: 229, key: "Process", bubbles: true }));
+  const afterKeydown = displayOffset;
+  compose();
+  const afterCompose = displayOffset;
+  const anchorRowPending = anchorRow(); // BEFORE `column()` renders and the re-assert repairs it
+  const composingPending = column(); // still inside the window — no `await` above
+  logLen.push(log.length);
+  const pendingTrace = {
+    beforeIdle,
+    afterKeydown,
+    afterCompose,
+    logLen,
+    anchorRowOnScreen,
+    anchorRowPending,
+    anchorRowOffScreenBefore,
+    anchorRowOffScreenAfter,
+  };
+  endCompose();
+  window.__deferScrollEcho = undefined;
+  await settle();
+
+  displayOffset = 0;
+  cursorDrift = savedDrift;
+  driftRow = savedRow;
+  probeCursorCol = CURSOR_COL;
+  log.length = savedLen;
+  appendTimer = window.setInterval(appendTick, 300);
+  render();
+  return {
+    gridRow,
+    rows: ROWS,
+    offsetOnScreen,
+    offsetOffScreen,
+    idleOnScreen,
+    composingOnScreen,
+    idleOffScreen,
+    composingOffScreen,
+    idlePending,
+    composingPending,
+    pendingTrace,
+  };
+};
+
+window.__scrolledPreeditProbe = async (): Promise<ScrolledPreeditProbe> => {
+  const gl = canvas.getContext("webgl2")!;
+  const { width: cw, height: ch } = renderer.cellSize();
+  const ta = document.querySelector("textarea")!;
+  // Per-cell 2-D sampling, as `__preeditProbe` — a single scanline through a Hangul syllable can
+  // miss every stroke, and a read after the browser presents returns a cleared buffer.
+  const strip = (): number[] => {
+    render();
+    const cells: number[] = [];
+    for (let c = 0; c < 8; c++) {
+      const px = new Uint8Array(4 * Math.round(cw) * Math.round(ch));
+      const y = gl.drawingBufferHeight - 1 - Math.round((CURSOR_ROW + 1) * ch) + 1;
+      gl.readPixels(Math.round((CURSOR_COL + c) * cw), y, Math.round(cw), Math.round(ch), gl.RGBA, gl.UNSIGNED_BYTE, px);
+      let ink = 0;
+      for (let i = 0; i < px.length; i += 4) {
+        const r = px[i] ?? 0;
+        const g = px[i + 1] ?? 0;
+        const b = px[i + 2] ?? 0;
+        if (r > 60 || g > 60 || b > 60) ink++;
+      }
+      cells.push(ink);
+    }
+    return cells;
+  };
+  /** The user types with an IME active: the gate swallows the key, so #913's snap is the only
+   * thing the keystroke produces. `keyCode` is what `CompositionController.keydown` reads. */
+  const imeKeydown = (): void => {
+    ta.dispatchEvent(new KeyboardEvent("keydown", { keyCode: 229, key: "Process", bubbles: true }));
+  };
+  const openComposition = (): void => {
+    ta.dispatchEvent(new CompositionEvent("compositionstart"));
+    ta.dispatchEvent(new CompositionEvent("compositionupdate", { data: "안" }));
+  };
+  const closeComposition = (): void => {
+    ta.dispatchEvent(new CompositionEvent("compositionend", { data: "" }));
+    ta.value = "";
+  };
+
+  const settle = (): Promise<unknown> => new Promise((r) => setTimeout(r, 0));
+
+  // Pad until there is really something to scroll into, as this file's other scrolled probes do
+  // (`__rulerAnchorProbe` and its two siblings). Without it `maxOffset()` is 0 this early in the
+  // page's life, and the arm below would hand the widget `{ displayOffset: 3, scrollbackLen: 0 }` —
+  // a pair `Term::frame` cannot produce and no wheel gesture on this page could reach. The code
+  // under test only asks `displayOffset !== 0`, so the readings would be identical either way; the
+  // point is that a probe should stage a state the engine can actually be in.
+  const savedLen = log.length;
+  while (maxOffset() < 3) log.push(`scrolled-preedit pad ${log.length}`);
+
+  probeCursorCol = CURSOR_COL;
+  displayOffset = 0;
+  const idle = strip();
+
+  // ---- ARM 1: the excursion ----
+  displayOffset = 3; // the user wheels up
+  render();
+  const hiddenWhileAway = viewportFrame().cursorVisible === false;
+  // Output arrives while the user is away and moves the cursor. **Whether such a frame is SENT is
+  // the consumer's cadence, not the engine's**, and the two artifacts answer different halves:
+  // `justerm-core/tests/cursor_coordinate_while_hidden.rs` shows the header stays live while the
+  // caret is hidden, and penterm's `NativeEngine` shows a consumer sending it — `feed` sets
+  // `dirty` unconditionally and `tick` encodes `engine.frame()` whenever `dirty`, with no
+  // `display_offset` term. Core's *damage* is empty while scrolled up (`docs/architecture.md`), so
+  // a consumer that skips a send on empty damage would not, and this demo is exactly that consumer
+  // (`appendTick` renders only at offset 0). Hence the probe supplies the frame.
+  probeCursorCol = CURSOR_COL + 4;
+  render();
+  // The echo is deferred, which is what frame mode's round trip through the consumer, the PTY and
+  // the application actually is. Without it the demo applies the snap synchronously, a frame with
+  // the live cursor reaches the widget BEFORE `compositionstart`, and the window under test never
+  // opens — the same property that makes the defect invisible to a direct-mode consumer.
+  window.__deferScrollEcho = 0;
+  imeKeydown();
+  openComposition(); // ← the latch, in the same task, before the echo lands
+  await settle(); // the deferred echo runs: displayOffset 0, cursor where it really is
+  const snappedBack = displayOffset === 0;
+  const afterExcursion = strip();
+  closeComposition();
+  window.__deferScrollEcho = undefined;
+  await settle();
+
+  // ---- ARM 2: the control, same cursor motion, no excursion ----
+  probeCursorCol = CURSOR_COL;
+  displayOffset = 0;
+  render();
+  probeCursorCol = CURSOR_COL + 4;
+  render();
+  imeKeydown();
+  openComposition();
+  await settle();
+  const noExcursion = strip();
+  closeComposition();
+
+  // ---- ARM 3: an excursion with a STATIONARY cursor ----
+  // Everything arm 1 does except the output that moves the cursor. The anchor still freezes; the
+  // cell it freezes at is still correct, so nothing is visible. This arm is why "scrolled up and
+  // then typed Korean" is not on its own a reproduction.
+  await settle();
+  probeCursorCol = CURSOR_COL;
+  displayOffset = 0;
+  render();
+  displayOffset = 3;
+  render();
+  window.__deferScrollEcho = 0;
+  imeKeydown();
+  openComposition();
+  await settle();
+  const excursionNoMotion = strip();
+  closeComposition();
+  window.__deferScrollEcho = undefined;
+
+  probeCursorCol = CURSOR_COL;
+  displayOffset = 0;
+  log.length = savedLen;
+  render();
+  return { idle, afterExcursion, noExcursion, excursionNoMotion, hiddenWhileAway, snappedBack };
 };
