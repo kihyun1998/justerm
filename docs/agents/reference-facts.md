@@ -3415,3 +3415,41 @@ paths where `ybase === ydisp` and the guard makes them no-ops.
 **keybinding**, and has nothing to do with scroll-on-user-input. A `Scroll::Bottom` grep reaches it
 first and reading only that line yields the opposite conclusion — that alacritty does this only on a
 bound key.
+
+## Two selection-out signals, and what actually guards the committing one (#914, verified 2026-09-16)
+
+### All three gate the commit on emptiness, and none of them on whether the pointer moved
+
+The question was whether feeding the X11 primary buffer is a *drag* behaviour. It is not — every
+reference commits on the gesture ending and lets an **empty selection** be the thing that makes a
+bare click silent. Nothing in this corpus tracks "did the pointer move" for this purpose at all.
+
+| | where the commit fires | the guard |
+|---|---|---|
+| xterm.js | `refresh(true)` at the end of **every** `_handleMouseDown` (`src/browser/services/SelectionService.ts:499`), *after* the `event.detail === 1 / 2 / 3` dispatch at `:490-495` — so a double- and a triple-click reach it exactly as a drag does | `onLinuxMouseSelection` fires only inside `if (selectionText.length)` (`:286-291`), under `Browser.isLinux` |
+| alacritty | every left/right release: `self.ctx.copy_selection(ClipboardType::Selection)` (`alacritty/src/input/mod.rs:719-722`), commented *"Copy selection on release, to prevent flooding the display server"* | `copy_selection` filters it out — `selection_to_string().filter(\|s\| !s.is_empty())` (`alacritty/src/event.rs:745-748`) |
+| ghostty | the release path (`src/Surface.zig:3869-3875`), right-click word/link select (`:4088`, `:4094`) and the select-all binding (`:5453`), all via `setSelectionAndCopy` | the release arm is gated on a selection *existing* (`if (prev_) \|prev\|`), never on motion |
+
+**Why this matters more than a 3–0 tally.** justerm's drag-only flag and the reference's emptiness
+test are **observationally identical on both cases justerm had tests for** — a completed drag is
+non-empty so both report, a bare single click collapses so both stay silent — and they diverge on
+exactly the case with no test, the double- and triple-click. `copySelection` already carried the
+emptiness half, so #914 was the removal of the motion term, not a new guard.
+
+### The commit signal and the change signal are two events, and the split is load-bearing
+
+| | commit — gesture end, carries text | change — every mutation, carries **nothing** |
+|---|---|---|
+| xterm.js | `onLinuxMouseSelection: IEvent<string>` (`SelectionService.ts:113-114`) | `onSelectionChange: IEvent<void>` (`:117-118`), de-duped against the previous endpoints in `_fireEventIfSelectionChanged` (`:746-776`); also fired by `clearSelection` (`:369`), `selectAll` (`:373`), `selectLines` (`:379`) and the programmatic `setSelection(col,row,length)` behind `terminal.select()` (`:811-817`) |
+| ghostty | `setSelectionAndCopy` — *"For committing selection gestures (mouse release, select-all binding)"* (`src/Surface.zig:2374-2382`) | `setSelection` → `.selection_changed` — *"All selection mutations route through here rather than `screen.select` directly so the notification fires consistently"* — de-duped by an explicit `changed` comparison that counts the set↔`null` transition (`:2347-2371`) |
+
+The change signal carries **no text in either reference**, and justerm has a sharper reason to copy
+that than either of them has: their selection text is a synchronous buffer read, while
+`SelectionPort.text()` round-trips to the backend in frame mode. A text-carrying signal at this
+firing rate would be a round-trip per pointer move.
+
+⚠ **`hasSelection` is not a cheap stand-in for the text.** The obvious saving — hand the consumer a
+boolean so it need not ask — was measured and dropped: the controller's flag is set at `begin`, so a
+bare click that selected nothing leaves it `true` while the engine reports empty text. A consumer
+trusting it would enable a Copy action with nothing to copy on **every click**. Making it true means
+asking the engine, which is the round-trip the boolean existed to avoid.

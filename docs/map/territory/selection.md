@@ -41,6 +41,28 @@ status.
   deliberately — dropping the anchor mid-gesture leaves the next `mouseMove` extending nothing.
   Both references do this at the same moment
   ([`reference-facts.md` § scroll-on-user-input](../../agents/reference-facts.md#scroll-on-user-input--both-references-snap-and-xtermjs-does-it-at-two-sites-913-verified-2026-09-16)).
+- **The widget reports a settled selection on two signals, not one, and they are guarded
+  differently** (#914). `onPrimarySelection` **commits** — it fires when a gesture ends and carries
+  the text; `onSelectionChange` **notifies** — it fires on every mutation and carries nothing.
+  Three things about the pair are easy to get wrong and are why it is written down:
+  - **The commit is guarded on the selection being empty, never on the pointer having moved.** It
+    was the latter until #914, which made a double- or triple-click — a real word/line selection
+    that releases without motion — unreportable. The emptiness test is not written at the call site
+    at all: `copySelection` skips `null` and `""`, and core resolves a `begin` that was never
+    extended to a zero-width range, so a bare click stays silent by arithmetic rather than by a
+    flag. The `hasSelection` term still standing beside it is presently unreachable-false and
+    reddens no test; it is a belt, not the guard.
+  - **The change signal carries no text on purpose.** `SelectionPort.text()` round-trips to the
+    backend in frame mode, so a text-carrying signal at per-cell firing rate is a round-trip per
+    pointer move. Passing the controller's `hasSelection` instead was measured and rejected: it is
+    set at `begin`, so it reads `true` after a bare click that selected nothing.
+  - **Its de-dup is keyed on the anchor cell, and `tick()` is deliberately outside that key.** On an
+    auto-scroll drag the pointer is held still outside the viewport, so every tick extends to the
+    same `(edgeRow, lastCol, lastSide)` while the selection grows under it — keying those on the
+    anchor reports the first tick and silences the rest of the drag.
+
+  Both references keep the same two-event split
+  ([`reference-facts.md` § two selection-out signals](../../agents/reference-facts.md#two-selection-out-signals-and-what-actually-guards-the-committing-one-914-verified-2026-09-16)).
 - **Anchors are absolute buffer coordinates** — `BufferPoint { line, col }`, where `line` indexes
   `[scrollback ++ screen]` from the oldest line. Not viewport coordinates.
 - **Why absolute**: it is invariant under a top-anchored scroll. A line evicted into scrollback grows
@@ -187,7 +209,12 @@ Check these after changing this territory:
   controller sees no frames, so repairing it needs a signal it does not receive today.
   **#913 narrowed this and did not close it**: the sentence used to read *"and never cleared"*, which
   stopped being true when `clear()` arrived — but its one caller is user input, so the field is still
-  wrong for exactly the trigger described here, a screen swap the controller never hears about.
+  wrong for the trigger described here, a screen swap the controller never hears about.
+  **#914 found a second, much commoner way it lies, and the word "exactly" above had to go**: the
+  field is set at `begin`, so a bare click that selected nothing leaves it `true` while the engine
+  reports empty text — measured, not reasoned. That is every click, not an alt-screen aftermath.
+  It is why the change signal #914 added carries no state (a boolean payload would have published
+  this defect), and why nothing in that change reads the field to decide anything.
 
 - **Zero governing records.** The whole §Design model above is unrecorded. *"Why absolute
   coordinates"* and *"what moves the coordinate"* are the kind of thing that gets
