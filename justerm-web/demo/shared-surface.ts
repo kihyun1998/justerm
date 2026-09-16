@@ -628,9 +628,59 @@ export interface SurfaceSnapshot {
   b: PaneSnapshot;
 }
 
+/** What a freshly mounted widget told its renderer about focus — see `window.__mountFocusProbe`. */
+interface MountFocusReport {
+  /** `setFocused` arguments seen from construction up to the end of `mount()`, in order. */
+  atMount: boolean[];
+  /** …and after a real `focus` event on the widget's hidden textarea. The positive control: it
+   * proves the recorder is on the call path, so an empty `atMount` means "never told" rather than
+   * "never watched". */
+  afterFocus: boolean[];
+  /** Whether the widget actually mounted a textarea to focus — an absent one would make
+   * `afterFocus` empty for a reason that has nothing to do with #912. */
+  textareaFound: boolean;
+  /** Intent kinds the consumer's `InputSink` saw during `mount()`. Mounting is not a user action, so
+   * establishing focus must not fabricate one — `sink.send({kind:"focus"})` would reach the renderer
+   * just as well and is the plausible wrong way to do this, since the sink wraps it. */
+  intentsAtMount: string[];
+}
+
 declare global {
   interface Window {
     __surfaceProbe?: () => SurfaceSnapshot;
+    /**
+     * Mount a **fresh** `Terminal` against a recording renderer and report what it was told about
+     * focus before anything was focused (#912).
+     *
+     * The renderer here is a plain object satisfying the `Renderer` port rather than a
+     * `JustermRenderer`, and that is the whole point: since #912 the first-party renderer *also*
+     * starts unfocused, so a behavioural check on a real one passes whichever half of the fix is
+     * present. A consumer-supplied renderer that assumes focus is the case only the `attach()` call
+     * can rescue, and this is the probe that can see it.
+     *
+     * Off to the side of the page — its own detached-but-laid-out container, its own source, and no
+     * surface at all. It borrows nothing from the two panes, so it cannot move any assertion above.
+     */
+    __mountFocusProbe?: () => MountFocusReport;
+    /**
+     * Let pane B blink **without ever focusing it**, then focus it and measure again (#912).
+     *
+     * The user-visible half of the same bug, in the arrangement it was reported from: several panes
+     * on screen, a caret blinking in the ones nobody clicked. Counted the way `__hiddenBlinkProbe`
+     * counts — presents on the raw backend, which is what `blinkTick` calls — because the caret's
+     * phase has no DOM proxy.
+     *
+     * **It must be the first thing to touch pane B on a fresh page.** "Never focused" is a state the
+     * probe cannot restore: calling `setFocused(false)` would measure the focus *gate*, which has
+     * worked since #115, rather than the state a pane is born in.
+     */
+    __unfocusedBlinkProbe?: () => Promise<{
+      presentsNeverFocused: number;
+      presentsOnceFocused: number;
+      windowMs: number;
+      wrapperSeesRender: number;
+      reducedMotion: boolean;
+    }>;
     /**
      * Hide pane B through the DOM, hold it hidden across a re-fit, then show it again — and report
      * what a rebuild would have cost (#801).
@@ -913,6 +963,136 @@ window.__densityProbe = (dpr: number): { before: DensitySample; after: DensitySa
 };
 
 const textareaCount = (): number => document.querySelectorAll("textarea").length;
+
+window.__unfocusedBlinkProbe = async (): Promise<{
+  presentsNeverFocused: number;
+  presentsOnceFocused: number;
+  windowMs: number;
+  wrapperSeesRender: number;
+  reducedMotion: boolean;
+}> => {
+  stopTimers();
+  const settle = (): Promise<void> =>
+    new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  const windowMs = 2100; // three cursor phase flips at 600 ms — `__hiddenBlinkProbe`'s margin
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  // Count on the RAW backend: `blinkTick` calls `backend.render()` directly, bypassing the surface.
+  const raw = surface.rendererBackend() as unknown as { render: () => void };
+  const underlying = raw.render.bind(raw);
+  let presents = 0;
+  raw.render = (): void => {
+    presents++;
+    underlying();
+  };
+
+  try {
+    // Blink authority first, THEN the frame: the loop is started by `updateCursor`, which runs on a
+    // decoded frame and starts it only when this terminal actually blinks. **No `setFocused` here**
+    // — that is the variable.
+    b.renderer.setCursorBlink(true);
+    b.pane.advance();
+    b.pane.push();
+    await settle();
+
+    // Assert the instrument before asserting with it: `surface.present()` reaches `backend.render()`
+    // synchronously, so this moves the counter by exactly one. A wrapper off the call path would
+    // otherwise report zero everywhere and read as a pass.
+    presents = 0;
+    surface.present();
+    const wrapperSeesRender = presents;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    presents = 0;
+    await wait(windowMs);
+    const presentsNeverFocused = presents;
+
+    // The positive control, same pane and same window: focus is the ONLY thing that changed, so a
+    // count that stays at zero here means the caret was never going to blink and the reading above
+    // proves nothing.
+    b.renderer.setFocused(true);
+    await settle();
+
+    presents = 0;
+    await wait(windowMs);
+    const presentsOnceFocused = presents;
+
+    return {
+      presentsNeverFocused,
+      presentsOnceFocused,
+      windowMs,
+      wrapperSeesRender,
+      reducedMotion,
+    };
+  } finally {
+    raw.render = underlying;
+    b.renderer.setCursorBlink(undefined);
+    b.renderer.setFocused(false);
+  }
+};
+
+window.__mountFocusProbe = (): MountFocusReport => {
+  const atMount: boolean[] = [];
+  const afterFocus: boolean[] = [];
+  const intentsAtMount: string[] = [];
+  let seen = atMount;
+  let recordIntents = true;
+
+  // A renderer that ASSUMES FOCUS, which is what the port used to permit and what the first-party
+  // one did until #912. It records instead of drawing; `applyFrame`/`render` are the two required
+  // members and this probe pushes no frames, so they stay empty.
+  const recorder = {
+    applyFrame: (): void => {},
+    render: (): void => {},
+    setFocused: (focused: boolean): void => {
+      seen.push(focused);
+    },
+  };
+
+  // Laid out, because `attach()` mounts a real textarea into it and a `display: none` host would
+  // refuse the focus below for an unrelated reason. Off-screen rather than hidden, for the same.
+  const host = document.createElement("div");
+  Object.assign(host.style, {
+    position: "absolute",
+    left: "-10000px",
+    top: "0",
+    width: "200px",
+    height: "100px",
+  });
+  document.body.appendChild(host);
+
+  const term = new Terminal(new StubFrameSource(), recorder, {
+    element: host,
+    input: {
+      send: (intent): void => {
+        if (recordIntents) intentsAtMount.push(intent.kind);
+      },
+    },
+    getGeometry: () => ({
+      originX: 0,
+      originY: 0,
+      cellWidth: 8,
+      cellHeight: 16,
+      cols: 20,
+      rows: 5,
+    }),
+  });
+
+  try {
+    term.mount();
+
+    // Everything from here is the control. A real `focus` on the textarea the widget mounted must
+    // reach the same recorder, or `atMount` is unreadable.
+    seen = afterFocus;
+    recordIntents = false;
+    const ta = host.querySelector("textarea");
+    ta?.focus();
+    return { atMount, afterFocus, textareaFound: ta !== null, intentsAtMount };
+  } finally {
+    term.dispose();
+    host.remove();
+  }
+};
 
 window.__teardownProbe = (order: "terminals-first" | "surface-only"): TeardownReport => {
   stopTimers();

@@ -31,7 +31,8 @@ type AsyncProbe =
   | "__restoreDensityProbe"
   | "__contractOnlyDensityProbe"
   | "__hideShowProbe"
-  | "__hiddenBlinkProbe";
+  | "__hiddenBlinkProbe"
+  | "__unfocusedBlinkProbe";
 
 /** This page's typed alias over the shared park-and-harvest helper (#731; extracted in #776). */
 const readAsyncProbe = <K extends AsyncProbe>(
@@ -696,4 +697,68 @@ test("a hidden terminal's blink loop presents nothing, and a shown one still doe
     r.presentsWhileShown,
     `the same terminal, shown, must still blink — otherwise the zero above proves nothing (window ${r.windowMs}ms)`,
   ).toBeGreaterThan(0);
+});
+
+
+// ── #912: a pane nobody clicked ───────────────────────────────────────────────────────────────
+//
+// Focus reached the renderer only as a *change*, and both holders of the flag defaulted to focused
+// — so a terminal that was never focused behaved as if it were, blinking its caret and painting the
+// active selection tint. It is a multi-pane bug by nature (with one terminal the user focuses it
+// almost immediately), which is why its proof lives on this page rather than on `demo/index.html`.
+//
+// The two tests below are NOT the same claim twice. The first measures what a user sees, and either
+// half of the fix alone produces it. The second measures the half that a behavioural check cannot
+// see: what the *port* promises a consumer-supplied renderer.
+
+test("a pane nobody focused does not blink, and the same pane does once focused (#912)", async ({
+  page,
+}) => {
+  test.setTimeout(30_000);
+  // `beforeEach` navigates, and nothing before this line touches pane B. That matters: "never
+  // focused" is the variable, and a click anywhere in it would set the state this test is about
+  // rather than observe it.
+  const r = await readAsyncProbe(page, "__unfocusedBlinkProbe");
+
+  expect(r.wrapperSeesRender, "the present counter must actually be on the call path").toBe(1);
+  expect(r.reducedMotion, "a reduced-motion environment parks the blink solid and proves nothing").toBe(
+    false,
+  );
+
+  expect(
+    r.presentsNeverFocused,
+    "a pane the user has never clicked must not blink its caret",
+  ).toBe(0);
+  // The control. Focus is the only thing that changed between the two windows, so without this the
+  // zero above is indistinguishable from a caret that was never going to blink at all.
+  expect(
+    r.presentsOnceFocused,
+    `the same pane, focused, must blink — otherwise the zero above proves nothing (window ${r.windowMs}ms)`,
+  ).toBeGreaterThan(0);
+});
+
+test("mounting tells the renderer its focus state before any focus event (#912)", async ({
+  page,
+}) => {
+  const r = await page.evaluate(() => window.__mountFocusProbe!());
+
+  expect(r.textareaFound, "the widget must have mounted the textarea this control focuses").toBe(true);
+  // The control is read FIRST: it is what makes an empty `atMount` mean "never told" instead of
+  // "never watched". A recorder off the call path reports nothing in both fields.
+  expect(
+    r.afterFocus,
+    "a real focus must reach this recorder, or the reading below is unreadable",
+  ).toEqual([true]);
+
+  // The claim. `false` and not merely "something": a renderer that assumes focus — which is what the
+  // port permitted, and what the first-party one did until #912 — is CORRECTED by mounting, and the
+  // correction arrives before any focus event rather than on the first blur.
+  expect(r.atMount, "mount must establish the focus state, not wait for a change").toEqual([false]);
+
+  // …and it reaches the renderer WITHOUT fabricating an input intent. `sink` wraps the renderer, so
+  // `sink.send({kind:"focus"})` would satisfy the assertion above while telling the consumer the
+  // user did something they did not — and a consumer that encodes focus reports would write bytes
+  // to the PTY at mount. xterm.js emits its report only from the real focus/blur handlers
+  // (`browser/CoreBrowserTerminal.ts:305,329` @ 699f553); `open()` establishes nothing.
+  expect(r.intentsAtMount, "mounting is not a user action and must not look like one").toEqual([]);
 });
