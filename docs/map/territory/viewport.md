@@ -32,18 +32,45 @@ directly.
   is a cache and not ownership; the engine stays authoritative.
 - **Alt-screen is transparent here.** The engine emits whichever screen is current; the viewport does
   not know which it is looking at.
+- **User input asks for the live edge, and the widget is what decides that** (#913). Typing while
+  scrolled up funnels to the consumer's `onScroll` with `0`, alongside the wheel and the scrollbar
+  drag. It is the terminal layer's call rather than the embedding app's because the state the
+  decision needs is only here: whether the key survived the IME gate and `beforeKey`, and how far up
+  the view actually is. The predicate is `scrollsToBottomOnInput`, kept pure and exported like
+  `routeWheel`, and it takes **only** `displayOffset` — deliberately not `altScreen`, because core
+  zeroes the offset on entering alt (`term.rs`, asserted by core's own
+  `entering_alt_resets_scroll_position`), so an alt-screen branch here would be a second, weaker copy
+  of an invariant the engine already holds. What counts as input is a key, committed IME text, a
+  paste, and a keydown the IME gate swallowed — bare modifiers excluded on **both** key paths.
+  - **The gate is a mirror, and three siblings write past it.** The predicate reads the widget's
+    `displayOffset`, refreshed only by `track()` on each frame and by the two optimistic sites. The
+    scrollbar drag, the selection drag auto-scroll and the accessible-view line nav all move the
+    viewport through the consumer directly, so between one of those and the frame that echoes it the
+    mirror reads stale and typing does not snap. One frame wide, unbounded if a consumer coalesces
+    frames. Pre-existing — `routeWheel` reads the same mirror — and **not** introduced by #913, which
+    merely made a second thing depend on it.
+  - **Requesting is deduplicated by the widget, not by the consumer.** `requestBottom` sets its own
+    tracked offset to `0` before calling out, because a frame-mode echo is an async round-trip and
+    without it every keystroke in a burst is another round-trip. This is invisible to a consumer that
+    echoes synchronously, which is why the demo needs `__deferScrollEcho` to make it observable at
+    all — a test written against the demo's default timing passes whether or not the line exists.
 
 ## Code
 
 - `justerm-core/src/term.rs` — `Term::scroll_up`, `scroll_down`, `scroll_delta`, `scroll_to_bottom`,
   `Term::set_display_offset` (private), `Term::scrollback_len`, `Term::viewport_line`
 - `justerm-core/src/serialize.rs` — `Frame`'s `display_offset` / `scrollback_len`
+- `justerm-web/src/terminal.ts` — `scrollsToBottomOnInput` (the input→bottom predicate),
+  `InputScrollSignal`, and `Terminal`'s `scrollOnUserInput` / `requestBottom` wiring
 
 ## Reference behaviour
 
-**None.** No entry in `docs/agents/reference-facts.md` — how the references split scroll ownership
-between engine and frontend has never been compared against a pinned tree, although ADR-0013 argues
-from that split.
+**One section** in
+[`reference-facts.md` § scroll-on-user-input](../../agents/reference-facts.md#scroll-on-user-input--both-references-snap-and-xtermjs-does-it-at-two-sites-913-verified-2026-09-16)
+(#913), which is also the
+first time this territory was read against the pinned trees rather than argued from. It covers one
+moment only: what the references do to the viewport when the user provides input. The ownership split
+ADR-0013 assumes — who holds the scroll position at all — is still uncompared.
 
 ## Cross-cutting invariants
 
@@ -67,7 +94,21 @@ from that split.
 
 ## Known holes / open
 
-- **No reference comparison** for the ownership split that ADR-0013 assumes.
+- **No reference comparison** for the ownership split that ADR-0013 assumes. (#913 compared one
+  *moment* — input — not the split.)
+- **The input snap has no decision record**, only this note. It was routed to the terminal layer on
+  two references converging plus a first-principles argument about which layer holds the state; the
+  maintainer's calls inside it (that an IME-swallowed keydown counts, 2026-09-16) are recorded on the
+  issue and nowhere else.
+- **A composition that begins while scrolled up draws its preedit at a stale cell.** While
+  `display_offset > 0` core reports `cursor_visible: false`, so `positionTextarea` early-returns and
+  `cursorAnchor` stops updating; the snap then moves the view to the bottom while `compositionstart`
+  latches that stale anchor, and the anchor is frozen for the composition's life. Found by #913's
+  lens, traced but not measured in a browser. Adjacent to #917.
+- **`scrollsToBottomOnInput` excludes bare modifiers, not "keys that write nothing".** `keyOf` maps
+  every unrecognised DOM key name to a `char`, so `ContextMenu`, `Pause`, `BrowserBack`, `Copy` and
+  the rest of the non-writing tail still snap. The widget cannot ask the real question — core owns
+  encoding, so only it knows whether bytes result — and a denylist is the most it can honestly hold.
 - **The overscan band is described in `architecture.md` and implemented nowhere**, so it is a
   permitted consumer behaviour rather than a supported one — no test asserts the engine stays
   authoritative if a consumer builds it.

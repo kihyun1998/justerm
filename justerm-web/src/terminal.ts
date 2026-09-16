@@ -389,9 +389,11 @@ export interface TerminalOptions {
    */
   selection?: LocalPointer;
   /** A local scroll request: scroll the viewport to this display offset (lines up
-   * from the bottom). Wheel (normal buffer, no app tracking) funnels here; the
-   * consumer's scrollbar drag funnels to the SAME callback for one coherent
-   * request. Omit to disable local scrolling. The backend applies it → a frame. */
+   * from the bottom). Three producers funnel to the SAME callback for one coherent
+   * request: the wheel (normal buffer, no app tracking), the consumer's scrollbar
+   * drag, and — since #913 — user input arriving while the view is scrolled up,
+   * which always asks for `0`. Omit to disable local scrolling **and the input
+   * snap with it**. The backend applies it → a frame. */
   onScroll?(displayOffset: number): void;
   /** Wheel scroll tuning (xterm `scrollSensitivity`). */
   scroll?: ScrollOptions;
@@ -422,8 +424,10 @@ export interface TerminalOptions {
  *
  * The DOM attachment in {@link mount} is browser-only glue (not unit-tested, like
  * {@link captureInput}); the decisions it makes — wheel routing ({@link routeWheel}),
- * pointer routing ({@link PointerRouter}) and renderer notification
- * ({@link rendererNotifyingSink}) — are pure and covered.
+ * pointer routing ({@link PointerRouter}), the input snap
+ * ({@link scrollsToBottomOnInput}) and renderer notification
+ * ({@link rendererNotifyingSink}) — are pure and covered. The *wiring* between them is not:
+ * `attach` needs a DOM, so the node suite cannot reach it and the browser proofs carry it.
  */
 export class Terminal {
   private unsubscribe: Unsubscribe | undefined;

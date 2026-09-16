@@ -177,7 +177,13 @@ because every value involved is finite and in range. The four measured shapes:
   non-finite scroll request must not reach the consumer's `onScroll`, while
   `TerminalOptions.onScroll`'s own doc says the scrollbar drag *"funnels to the SAME callback"*. The
   scrollbar was the one producer of that callback not on the guard's path — a statement that needs no
-  reference in it, which is why it is the one the change rests on
+  reference in it, which is why it is the one the change rests on.
+  **#913 added a third producer and the count in that sentence is no longer exhaustive**: user input
+  also reaches `onScroll` without passing `wheelScrollTarget`. The reasoning survives rather than
+  breaking, and for a reason worth stating — that producer's requested offset is the **constant `0`**,
+  not a value computed from a measurement, so there is no argument for a non-finite one to arrive
+  through. What it means for the next reader is that "the one producer off the guard's path" is now
+  "the one producer off it that computes what it asks for"
 - **#801** (2026-08-25) — found while making a hidden terminal reachable. The first site was repaired
   by widening `OverlayBoxes` and returning a union; the other three were enumerated by a completeness
   pass asking which other readers of an element box exist, and are **not** repaired. The first
