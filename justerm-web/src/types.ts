@@ -194,6 +194,25 @@ export type Unsubscribe = () => void;
  * renderer never knows which — it just subscribes.
  */
 export interface FrameSource {
+  /**
+   * Receive every frame the backend produces.
+   *
+   * **A frame is expected whenever the engine's state moves, including while the view is scrolled
+   * up (#921).** That is worth stating because the obvious optimisation is wrong here: core's
+   * `damage`/`frame_damage` return an *empty* `Partial` while `display_offset > 0` — nothing the
+   * user can see has changed — and `docs/architecture.md` says so in as many words. But the frame's
+   * **header** does not go quiet: `cursor_row`/`cursor_col` keep describing where the cursor is,
+   * and they are exactly the cell it will occupy once the view returns to the bottom (pinned in
+   * `justerm-core/tests/cursor_coordinate_while_hidden.rs`). The widget retains that cell on every
+   * frame to anchor the IME, so a source that skips the send on empty damage freezes the anchor for
+   * the length of the excursion and a composition begun on the way back is placed at a cell the
+   * cursor has left.
+   *
+   * The first-party backend does send them: penterm's `NativeEngine::feed` marks the engine dirty
+   * unconditionally and its tick encodes `engine.frame()` whenever dirty, with no `display_offset`
+   * term. The demo in this package does **not** — it renders only at offset 0 — which is why its
+   * `#921` probe supplies the frame rather than waiting for one.
+   */
   subscribe(listener: (frame: DecodedFrame) => void): Unsubscribe;
   /**
    * Subscribe to consumer events (#117) from core's `drain_events`, delivered
