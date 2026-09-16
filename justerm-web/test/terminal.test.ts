@@ -539,7 +539,18 @@ describe("scrollsToBottomOnInput", () => {
   // user is typing. Our IME gate produces no intent at all there, so the signal is
   // its own kind. Maintainer's call, 2026-09-16.
   it("snaps for a key the IME gate swallowed, which produces no intent", () => {
-    expect(scrollsToBottomOnInput({ kind: "imeKey" }, 5)).toBe(true);
+    expect(scrollsToBottomOnInput({ kind: "imeKey", key: "ㅎ" }, 5)).toBe(true);
+  });
+
+  // `CompositionController.keydown` swallows keyCodes 16/17/18/20 while composing, so a bare
+  // Shift arrives on the imeKey path — where the `key` branch's modifier test cannot see it.
+  // Deliberately NOT xterm.js's behaviour: its swallowed-keydown branch has the same overlap
+  // and snaps. A rule that a bare modifier is not input has to hold on both paths or it is
+  // not a rule.
+  it("does not snap for a bare modifier the IME gate swallowed", () => {
+    for (const m of ["Shift", "Control", "Alt", "CapsLock"]) {
+      expect(scrollsToBottomOnInput({ kind: "imeKey", key: m }, 5), m).toBe(false);
+    }
   });
 
   it("does not snap for a bare modifier", () => {
@@ -564,13 +575,7 @@ describe("scrollsToBottomOnInput", () => {
     expect(scrollsToBottomOnInput(key("a"), 0)).toBe(false);
     expect(scrollsToBottomOnInput({ kind: "text", text: "가" }, 0)).toBe(false);
     expect(scrollsToBottomOnInput({ kind: "paste", text: "ls" }, 0)).toBe(false);
-    expect(scrollsToBottomOnInput({ kind: "imeKey" }, 0)).toBe(false);
-  });
-
-  // The alt screen needs NO branch: core reports offset 0 there, so it is a no-op by
-  // construction. Asserted so a future `altScreen` argument reads as a regression.
-  it("is a no-op on the alt screen without naming it", () => {
-    expect(scrollsToBottomOnInput(key("a"), 0)).toBe(false);
+    expect(scrollsToBottomOnInput({ kind: "imeKey", key: "ㅎ" }, 0)).toBe(false);
   });
 
   // `wheelScrollTarget` refuses a poisoned offset because its OUTPUT is computed from

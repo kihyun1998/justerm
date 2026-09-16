@@ -585,6 +585,13 @@ test.describe("S16 input + wheel + focus wiring (#133)", () => {
     scrolls.length = 0;
     await page.keyboard.press("a");
     await expect.poll(() => scrolls).toContain(0);
+    // ONCE, not once per keystroke. `requestBottom` advances its own tracked offset because
+    // frame mode's echo is an async round-trip; delete that line and every subsequent
+    // keystroke is another consumer round-trip, which no other assertion here would notice.
+    await page.keyboard.press("b");
+    await page.keyboard.press("c");
+    await page.waitForTimeout(250);
+    expect(scrolls).toEqual([0]);
   });
 
   // The side condition, in the same browser: a bare modifier is not input, so it must not

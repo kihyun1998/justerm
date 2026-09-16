@@ -125,23 +125,24 @@ const MODIFIER_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * What the input path saw, for the scroll-on-user-input decision: an {@link Intent} on
- * its way to the application, or `imeKey` — a keydown the IME gate swallowed, which
- * produces no intent at all.
+ * What the input path saw, for the scroll-on-user-input decision: an {@link Intent} on its
+ * way to the application, or `imeKey` — a keydown the IME gate swallowed, which produces no
+ * intent at all. `imeKey` carries its DOM `KeyboardEvent.key` because the gate swallows bare
+ * modifiers too, and they are not input on either path.
  */
-export type InputScrollSignal = Intent | { kind: "imeKey" };
+export type InputScrollSignal = Intent | { kind: "imeKey"; key: string };
 
-/** Whether a key writes input at all; a bare modifier does not. */
-function keyIsInput(key: Key): boolean {
-  return key.type !== "char" || !MODIFIER_KEYS.has(key.char);
+/** A bare modifier press. `keyOf` maps it to a `char` carrying the DOM key name. */
+function isBareModifier(key: Key): boolean {
+  return key.type === "char" && MODIFIER_KEYS.has(key.char);
 }
 
 /**
  * Whether user input should bring the viewport back to the bottom (#913).
  *
- * Counts: a key that is not a bare modifier, committed IME text, a paste, and a keydown
- * the IME gate swallowed. Does not: focus and mouse intents. A key vetoed by the IME gate
- * or by `TerminalOptions.beforeKey` never becomes an {@link Intent}, so it cannot reach
+ * Counts: a key, committed IME text, a paste, and a keydown the IME gate swallowed — a bare
+ * modifier on either of the two key paths excepted. Does not: focus and mouse intents. A key
+ * vetoed by `TerminalOptions.beforeKey` never becomes an {@link Intent}, so it cannot reach
  * here as one.
  *
  * `displayOffset` is the only state this needs — `0` already means the live edge, on the
@@ -153,10 +154,11 @@ export function scrollsToBottomOnInput(signal: InputScrollSignal, displayOffset:
   if (displayOffset === 0) return false;
   switch (signal.kind) {
     case "key":
-      return keyIsInput(signal.event.key);
+      return !isBareModifier(signal.event.key);
+    case "imeKey":
+      return !MODIFIER_KEYS.has(signal.key);
     case "text":
     case "paste":
-    case "imeKey":
       return true;
     default:
       return false;
@@ -551,10 +553,6 @@ export class Terminal {
     }
   }
 
-  /** Retain the scroll/routing state each frame carries; drop the wheel remainder
-   * on a buffer switch (alt-screen), so a fresh screen doesn't inherit a stale
-   * trackpad fraction. Ours, not xterm.js's: its `MouseService.reset()` runs only on a
-   * terminal reset (`CoreBrowserTerminal.reset`, 699f553), never on a buffer switch. */
   /** Wraps the consumer's sink so input that counts returns the view to the bottom (#913). */
   private scrollOnUserInput(inner: InputSink, o: TerminalOptions): InputSink {
     return {
@@ -575,6 +573,10 @@ export class Terminal {
     o.onScroll(0);
   }
 
+  /** Retain the scroll/routing state each frame carries; drop the wheel remainder
+   * on a buffer switch (alt-screen), so a fresh screen doesn't inherit a stale
+   * trackpad fraction. Ours, not xterm.js's: its `MouseService.reset()` runs only on a
+   * terminal reset (`CoreBrowserTerminal.reset`, 699f553), never on a buffer switch. */
   private track(frame: DecodedFrame): void {
     this.mask = frame.mouseWantedEvents ?? 0;
     this.displayOffset = frame.displayOffset ?? 0;
@@ -599,8 +601,11 @@ export class Terminal {
     const input = o.input;
     const getGeometry = o.getGeometry;
     if (!element || !input || !getGeometry) return;
-    // #913 — the snap wraps the consumer's sink INSIDE the renderer-notifying one, so it
-    // sees exactly the intents the consumer is about to receive and nothing else.
+    // #913 — the snap wraps the consumer's sink, so everything reaching it has already
+    // survived the IME gate and `beforeKey`. It is NOT every intent the consumer receives:
+    // `onWheel` sends its app report and its alt-screen cursor keys straight to `o.input`,
+    // past both wrappers. Unreachable for the snap (an alt screen is always at offset 0),
+    // but the bypass is real and the next reader needs it to be stated correctly.
     const sink = rendererNotifyingSink(this.scrollOnUserInput(input, o), this.renderer);
     const ta = makeHiddenTextarea();
     element.appendChild(ta);
@@ -631,8 +636,9 @@ export class Terminal {
           // composition (Enter, proceed=true) — both leave committed text behind.
           this.clearTextareaWhenIdle();
           // Swallowed by the IME: no intent will ever be sent for this key, so the sink
-          // below cannot see it — and the user is typing (#913).
-          if (!proceed) this.requestBottom({ kind: "imeKey" }, o);
+          // below cannot see it — and the user is typing (#913). The gate also swallows
+          // bare Shift/Ctrl/Alt/CapsLock mid-composition, hence the key travels with it.
+          if (!proceed) this.requestBottom({ kind: "imeKey", key: e.key }, o);
           return proceed && (o.beforeKey?.(e) ?? true);
         },
       }),
