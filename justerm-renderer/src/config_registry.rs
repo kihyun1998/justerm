@@ -38,9 +38,11 @@
 //! change, a context restore — where "it would change in all" is the correct outcome rather than the
 //! bug.
 
-/// A font configuration: the four per-grid selectors that decide which atlas serves a grid.
+use crate::css_font::FontWeight;
+
+/// A font configuration: the six per-grid selectors that decide which atlas serves a grid.
 ///
-/// The three `f32` selectors are stored as **bit patterns** so the key can be compared and hashed.
+/// The `f32` selectors are stored as **bit patterns** so the key can be compared and hashed.
 /// A `-0.0` is normalised to `0.0` first: the two compare equal as floats and would otherwise key
 /// two byte-identical atlases, which is exactly the duplication this registry exists to remove.
 ///
@@ -51,6 +53,8 @@
 pub struct ConfigKey {
     font_family: String,
     font_size: u32,
+    font_weight: u32,
+    font_weight_bold: u32,
     letter_spacing: u32,
     line_height: u32,
 }
@@ -61,11 +65,20 @@ fn bits(v: f32) -> u32 {
 }
 
 impl ConfigKey {
-    /// The configuration a grid with these four selectors stands on.
-    pub fn new(font_family: &str, font_size: f32, letter_spacing: f32, line_height: f32) -> Self {
+    /// The configuration a grid with these six selectors stands on.
+    pub fn new(
+        font_family: &str,
+        font_size: f32,
+        font_weight: FontWeight,
+        font_weight_bold: FontWeight,
+        letter_spacing: f32,
+        line_height: f32,
+    ) -> Self {
         ConfigKey {
             font_family: font_family.to_string(),
             font_size: bits(font_size),
+            font_weight: bits(font_weight.value()),
+            font_weight_bold: bits(font_weight_bold.value()),
             letter_spacing: bits(letter_spacing),
             line_height: bits(line_height),
         }
@@ -79,6 +92,16 @@ impl ConfigKey {
     /// The font size in CSS px (#406).
     pub fn font_size(&self) -> f32 {
         f32::from_bits(self.font_size)
+    }
+
+    /// The weight regular text is drawn at (#928).
+    pub fn font_weight(&self) -> FontWeight {
+        FontWeight::from_value(f32::from_bits(self.font_weight))
+    }
+
+    /// The weight bold text is drawn at (#928).
+    pub fn font_weight_bold(&self) -> FontWeight {
+        FontWeight::from_value(f32::from_bits(self.font_weight_bold))
     }
 
     /// Extra space between columns in CSS px (#338, ADR-0023).
@@ -271,8 +294,15 @@ mod tests {
     #[derive(Debug, PartialEq, Eq, Clone)]
     struct FakeAtlas(u32);
 
+    const W: FontWeight = FontWeight::NORMAL;
+    const B: FontWeight = FontWeight::BOLD;
+
     fn key(family: &str, size: f32) -> ConfigKey {
-        ConfigKey::new(family, size, 0.0, 1.0)
+        ConfigKey::new(family, size, W, B, 0.0, 1.0)
+    }
+
+    fn weight(v: f64) -> FontWeight {
+        FontWeight::from_number(v).unwrap()
     }
 
     fn start() -> (ConfigRegistry<FakeAtlas>, ConfigId) {
@@ -306,10 +336,12 @@ mod tests {
     fn each_selector_separates_a_configuration() {
         let (reg, _) = start();
         for other in [
-            ConfigKey::new("Fira Code", 15.0, 0.0, 1.0),
-            ConfigKey::new("monospace", 16.0, 0.0, 1.0),
-            ConfigKey::new("monospace", 15.0, 1.0, 1.0),
-            ConfigKey::new("monospace", 15.0, 0.0, 1.5),
+            ConfigKey::new("Fira Code", 15.0, W, B, 0.0, 1.0),
+            ConfigKey::new("monospace", 16.0, W, B, 0.0, 1.0),
+            ConfigKey::new("monospace", 15.0, weight(300.0), B, 0.0, 1.0),
+            ConfigKey::new("monospace", 15.0, W, weight(900.0), 0.0, 1.0),
+            ConfigKey::new("monospace", 15.0, W, B, 1.0, 1.0),
+            ConfigKey::new("monospace", 15.0, W, B, 0.0, 1.5),
         ] {
             assert_eq!(reg.find(&other), None, "{other:?} must not share");
         }
@@ -318,8 +350,15 @@ mod tests {
     #[test]
     fn negative_zero_spacing_is_the_same_configuration_as_zero() {
         let (reg, first) = start();
-        let neg = ConfigKey::new("monospace", 15.0, -0.0, 1.0);
+        let neg = ConfigKey::new("monospace", 15.0, W, B, -0.0, 1.0);
         assert_eq!(reg.find(&neg), Some(first));
+    }
+
+    #[test]
+    fn a_weight_given_as_its_number_is_the_same_configuration_as_its_keyword() {
+        let (reg, first) = start();
+        let numeric = ConfigKey::new("monospace", 15.0, weight(400.0), weight(700.0), 0.0, 1.0);
+        assert_eq!(reg.find(&numeric), Some(first));
     }
 
     #[test]
@@ -328,6 +367,11 @@ mod tests {
         let k = reg.key(first);
         assert_eq!(k.font_family(), "monospace");
         assert_eq!(k.font_size(), 15.0);
+        assert_eq!(k.font_weight(), W);
+        assert_eq!(k.font_weight_bold(), B);
+        let other = ConfigKey::new("monospace", 15.0, weight(350.5), weight(1000.0), 0.0, 1.0);
+        assert_eq!(other.font_weight().value(), 350.5);
+        assert_eq!(other.font_weight_bold().value(), 1000.0);
         assert_eq!(k.letter_spacing(), 0.0);
         assert_eq!(k.line_height(), 1.0);
     }

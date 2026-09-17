@@ -25,7 +25,7 @@ drawing buffer in device pixels, `clearViewport` hides it while keeping every by
 privileges, and no grid at all until the consumer asks for one.
 
 **Terminals in the same font share one glyph atlas.** Resources are keyed by font configuration —
-family, size, letter-spacing and line-height together — and refcounted, so six terminals in one font
+family, size, the regular and bold weights, letter-spacing and line-height together — and refcounted, so six terminals in one font
 hold one atlas, rasteriser and glyph cache between them, and the last one to leave a configuration
 releases it. Changing one terminal's font moves it to a different entry rather than editing the one
 its neighbours are drawing through, which is also what makes two terminals in two different fonts —
@@ -35,7 +35,7 @@ something you can measure rather than assume.
 
 **Every per-grid export names the grid it acts on** (0.15.0, breaking). `applyFrame`, `applyDamage`,
 `setPalette`, `setOverlay`, `setActiveMatch`, `setDecorations`, `setCursor`, `clearCursor`,
-`setPreedit`, `cols`/`rows`, `cellWidth`/`cellHeight`/`cssCellWidth`/`cssCellHeight`, the four
+`setPreedit`, `cols`/`rows`, `cellWidth`/`cellHeight`/`cssCellWidth`/`cssCellHeight`, the
 font/metric setters and the colour/cursor policy scalars all take a grid id first and throw on one
 they do not know. The exports that belong to the surface — `render`, `setDevicePixelRatio`, the
 context-loss handlers, `cssWidth`/`cssHeight` — do not.
@@ -57,8 +57,8 @@ Two consequences worth knowing before upgrading:
   `resizeSurface`, `resizeGrid` and `setViewport` after one — which you are doing anyway, the cell
   having just moved.
 
-`addGrid(palette, defaultFg, defaultBg, fontFamily?, fontSize?, letterSpacing?, lineHeight?)` takes
-the grid's font up front, so a grid joins a sibling's atlas instead of baking one it would abandon a
+`addGrid(palette, defaultFg, defaultBg, fontFamily?, fontSize?, letterSpacing?, lineHeight?,
+fontWeight?, fontWeightBold?)` takes the grid's font up front, so a grid joins a sibling's atlas instead of baking one it would abandon a
 line later. `applyDamageTo` is retired — `applyDamage` addresses a grid itself.
 
 Published to npm as **`justerm-renderer`** on its own **`renderer-v*`** tag track. That track is

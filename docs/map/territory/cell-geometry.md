@@ -7,7 +7,7 @@ device pixels and CSS pixels. Everything geometric derives from **one measuremen
 the font's `█`.
 
 One measurement *per font configuration*, since #772 — the renderer keys the ink scan, the cell and
-the glyph box by (family, size, letter-spacing, line-height) and refcounts them, so two terminals in
+the glyph box by (family, size, weight, bold weight, letter-spacing, line-height) and refcounts them, so two terminals in
 two fonts have two cell geometries on one canvas. Nothing in the derivation changed; what changed is
 that "the renderer's cell" is no longer a phrase with one referent. Every export here still reports
 the **implicit default grid's** — `cellWidth`, `cellHeight`, `cssCellWidth`, `cssCellHeight`, `cols`,
@@ -70,6 +70,25 @@ See [multi-viewport](multi-viewport.md) for the tier and its lifetime.
   multiple of — and `resize_surface` adopts the browser's grant while `resize_grid` records what it
   was told. So `cols()` is an echo, and a consumer that asks for more than fits learns it from
   `cssWidth` rather than from `cols`.
+- **The cell is measured at the `normal` weight, whatever weights the configuration draws at** (#928).
+  The two weights key the configuration, so a weight change re-bakes the atlas — and the ink scan
+  still reads `█` at 400. The maintainer chose this over measuring at the regular weight, on a
+  measurement that showed the other choice moves the cell on real faces (headless Chromium, cells in
+  device px at weights 100 / 400 / 900): `monospace` 8x16 / 8x16 / 9x16 at dpr 1 and 16x33 / 16x33 /
+  17x33 at dpr 2; Courier New 10x18 / 10x18 / 11x16 at dpr 1 and 20x37 / 20x37 / 21x33 at dpr 2;
+  Consolas unchanged at every weight. A heavier face's `█` can be wider *and* shorter. What it buys:
+  a weight change never moves the grid, so no consumer re-fit is owed, and a profile draws the same
+  grid in a Native pane as in an xterm.js pane, whose `CharSizeService` also measures without the
+  weight. What it costs: heavy regular text is drawn into a box measured for 400, exactly as bold
+  text always has been, so the condense (#792) and bleed band (#791) paths above carry it. The
+  ink-scan method itself (ADR-0022) was not reopened by this. **Decided on** that table and the
+  xterm.js fact only; alacritty, read afterwards, measures at the configured regular face instead
+  (reference-facts, same section). The maintainer was shown that afterwards and kept `normal`.
+- **A weight a consumer names is validated before it reaches a `font` string** (#928). An invalid CSS
+  `font` assignment is dropped by the browser whole, so a bad weight would silently swap the face and
+  move the cell rather than just lose the weight. `css_font::FontWeight` takes xterm.js's set
+  (`normal`, `bold`, `100`..`900`, a number in `[1, 1000]`); a setter ignores anything else and
+  `addGrid` falls back to the default. `bolder`/`lighter` are refused like xterm.js refuses them.
 - **The cell is per font configuration, so a surface can hold several at once** (#772/#773). Every
   cell reader takes a grid: `cellWidth(grid)`, `cssCellWidth(grid)`. See the cross-cutting invariant
   below for what a *reader* of one owes.
@@ -77,6 +96,8 @@ See [multi-viewport](multi-viewport.md) for the tier and its lifetime.
 ## Code
 
 - `justerm-renderer/src/rasterizer.rs` — the ink scan of `█` (browser-only)
+- `justerm-renderer/src/css_font.rs` — `FontWeight` and `font_string`, the `font` the scan and every
+  glyph are drawn with (host-testable)
 - `justerm-renderer/src/metrics.rs` — the cell box / glyph box nesting
 - `justerm-renderer/src/dpr.rs` — `css_px`, the device→CSS derivation. It is the only direction
   left: grid_px, cells_that_fit and device_px were all retired with the grid-derived buffer (#773),
@@ -84,7 +105,8 @@ See [multi-viewport](multi-viewport.md) for the tier and its lifetime.
   converts *into* device px any more. (Retired names un-backticked on purpose — this heading
   resolves every code-span against the source.)
 - `justerm-renderer/src/webgl.rs` — `css_cell_width`, `css_cell_height`, `css_width`, `css_height`,
-  `cols`, `rows`, `set_font_size`, `set_font_family`, `set_line_height`, `set_letter_spacing`,
+  `cols`, `rows`, `set_font_size`, `set_font_family`, `set_font_weight`, `set_font_weight_bold`,
+  `set_line_height`, `set_letter_spacing`,
   `set_device_pixel_ratio` — the largest single share of the crate's wasm exports
   (`rg -c '#\[wasm_bindgen' justerm-renderer/src/webgl.rs` for the total)
 
@@ -94,6 +116,7 @@ In `docs/agents/reference-facts.md` — **linked, never restated** (each row car
 recorded SHA; a paraphrase drops the pin).
 
 - [Renderer ink channels](../../agents/reference-facts.md#renderer-ink-channels)
+- [Font weight — what it reaches, and what the cell is measured at](../../agents/reference-facts.md#font-weight--what-it-reaches-and-what-the-cell-is-measured-at-928-verified-2026-09-17)
 
 The cell/glyph box split is quoted directly in `metrics.rs`'s module doc from both references. **The
 ink-scan measurement itself has no such backing** — ADR-0022 records it as inherited and grades its

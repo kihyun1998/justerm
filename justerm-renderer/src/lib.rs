@@ -44,6 +44,7 @@ pub(crate) mod color;
 pub(crate) mod config_registry;
 pub(crate) mod context_loss;
 pub(crate) mod contrast;
+pub(crate) mod css_font;
 pub(crate) mod cursor;
 pub(crate) mod decoration;
 pub(crate) mod dpr;

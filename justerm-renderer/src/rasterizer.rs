@@ -36,9 +36,10 @@ use web_sys::{OffscreenCanvas, OffscreenCanvasRenderingContext2d};
 
 use crate::bitmap::{PADDING, cell_metrics, ink_bounds};
 use crate::builtin::block_glyph;
+use crate::css_font::{FontWeight, font_string};
 use crate::glyph_cache::FontStyle;
 
-/// A browser-backed glyph rasteriser bound to one font family + size.
+/// A browser-backed glyph rasteriser bound to one font family, size and pair of weights.
 pub struct Rasterizer {
     /// Held only to keep the JS canvas alive for the context's lifetime.
     #[allow(dead_code)]
@@ -46,6 +47,9 @@ pub struct Rasterizer {
     ctx: OffscreenCanvasRenderingContext2d,
     font_family: String,
     font_size: f32,
+    /// The weights regular and bold text are drawn at (#928).
+    font_weight: FontWeight,
+    font_weight_bold: FontWeight,
     /// Physical (content) cell in device px — the on-screen grid cell.
     phys_w: u32,
     phys_h: u32,
@@ -66,23 +70,16 @@ pub struct Rasterizer {
     bleed_y: u32,
 }
 
-/// A CSS `font` string for the family/size/style (mirrors beamterm `build_font_string`).
-fn font_string(family: &str, size: f32, style: FontStyle) -> String {
-    let (bold, italic) = match style {
-        FontStyle::Normal => (false, false),
-        FontStyle::Bold => (true, false),
-        FontStyle::Italic => (false, true),
-        FontStyle::BoldItalic => (true, true),
-    };
-    let italic = if italic { "italic " } else { "" };
-    let bold = if bold { "bold " } else { "" };
-    format!("{italic}{bold}{size}px {family}, monospace")
-}
-
 impl Rasterizer {
-    /// Build a rasteriser for `font_family` at `font_size` (CSS px). Measures the cell from the
-    /// `█` ink bounds and sizes an internal double-width padded canvas.
-    pub fn new(font_family: &str, font_size: f32) -> Result<Rasterizer, JsValue> {
+    /// Build a rasteriser for `font_family` at `font_size` (CSS px), drawing regular text at
+    /// `font_weight` and bold text at `font_weight_bold`. Measures the cell from the `█` ink bounds
+    /// at the `normal` weight and sizes an internal double-width padded canvas.
+    pub fn new(
+        font_family: &str,
+        font_size: f32,
+        font_weight: FontWeight,
+        font_weight_bold: FontWeight,
+    ) -> Result<Rasterizer, JsValue> {
         // A generous square measuring buffer so `█` (drawn at an offset to catch any negative
         // positioning) fits with headroom above and below the baseline.
         let buf = ((font_size * 4.0).ceil() as u32).max(64);
@@ -92,11 +89,16 @@ impl Rasterizer {
             .ok_or_else(|| JsValue::from_str("justerm-renderer: no 2d context"))?
             .dyn_into::<OffscreenCanvasRenderingContext2d>()?;
 
-        // Cell metrics are style-independent for monospace (bold/italic keep the advance).
-        Self::apply_state(
-            &ctx,
-            &font_string(font_family, font_size, FontStyle::Normal),
+        // Cell metrics are style-independent for monospace (bold/italic keep the advance), and are
+        // measured at the `normal` weight whatever this rasteriser's weights are (#928).
+        let measuring = font_string(
+            font_family,
+            font_size,
+            FontStyle::Normal,
+            FontWeight::NORMAL,
+            FontWeight::BOLD,
         );
+        Self::apply_state(&ctx, &measuring);
 
         // Ink-scan the full block: draw at an offset with the (default) alphabetic baseline,
         // read back the buffer, and take the tight alpha bounds. The offset gives `2*font_size`
@@ -126,16 +128,15 @@ impl Rasterizer {
         // 2D state, so re-apply it.
         canvas.set_width(padded_w * 2);
         canvas.set_height(padded_h);
-        Self::apply_state(
-            &ctx,
-            &font_string(font_family, font_size, FontStyle::Normal),
-        );
+        Self::apply_state(&ctx, &measuring);
 
         Ok(Rasterizer {
             canvas,
             ctx,
             font_family: font_family.to_string(),
             font_size,
+            font_weight,
+            font_weight_bold,
             phys_w,
             phys_h,
             ascent,
@@ -147,6 +148,17 @@ impl Rasterizer {
             off_y: 0,
             bleed_y: 0,
         })
+    }
+
+    /// This rasteriser's CSS `font` string for `style`.
+    fn font(&self, style: FontStyle) -> String {
+        font_string(
+            &self.font_family,
+            self.font_size,
+            style,
+            self.font_weight,
+            self.font_weight_bold,
+        )
     }
 
     fn apply_state(ctx: &OffscreenCanvasRenderingContext2d, font: &str) {
@@ -201,10 +213,7 @@ impl Rasterizer {
             self.canvas.set_height(need_h.max(self.canvas.height()));
             // Resizing an OffscreenCanvas resets its 2D state — baseline, align and fill style go
             // back to their defaults, and every glyph would then be drawn from the wrong origin.
-            Self::apply_state(
-                &self.ctx,
-                &font_string(&self.font_family, self.font_size, FontStyle::Normal),
-            );
+            Self::apply_state(&self.ctx, &self.font(FontStyle::Normal));
         }
         Ok(())
     }
@@ -252,8 +261,7 @@ impl Rasterizer {
             return Ok(self.pad(&bitmap, padded_w, padded_h));
         }
 
-        self.ctx
-            .set_font(&font_string(&self.font_family, self.font_size, style));
+        self.ctx.set_font(&self.font(style));
         // Clear the full (double padded) canvas so a previous wide glyph can't linger.
         self.ctx
             .clear_rect(0.0, 0.0, (padded_w * 2) as f64, padded_h as f64);
