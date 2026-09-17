@@ -37,7 +37,9 @@ impl Pen {
 }
 
 /// The cursor's drawn shape (DECSCUSR / the renderer's caret glyph). The engine
-/// reports it on the frame; the renderer draws it. Default `Block` (#81).
+/// reports the application's choice on the frame as an `Option` — `None` until
+/// DECSCUSR sets one — and the consumer draws it, falling back to its own default
+/// shape (#927).
 ///
 /// **Deliberately exhaustive (#843) — and the reason is the wire, not the spec.**
 ///
@@ -182,9 +184,11 @@ pub struct Cursor {
     pub pen: Pen,
     /// Whether the cursor is shown (DEC ?25). The engine only reports it.
     pub visible: bool,
-    /// The caret shape (DECSCUSR, #89) — reported on the frame, drawn by the
+    /// The caret shape the application set with DECSCUSR (#89), or `None` when it
+    /// has not set one — the consumer's default shape applies then (#927).
+    /// `CSI 0 SP q`, DECSTR and RIS clear it. Reported on the frame, drawn by the
     /// renderer.
-    pub shape: CursorShape,
+    pub shape: Option<CursorShape>,
     /// Whether the caret blinks (att610 ?12, #81). The engine reports the *mode*;
     /// the actual animation is the renderer's.
     pub blink: bool,
@@ -213,7 +217,7 @@ impl Default for Cursor {
             pending_wrap: false,
             pen: Pen::default(),
             visible: true,
-            shape: CursorShape::Block,
+            shape: None,
             blink: false,
         }
     }

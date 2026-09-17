@@ -1,6 +1,6 @@
 # cursor_color_nvim 80x24 bytes=374 kinds=26
 C0 0x0a                x24    frame
-CSI 2 q                x2     -
+CSI 2 q                x2     frame
 CSI 22;0;0t            x1     -
 CSI 22;0t              x1     -
 CSI 2J                 x2     -

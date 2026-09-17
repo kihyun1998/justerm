@@ -460,8 +460,8 @@ fn decode_rejects_superseded_version() {
 /// `wire_version()` mirrors in lockstep (ADR-0008), so a drift here trips before it
 /// can desync a binding.
 #[test]
-fn wire_version_is_sixteen() {
-    assert_eq!(justerm_core::WIRE_VERSION, 16);
+fn wire_version_is_seventeen() {
+    assert_eq!(justerm_core::WIRE_VERSION, 17);
     let mut term = Engine::new(1, 1);
     term.feed(b"x");
     let bytes = encode(&term.frame());

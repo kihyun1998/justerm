@@ -3139,6 +3139,7 @@ impl Term {
     fn soft_reset(&mut self) {
         self.cursor.visible = true;
         self.cursor.pen = Pen::default();
+        self.cursor.shape = None; // xterm resets the caret shape on DECSTR as on RIS (#927)
         self.scroll_top = 0;
         self.scroll_bottom = self.grid.rows() - 1;
         self.origin_mode = false;
@@ -3158,18 +3159,20 @@ impl Term {
         self.cursor.pending_wrap = false;
     }
 
-    /// DECSCUSR (CSI Ps SP q): set the caret shape + blink (#89). 0/2 = steady
-    /// block, 1 = blinking block; 3/4 = blinking/steady underline; 5/6 =
-    /// blinking/steady bar (odd = blink). 0 resets to the default (steady block).
-    /// An unknown param leaves the style unchanged. Mirrors xterm.js.
+    /// DECSCUSR (CSI Ps SP q): set the caret shape + blink (#89). 1/2 =
+    /// blinking/steady block; 3/4 = blinking/steady underline; 5/6 =
+    /// blinking/steady bar (odd = blink). 0 clears the shape to `None` — the
+    /// consumer's default shape (#927) — and turns the blink mode off. An unknown
+    /// param leaves the style unchanged.
     fn set_cursor_style(&mut self, param: u16) {
         let (shape, blink) = match param {
-            0 | 2 => (CursorShape::Block, false),
-            1 => (CursorShape::Block, true),
-            3 => (CursorShape::Underline, true),
-            4 => (CursorShape::Underline, false),
-            5 => (CursorShape::Bar, true),
-            6 => (CursorShape::Bar, false),
+            0 => (None, false),
+            1 => (Some(CursorShape::Block), true),
+            2 => (Some(CursorShape::Block), false),
+            3 => (Some(CursorShape::Underline), true),
+            4 => (Some(CursorShape::Underline), false),
+            5 => (Some(CursorShape::Bar), true),
+            6 => (Some(CursorShape::Bar), false),
             _ => return,
         };
         self.cursor.shape = shape;

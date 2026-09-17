@@ -5,7 +5,7 @@ C0 0x0d                x32    frame text
 CSI 0;1;7m             x6     frame
 CSI 0;1m               x3     frame
 CSI 103m               x1     frame
-CSI 2 q                x6     -
+CSI 2 q                x6     frame
 CSI 22;0;0t            x1     -
 CSI 22;0t              x1     -
 CSI 2J                 x2     -
