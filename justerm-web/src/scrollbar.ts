@@ -178,6 +178,10 @@ export interface ScrollbarOptions {
  * `update(pos)` sizes/positions the thumb from {@link scrollbarMetrics}; dragging
  * maps to a display offset via {@link dragToDisplayOffset} and calls `onScroll`.
  *
+ * The thumb carries {@link SCROLLBAR_THUMB_ATTRIBUTE} and paints the colour
+ * {@link thumbBackground} names for its state — `--justerm-scrollbar-thumb`, `-hover` and
+ * `-active`, set by the consumer on any ancestor.
+ *
  * Browser-only glue — not unit-tested; the geometry it calls is.
  */
 export class Scrollbar {
