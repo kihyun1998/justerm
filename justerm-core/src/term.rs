@@ -3139,6 +3139,8 @@ impl Term {
     fn soft_reset(&mut self) {
         self.cursor.visible = true;
         self.cursor.pen = Pen::default();
+        self.cursor.shape = None; // the application's caret shape and blink mode (#927)
+        self.cursor.blink = false;
         self.scroll_top = 0;
         self.scroll_bottom = self.grid.rows() - 1;
         self.origin_mode = false;
@@ -3158,18 +3160,20 @@ impl Term {
         self.cursor.pending_wrap = false;
     }
 
-    /// DECSCUSR (CSI Ps SP q): set the caret shape + blink (#89). 0/2 = steady
-    /// block, 1 = blinking block; 3/4 = blinking/steady underline; 5/6 =
-    /// blinking/steady bar (odd = blink). 0 resets to the default (steady block).
-    /// An unknown param leaves the style unchanged. Mirrors xterm.js.
+    /// DECSCUSR (CSI Ps SP q): set the caret shape + blink (#89). 1/2 =
+    /// blinking/steady block; 3/4 = blinking/steady underline; 5/6 =
+    /// blinking/steady bar (odd = blink). 0 clears the shape to `None` — the
+    /// consumer's default shape (#927) — and turns the blink mode off. An unknown
+    /// param leaves the style unchanged.
     fn set_cursor_style(&mut self, param: u16) {
         let (shape, blink) = match param {
-            0 | 2 => (CursorShape::Block, false),
-            1 => (CursorShape::Block, true),
-            3 => (CursorShape::Underline, true),
-            4 => (CursorShape::Underline, false),
-            5 => (CursorShape::Bar, true),
-            6 => (CursorShape::Bar, false),
+            0 => (None, false),
+            1 => (Some(CursorShape::Block), true),
+            2 => (Some(CursorShape::Block), false),
+            3 => (Some(CursorShape::Underline), true),
+            4 => (Some(CursorShape::Underline), false),
+            5 => (Some(CursorShape::Bar), true),
+            6 => (Some(CursorShape::Bar), false),
             _ => return,
         };
         self.cursor.shape = shape;
@@ -5750,9 +5754,10 @@ impl Perform for Term {
             self.soft_reset();
             return;
         }
-        // DECSCUSR set cursor style: CSI Ps SP q (space intermediate) (#89). An
-        // absent param means 1 (block blink); an explicit 0 means reset — so the
-        // raw value matters and `param_or` (which folds 0 to its default) is wrong.
+        // DECSCUSR set cursor style: CSI Ps SP q (space intermediate) (#89). The raw
+        // value is read, since `param_or` folds 0 to its default and 0 is the reset.
+        // `CSI SP q` arrives from vte as an explicit 0; `unwrap_or(1)` covers a
+        // params list with no entry at all.
         if intermediates.first() == Some(&b' ') && action == 'q' {
             let param = params.iter().next().and_then(|p| p.first().copied());
             self.set_cursor_style(param.unwrap_or(1));

@@ -2376,6 +2376,16 @@ test("the cursor's thickness and contrast policies reach the renderer (#580)", a
   // Not a one-way door.
   expect(p.thickness.back).toBe(p.thickness.boot);
 
+  // --- style (#927) ---------------------------------------------------------------------------
+  // With the frame reporting no DECSCUSR shape, the consumer's style decides it. The caret is red
+  // here, so a block's corner is red and a bar's is the cell's background.
+  expect(p.style.unsetBlock).toBe("rgb(255,0,0)");
+  expect(p.style.boot).toBe(p.style.unsetBlock); // no option → a block
+  expect(p.style.unsetBar).toBe(p.style.background); // the setter redraws on its own
+  expect(p.style.background).not.toBe(p.style.unsetBlock);
+  // An explicit application block is not unset: it outranks the consumer's bar.
+  expect(p.style.appBlockOverBar).toBe(p.style.unsetBlock);
+
   // --- contrast -------------------------------------------------------------------------------
   // The caret is painted the cell's own background here, so with the guard at its floor it is
   // genuinely invisible. This assertion is what proves `cursorContrast: 1` reached the renderer at
@@ -2425,6 +2435,21 @@ test.describe("the cursor policies given at create take effect (#580)", () => {
     // — the two together are what separate "the field arrived" from "the caret happens to look
     // like this".
     expect(p.contrast.boot).toBe(p.contrast.background);
+  });
+});
+
+// #927, the CREATE half of `cursorStyle`: only reachable by booting with it set.
+test.describe("a cursor style given at create takes effect (#927)", () => {
+  test.use({ bootUrl: "/?cursorStyle=bar" });
+
+  test("a frame with no DECSCUSR shape draws the booted style", async ({ page }) => {
+    await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+
+    const p = await page.evaluate(() => window.__cursorPolicyProbe!());
+    expectContextAlive(p);
+
+    expect(p.style.boot).toBe(p.style.background);
+    expect(p.style.unsetBlock).toBe("rgb(255,0,0)"); // the instrument can see a block on this page
   });
 });
 

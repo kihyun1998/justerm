@@ -54,7 +54,10 @@ use std::collections::BTreeMap;
 ///   failure would have rejected frames every one of those decoders can otherwise read correctly,
 ///   which is a larger harm than one flattened mark.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 16; // v16 removes the fourth overlay group — every live marker's absolute line — and adds `marker_count` (u32) to the header in its place: the group was measured at 37-70% of an 80x24 frame at ordinary OSC-133 densities and is the R3 violation ADR-0020 records against itself, so a consumer pulls the index once (`Engine::marker_index`, v15) and the count is its check against drift (#490). The *viewport* marker group stays: it is what command-announce consumes, it is row-filtered, and its population is bounded by MAX_MARKERS (#721) ; v15 adds the marker-index basis to the header — `evicted_total` (u64) and `marker_epoch` (u32) — so a consumer can pull the marker set once and keep it valid instead of being handed every live marker in every frame; the marker groups stayed one version as an oracle for the consumer index and the absolute-line one left in v16 (#490); v14 moves combining clusters and hyperlink refs off the fixed cell record (18 B -> 14 B) into per-span sparse groups, inlining the cluster (no side-table) but keeping the URI table interned, and widens every count/length prefix they use to u32 — the engine could hold a cluster, a URI, or a viewport its own decoder then rejected or, worse, mis-read as Ok (#621); v13 adds a per-span underline-colour group: sparse (col, Color) pairs for cells drawing a coloured underline (SGR 58, #520); v12 adds a fifth overlay group: the consumer-designated active search match's spans (#428); v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
+const VERSION: u8 = 17; // v17 gives the cursor-shape byte an "unset" value, `CURSOR_SHAPE_UNSET`, for a frame whose application has not set a DECSCUSR shape — the consumer draws its own default then (#927) ; v16 removes the fourth overlay group — every live marker's absolute line — and adds `marker_count` (u32) to the header in its place: the group was measured at 37-70% of an 80x24 frame at ordinary OSC-133 densities and is the R3 violation ADR-0020 records against itself, so a consumer pulls the index once (`Engine::marker_index`, v15) and the count is its check against drift (#490). The *viewport* marker group stays: it is what command-announce consumes, it is row-filtered, and its population is bounded by MAX_MARKERS (#721) ; v15 adds the marker-index basis to the header — `evicted_total` (u64) and `marker_epoch` (u32) — so a consumer can pull the marker set once and keep it valid instead of being handed every live marker in every frame; the marker groups stayed one version as an oracle for the consumer index and the absolute-line one left in v16 (#490); v14 moves combining clusters and hyperlink refs off the fixed cell record (18 B -> 14 B) into per-span sparse groups, inlining the cluster (no side-table) but keeping the URI table interned, and widens every count/length prefix they use to u32 — the engine could hold a cluster, a URI, or a viewport its own decoder then rejected or, worse, mis-read as Ok (#621); v13 adds a per-span underline-colour group: sparse (col, Color) pairs for cells drawing a coloured underline (SGR 58, #520); v12 adds a fifth overlay group: the consumer-designated active search match's spans (#428); v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
+
+/// The header's cursor-shape byte when the application has not set a shape (#927).
+const CURSOR_SHAPE_UNSET: u8 = 0xFF;
 
 /// The wire-format version (the gating `VERSION` byte), exposed so a binding can
 /// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
@@ -196,7 +199,7 @@ pub struct MarkerId(pub u32);
 ///
 /// Measured over `justerm-wasm-decode/src` — the published encoder, and the only
 /// place the boundary bites — that is **four**: [`crate::CursorShape`]
-/// (`lib.rs:198`), [`FrameKind`] (`:192`), this one (`:233`), and
+/// (`lib.rs:199`), [`FrameKind`] (`:192`), this one (`:235`), and
 /// [`crate::UnderlineStyle`], which joined when #831 gave the style a name on the
 /// published surface. Every other public enum has zero such sites, so no other
 /// call turns on this rule.
@@ -349,7 +352,9 @@ pub struct Frame {
     pub cursor_visible: bool,
     /// The caret shape (DECSCUSR #89) and whether it blinks (att610 ?12, #81).
     /// Reported for the renderer; drawing/animation stays the consumer's.
-    pub cursor_shape: CursorShape,
+    /// `cursor_shape` is `None` while the application has not set a shape, and the
+    /// consumer draws its own default shape then (#927).
+    pub cursor_shape: Option<CursorShape>,
     pub cursor_blink: bool,
     /// Viewport scroll position (#112 / ADR-0013), for the consumer's scrollbar.
     /// `display_offset` = lines scrolled up from the bottom (0 = following the
@@ -519,9 +524,10 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     out.extend_from_slice(&frame.cursor_col.to_le_bytes());
     out.push(frame.cursor_visible as u8);
     out.push(match frame.cursor_shape {
-        CursorShape::Block => 0,
-        CursorShape::Underline => 1,
-        CursorShape::Bar => 2,
+        Some(CursorShape::Block) => 0,
+        Some(CursorShape::Underline) => 1,
+        Some(CursorShape::Bar) => 2,
+        None => CURSOR_SHAPE_UNSET,
     });
     out.push(frame.cursor_blink as u8);
     out.extend_from_slice(&frame.display_offset.to_le_bytes());
@@ -856,9 +862,10 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     let cursor_col = r.u16()?;
     let cursor_visible = r.u8()? != 0;
     let cursor_shape = match r.u8()? {
-        0 => CursorShape::Block,
-        1 => CursorShape::Underline,
-        2 => CursorShape::Bar,
+        0 => Some(CursorShape::Block),
+        1 => Some(CursorShape::Underline),
+        2 => Some(CursorShape::Bar),
+        CURSOR_SHAPE_UNSET => None,
         _ => return Err(DecodeError::BadTag),
     };
     let cursor_blink = r.u8()? != 0;

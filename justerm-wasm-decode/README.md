@@ -32,7 +32,7 @@ import { resolveRgb, decodeColorRef, FG, BG } from "justerm-wasm-decode/colors.j
 // Bundler target (Vite/webpack): the above imports work directly.
 // Web target (no bundler): `import init, { ... } from "justerm-wasm-decode"; await init();` first.
 
-console.assert(wireVersion() === 16); // optional: assert the backend encoder agrees
+console.assert(wireVersion() === 17); // optional: assert the backend encoder agrees
 
 // --- once at startup / on theme change ---
 // buildPalette fills 0..15 from your scheme's ANSI colours and 16..255 from the
@@ -112,7 +112,9 @@ caret as its own overlay. If your renderer has no cursor primitive, invert `fg`/
 one without ghosting.
 
 The frame carries two more cursor scalars the table above omits — `cursorShape` and `cursorBlink`.
-Blink is a renderer-local animation, not an engine tick.
+Blink is a renderer-local animation, not an engine tick. `cursorShape` is the shape the application set
+with DECSCUSR (`0` block, `1` underline, `2` bar), or `undefined` while it has set none — draw your own
+default shape then. `CSI 0 SP q`, DECSTR and RIS return it to `undefined`.
 
 ## Colour helpers
 

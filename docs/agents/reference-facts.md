@@ -369,6 +369,25 @@ guaranteed to correct any of them.
 | ⚠ **Counter-example, and a reasoned one: ghostty starts FOCUSED** — *"If we're not initially focused then apprts can call focusCallback to let us know"*. Its renderer says the same in one comment: `.focus = 1, // assume focused initially`. This is an optimistic default **plus a named correction path**, not an absent one | ghostty | `src/Surface.zig:155` (and `:153-154` for the comment), `src/renderer/generic.zig:768` |
 | **justerm-web takes the other pairing**: a pessimistic default (`CursorBlink.focused`, `JustermRenderer.focused`) **and** a guaranteed correction — `Terminal.attach()` reports once before any focus event. Two halves because they close different holes: the default covers a `Terminal` built without `element`, which never attaches; the call covers a consumer-supplied `Renderer` whose own default nobody controls | justerm-web | `justerm-web/src/terminal.ts` `attach`, `src/renderer.ts` `setFocused` doc |
 
+### The caret's default shape — where it lives, and what resets to it (#927, verified 2026-09-17)
+
+Every reference keeps the user's shape and the application's DECSCUSR shape apart; they differ on
+**which layer holds the default** and on **what `0` means**. justerm put the default in the widget
+against the 3-of-4 majority below — the grounds are in `docs/map/territory/caret-report.md`, and the
+row that decided a neighbour the other way is the measured one at the bottom.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The default is **terminal state**: `default_cursor_style` sits in the terminal's `Config`, the drawn style is `cursor_style.unwrap_or(config.default_cursor_style)`, and RIS clears the override with `cursor_style = None` | alacritty | `alacritty_terminal/src/term/mod.rs:339`, `:942-943`, `reset_state` at `:1840` |
+| ⚠ `?12` does `get_or_insert(default_cursor_style)`, **copying the default into the override** at that instant — a later change of the default no longer shows through | alacritty | `alacritty_terminal/src/term/mod.rs:1988` |
+| The default is **terminal state and live**: `setDefaultCursorStyle` always retains the new default, and applies it at once only while the program has not chosen a shape (`is_default`) | ghostty | `src/terminal/Terminal.zig:399-410`, field default `.block` at `:267` |
+| DECRQSS ` q` reports the **resolved** style from core state | ghostty | `src/termio/stream_handler.zig:491-502` |
+| `CSI 0 SP q` clears **both** the shape and the blink to `undefined`; the renderer draws `decPrivateModes.cursorStyle ?? options` (see the blink section's row). The default lives in `OptionsService`, which is in `common`, so its DECRQSS reads the option rather than the override | xterm.js | `common/InputHandler.ts:2852-2856`; DECRQSS ` q` at `:3530` |
+| ⚠ **The spec proxy disagrees on `0`**: `DEFAULT` and `DEFAULT_STYLE` fall through to `BLINK_BLOCK` — a *blinking block*, not the user's default | xterm | `charproc.c:4945-4962` (`CASE_DECSCUSR`) |
+| RIS **and DECSTR** return the shape to the user's resources (`cursorUnderline` / `cursorBar`) — both go through `VTReset`, and `ReallyReset` runs `InitCursorShape` before its `full` branch, and on the same path clears the escape-set blink (`cursor_blink_esc = 0`) back to the user's `cursorBlink` resource | xterm | `charproc.c:6143-6150` (the two cases), `:14340`, blink at `:14343-14344`, macro at `:10313` |
+| DECRQSS ` q` reports the drawn shape | xterm | `misc.c:4932-4942` |
+| ⚠ **Measured, not read (VM, `TERM=xterm-256color`, NVIM v0.8.0 `--clean +q`, 2026-09-17)**: terminfo gives `Se=\E[2 q` — an explicit steady block, not `0`. nvim emitted `CSI 2 SP q` twice, at bytes 202 and 246, **both inside** the alternate screen (`?1049h` at 112, `?1049l` at 287). vim 8.2 `--clean` emitted no DECSCUSR at all | nvim / terminfo | not retained; reproduce on the VM with `script -q -c "nvim --clean +q" out.cap` then `grep -aob "1049[hl]\|2 q" out.cap`, and `infocmp -x xterm-256color` for `Se` |
+
 ### A device-pixel-ratio change — who notices, and what they do about it (#325, verified 2026-08-10)
 
 Only xterm.js has this problem: alacritty and ghostty own their OS window and are told about a scale

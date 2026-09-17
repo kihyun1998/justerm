@@ -173,6 +173,12 @@ export interface JustermRendererOptions {
    */
   cursorBlink?: boolean;
   /**
+   * The caret shape drawn while the application has not chosen one (#927). DECSCUSR
+   * (`CSI Ps SP q`) overrides it, and `CSI 0 SP q`, DECSTR and RIS hand it back. Omit for `"block"`.
+   * Change it at runtime with {@link JustermRenderer.setCursorStyle}.
+   */
+  cursorStyle?: CursorStyle;
+  /**
    * How long the cursor keeps blinking with no user input before parking solid, in ms (#593).
    * `0` disables the timeout. Omit for the default — 5 minutes, xterm.js's `CURSOR_BLINK_IDLE_TIMEOUT`.
    *
@@ -187,7 +193,7 @@ export interface JustermRendererOptions {
    * default, `0.15` (alacritty's `cursor.thickness`, `alacritty/src/config/cursor.rs:31`).
    *
    * **A block ignores it.** A block cursor recolours its cell and draws no stroke, so this changes
-   * nothing for the default shape — set a bar/underline/hollow shape (DECSCUSR) to see it.
+   * nothing for a block — a bar or underline (DECSCUSR, or {@link cursorStyle}) shows it.
    *
    * A *fraction*, not a length, because the renderer resolves it as
    * `(frac * cell_w).round().max(1)` device px — so it tracks dpr **and** font size. That is
@@ -621,11 +627,12 @@ export function gridForBox(
 /** What a frame says to do with the cursor, as a pure decision (no blink/state): `none` = the
  * frame carries no cursor info (leave it); `clear` = hidden (DECTCEM); `set` = place it. Extracted
  * so the visible/hidden branch + the field defaults — the spot an off-by-one or wrong default would
- * hide — are unit-testable without the blink loop. Shape `0` block / `1` underline / `2` bar. */
+ * hide — are unit-testable without the blink loop. `shape` is the application's DECSCUSR shape
+ * (`0` block / `1` underline / `2` bar), `undefined` while it has set none (#927). */
 export type CursorCommand =
   | { kind: "none" }
   | { kind: "clear" }
-  | { kind: "set"; col: number; row: number; shape: number };
+  | { kind: "set"; col: number; row: number; shape: number | undefined };
 
 export function cursorCommand(frame: DecodedFrame): CursorCommand {
   if (frame.cursorRow === undefined && frame.cursorVisible === undefined) return { kind: "none" };
@@ -634,8 +641,25 @@ export function cursorCommand(frame: DecodedFrame): CursorCommand {
     kind: "set",
     col: frame.cursorCol ?? 0,
     row: frame.cursorRow ?? 0,
-    shape: frame.cursorShape ?? 0,
+    shape: frame.cursorShape,
   };
+}
+
+/** The caret shape a consumer can choose as its default (#927). */
+export type CursorStyle = "block" | "underline" | "bar";
+
+/** The shape id to draw: the application's DECSCUSR shape, else the consumer's style (#927). A style
+ * outside the three draws a block. */
+export function resolveCursorShape(appShape: number | undefined, style: CursorStyle): number {
+  if (appShape !== undefined) return appShape;
+  switch (style) {
+    case "underline":
+      return 1;
+    case "bar":
+      return 2;
+    default:
+      return 0;
+  }
 }
 
 /** Coerce a decoder array to the exact typed array wasm-bindgen's `&[u32]`/`&[u16]` expect.
@@ -711,8 +735,11 @@ export class JustermRenderer implements Renderer {
   private readonly blink = new CursorBlink();
   /** The SGR 5 text phase (#576) — a separate clock from the caret's, never restarted by input. */
   private readonly textBlink = new TextBlink();
-  /** Last cursor reported by a frame (screen coords), or `undefined` if hidden. */
-  private cursor: { col: number; row: number; shape: number } | undefined;
+  /** Last cursor reported by a frame (screen coords), or `undefined` if hidden. `shape` is the
+   * application's, `undefined` while it has set none (#927). */
+  private cursor: { col: number; row: number; shape: number | undefined } | undefined;
+  /** The consumer's default caret shape (#927). */
+  private cursorStyle: CursorStyle = "block";
   /** Where the caret sits while a composition is open (ADR-0028 D5), or undefined when none is —
    * retained because every frame re-asserts the engine's cursor, which cannot know about a preedit. */
   private preeditCaret: { col: number; row: number } | undefined;
@@ -1123,6 +1150,7 @@ export class JustermRenderer implements Renderer {
     }
     // `undefined` is the default (follow the application), so this is a no-op unless set (#575).
     instance.setCursorBlink(opts.cursorBlink);
+    if (opts.cursorStyle !== undefined) instance.setCursorStyle(opts.cursorStyle);
     if (opts.cursorBlinkTimeout !== undefined) instance.setCursorBlinkTimeout(opts.cursorBlinkTimeout);
     // `0`/omitted = no text blink, the reference default (#576) — a no-op unless the consumer opts in.
     if (opts.textBlinkInterval !== undefined) instance.setTextBlinkInterval(opts.textBlinkInterval);
@@ -1971,7 +1999,7 @@ export class JustermRenderer implements Renderer {
       this.backend.setCursor(this.lease.id,
         this.cursor.col,
         this.cursor.row,
-        this.cursor.shape,
+        resolveCursorShape(this.cursor.shape, this.cursorStyle),
         this.cursorColor,
         this.cursorTextColor,
       );
@@ -2070,6 +2098,16 @@ export class JustermRenderer implements Renderer {
    */
   setCursorBlink(blink: boolean | undefined): void {
     this.blink.setBlinkOverride(blink);
+    if (this.cursor) this.redrawCursor();
+  }
+
+  /**
+   * The caret shape drawn while the application has not chosen one (#927). The live counterpart of
+   * {@link JustermRendererOptions.cursorStyle}. Redraws immediately when a cursor is on screen, as
+   * {@link setCursorBlink} does.
+   */
+  setCursorStyle(style: CursorStyle): void {
+    this.cursorStyle = style;
     if (this.cursor) this.redrawCursor();
   }
 

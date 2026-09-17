@@ -36,7 +36,7 @@ import {
   VERBOSE_ANNOUNCE_TEXT,
 } from "../src/index";
 import { FitController, composeRulerMarks, observeResize, searchRulerMarks } from "../src/index";
-import type { AccessiblePort, SignalSink } from "../src/index";
+import type { AccessiblePort, CursorStyle, SignalSink } from "../src/index";
 import type {
   CellGeometry,
   FitInput,
@@ -71,6 +71,8 @@ const bootLineHeight = bootParams.get("lineHeight");
 const bootCursorThickness = bootParams.get("cursorThickness");
 const bootCursorContrast = bootParams.get("cursorContrast");
 const bootCursorColor = bootParams.get("cursorColor");
+// #927: the consumer's default caret shape, an option like `cursorThickness`.
+const bootCursorStyle = bootParams.get("cursorStyle") as CursorStyle | null;
 // #908: a `Terminal` construction option, so it too is only reachable by booting with it set.
 const bootScrollSensitivity = bootParams.get("scrollSensitivity");
 
@@ -82,6 +84,7 @@ const renderer = await JustermRenderer.create({
   ...(bootLetterSpacing === null ? {} : { letterSpacing: Number(bootLetterSpacing) }),
   ...(bootLineHeight === null ? {} : { lineHeight: Number(bootLineHeight) }),
   ...(bootCursorThickness === null ? {} : { cursorThickness: Number(bootCursorThickness) }),
+  ...(bootCursorStyle === null ? {} : { cursorStyle: bootCursorStyle }),
   theme: {
     ansi: [
       0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5, 0x7f7f7f,
@@ -261,13 +264,15 @@ const CURSOR_COL = 2;
 /**
  * #580 — the DECSCUSR shape the frame reports, mutable so `__cursorPolicyProbe` can ask for a stroke.
  *
- * A **block** is the default and stays so: every other pixel probe on this page was calibrated
- * against a block filling `(CURSOR_ROW, CURSOR_COL)`, and a bar would change what they read. It is
- * also the reason the thickness half needs this at all — a block recolours its cell and draws no
- * stroke, so `setCursorThickness` is a visual no-op until the shape is `2` (bar). The probe restores
- * it before returning, the same discipline `__cursorBlinkProbe` follows with `cursorBlink`.
+ * **Unset** by default, as core reports it before any DECSCUSR (#927), so the renderer draws its
+ * `cursorStyle` — a block unless the page was booted with `?cursorStyle=`. Every other pixel probe
+ * on this page was calibrated against a block filling `(CURSOR_ROW, CURSOR_COL)`, and a bar would
+ * change what they read. It is also the reason the thickness half needs this at all — a block
+ * recolours its cell and draws no stroke, so `setCursorThickness` is a visual no-op until the shape
+ * is `2` (bar). The probe restores it before returning, the same discipline `__cursorBlinkProbe`
+ * follows with `cursorBlink`.
  */
-let cursorShape = 0;
+let cursorShape: number | undefined = undefined;
 
 /**
  * #911 — the column the emitted frames put the cursor at, so a probe can deliver an ECHO.
@@ -1064,7 +1069,7 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     // reports the caret visible while scrolled up cannot produce #921's precondition at all, and
     // an instrument that cannot see the defect reports the same thing as a fixed codebase.
     cursorVisible: cursorShown && displayOffset === 0,
-    cursorShape, // block by default; `__cursorPolicyProbe` swaps in a bar (#580)
+    cursorShape, // unset by default (#927); `__cursorPolicyProbe` swaps in a bar (#580)
     cursorBlink,
     ...(out && out.scrollCount > 0
       ? { hasScroll: true, scrollTop: 0, scrollBottom: ROWS - 1, scrollCount: out.scrollCount }
@@ -1838,6 +1843,20 @@ interface CursorPolicyProbe {
      * booted without the option, which is what makes `thick` a change rather than a drift. */
     back: number;
   };
+  /** The cursor cell's inset corner under a red caret while the frame reports NO shape (#927),
+   * except the last. A block fills it red; a bar leaves it background. */
+  style: {
+    /** The boot state — the `cursorStyle` option if the page was booted with one, else a block. */
+    boot: string;
+    /** After `setCursorStyle("block")`. */
+    unsetBlock: string;
+    /** After `setCursorStyle("bar")`, read without re-emitting a frame. */
+    unsetBar: string;
+    /** No cursor at all: the comparand for `unsetBar`. */
+    background: string;
+    /** The frame reports an explicit block (DECSCUSR 2) while the style is still `"bar"`. */
+    appBlockOverBar: string;
+  };
   /** The caret's colour under a theme whose `cursorColor` is deliberately the cell's own background
    * — the exact case the guard exists for, and invisible without it. */
   contrast: {
@@ -2231,6 +2250,10 @@ window.__cursorPolicyProbe = (): CursorPolicyProbe => {
   // point `__cursorBlinkProbe` samples, for the same reason.
   const corner = (): string => {
     render(); // re-emit → the adapter re-pushes the cursor; read in the SAME synchronous turn
+    return readCorner();
+  };
+  // No re-emit: reads whatever the last present left, so a setter's own redraw is what is measured.
+  const readCorner = (): string => {
     const x = Math.round(CURSOR_COL * cw) + 2;
     const y = gl.drawingBufferHeight - 1 - (Math.round(CURSOR_ROW * ch) + 2);
     const px = new Uint8Array(4);
@@ -2280,6 +2303,24 @@ window.__cursorPolicyProbe = (): CursorPolicyProbe => {
   renderer.setCursorThickness(0.15); // the renderer's own default, restated by the probe not the widget
   const back = strokeWidth();
 
+  // ---- style: the consumer's default shape (#927) ---------------------------------------------
+  //
+  // Read, not counted: a stroke count cannot separate the two, because a block draws no stroke and
+  // its leading run on a narrow cell is as short as a bar's. The corner can — a block fills it with
+  // the (red) caret colour, while a bar's stroke at the left edge leaves it background.
+  cursorShape = undefined; // the application has not spoken
+  const styleBoot = corner(); // the `cursorStyle` option, or the block default
+  renderer.setCursorStyle("block");
+  const unsetBlock = corner();
+  renderer.setCursorStyle("bar");
+  const unsetBar = readCorner(); // the setter's redraw, with no frame behind it
+  cursorShown = false;
+  const styleBackground = corner();
+  cursorShown = true;
+  cursorShape = 0; // an explicit DECSCUSR block outranks the consumer's bar
+  const appBlockOverBar = corner();
+  renderer.setCursorStyle(bootCursorStyle ?? "block");
+
   // ---- contrast: read, because the answer is a colour -----------------------------------------
   //
   // Back to a BLOCK, so `corner()` reads the caret's fill rather than a stroke's neighbourhood.
@@ -2313,6 +2354,7 @@ window.__cursorPolicyProbe = (): CursorPolicyProbe => {
     contextLost: gl.isContextLost(),
     cellW,
     thickness: { boot, thick, back },
+    style: { boot: styleBoot, unsetBlock, unsetBar, background: styleBackground, appBlockOverBar },
     contrast: { boot: bootCaret, background, guardOff, guardOn, guardReset },
   };
 };
