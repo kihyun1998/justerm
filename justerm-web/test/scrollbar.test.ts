@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  dragStillHeld,
   dragToDisplayOffset,
   dragTrackRatio,
   rulerMarkHeightPx,
   scrollbarMetrics,
+  startsThumbDrag,
   thumbBackground,
   thumbState,
 } from "../src/scrollbar";
@@ -15,6 +17,22 @@ describe("SCROLLBAR_THUMB_ATTRIBUTE (#926)", () => {
     // hard-codes.
     const { SCROLLBAR_THUMB_ATTRIBUTE } = await import("../src/index");
     expect(SCROLLBAR_THUMB_ATTRIBUTE).toBe("data-justerm-scrollbar-thumb");
+  });
+});
+
+describe("thumb drag buttons (#926)", () => {
+  it("starts a drag on the primary button only", () => {
+    expect(startsThumbDrag(0)).toBe(true);
+    expect(startsThumbDrag(1)).toBe(false); // middle
+    expect(startsThumbDrag(2)).toBe(false); // secondary: a context menu may swallow its release
+  });
+
+  it("holds a drag only while a move still reports the primary button down", () => {
+    expect(dragStillHeld(1)).toBe(true);
+    expect(dragStillHeld(1 | 2)).toBe(true); // secondary pressed as well
+    // A release the page never received: the pointer moves with no button held.
+    expect(dragStillHeld(0)).toBe(false);
+    expect(dragStillHeld(2)).toBe(false);
   });
 });
 

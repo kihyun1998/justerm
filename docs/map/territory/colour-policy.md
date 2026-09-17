@@ -49,10 +49,13 @@ this is what resolves it.
   - **The widget holds the state, because an inline style cannot say `:hover`.** `thumbState` is
     `active` for as long as a drag the thumb started is held, wherever the pointer is — the
     `window`-bound drag listeners outlive the hover. xterm.js has the same three states and holds
-    `xterm-active` from drag start to drag end (`browser/scrollable/abstractScrollbar.ts`), but its
-    drag *ends* on more paths: it starts only on the primary button and also ends on a move whose
-    `buttons` no longer match the press (`globalPointerMoveMonitor.ts`). Ours ends only on `mouseup`,
-    so a lost `mouseup` leaves the drag, and now the active colour, held — see Known holes.
+    `xterm-active` from drag start to drag end (`browser/scrollable/abstractScrollbar.ts`).
+  - **A drag ends on a buttonless move as well as on `mouseup`**, and starts on the primary button
+    only (`startsThumbDrag`, `dragStillHeld`). Before, a release the page never received — a context
+    menu opened on press, a window switch mid-drag — left the thumb following a pointer with no
+    button down, and with the active colour that became a visibly stuck thumb. xterm.js ends its drag
+    the same way, on a move whose `buttons` no longer match the press (`globalPointerMoveMonitor.ts`).
+    It does not undo #814's inert drag through a hidden pane: that pointer still has its button down.
 - **The bit positions mirror `justerm_core::CellFlags`** — the renderer decodes the same word the
   engine packed, so a flag added on one side is a silent no-op on the other until both move.
 
@@ -70,7 +73,8 @@ this is what resolves it.
   crate draws itself** ([built-in block glyphs](builtin-block-glyphs.md))
 - `justerm-renderer/src/webgl.rs` — `set_palette`, `set_bg_alpha`, `set_bold_to_bright`,
   `set_minimum_contrast_ratio`, `set_selection_foreground`
-- `justerm-web/src/scrollbar.ts` — `thumbBackground`, `thumbState`, `SCROLLBAR_THUMB_ATTRIBUTE`: the
+- `justerm-web/src/scrollbar.ts` — `thumbBackground`, `thumbState`, `startsThumbDrag`, `dragStillHeld`,
+  `SCROLLBAR_THUMB_ATTRIBUTE`: the
   thumb's colour, the one piece of widget chrome a consumer themes
 
 ## Reference behaviour
@@ -115,10 +119,5 @@ leaving a reader to discover it.
   fidelity to xterm's implementation and nothing checks the nudge against the source. #577 pinned
   the neighbouring question — what both references do about a *translucent* background — which is
   what makes the remaining hole a narrower and more answerable one than it was.
-- **A scrollbar drag that never sees its `mouseup` stays held** (older than #926, which made it
-  visible as a stuck active colour). `Scrollbar` starts a drag on any button and ends it only on
-  `window` `mouseup`, so a release the page never receives — a context menu opened on press, a
-  window switch mid-drag — leaves the thumb following a buttonless pointer. Not measured: headless
-  Chromium opens no native menu.
 - **Three implementations of one colour encoding** — core, the wasm decoder, and this crate — held in
   lockstep by convention. Only the wire version gates any of it.

@@ -3046,7 +3046,8 @@ window.__scrollbarZeroBoxProbe = (): {
     finite: Number.isFinite(offset),
   });
   const move = (clientY: number): void => {
-    window.dispatchEvent(new MouseEvent("mousemove", { clientY, bubbles: true }));
+    // `buttons: 1`: the button is held throughout, and a move without it ends the drag (#926).
+    window.dispatchEvent(new MouseEvent("mousemove", { clientY, buttons: 1, bubbles: true }));
   };
 
   probeBar.update({ displayOffset: offset, scrollbackLen: scrollback, rows: ROWS });

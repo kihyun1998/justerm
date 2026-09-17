@@ -19,6 +19,17 @@ export function thumbState(hovered: boolean, dragging: boolean): ThumbState {
   return hovered ? "hover" : "rest";
 }
 
+/** Whether a `mousedown` with this `MouseEvent.button` starts a thumb drag: the primary button only. */
+export function startsThumbDrag(button: number): boolean {
+  return button === 0;
+}
+
+/** Whether a move with this `MouseEvent.buttons` continues a thumb drag: the primary button is still
+ * down. A move without it is a release the page never received. */
+export function dragStillHeld(buttons: number): boolean {
+  return (buttons & 1) === 1;
+}
+
 /**
  * The thumb's CSS `background-color` for a state (#926): a custom property per state, each falling back to
  * the previous state's, and `rest` to the default thumb colour.
@@ -240,7 +251,13 @@ export class Scrollbar {
     this.track.appendChild(this.thumb);
     parent.appendChild(this.track);
 
-    this.onMove = (e) => this.dragTo(e.clientY);
+    this.onMove = (e) => {
+      if (!dragStillHeld(e.buttons)) {
+        this.onUp();
+        return;
+      }
+      this.dragTo(e.clientY);
+    };
     this.onUp = () => {
       this.dragging = false;
       this.paintThumb();
@@ -248,6 +265,7 @@ export class Scrollbar {
       window.removeEventListener("mouseup", this.onUp);
     };
     this.thumb.addEventListener("mousedown", (e) => {
+      if (!startsThumbDrag(e.button)) return;
       e.preventDefault();
       this.dragging = true;
       this.paintThumb();

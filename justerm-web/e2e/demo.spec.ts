@@ -3363,6 +3363,24 @@ test("the scrollbar thumb takes its colour from its pane's custom properties, pe
   await page.mouse.up();
   expect((await read()).all.color, "released on the thumb, it is hovered").toBe("rgb(0, 255, 0)");
 
+  // A secondary-button press is not a drag.
+  await page.mouse.down({ button: "right" });
+  expect((await read()).all.color, "a right press does not start a drag").toBe("rgb(0, 255, 0)");
+  await page.mouse.up({ button: "right" });
+
+  // A release the page never received: the drag is held off the thumb, then a move arrives with no
+  // button down. It ends the drag rather than leaving the thumb active.
+  await page.mouse.down();
+  await page.mouse.move(at.all.x + 300, at.all.y, { steps: 4 });
+  expect((await read()).all.color).toBe("rgb(0, 0, 255)");
+  await page.evaluate(
+    ({ x, y }) =>
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: x, clientY: y, buttons: 0, bubbles: true })),
+    { x: at.all.x + 310, y: at.all.y },
+  );
+  expect((await read()).all.color, "a buttonless move ends the drag").toBe("rgb(255, 0, 0)");
+  await page.mouse.up();
+
   await page.evaluate(() => window.__thumbThemeProbe!.unmount());
 });
 
