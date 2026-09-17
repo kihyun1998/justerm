@@ -36,7 +36,7 @@ import {
   VERBOSE_ANNOUNCE_TEXT,
 } from "../src/index";
 import { FitController, composeRulerMarks, observeResize, searchRulerMarks } from "../src/index";
-import type { AccessiblePort, CursorStyle, SignalSink } from "../src/index";
+import type { AccessiblePort, CursorStyle, FontWeight, SignalSink } from "../src/index";
 import type {
   CellGeometry,
   FitInput,
@@ -73,6 +73,14 @@ const bootCursorContrast = bootParams.get("cursorContrast");
 const bootCursorColor = bootParams.get("cursorColor");
 // #927: the consumer's default caret shape, an option like `cursorThickness`.
 const bootCursorStyle = bootParams.get("cursorStyle") as CursorStyle | null;
+// #928: the two weights, options like `cursorStyle`. A digits-only value is passed as a number.
+const bootWeight = (key: string): FontWeight | undefined => {
+  const v = bootParams.get(key);
+  if (v === null) return undefined;
+  return /^\d+$/.test(v) ? Number(v) : (v as FontWeight);
+};
+const bootFontWeight = bootWeight("fontWeight");
+const bootFontWeightBold = bootWeight("fontWeightBold");
 // #908: a `Terminal` construction option, so it too is only reachable by booting with it set.
 const bootScrollSensitivity = bootParams.get("scrollSensitivity");
 
@@ -85,6 +93,8 @@ const renderer = await JustermRenderer.create({
   ...(bootLineHeight === null ? {} : { lineHeight: Number(bootLineHeight) }),
   ...(bootCursorThickness === null ? {} : { cursorThickness: Number(bootCursorThickness) }),
   ...(bootCursorStyle === null ? {} : { cursorStyle: bootCursorStyle }),
+  ...(bootFontWeight === undefined ? {} : { fontWeight: bootFontWeight }),
+  ...(bootFontWeightBold === undefined ? {} : { fontWeightBold: bootFontWeightBold }),
   theme: {
     ansi: [
       0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5, 0x7f7f7f,
@@ -321,6 +331,14 @@ const BLINK_ROW = 7;
 const BLINK_COL = 4;
 const BLINK_WIDTH = 3;
 const BLOCK_GLYPH = 0x2588;
+
+// #928: a run of regular `M` followed by a run of bold `M`, drawn only while `__fontWeightProbe` asks
+// for it. Row 9 is clear of the other probes' rows (0, 2, 5, 7).
+let weightText = false;
+const WEIGHT_ROW = 9;
+const WEIGHT_COL = 4;
+const WEIGHT_WIDTH = 4;
+const WEIGHT_GLYPH = 0x4d;
 
 // #577: the consumer's background opacity. Starts at `1` and the option is deliberately left OFF the
 // `create` call below, so the page boots in the state a widget with no configuration is in — which is
@@ -999,6 +1017,13 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
       const at = BLINK_ROW * COLS + BLINK_COL + i;
       codepoints[at] = BLOCK_GLYPH;
       flags[at] = renderer.cellFlags.blink;
+    }
+  }
+  if (weightText) {
+    for (let i = 0; i < 2 * WEIGHT_WIDTH; i++) {
+      const at = WEIGHT_ROW * COLS + WEIGHT_COL + i;
+      codepoints[at] = WEIGHT_GLYPH;
+      flags[at] = i < WEIGHT_WIDTH ? 0 : renderer.cellFlags.bold;
     }
   }
   return {
@@ -1732,6 +1757,7 @@ declare global {
     __bgAlphaProbe?: () => Promise<BgAlphaProbe>;
     __cursorPolicyProbe?: () => CursorPolicyProbe;
     __spacingProbe?: () => SpacingProbe;
+    __fontWeightProbe?: () => FontWeightProbe;
     __preeditProbe?: () => PreeditProbe;
     __preeditOriginProbe?: () => Promise<PreeditOriginProbe>;
     __scrolledPreeditProbe?: () => Promise<ScrolledPreeditProbe>;
@@ -1877,6 +1903,26 @@ interface CursorPolicyProbe {
      * `guardOn` again, and it goes red if `setTheme` pushes the field only when present. */
     guardReset: string;
   };
+}
+
+/** #928 — total red-channel ink of the regular run and of the bold run, and the device cell. */
+interface WeightSample {
+  regular: number;
+  bold: number;
+  cellW: number;
+  cellH: number;
+}
+
+/** #928 — the two weights, sampled across a change and back. */
+interface FontWeightProbe {
+  /** Before this probe touches a weight: what `create` applied. */
+  boot: WeightSample;
+  /** After `setFontWeightBold(100)`, read with no frame emitted — only the setter could present it. */
+  lightBold: WeightSample;
+  /** After `setFontWeight(900)` on top of that, again with no frame emitted. */
+  heavyRegular: WeightSample;
+  /** After both setters are handed the boot values back. */
+  restored: WeightSample;
 }
 
 /** #578 — the spacing knobs, sampled across a change and back. */
@@ -2524,6 +2570,50 @@ window.__bgAlphaProbe = async (): Promise<BgAlphaProbe> => {
   renderer.setBgAlpha(savedAlpha);
   render();
   return { defaultBg, defaultInk, translucentBg, translucentInk, liveNoFrame, restoredBg };
+};
+
+window.__fontWeightProbe = (): FontWeightProbe => {
+  // #928. Synchronous: the setters re-bake and present immediately, so no timer can interleave.
+  const gl = canvas.getContext("webgl2")!;
+  const inkOf = (col: number): number => {
+    const { width: cw, height: ch } = renderer.cellSize(); // device px
+    const w = Math.round(WEIGHT_WIDTH * cw);
+    const h = Math.round(ch);
+    const buf = new Uint8Array(w * h * 4);
+    const x = Math.round(col * cw);
+    const y = gl.drawingBufferHeight - Math.round((WEIGHT_ROW + 1) * ch); // readPixels counts from the bottom
+    gl.readPixels(x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i += 4) sum += buf[i]!;
+    return sum;
+  };
+  const sample = (): WeightSample => {
+    const cell = renderer.cellSize();
+    return {
+      regular: inkOf(WEIGHT_COL),
+      bold: inkOf(WEIGHT_COL + WEIGHT_WIDTH),
+      cellW: cell.width,
+      cellH: cell.height,
+    };
+  };
+
+  const savedText = weightText;
+  weightText = true;
+  render();
+  const boot = sample();
+
+  renderer.setFontWeightBold(100);
+  const lightBold = sample();
+  renderer.setFontWeight(900);
+  const heavyRegular = sample();
+
+  renderer.setFontWeight(bootFontWeight ?? "normal");
+  renderer.setFontWeightBold(bootFontWeightBold ?? "bold");
+  const restored = sample();
+
+  weightText = savedText;
+  render();
+  return { boot, lightBold, heavyRegular, restored };
 };
 
 window.__spacingProbe = (): SpacingProbe => {

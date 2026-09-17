@@ -2564,6 +2564,53 @@ test.describe("letterSpacing is CSS px, so its gap is density-independent (ADR-0
   });
 });
 
+// #928: regular and bold text drawn at the consumer's weights. Ink is a relationship (heavier than,
+// unchanged), never a count: the faces behind `monospace` differ by machine. What it needs is only that
+// the bold face carries more ink than the regular one, which the boot sample asserts first.
+test("the consumer sets the weight of regular and of bold text, live, without moving the cell (#928)", async ({
+  page,
+}) => {
+  await expect(page.getByRole("button", { name: "Letter spacing: 0px" })).toBeVisible();
+  const p = await page.evaluate(() => window.__fontWeightProbe!());
+  const cellOf = (s: { cellW: number; cellH: number }): string => `${s.cellW}x${s.cellH}`;
+
+  // Unset = as before: bold text is heavier than regular text, so the two runs actually painted.
+  expect(p.boot.regular).toBeGreaterThan(0);
+  expect(p.boot.bold).toBeGreaterThan(p.boot.regular);
+
+  // A lighter BOLD weight lightens bold text and leaves regular text exactly as it was — presented by
+  // the setter itself, since the probe emits no frame after it.
+  expect(p.lightBold.bold).toBeLessThan(p.boot.bold);
+  expect(p.lightBold.regular).toBe(p.boot.regular);
+
+  // A heavier REGULAR weight darkens regular text and leaves bold text at its own weight.
+  expect(p.heavyRegular.regular).toBeGreaterThan(p.boot.regular);
+  expect(p.heavyRegular.bold).toBe(p.lightBold.bold);
+
+  // Neither weight moves the cell: it is measured at `normal`, so no re-fit is owed.
+  for (const s of [p.lightBold, p.heavyRegular, p.restored]) expect(cellOf(s)).toBe(cellOf(p.boot));
+
+  expect(p.restored.regular).toBe(p.boot.regular);
+  expect(p.restored.bold).toBe(p.boot.bold);
+});
+
+// #928: the OPTION half, which only a boot can reach. Swapping the two weights at `create` swaps which
+// run is heavier — so this goes red if `create` drops either option, or passes them to the wrong slot.
+test.describe("fontWeight / fontWeightBold given at create reach the renderer (#928)", () => {
+  test.use({ bootUrl: "/?fontWeight=bold&fontWeightBold=400" });
+
+  test("booting with the weights swapped draws regular text heavier than bold", async ({ page }) => {
+    await expect(page.getByRole("button", { name: "Letter spacing: 0px" })).toBeVisible();
+    const p = await page.evaluate(() => window.__fontWeightProbe!());
+
+    expect(p.boot.bold).toBeGreaterThan(0);
+    expect(p.boot.regular).toBeGreaterThan(p.boot.bold);
+    // …and the probe's restore hands the BOOT weights back, not the defaults.
+    expect(p.restored.regular).toBe(p.boot.regular);
+    expect(p.restored.bold).toBe(p.boot.bold);
+  });
+});
+
 // #578: the OPTION half. `create` runs once per page load, so `letterSpacing`/`lineHeight` passed
 // there are only reachable by booting with them — and the claim is specifically that they are applied
 // BEFORE the first fit, so the initial grid is computed at the consumer's cell rather than at the
