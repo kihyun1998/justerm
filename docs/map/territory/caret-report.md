@@ -45,7 +45,9 @@ though one is derived from the other.
   carries only these scalars.
 - **DECSCUSR `0` means "the application has not spoken"**, not "steady block" — the difference
   matters because the consumer's own setting is the fallback for exactly that state. Since #927 the
-  engine holds the shape as `Option<CursorShape>`: `CSI 0 SP q`, DECSTR and RIS write `None`, and the
+  engine holds the shape as `Option<CursorShape>`: `CSI 0 SP q` (with or without the `0`), DECSTR and
+  RIS write `None` and turn the blink mode off — DECSTR's blink half since #927 too, as xterm and
+  xterm.js both reset it on a soft reset — and the
   wire carries `None` as its own byte (`0xFF`, v17). **An explicit `2` is a block, not unset** — the
   distinction the whole slice exists for.
 - **The consumer's default shape lives in the widget, not in core** (#927, a maintainer call).
