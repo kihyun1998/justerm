@@ -4,6 +4,42 @@ import type { RulerMark } from "./decorations";
  * contains it does not route a press or motion on it as one on the grid (#902). */
 export const SCROLLBAR_ATTRIBUTE = "data-justerm-scrollbar";
 
+/** The attribute a scrollbar's thumb carries, so a consumer can reach the thumb without relying on
+ * DOM order (#926). */
+export const SCROLLBAR_THUMB_ATTRIBUTE = "data-justerm-scrollbar-thumb";
+
+/** The thumb's interaction state: `active` while a drag it started is held, `hover` while the
+ * pointer is on it, `rest` otherwise. */
+export type ThumbState = "rest" | "hover" | "active";
+
+/** The thumb state for a pointer that is (or is not) on the thumb and a drag that is (or is not) held.
+ * A held drag is `active` wherever the pointer is. */
+export function thumbState(hovered: boolean, dragging: boolean): ThumbState {
+  if (dragging) return "active";
+  return hovered ? "hover" : "rest";
+}
+
+/**
+ * The thumb's CSS `background` for a state (#926): a custom property per state, each falling back to
+ * the previous state's, and `rest` to the default thumb colour.
+ *
+ * | state | property |
+ * |---|---|
+ * | `rest` | `--justerm-scrollbar-thumb` |
+ * | `hover` | `--justerm-scrollbar-thumb-hover` |
+ * | `active` | `--justerm-scrollbar-thumb-active` |
+ *
+ * Custom properties inherit, so a consumer sets them on any ancestor (a pane) and each scrollbar
+ * under it follows that ancestor.
+ */
+export function thumbBackground(state: ThumbState): string {
+  const rest = "var(--justerm-scrollbar-thumb, rgba(255,255,255,0.25))";
+  if (state === "rest") return rest;
+  const hover = `var(--justerm-scrollbar-thumb-hover, ${rest})`;
+  if (state === "hover") return hover;
+  return `var(--justerm-scrollbar-thumb-active, ${hover})`;
+}
+
 /** The viewport scroll position the scrollbar reads (from the decoded frame). */
 export interface ScrollPosition {
   /** Lines scrolled up from the bottom (0 = following the live screen). */
@@ -155,6 +191,8 @@ export class Scrollbar {
    * routinely (#440). */
   private readonly markEls: HTMLDivElement[] = [];
   private dragging = false;
+  /** Whether the pointer is on the thumb (`mouseenter` / `mouseleave`). */
+  private hovered = false;
   private readonly onMove: (e: globalThis.MouseEvent) => void;
   private readonly onUp: () => void;
 
@@ -184,12 +222,13 @@ export class Scrollbar {
       overflow: "hidden",
     } satisfies Partial<CSSStyleDeclaration>);
     this.thumb = document.createElement("div");
+    this.thumb.setAttribute(SCROLLBAR_THUMB_ATTRIBUTE, "");
     Object.assign(this.thumb.style, {
       position: "absolute",
       left: "2px",
       right: "2px",
       borderRadius: "4px",
-      background: "rgba(255,255,255,0.25)",
+      background: thumbBackground("rest"),
     } satisfies Partial<CSSStyleDeclaration>);
     this.track.appendChild(this.thumb);
     parent.appendChild(this.track);
@@ -197,15 +236,30 @@ export class Scrollbar {
     this.onMove = (e) => this.dragTo(e.clientY);
     this.onUp = () => {
       this.dragging = false;
+      this.paintThumb();
       window.removeEventListener("mousemove", this.onMove);
       window.removeEventListener("mouseup", this.onUp);
     };
     this.thumb.addEventListener("mousedown", (e) => {
       e.preventDefault();
       this.dragging = true;
+      this.paintThumb();
       window.addEventListener("mousemove", this.onMove);
       window.addEventListener("mouseup", this.onUp);
     });
+    this.thumb.addEventListener("mouseenter", () => {
+      this.hovered = true;
+      this.paintThumb();
+    });
+    this.thumb.addEventListener("mouseleave", () => {
+      this.hovered = false;
+      this.paintThumb();
+    });
+  }
+
+  /** Write the thumb's background for its current {@link thumbState}. */
+  private paintThumb(): void {
+    this.thumb.style.background = thumbBackground(thumbState(this.hovered, this.dragging));
   }
 
   /** Re-size/position the thumb from the frame's scroll position. */
