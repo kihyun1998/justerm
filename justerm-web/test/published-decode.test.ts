@@ -13,7 +13,7 @@
  *
  * ## The fixture
  *
- * `fixtures/frame-wire-v16.jt` is bytes, checked in rather than generated here, because neither CI
+ * `fixtures/frame-wire-v17.jt` is bytes, checked in rather than generated here, because neither CI
  * job that runs this package installs Rust (`.github/workflows/test.yml:156`, `:188` — the `web`
  * job's own comment says it "needs no Rust"). They come from a real `Engine`:
  *
@@ -36,13 +36,15 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { asU16, asU32, damageHeader, retainU32 } from "../src/justerm-renderer";
+import { MouseEvents } from "../src/input";
 import { osc8Links } from "../src/links";
+import { MarkerKind } from "../src/markers";
 import type { DecodedFrame } from "../src/types";
 
-/** The wire version `fixtures/frame-wire-v16.jt` was produced at. Regenerated with the
- * engine each time the wire moves — v14 -> v16 here (#490), where the decoder started
- * rejecting the old bytes outright, which is the version check doing its job. */
-const FIXTURE_WIRE_VERSION = 16;
+/** The wire version `fixtures/frame-wire-v17.jt` was produced at. Regenerated with the
+ * engine each time the wire moves — v14 -> v16 (#490), then v16 -> v17 (#927), where the
+ * decoder started rejecting the old bytes outright, which is the version check doing its job. */
+const FIXTURE_WIRE_VERSION = 17;
 
 const decoder = await import("justerm-wasm-decode");
 
@@ -70,6 +72,12 @@ describe("a frame the published decoder produced", () => {
     // throw `BadVersion` below and every expectation would read as a mystery. Regenerate the
     // fixture with the example named in this file's header and rename it to the new version.
     expect(decoder.wireVersion()).toBe(FIXTURE_WIRE_VERSION);
+  });
+
+  it("reports no caret shape when the application set none, so the consumer's default draws (#927)", () => {
+    // The fixture's input carries no DECSCUSR. A decoder before wire v17 answered `0` here, which
+    // `resolveCursorShape` reads as the application choosing a block, so `cursorStyle` never drew.
+    expect(decodeFixture().cursorShape).toBeUndefined();
   });
 
   it("carries what the engine printed", () => {
@@ -177,6 +185,31 @@ describe("a frame the published decoder produced", () => {
         ],
       },
     ]);
+  });
+
+  it("the hand-kept MarkerKind carries the decoder's number under every name (#885)", () => {
+    const names = Object.keys(MarkerKind).filter((k) => Number.isNaN(Number(k)));
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) {
+      const local = MarkerKind[name as keyof typeof MarkerKind];
+      const published = decoder.MarkerKind[name as keyof typeof decoder.MarkerKind];
+      expect([name, published]).toEqual([name, local]);
+      expect(decoder.markerKind(local)).toBe(published);
+    }
+  });
+
+  it("the hand-kept MouseEvents bits are the decoder's (#885)", () => {
+    const bits = decoder.mouseEventBits();
+    try {
+      const names = Object.keys(MouseEvents) as (keyof typeof MouseEvents)[];
+      expect(names.length).toBeGreaterThan(0);
+      for (const name of names) {
+        const key = (name.charAt(0).toLowerCase() + name.slice(1)) as Uncapitalize<typeof name>;
+        expect([name, bits[key]]).toEqual([name, MouseEvents[name]]);
+      }
+    } finally {
+      bits.free();
+    }
   });
 
   it("puts only the trailing marks in sideTable, leaving the base character in codepoints", () => {
