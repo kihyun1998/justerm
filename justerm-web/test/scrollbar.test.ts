@@ -1,6 +1,64 @@
 import { describe, expect, it } from "vitest";
-import { dragToDisplayOffset, dragTrackRatio, rulerMarkHeightPx, scrollbarMetrics } from "../src/scrollbar";
+import {
+  dragStillHeld,
+  dragToDisplayOffset,
+  dragTrackRatio,
+  rulerMarkHeightPx,
+  scrollbarMetrics,
+  startsThumbDrag,
+  thumbBackground,
+  thumbState,
+} from "../src/scrollbar";
 import type { RulerMark } from "../src/decorations";
+
+describe("SCROLLBAR_THUMB_ATTRIBUTE (#926)", () => {
+  it("is published from the package entry with its documented value", async () => {
+    // Through the entry point, so dropping the export reddens too; the literal is what a consumer
+    // hard-codes.
+    const { SCROLLBAR_THUMB_ATTRIBUTE } = await import("../src/index");
+    expect(SCROLLBAR_THUMB_ATTRIBUTE).toBe("data-justerm-scrollbar-thumb");
+  });
+});
+
+describe("thumb drag buttons (#926)", () => {
+  it("starts a drag on the primary button only", () => {
+    expect(startsThumbDrag(0)).toBe(true);
+    expect(startsThumbDrag(1)).toBe(false); // middle
+    expect(startsThumbDrag(2)).toBe(false); // secondary: a context menu may swallow its release
+  });
+
+  it("holds a drag only while a move still reports the primary button down", () => {
+    expect(dragStillHeld(1)).toBe(true);
+    expect(dragStillHeld(1 | 2)).toBe(true); // secondary pressed as well
+    // A release the page never received: the pointer moves with no button held.
+    expect(dragStillHeld(0)).toBe(false);
+    expect(dragStillHeld(2)).toBe(false);
+  });
+});
+
+describe("thumbState (#926)", () => {
+  it("is rest, hover, or active — and a drag stays active off the thumb", () => {
+    expect(thumbState(false, false)).toBe("rest");
+    expect(thumbState(true, false)).toBe("hover");
+    expect(thumbState(true, true)).toBe("active");
+    // The pointer leaves the thumb mid-drag: the `window` listeners still own the drag.
+    expect(thumbState(false, true)).toBe("active");
+  });
+});
+
+describe("thumbBackground (#926)", () => {
+  const REST = "var(--justerm-scrollbar-thumb, rgba(255,255,255,0.25))";
+
+  it("reads the rest colour from a custom property, with the pre-#926 colour as fallback", () => {
+    expect(thumbBackground("rest")).toBe(REST);
+  });
+
+  it("falls back hover → rest and active → hover, so an unset state looks like the one before it", () => {
+    const HOVER = `var(--justerm-scrollbar-thumb-hover, ${REST})`;
+    expect(thumbBackground("hover")).toBe(HOVER);
+    expect(thumbBackground("active")).toBe(`var(--justerm-scrollbar-thumb-active, ${HOVER})`);
+  });
+});
 
 describe("scrollbarMetrics", () => {
   // Thumb geometry from the frame's scroll position, mirroring xterm Viewport

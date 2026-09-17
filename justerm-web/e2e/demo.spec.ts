@@ -3306,6 +3306,85 @@ test("a scrollbar drag that outlives its track's box requests nothing (#814)", a
 });
 
 /**
+ * #926 — the thumb's colour comes from custom properties inherited from each pane, per state, with
+ * a real pointer driving hover and drag.
+ *
+ * Three panes on one page: every state property set, only the rest one set, none set. Each must
+ * resolve its own ancestor's values — the xterm.js defect this avoids is one pane's theme painting
+ * every pane. `unset` is the control that today's colour survives for a consumer that sets nothing.
+ */
+test("the scrollbar thumb takes its colour from its pane's custom properties, per state (#926)", async ({
+  page,
+}) => {
+  const at = await page.evaluate(() => window.__thumbThemeProbe!.mount());
+  const read = () => page.evaluate(() => window.__thumbThemeProbe!.read());
+  const WHITE_25 = "rgba(255, 255, 255, 0.25)";
+
+  const rest = await read();
+  expect(rest.all.tagged, "the thumb is reachable by its attribute").toBe(1);
+  // The literal a consumer's stylesheet hard-codes, not the constant the probe imports.
+  expect(await page.locator("[data-justerm-scrollbar-thumb]").count()).toBeGreaterThanOrEqual(3);
+  // A stylesheet reaching the thumb by that attribute keeps every background property but the
+  // colour: the widget writes `background-color`, not the `background` shorthand that resets the rest.
+  await page.addStyleTag({ content: "[data-justerm-scrollbar-thumb] { background-clip: content-box; }" });
+  expect(
+    await page.locator("[data-justerm-scrollbar-thumb]").first().evaluate((el) => getComputedStyle(el).backgroundClip),
+  ).toBe("content-box");
+  expect(rest.all.color).toBe("rgb(255, 0, 0)");
+  expect(rest.restOnly.color).toBe("rgb(200, 100, 0)");
+  expect(rest.unset.color).toBe(WHITE_25);
+
+  // Hover each thumb with a real pointer. Only the hovered one changes.
+  await page.mouse.move(at.all.x, at.all.y);
+  const hoverAll = await read();
+  expect(hoverAll.all.color).toBe("rgb(0, 255, 0)");
+  expect(hoverAll.restOnly.color, "a pane not under the pointer stays at rest").toBe("rgb(200, 100, 0)");
+
+  await page.mouse.move(at.restOnly.x, at.restOnly.y);
+  const hoverRestOnly = await read();
+  expect(hoverRestOnly.all.color, "leaving the thumb returns it to rest").toBe("rgb(255, 0, 0)");
+  expect(hoverRestOnly.restOnly.color, "an unset hover falls back to rest").toBe("rgb(200, 100, 0)");
+
+  await page.mouse.move(at.unset.x, at.unset.y);
+  expect((await read()).unset.color, "a consumer that sets nothing keeps today's thumb").toBe(WHITE_25);
+
+  // Drag the `all` thumb, then carry the pointer off it sideways: the drag still holds.
+  await page.mouse.move(at.all.x, at.all.y);
+  await page.mouse.down();
+  expect((await read()).all.color).toBe("rgb(0, 0, 255)");
+  await page.mouse.move(at.all.x + 300, at.all.y, { steps: 4 });
+  expect((await read()).all.color, "a drag off the thumb stays active").toBe("rgb(0, 0, 255)");
+  await page.mouse.up();
+  expect((await read()).all.color, "released off the thumb, it is at rest").toBe("rgb(255, 0, 0)");
+
+  // Released while ON the thumb, it is hovered rather than at rest.
+  await page.mouse.move(at.all.x, at.all.y);
+  await page.mouse.down();
+  await page.mouse.up();
+  expect((await read()).all.color, "released on the thumb, it is hovered").toBe("rgb(0, 255, 0)");
+
+  // A secondary-button press is not a drag.
+  await page.mouse.down({ button: "right" });
+  expect((await read()).all.color, "a right press does not start a drag").toBe("rgb(0, 255, 0)");
+  await page.mouse.up({ button: "right" });
+
+  // A release the page never received: the drag is held off the thumb, then a move arrives with no
+  // button down. It ends the drag rather than leaving the thumb active.
+  await page.mouse.down();
+  await page.mouse.move(at.all.x + 300, at.all.y, { steps: 4 });
+  expect((await read()).all.color).toBe("rgb(0, 0, 255)");
+  await page.evaluate(
+    ({ x, y }) =>
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: x, clientY: y, buttons: 0, bubbles: true })),
+    { x: at.all.x + 310, y: at.all.y },
+  );
+  expect((await read()).all.color, "a buttonless move ends the drag").toBe("rgb(255, 0, 0)");
+  await page.mouse.up();
+
+  await page.evaluate(() => window.__thumbThemeProbe!.unmount());
+});
+
+/**
  * #819 (#815 site 4) — a selection drag that outlives its element's box.
  *
  * Two arms, one page, and the ONLY difference between them is whether the consumer's

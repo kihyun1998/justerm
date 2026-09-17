@@ -23,6 +23,7 @@ import {
   LinkController,
   MarkerKind,
   MouseEvents,
+  SCROLLBAR_THUMB_ATTRIBUTE,
   Scrollbar,
   ScreenReaderState,
   SearchController,
@@ -1754,6 +1755,11 @@ declare global {
       shown: ScrollbarDragStep;
       selfHidden: ScrollbarDragStep;
     };
+    __thumbThemeProbe?: {
+      mount: () => Record<ThumbPane, { x: number; y: number }>;
+      read: () => Record<ThumbPane, ThumbReading>;
+      unmount: () => void;
+    };
     __geometryOriginProbe?: () => {
       silent: OriginDragArm;
       declares: OriginDragArm;
@@ -3040,7 +3046,8 @@ window.__scrollbarZeroBoxProbe = (): {
     finite: Number.isFinite(offset),
   });
   const move = (clientY: number): void => {
-    window.dispatchEvent(new MouseEvent("mousemove", { clientY, bubbles: true }));
+    // `buttons: 1`: the button is held throughout, and a move without it ends the drag (#926).
+    window.dispatchEvent(new MouseEvent("mousemove", { clientY, buttons: 1, bubbles: true }));
   };
 
   probeBar.update({ displayOffset: offset, scrollbackLen: scrollback, rows: ROWS });
@@ -3076,6 +3083,73 @@ window.__scrollbarZeroBoxProbe = (): {
   pane.remove();
   return { trackWasVisible, before, dragged, hidden, shown, selfHidden };
 };
+
+/** The three panes of {@link window.__thumbThemeProbe}: every state property set, only the rest one
+ * set, and none set. */
+type ThumbPane = "all" | "restOnly" | "unset";
+
+/** One pane's thumb, as the browser resolved it (#926). */
+interface ThumbReading {
+  /** `getComputedStyle(thumb).backgroundColor`. */
+  color: string;
+  /** How many elements under the pane carry `SCROLLBAR_THUMB_ATTRIBUTE`. */
+  tagged: number;
+}
+
+/**
+ * #926 — side-by-side scrollbars whose thumbs take their colour from custom properties set on each
+ * pane. `mount` returns each thumb's centre in client px so the spec drives a real pointer over it;
+ * `read` reports what the browser resolved.
+ */
+window.__thumbThemeProbe = (() => {
+  const panes: Partial<Record<ThumbPane, { pane: HTMLElement; bar: Scrollbar }>> = {};
+  const vars: Record<ThumbPane, Record<string, string>> = {
+    all: {
+      "--justerm-scrollbar-thumb": "rgb(255, 0, 0)",
+      "--justerm-scrollbar-thumb-hover": "rgb(0, 255, 0)",
+      "--justerm-scrollbar-thumb-active": "rgb(0, 0, 255)",
+    },
+    restOnly: { "--justerm-scrollbar-thumb": "rgb(200, 100, 0)" },
+    unset: {},
+  };
+  const order: ThumbPane[] = ["all", "restOnly", "unset"];
+  const thumbOf = (name: ThumbPane): HTMLElement =>
+    panes[name]!.pane.querySelector<HTMLElement>(`[${SCROLLBAR_THUMB_ATTRIBUTE}]`)!;
+  return {
+    mount: () => {
+      const centres = {} as Record<ThumbPane, { x: number; y: number }>;
+      order.forEach((name, i) => {
+        const pane = document.createElement("div");
+        pane.style.cssText = `position:fixed;top:40px;left:${80 + i * 60}px;width:14px;height:300px;z-index:1000;`;
+        for (const [k, v] of Object.entries(vars[name])) pane.style.setProperty(k, v);
+        document.body.appendChild(pane);
+        const bar = new Scrollbar(pane, { onScroll: () => {} });
+        bar.update({ displayOffset: 0, scrollbackLen: 60, rows: ROWS });
+        panes[name] = { pane, bar };
+        const r = thumbOf(name).getBoundingClientRect();
+        centres[name] = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      });
+      return centres;
+    },
+    read: () => {
+      const out = {} as Record<ThumbPane, ThumbReading>;
+      for (const name of order) {
+        out[name] = {
+          color: getComputedStyle(thumbOf(name)).backgroundColor,
+          tagged: panes[name]!.pane.querySelectorAll(`[${SCROLLBAR_THUMB_ATTRIBUTE}]`).length,
+        };
+      }
+      return out;
+    },
+    unmount: () => {
+      for (const name of order) {
+        panes[name]?.bar.dispose();
+        panes[name]?.pane.remove();
+        delete panes[name];
+      }
+    },
+  };
+})();
 
 /** One reading of a selection drag that may have outlived its element's box (#815). */
 interface OriginDragStep {

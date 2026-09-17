@@ -232,13 +232,11 @@ export interface JustermRendererOptions {
    * returns `0.` only for the named background colour), and it is what keeps coloured output
    * readable over an arbitrary desktop.
    *
-   * **Widget chrome is not alpha-aware.** The scrollbar thumb is a translucent white
+   * **Widget chrome is not alpha-aware.** The scrollbar thumb defaults to a translucent white
    * (`rgba(255,255,255,0.25)`) over a track with no background of its own, which reads well against
-   * an opaque terminal and may not against a light desktop showing through at a low `bgAlpha`. Left
-   * as-is deliberately rather than fixed blind: no reference can arbitrate it (xterm.js uses the
-   * browser's native scrollbar; alacritty and ghostty draw no DOM chrome at all), and the failure
-   * needs a combination — low alpha, a transparent page, a light backdrop — that nobody has actually
-   * hit. If you build that combination, restyle the scrollbar from your side.
+   * an opaque terminal and may not against a light desktop showing through at a low `bgAlpha`. If you
+   * build that combination, set the thumb's colour from your side through the
+   * `--justerm-scrollbar-thumb` custom properties that `Scrollbar` reads.
    *
    * Deliberately here rather than on {@link Theme}, though an alpha is the closest thing on this
    * roster to a colour: it changes no palette entry, only how much of what is behind shows through.

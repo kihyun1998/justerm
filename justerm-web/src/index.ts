@@ -89,7 +89,13 @@ export { BLINK_IDLE_TIMEOUT, BLINK_INTERVAL, CursorBlink } from "./cursor";
 // SGR 5 text blink phase (#576) — the caret's sibling policy, on its own clock and off by default.
 export { TextBlink } from "./text-blink";
 // Scrollbar — custom DOM slider over the canvas (thumb math + drag → offset).
-export { dragToDisplayOffset, dragTrackRatio, Scrollbar, scrollbarMetrics } from "./scrollbar";
+export {
+  dragToDisplayOffset,
+  dragTrackRatio,
+  SCROLLBAR_THUMB_ATTRIBUTE,
+  Scrollbar,
+  scrollbarMetrics,
+} from "./scrollbar";
 export type { ScrollbarMetrics, ScrollbarOptions, ScrollPosition } from "./scrollbar";
 // Selection — drag → engine selection commands (SelectionPort, the write-side
 // sibling of FrameSource), drag-scroll, alt-click cursor move, copy, primary.
