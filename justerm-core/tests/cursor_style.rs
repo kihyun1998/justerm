@@ -18,7 +18,10 @@ fn cursor_shape_is_unset_until_the_application_speaks_and_round_trips() {
     let mut t = Engine::new(80, 24);
     t.feed(b"\x1b[?12h");
     let frame = t.frame();
-    assert_eq!(frame.cursor_shape, None, "no DECSCUSR yet: the consumer's default applies (#927)");
+    assert_eq!(
+        frame.cursor_shape, None,
+        "no DECSCUSR yet: the consumer's default applies (#927)"
+    );
     // The cursor-style fields survive the wire round-trip, unset included.
     let decoded = decode(&encode(&frame)).expect("decode");
     assert_eq!(decoded.cursor_shape, frame.cursor_shape);
@@ -26,7 +29,10 @@ fn cursor_shape_is_unset_until_the_application_speaks_and_round_trips() {
     for shape in [CursorShape::Block, CursorShape::Underline, CursorShape::Bar] {
         let mut f = frame.clone();
         f.cursor_shape = Some(shape);
-        assert_eq!(decode(&encode(&f)).expect("decode").cursor_shape, Some(shape));
+        assert_eq!(
+            decode(&encode(&f)).expect("decode").cursor_shape,
+            Some(shape)
+        );
     }
 }
 
@@ -82,7 +88,10 @@ fn unset_rides_as_its_own_byte_and_a_hollow_block_id_is_rejected() {
     assert_eq!(bytes[SHAPE_BYTE], 0xFF, "unset is 0xFF on the wire (#927)");
     // 3 is the renderer's HollowBlock id and no core shape: a frame carrying it is malformed.
     bytes[SHAPE_BYTE] = 3;
-    assert!(matches!(decode(&bytes), Err(justerm_core::DecodeError::BadTag)));
+    assert!(matches!(
+        decode(&bytes),
+        Err(justerm_core::DecodeError::BadTag)
+    ));
 }
 
 #[test]

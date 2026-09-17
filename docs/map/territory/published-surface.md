@@ -99,9 +99,11 @@ How a version gets there is [release](release.md).
     live*; whether it is a set or a choice decides *what shape they take*.
     The web half — gating `input.ts` against the published constants — waits on the same pin bump
     as the marker kind's, and both land in one slice.
-  - **`cursorShape`'s three names and `kind`'s two** live only in prose, but the roster was never
-    copied into a consumer as *values*: `justerm-web` mirrors them as a comment and passes the
-    number through. Weaker instance, same class.
+  - **`cursorShape`'s three names and `kind`'s two** live only in prose. `kind`'s roster was never
+    copied into a consumer as *values*. **`cursorShape`'s now is** (#927): `justerm-web`'s
+    `CURSOR_STYLE_SHAPE` maps `block`/`underline`/`bar` to `0`/`1`/`2` to resolve the consumer's
+    default under an unset application shape, and nothing checks that table against the decoder.
+    The same class as `flags()`, at three members.
 - **What the named form buys is a roster that is enumerated rather than restated** — this section's
   own thesis, one surface up. The prose mapping ships *verbatim* into the published `.d.ts`, where
   nothing checks it and nothing can rewrite it.

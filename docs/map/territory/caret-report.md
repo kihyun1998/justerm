@@ -20,7 +20,7 @@ though one is derived from the other.
 
 ## Design model
 
-- **Mode, never phase.** `visible` (DEC ?25), `shape` (DECSCUSR, `Block` by default) and `blink`
+- **Mode, never phase.** `visible` (DEC ?25), `shape` (DECSCUSR, **unset** by default) and `blink`
   (att610 ?12) are *state*. The blink phase — the actual on/off animation — is the consumer's, and
   the engine has no timer.
   **This is not a caret rule** — it is ADR-0017's split applied to time-varying presentation, and it
@@ -44,11 +44,34 @@ though one is derived from the other.
   entirely the renderer's choice, and the family renderer draws it as an overlay while the wire
   carries only these scalars.
 - **DECSCUSR `0` means "the application has not spoken"**, not "steady block" — the difference
-  matters because the consumer's own setting is the fallback for exactly that state.
+  matters because the consumer's own setting is the fallback for exactly that state. Since #927 the
+  engine holds the shape as `Option<CursorShape>`: `CSI 0 SP q`, DECSTR and RIS write `None`, and the
+  wire carries `None` as its own byte (`0xFF`, v17). **An explicit `2` is a block, not unset** — the
+  distinction the whole slice exists for.
+- **The consumer's default shape lives in the widget, not in core** (#927, a maintainer call).
+  `JustermRendererOptions.cursorStyle` / `setCursorStyle` resolve `appShape ?? style` beside
+  `cursorBlink`. It was decided against the other placement — `Term` holding the default and
+  resolving it, as alacritty and ghostty do — on ADR-0017 (a default shape is neither VT-parsed nor a
+  whole-buffer computation) and on the first consumer's cost (penterm's `cursorBlink` path already
+  reaches the renderer; nothing of its settings reaches its Rust `Engine`). **What the decision gave
+  up**: a DECRQSS ` q` reply in core cannot report the drawn shape, because core never learns the
+  default. No such reply exists today. **The precedence runs opposite to blink's**: blink's consumer
+  setting forces over the application (#575), shape's is a fallback under it.
+- **Leaving the alternate screen restores the shape from before it — deliberately unlike every
+  reference** (#927, a maintainer call on a capture). `saved_cursor` is the whole `Cursor`, so the
+  override rides the 1049 save; xterm, alacritty and xterm.js all keep the style outside the saved
+  cursor. The reason is measured: nvim under `TERM=xterm-256color` emits both of its `CSI 2 SP q`
+  (terminfo `Se=\E[2 q`) **inside** the alternate screen (bytes 202 and 246, between `?1049h` at 112
+  and `?1049l` at 287), so restoring on leave is what returns the consumer's default after nvim
+  exits. Moving the override off `Cursor` to match the references would pin a block there. A program
+  that resets the shape *outside* the alternate screen with `2` still pins a block — the same thing
+  an xterm.js pane shows, since `2` is explicit there too.
 
 ## Code
 
 - `justerm-core/src/cursor.rs` — `CursorShape`, and `Cursor`'s `visible` / `shape` / `blink`
+- `justerm-web/src/justerm-renderer.ts` — `resolveCursorShape`, `JustermRenderer.setCursorStyle`: the
+  consumer's default shape under an unset application shape
 - `justerm-core/src/serialize.rs` — `Frame`'s `cursor_row` / `cursor_col` / `cursor_visible` /
   `cursor_shape` / `cursor_blink`
 - `justerm-core/src/term.rs` — `Term::frame` (the `display_offset == 0` gate), `Term::frame_damage`
@@ -66,6 +89,9 @@ at a recorded SHA; a paraphrase drops the pin).
   the three-state. justerm follows alacritty's placement because it is what ADR-0017 implies and it
   needs no wire change. Also records that `CSI ?12 h/l` is ignored in xterm.js unless a quirk is
   enabled, because it writes the *user's* option rather than the application channel
+- [The caret's default shape](../../agents/reference-facts.md#the-carets-default-shape--where-it-lives-and-what-resets-to-it-927-verified-2026-09-17)
+  — three of four references keep the default in the terminal layer, xterm's `0` is a blinking block
+  rather than the default, and the nvim capture that kept the 1049 restore
 - [Text blink — SGR 5](../../agents/reference-facts.md#text-blink--sgr-5-576-verified-2026-07-29)
   — the sibling clock, and a **negative result** worth reading before assuming a default: only one of
   the three references animates blinking text at all, and it ships the interval defaulting to `0`.
@@ -97,3 +123,10 @@ at a recorded SHA; a paraphrase drops the pin).
   documentation owns it.
 - **`justerm-web/src/cursor.ts` is the only consumer half mapped anywhere**, and it is named here
   rather than in a note of its own — the renderer and web widget have no territories yet.
+- **What `0` means is a real split, settled by the #927 direction rather than by the spec proxy.**
+  xterm makes `CSI 0 SP q` a blinking block; the three implementations make it "the default". The
+  blink half keeps today's value — `0` turns the application's blink mode off — which matches
+  neither xterm (blinking) nor xterm.js (back to the user's option).
+- **The dispatcher folds an absent DECSCUSR parameter to `1`** (a blinking block), not to the reset,
+  as xterm.js does (`params.length === 0 ? 1`). Whether `vte` reports `CSI SP q` as absent or as an
+  explicit `0` was not measured, and #927 did not revisit it.
