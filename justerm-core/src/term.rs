@@ -3139,7 +3139,7 @@ impl Term {
     fn soft_reset(&mut self) {
         self.cursor.visible = true;
         self.cursor.pen = Pen::default();
-        self.cursor.shape = None; // xterm resets the caret shape on DECSTR as on RIS (#927)
+        self.cursor.shape = None; // the application's caret shape is cleared (#927)
         self.scroll_top = 0;
         self.scroll_bottom = self.grid.rows() - 1;
         self.origin_mode = false;

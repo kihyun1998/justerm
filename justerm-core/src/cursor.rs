@@ -51,7 +51,7 @@ impl Pen {
 /// one crate over.
 ///
 /// What actually decides it is that **this enum is mapped onto wire values by a
-/// `match` outside this crate** — `justerm-wasm-decode/src/lib.rs:198` turns each
+/// `match` outside this crate** — `justerm-wasm-decode/src/lib.rs:199` turns each
 /// member into an int for the frame header. Marking it non-exhaustive would force
 /// a `_` arm there, converting a future compile error into a silently wrong wire
 /// value. That is the same construct that reddened `cargo test --workspace` for

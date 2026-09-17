@@ -66,6 +66,11 @@ though one is derived from the other.
   exits. Moving the override off `Cursor` to match the references would pin a block there. A program
   that resets the shape *outside* the alternate screen with `2` still pins a block — the same thing
   an xterm.js pane shows, since `2` is explicit there too.
+  **The decision covered 1049 only; the same save reaches two cases nobody ruled on.** `?1048h/l`
+  goes through the same `save_alt_cursor` / `restore_alt_cursor`, so it restores the shape as well,
+  while DECSC/DECRC (`SavedCursor`) do not carry it — two "save cursor" verbs that disagree, true
+  since #89. And DECSTR clears `cursor.shape` but not `saved_cursor`, so a shape set before
+  `?1049h` returns at `?1049l` even when a DECSTR ran in between.
 
 ## Code
 

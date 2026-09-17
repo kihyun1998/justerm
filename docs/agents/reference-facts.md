@@ -386,7 +386,7 @@ row that decided a neighbour the other way is the measured one at the bottom.
 | ⚠ **The spec proxy disagrees on `0`**: `DEFAULT` and `DEFAULT_STYLE` fall through to `BLINK_BLOCK` — a *blinking block*, not the user's default | xterm | `charproc.c:4945-4962` (`CASE_DECSCUSR`) |
 | RIS **and DECSTR** return the shape to the user's resources (`cursorUnderline` / `cursorBar`) — both go through `VTReset`, and `ReallyReset` runs `InitCursorShape` before its `full` branch | xterm | `charproc.c:6143-6150` (the two cases), `:14340`, macro at `:10313` |
 | DECRQSS ` q` reports the drawn shape | xterm | `misc.c:4932-4942` |
-| ⚠ **Measured, not read (VM, `TERM=xterm-256color`, NVIM v0.8.0 `--clean +q`, 2026-09-17)**: terminfo gives `Se=\E[2 q` — an explicit steady block, not `0`. nvim emitted `CSI 2 SP q` twice, at bytes 202 and 246, **both inside** the alternate screen (`?1049h` at 112, `?1049l` at 287). vim 8.2 `--clean` emitted no DECSCUSR at all | nvim / terminfo | capture `/tmp/n927.cap` on the VM; positive control: the same `grep` found the sequence |
+| ⚠ **Measured, not read (VM, `TERM=xterm-256color`, NVIM v0.8.0 `--clean +q`, 2026-09-17)**: terminfo gives `Se=\E[2 q` — an explicit steady block, not `0`. nvim emitted `CSI 2 SP q` twice, at bytes 202 and 246, **both inside** the alternate screen (`?1049h` at 112, `?1049l` at 287). vim 8.2 `--clean` emitted no DECSCUSR at all | nvim / terminfo | not retained; reproduce on the VM with `script -q -c "nvim --clean +q" out.cap` then `grep -aob "1049[hl]\|2 q" out.cap`, and `infocmp -x xterm-256color` for `Se` |
 
 ### A device-pixel-ratio change — who notices, and what they do about it (#325, verified 2026-08-10)
 

@@ -193,7 +193,7 @@ export interface JustermRendererOptions {
    * default, `0.15` (alacritty's `cursor.thickness`, `alacritty/src/config/cursor.rs:31`).
    *
    * **A block ignores it.** A block cursor recolours its cell and draws no stroke, so this changes
-   * nothing for the default shape — set a bar/underline/hollow shape (DECSCUSR) to see it.
+   * nothing for a block — a bar or underline (DECSCUSR, or {@link cursorStyle}) shows it.
    *
    * A *fraction*, not a length, because the renderer resolves it as
    * `(frac * cell_w).round().max(1)` device px — so it tracks dpr **and** font size. That is

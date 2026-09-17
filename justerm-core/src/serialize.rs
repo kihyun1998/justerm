@@ -199,7 +199,7 @@ pub struct MarkerId(pub u32);
 ///
 /// Measured over `justerm-wasm-decode/src` — the published encoder, and the only
 /// place the boundary bites — that is **four**: [`crate::CursorShape`]
-/// (`lib.rs:198`), [`FrameKind`] (`:192`), this one (`:233`), and
+/// (`lib.rs:199`), [`FrameKind`] (`:192`), this one (`:233`), and
 /// [`crate::UnderlineStyle`], which joined when #831 gave the style a name on the
 /// published surface. Every other public enum has zero such sites, so no other
 /// call turns on this rule.
