@@ -20,7 +20,7 @@ export function thumbState(hovered: boolean, dragging: boolean): ThumbState {
 }
 
 /**
- * The thumb's CSS `background` for a state (#926): a custom property per state, each falling back to
+ * The thumb's CSS `background-color` for a state (#926): a custom property per state, each falling back to
  * the previous state's, and `rest` to the default thumb colour.
  *
  * | state | property |
@@ -178,9 +178,12 @@ export interface ScrollbarOptions {
  * `update(pos)` sizes/positions the thumb from {@link scrollbarMetrics}; dragging
  * maps to a display offset via {@link dragToDisplayOffset} and calls `onScroll`.
  *
- * The thumb carries {@link SCROLLBAR_THUMB_ATTRIBUTE} and paints the colour
- * {@link thumbBackground} names for its state — `--justerm-scrollbar-thumb`, `-hover` and
- * `-active`, set by the consumer on any ancestor.
+ * The thumb carries {@link SCROLLBAR_THUMB_ATTRIBUTE}, and its `background-color` is read from
+ * custom properties the consumer sets on any ancestor: `--justerm-scrollbar-thumb` at rest,
+ * `--justerm-scrollbar-thumb-hover` with the pointer on it, `--justerm-scrollbar-thumb-active` while
+ * a drag it started is held. An unset state falls back to the one before it, and an unset rest
+ * colour to `rgba(255,255,255,0.25)`. Only the colour is inline-set this way; the other background
+ * properties are left to the consumer's stylesheet.
  *
  * Browser-only glue — not unit-tested; the geometry it calls is.
  */
@@ -232,7 +235,7 @@ export class Scrollbar {
       left: "2px",
       right: "2px",
       borderRadius: "4px",
-      background: thumbBackground("rest"),
+      backgroundColor: thumbBackground("rest"),
     } satisfies Partial<CSSStyleDeclaration>);
     this.track.appendChild(this.thumb);
     parent.appendChild(this.track);
@@ -263,7 +266,7 @@ export class Scrollbar {
 
   /** Write the thumb's background for its current {@link thumbState}. */
   private paintThumb(): void {
-    this.thumb.style.background = thumbBackground(thumbState(this.hovered, this.dragging));
+    this.thumb.style.backgroundColor = thumbBackground(thumbState(this.hovered, this.dragging));
   }
 
   /** Re-size/position the thumb from the frame's scroll position. */

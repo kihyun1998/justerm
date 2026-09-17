@@ -3322,6 +3322,14 @@ test("the scrollbar thumb takes its colour from its pane's custom properties, pe
 
   const rest = await read();
   expect(rest.all.tagged, "the thumb is reachable by its attribute").toBe(1);
+  // The literal a consumer's stylesheet hard-codes, not the constant the probe imports.
+  expect(await page.locator("[data-justerm-scrollbar-thumb]").count()).toBeGreaterThanOrEqual(3);
+  // A stylesheet reaching the thumb by that attribute keeps every background property but the
+  // colour: the widget writes `background-color`, not the `background` shorthand that resets the rest.
+  await page.addStyleTag({ content: "[data-justerm-scrollbar-thumb] { background-clip: content-box; }" });
+  expect(
+    await page.locator("[data-justerm-scrollbar-thumb]").first().evaluate((el) => getComputedStyle(el).backgroundClip),
+  ).toBe("content-box");
   expect(rest.all.color).toBe("rgb(255, 0, 0)");
   expect(rest.restOnly.color).toBe("rgb(200, 100, 0)");
   expect(rest.unset.color).toBe(WHITE_25);

@@ -36,9 +36,11 @@ this is what resolves it.
   ghostty composites first and still reads only `bg.rgb`, `common.glsl:97-110`). None of the three
   can know what is behind the window, so this is a limit of the idea, not a gap in the port.
 - **Widget chrome takes its colour through the CSS cascade, not through the palette** (#926). The
-  web `Scrollbar` thumb's inline `background` is a `var()` chain — `--justerm-scrollbar-thumb-active`
+  web `Scrollbar` thumb's inline `background-color` is a `var()` chain — `--justerm-scrollbar-thumb-active`
   → `-hover` → `--justerm-scrollbar-thumb` → the pre-#926 `rgba(255,255,255,0.25)` — so a consumer
   that sets nothing sees no change and one that sets only the rest colour gets it in every state.
+  The longhand, not the `background` shorthand: the shorthand resets `background-clip` and the rest
+  inline, which a stylesheet reaching the thumb by `SCROLLBAR_THUMB_ATTRIBUTE` could then not undo.
   - **No `<style>` is injected, and that is the point.** xterm.js injects one per `Terminal` with an
     unscoped selector (`browser/Viewport.ts`, the `_styleElement` block @ 699f553), so with N
     terminals on a page the last one created paints every pane's slider — PenTerm measured exactly
@@ -46,9 +48,11 @@ this is what resolves it.
     and a scheme change needs no call into the widget.
   - **The widget holds the state, because an inline style cannot say `:hover`.** `thumbState` is
     `active` for as long as a drag the thumb started is held, wherever the pointer is — the
-    `window`-bound drag listeners outlive the hover. xterm.js has the same three states and the same
-    hold: `xterm-active` is set at drag start and cleared at drag end
-    (`browser/scrollable/abstractScrollbar.ts`).
+    `window`-bound drag listeners outlive the hover. xterm.js has the same three states and holds
+    `xterm-active` from drag start to drag end (`browser/scrollable/abstractScrollbar.ts`), but its
+    drag *ends* on more paths: it starts only on the primary button and also ends on a move whose
+    `buttons` no longer match the press (`globalPointerMoveMonitor.ts`). Ours ends only on `mouseup`,
+    so a lost `mouseup` leaves the drag, and now the active colour, held — see Known holes.
 - **The bit positions mirror `justerm_core::CellFlags`** — the renderer decodes the same word the
   engine packed, so a flag added on one side is a silent no-op on the other until both move.
 
@@ -111,5 +115,10 @@ leaving a reader to discover it.
   fidelity to xterm's implementation and nothing checks the nudge against the source. #577 pinned
   the neighbouring question — what both references do about a *translucent* background — which is
   what makes the remaining hole a narrower and more answerable one than it was.
+- **A scrollbar drag that never sees its `mouseup` stays held** (older than #926, which made it
+  visible as a stuck active colour). `Scrollbar` starts a drag on any button and ends it only on
+  `window` `mouseup`, so a release the page never receives — a context menu opened on press, a
+  window switch mid-drag — leaves the thumb following a buttonless pointer. Not measured: headless
+  Chromium opens no native menu.
 - **Three implementations of one colour encoding** — core, the wasm decoder, and this crate — held in
   lockstep by convention. Only the wire version gates any of it.

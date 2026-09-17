@@ -9,6 +9,15 @@ import {
 } from "../src/scrollbar";
 import type { RulerMark } from "../src/decorations";
 
+describe("SCROLLBAR_THUMB_ATTRIBUTE (#926)", () => {
+  it("is published from the package entry with its documented value", async () => {
+    // Through the entry point, so dropping the export reddens too; the literal is what a consumer
+    // hard-codes.
+    const { SCROLLBAR_THUMB_ATTRIBUTE } = await import("../src/index");
+    expect(SCROLLBAR_THUMB_ATTRIBUTE).toBe("data-justerm-scrollbar-thumb");
+  });
+});
+
 describe("thumbState (#926)", () => {
   it("is rest, hover, or active — and a drag stays active off the thumb", () => {
     expect(thumbState(false, false)).toBe("rest");
