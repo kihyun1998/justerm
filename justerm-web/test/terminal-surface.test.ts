@@ -22,9 +22,13 @@ class FakeBackend implements SurfaceBackend {
   contextLost = false;
   restoreOverdue = false;
 
-  addGrid(): number {
+  /** The arguments each `addGrid` was called with, in order. */
+  readonly addGridArgs: unknown[][] = [];
+
+  addGrid(...args: unknown[]): number {
     const id = this.nextGrid++;
     this.calls.push(`addGrid->${id}`);
+    this.addGridArgs.push(args);
     return id;
   }
   removeGrid(grid: number): void {
@@ -181,6 +185,27 @@ describe("GridLease — a stale id becomes unrepresentable", () => {
     expect(typeof lease.id).toBe("number");
     expect(backend.calls.filter((c) => c.startsWith("addGrid"))).toEqual(["addGrid->1"]);
     expect(lease.released).toBe(false);
+  });
+
+  it("names the grid's font weights at birth, in the two slots after the other selectors (#928)", () => {
+    const { surface, backend } = harness();
+    const palette = new Uint32Array(256);
+
+    surface.addGrid({
+      paletteColors: palette,
+      defaultFg: 1,
+      defaultBg: 2,
+      fontFamily: "Fira Code",
+      fontSize: 14,
+      letterSpacing: 0.5,
+      lineHeight: 1.2,
+      fontWeight: 300,
+      fontWeightBold: "900",
+    });
+    surface.addGrid();
+
+    expect(backend.addGridArgs[0]).toEqual([palette, 1, 2, "Fira Code", 14, 0.5, 1.2, 300, "900"]);
+    expect(backend.addGridArgs[1]?.slice(7)).toEqual([undefined, undefined]);
   });
 
   it("releases exactly once, however many times it is asked", () => {

@@ -71,6 +71,7 @@ export type {
 export { observeViewportRect, TerminalSurface, viewportOrigin } from "./terminal-surface";
 export type {
   AddGridOptions,
+  FontWeight,
   GridLease,
   OverlayBoxes,
   SurfaceBackend,

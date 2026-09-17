@@ -20,9 +20,9 @@ export interface SurfaceBackend {
   /** Register a terminal grid and return its id — since renderer 0.15.0 the **only** way to get one:
    * a renderer arrives holding none, and every per-terminal method names the grid it acts on (#773).
    *
-   * The four font selectors are optional and trailing, and this package passes all four. They key
+   * The six font selectors are optional and trailing, and this package passes all six. They key
    * the atlas, so naming them here means **one** bake: a grid born at the renderer's defaults and
-   * then moved by the four setters would bake an atlas per call and free each one again. */
+   * then moved by the six setters would bake an atlas per call and free each one again. */
   addGrid(
     paletteColors: Uint32Array,
     defaultFg: number,
@@ -31,6 +31,8 @@ export interface SurfaceBackend {
     fontSize?: number,
     letterSpacing?: number,
     lineHeight?: number,
+    fontWeight?: FontWeight,
+    fontWeightBold?: FontWeight,
   ): number;
   /** Unregister a grid and release what it owned: its VAO, its instance buffer, and — if it was the
    * last grid standing on its font configuration — that configuration's glyph atlas, rasteriser and
@@ -117,6 +119,24 @@ export interface SurfaceDeps<B extends SurfaceBackend = SurfaceBackend> {
   currentDpr: () => number;
 }
 
+/**
+ * A CSS font weight (#928): `"normal"` (400), `"bold"` (700), a `"100"`..`"900"` keyword, or a number
+ * in `[1, 1000]`. The renderer ignores anything else.
+ */
+export type FontWeight =
+  | "normal"
+  | "bold"
+  | "100"
+  | "200"
+  | "300"
+  | "400"
+  | "500"
+  | "600"
+  | "700"
+  | "800"
+  | "900"
+  | number;
+
 /** How a grid is registered. */
 export interface AddGridOptions {
   paletteColors?: Uint32Array;
@@ -126,6 +146,8 @@ export interface AddGridOptions {
   fontSize?: number;
   letterSpacing?: number;
   lineHeight?: number;
+  fontWeight?: FontWeight;
+  fontWeightBold?: FontWeight;
 }
 
 /**
@@ -450,6 +472,8 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
       opts.fontSize,
       opts.letterSpacing,
       opts.lineHeight,
+      opts.fontWeight,
+      opts.fontWeightBold,
     );
     const lease = new Lease(grid, (l) => {
       this.leases.delete(l);

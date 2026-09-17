@@ -3,7 +3,12 @@ import { CursorBlink } from "./cursor";
 import { FrameLoop } from "./frame-loop";
 import type { DecorationRect } from "./decorations";
 import { MINIMUM_COLS, MINIMUM_ROWS } from "./fit";
-import { TerminalSurface, type GridLease, type SurfaceBackend } from "./terminal-surface";
+import {
+  TerminalSurface,
+  type FontWeight,
+  type GridLease,
+  type SurfaceBackend,
+} from "./terminal-surface";
 
 import type { Renderer } from "./renderer";
 import { TextBlink } from "./text-blink";
@@ -161,6 +166,15 @@ export interface JustermRendererOptions {
    * (`@font-face`/`FontFace`) before an unfamiliar `fontFamily` is the consumer's job. */
   fontFamily: string;
   fontSize: number;
+  /**
+   * The weight regular text is drawn at, and the weight bold (SGR 1) text is drawn at (#928). Omit
+   * for `"normal"` / `"bold"`. Change them at runtime with {@link JustermRenderer.setFontWeight} /
+   * {@link JustermRenderer.setFontWeightBold}; a weight the renderer refuses leaves the default.
+   *
+   * Neither moves the cell: it is measured at `"normal"` whatever these are.
+   */
+  fontWeight?: FontWeight;
+  fontWeightBold?: FontWeight;
   /**
    * Force the cursor to blink (`true`) or stay steady (`false`), overriding the application.
    * Omit (or `undefined`) to **follow the application's** DECSCUSR / `CSI ?12` mode, which is the
@@ -436,6 +450,10 @@ export interface RendererBackend extends SurfaceBackend {
    * consumer must re-fit. A no-op if unchanged; a non-finite / `<1` size is guarded by the renderer. */
   setFontSize(grid: number, cssPx: number): void;
   setFontFamily(grid: number, family: string): void;
+  /** Re-bake the atlas at a new weight for regular / bold text (#928). The cell does not move. A
+   * weight outside {@link FontWeight} is ignored by the renderer; unchanged is a no-op. */
+  setFontWeight(grid: number, weight: FontWeight): void;
+  setFontWeightBold(grid: number, weight: FontWeight): void;
   /** Extra space between columns in **CSS px** (ADR-0023 — the space `fontSize` already speaks), and
    * a multiplier on the glyph height (`>= 1`). Both move the cell, so the consumer must re-fit; both
    * are clamped or rolled back by the renderer, so the result is read back rather than assumed (#338,
@@ -1020,9 +1038,9 @@ export class JustermRenderer implements Renderer {
     const paletteColors = decoder.buildPalette(Uint32Array.from(t.ansi));
     const backend = surface.rendererBackend();
     // A renderer arrives holding no terminal since 0.15.0, so this widget's single grid is created
-    // here — and its font is named at birth rather than pushed by four setters afterwards. The four
-    // selectors key the atlas, so this is **one** bake where the setter route was up to five, each
-    // of the first four freed again by the next (#773).
+    // here — and its font is named at birth rather than pushed by setters afterwards. The six
+    // selectors key the atlas, so this is **one** bake where the setter route was up to seven, each
+    // of the first six freed again by the next (#773, #928).
     //
     // The values are the same ones the setters used, defaults included, so the initial fit is still
     // computed at the consumer's final cell.
@@ -1035,6 +1053,8 @@ export class JustermRenderer implements Renderer {
       fontSize: opts.fontSize,
       letterSpacing: opts.letterSpacing ?? 0,
       lineHeight: opts.lineHeight ?? 1,
+      fontWeight: opts.fontWeight,
+      fontWeightBold: opts.fontWeightBold,
     });
     try {
       return await JustermRenderer.assemble(surface, composedSurface, opts, lease, decoder, paletteColors);
@@ -1219,6 +1239,24 @@ export class JustermRenderer implements Renderer {
   setFontFamily(family: string): void {
     this.backend.setFontFamily(this.lease.id, family);
     this.reapplySurface();
+  }
+
+  /**
+   * Change the weight regular text is drawn at (#928) — the live counterpart of
+   * {@link JustermRendererOptions.fontWeight}. Re-bakes the atlas and presents.
+   *
+   * **No re-fit**, unlike {@link setFontFamily}: the cell is measured at `"normal"` whatever the
+   * weight, so the grid the consumer drives its engine at is unaffected.
+   */
+  setFontWeight(weight: FontWeight): void {
+    this.backend.setFontWeight(this.lease.id, weight);
+    this.backend.render();
+  }
+
+  /** Change the weight bold (SGR 1) text is drawn at (#928). See {@link setFontWeight}. */
+  setFontWeightBold(weight: FontWeight): void {
+    this.backend.setFontWeightBold(this.lease.id, weight);
+    this.backend.render();
   }
 
   /**
