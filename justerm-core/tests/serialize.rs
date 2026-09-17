@@ -451,12 +451,9 @@ fn decode_rejects_superseded_version() {
     ));
 }
 
-/// The wire is gated at version 14 (#621 moved the grapheme and hyperlink references
-/// off the cell record into sparse per-span groups and widened their counts/lengths
-/// to u32, atop the #520 per-span underline-colour group, the #428 active-match
-/// group, #120 S3 marker-lines, #159 marker kind + exit, #149 alt-screen flag, #129
-/// mouse mask and #118 marker group). Both the exported `WIRE_VERSION` constant and
-/// the byte the encoder emits must read 14 — the value the WASM decoder's
+/// The wire is gated at version 17 (the per-version changes are listed on `VERSION`
+/// in `serialize.rs`). Both the exported `WIRE_VERSION` constant and
+/// the byte the encoder emits must read 17 — the value the WASM decoder's
 /// `wire_version()` mirrors in lockstep (ADR-0008), so a drift here trips before it
 /// can desync a binding.
 #[test]

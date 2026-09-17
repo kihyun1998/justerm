@@ -132,6 +132,7 @@ at a recorded SHA; a paraphrase drops the pin).
   xterm makes `CSI 0 SP q` a blinking block; the three implementations make it "the default". The
   blink half keeps today's value — `0` turns the application's blink mode off — which matches
   neither xterm (blinking) nor xterm.js (back to the user's option).
-- **The dispatcher folds an absent DECSCUSR parameter to `1`** (a blinking block), not to the reset,
-  as xterm.js does (`params.length === 0 ? 1`). Whether `vte` reports `CSI SP q` as absent or as an
-  explicit `0` was not measured, and #927 did not revisit it.
+- **An omitted DECSCUSR parameter resets, like `0`** — measured (#927): `CSI 6 SP q` then `CSI SP q`
+  reports `None` and no blink, because `vte` hands the dispatcher an explicit `0`. The dispatcher's
+  `unwrap_or(1)` fallback (written after xterm.js's `params.length === 0 ? 1`) is therefore not what
+  decides this form, and an earlier line in this note that said it was, unmeasured, was wrong.

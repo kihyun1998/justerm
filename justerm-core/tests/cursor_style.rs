@@ -77,6 +77,14 @@ fn decscusr_0_clears_the_application_shape() {
     assert!(!f.cursor_blink);
 }
 
+#[test]
+fn decscusr_with_no_parameter_clears_the_application_shape_too() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[6 q"); // steady bar
+    t.feed(b"\x1b[ q"); // CSI SP q
+    assert_eq!(t.frame().cursor_shape, None);
+}
+
 /// The header's cursor-shape byte: magic 2, version, has_scroll, kind, cols 2, rows 2,
 /// cursor_row 2, cursor_col 2, cursor_visible.
 const SHAPE_BYTE: usize = 14;

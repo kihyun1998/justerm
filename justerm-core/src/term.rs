@@ -5753,9 +5753,10 @@ impl Perform for Term {
             self.soft_reset();
             return;
         }
-        // DECSCUSR set cursor style: CSI Ps SP q (space intermediate) (#89). An
-        // absent param means 1 (block blink); an explicit 0 means reset — so the
-        // raw value matters and `param_or` (which folds 0 to its default) is wrong.
+        // DECSCUSR set cursor style: CSI Ps SP q (space intermediate) (#89). The raw
+        // value is read, since `param_or` folds 0 to its default and 0 is the reset.
+        // `CSI SP q` arrives from vte as an explicit 0; `unwrap_or(1)` covers a
+        // params list with no entry at all.
         if intermediates.first() == Some(&b' ') && action == 'q' {
             let param = params.iter().next().and_then(|p| p.first().copied());
             self.set_cursor_style(param.unwrap_or(1));
