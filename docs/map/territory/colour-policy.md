@@ -73,9 +73,9 @@ this is what resolves it.
   crate draws itself** ([built-in block glyphs](builtin-block-glyphs.md))
 - `justerm-renderer/src/webgl.rs` — `set_palette`, `set_bg_alpha`, `set_bold_to_bright`,
   `set_minimum_contrast_ratio`, `set_selection_foreground`
-- `justerm-web/src/scrollbar.ts` — `thumbBackground`, `thumbState`, `startsThumbDrag`, `dragStillHeld`,
-  `SCROLLBAR_THUMB_ATTRIBUTE`: the
-  thumb's colour, the one piece of widget chrome a consumer themes
+- `justerm-web/src/scrollbar.ts` — `thumbBackground`, `thumbState`, `SCROLLBAR_THUMB_ATTRIBUTE`: the
+  thumb's colour, the one piece of widget chrome a consumer themes; `startsThumbDrag`,
+  `dragStillHeld`: when the drag that holds it `active` starts and ends
 
 ## Reference behaviour
 
