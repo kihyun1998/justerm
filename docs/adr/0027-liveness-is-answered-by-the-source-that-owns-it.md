@@ -91,7 +91,7 @@ work may be attempted cannot be a function of its state alone.
 | Site | Predicate today | Resolved by |
 |---|---|---|
 | `resize` | its own `drawingBuffer` read-back | **D2** ✓ |
-| `set_device_pixel_ratio`, `set_font_size`, `set_font_family`, `adopt_spacing` | `gpu_work_must_wait()` (context ∨ flag) | **D3** ✓ |
+| `set_device_pixel_ratio`, `set_font_size`, `set_font_family`, `set_font_weight`, `set_font_weight_bold`, `adopt_spacing` | `gpu_work_must_wait()` (context ∨ flag) | **D3** ✓ |
 | the constructor (#688) | `webgl2.is_context_lost()` alone | **D3** ✓ — the flag is a constant here |
 | public `isContextLost()` | flag | **D4** ✓ — and since #579 the only row with a *measured* consumer: the widget observes the flag and the context disagreeing, so D4's "different question" is a demonstrated fact rather than a derivation |
 | `on_restore_deadline`'s `!is_lost`, `restore_overdue()` | flag | **D4** ✓ — these decide a *consumer notification* |

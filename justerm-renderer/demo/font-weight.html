@@ -1,0 +1,151 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — setFontWeight / setFontWeightBold: regular and bold text at the consumer's weights (#928)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  A grid draws regular text at one weight and bold (SGR 1) text at another, both the consumer's (#928).
+  The signal is total ink: a white glyph on black drawn at a heavier weight lights more red channel.
+  That is a relationship (heavier > lighter, unchanged == unchanged), never a pixel count, because the
+  faces behind `monospace` differ per environment. What it needs from a font is only that 100 and 900
+  resolve to different faces, and a browser synthesises a bold face where the family has none.
+
+  · each selector moves its own text only — a bold weight leaves regular ink alone and the reverse;
+  · a weight outside CSS `normal`/`bold`/`100`..`900`/[1, 1000] changes nothing: no bake, same cell,
+    same ink (an invalid CSS `font` string would otherwise make the browser keep its previous font);
+  · a keyword and its number are one configuration (`bakes()` delta 0), a new weight is a new one;
+  · `addGrid`'s trailing weights key the atlas at birth, so a grid born at a sibling's weights bakes nothing.
+
+  · no weight moves the cell: it is the `normal` face's, in every family tried — where a heavier face
+    measures a different `█` (Courier New does, and `monospace` here), that is exactly what this reddens.
+  dpr 1/1.1/1.5/2.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect, fitGrid } from "./proof.js";
+  await init();
+
+  const COLS = 2, ROWS = 1, N = COLS * ROWS;
+  const GLYPH = 0x4d;                          // 'M' — a lot of stroke, so weight shows
+  const BOLD = 1;                              // attrs flag bit 0
+  const RGB = (c) => ((2 << 24) | c) >>> 0;    // absolute Rgb colour ref (tag 2)
+  const WHITE = 0xffffff;
+  const palette = new Uint32Array(256);
+
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, WHITE, 0x000000);
+  const gl = document.querySelector("#c").getContext("webgl2");
+
+  /** Total red-channel ink of 'MM' drawn with `flags`, re-fitted to the current cell. */
+  const ink = (flags) => {
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(N), new Uint32Array(N).fill(RGB(WHITE)),
+      new Uint32Array(N).fill(GLYPH), new Uint16Array(N).fill(flags), true);
+    r.render();
+    const { buf } = readRect(gl, { x: 0, y: 0, w: gl.drawingBufferWidth, h: gl.drawingBufferHeight });
+    let s = 0;
+    for (let i = 0; i < buf.length; i += 4) s += buf[i];
+    return s;
+  };
+  const cell = () => [r.cell_width(g), r.cell_height(g)];
+  const same = (a, b) => a[0] === b[0] && a[1] === b[1];
+
+  const checks = {};
+  const base = { regular: ink(0), bold: ink(BOLD), cell: cell() };
+  checks.defaultBoldIsHeavierThanRegular = base.bold > base.regular;
+
+  // ── the bold weight moves bold text, and only bold text ──
+  let b0 = r.bakes();
+  r.setFontWeightBold(g, 100);
+  checks.aNewBoldWeightBakesOnce = r.bakes() - b0 === 1;
+  checks.aBoldWeightLeavesTheCell = same(cell(), base.cell);
+  const bold100 = ink(BOLD);
+  checks.boldDrawsLighterAtALighterBoldWeight = bold100 < base.bold;
+  checks.aBoldWeightLeavesRegularTextAlone = ink(0) === base.regular;
+  r.setFontWeightBold(g, "900");
+  const bold900 = ink(BOLD);
+  checks.boldDrawsHeavierAtAHeavierBoldWeight = bold900 > bold100;
+  r.setFontWeightBold(g, "bold");
+  checks.theBoldKeywordRestoresTheDefaultBold = ink(BOLD) === base.bold;
+
+  // ── the regular weight moves regular text, and not bold text ──
+  r.setFontWeight(g, 900);
+  checks.aRegularWeightLeavesTheCell = same(cell(), base.cell);
+  const regular900 = ink(0);
+  checks.regularDrawsHeavierAtAHeavierWeight = regular900 > base.regular;
+  // With regular text at 900, bold text still follows its own selector.
+  const bold_at_regular900 = ink(BOLD);
+  r.setFontWeightBold(g, 100);
+  const bold100_at_regular900 = ink(BOLD);
+  checks.aRegularWeightLeavesBoldTextToItsOwnWeight = bold100_at_regular900 < bold_at_regular900;
+  r.setFontWeightBold(g, "bold");
+  r.setFontWeight(g, "normal");
+  checks.theNormalKeywordRestoresTheDefault = ink(0) === base.regular && same(cell(), base.cell);
+
+  // ── a fractional weight reaches the canvas: a `font` string the browser refused would leave the
+  //    canvas at the `normal` measuring font, and regular text at its default ink ──
+  r.setFontWeight(g, 899.5);
+  const regular899_5 = ink(0);
+  checks.aFractionalWeightDraws = regular899_5 > base.regular && same(cell(), base.cell);
+  r.setFontWeight(g, "normal");
+
+  // ── a keyword and its number are one configuration ──
+  b0 = r.bakes();
+  r.setFontWeight(g, 400);
+  r.setFontWeight(g, "400");
+  r.setFontWeightBold(g, 700);
+  r.setFontWeightBold(g, "700");
+  checks.aKeywordAndItsNumberBakeNothing = r.bakes() - b0 === 0;
+
+  // ── a weight outside the accepted values changes nothing ──
+  const rejected = ["bolder", "lighter", "Bold", "450", "", "banana", 0, 1001, -1, NaN, Infinity, null, undefined, true, {}];
+  b0 = r.bakes();
+  for (const v of rejected) {
+    r.setFontWeight(g, v);
+    r.setFontWeightBold(g, v);
+  }
+  checks.aRejectedWeightBakesNothing = r.bakes() - b0 === 0;
+  checks.aRejectedWeightLeavesTheCell = same(cell(), base.cell);
+  checks.aRejectedWeightLeavesTheInk = ink(0) === base.regular && ink(BOLD) === base.bold;
+
+  // ── addGrid's trailing weights key the atlas at birth ──
+  r.setFontWeightBold(g, 900);
+  b0 = r.bakes();
+  const born = r.addGrid(palette, WHITE, 0x000000, null, null, null, null, "normal", 900);
+  checks.aGridBornAtASiblingsWeightsBakesNothing = r.bakes() - b0 === 0;
+  b0 = r.bakes();
+  const bornRejected = r.addGrid(palette, WHITE, 0x000000, null, null, null, null, "banana", "bolder");
+  checks.aGridBornAtRejectedWeightsTakesTheDefaults = r.bakes() - b0 === 1;
+  const other = r.addGrid(palette, WHITE, 0x000000, null, null, null, null, 300);
+  checks.aGridBornAtANewWeightBakes = r.bakes() - b0 === 2;
+  b0 = r.bakes();
+  r.setFontWeightBold(bornRejected, 900);
+  checks.movingToASiblingsWeightsBakesNothing = r.bakes() - b0 === 0;
+  for (const x of [born, bornRejected, other]) r.removeGrid(x);
+
+  // ── no weight moves the cell, in any family: it is measured at `normal` (#928) ──
+  const cells = {};
+  for (const family of ["monospace", "Consolas", "Cascadia Mono", "Cascadia Code", "DejaVu Sans Mono", "Courier New"]) {
+    const m = r.addGrid(palette, WHITE, 0x000000, family);
+    const row = {};
+    for (const w of [100, 400, 900]) {
+      r.setFontWeight(m, w);
+      r.setFontWeightBold(m, 1000 - w);
+      row[w] = [r.cell_width(m), r.cell_height(m)];
+    }
+    cells[family] = row;
+    checks[`noWeightMovesTheCellIn ${family}`] = same(row[100], row[400]) && same(row[900], row[400]);
+    r.removeGrid(m);
+  }
+
+  window.__proof = {
+    ok: Object.values(checks).every(Boolean), checks,
+    measured: { dpr: devicePixelRatio, base, bold100, bold900, regular900, regular899_5, bold_at_regular900, bold100_at_regular900, cells },
+  };
+  window.__done = true;
+</script>

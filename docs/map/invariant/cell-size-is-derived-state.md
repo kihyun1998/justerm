@@ -8,6 +8,8 @@ spacing and the line height — and re-derived through a single funnel (`webgl.r
 whenever any of them moves. Five widget-exposed setters can move it: `setFontSize`, `setFontFamily`,
 `setLetterSpacing`, `setLineHeight` (#578) and `setDevicePixelRatio` (#325, **wired 2026-08-10**) —
 and since #773 the first four **name the grid they move**, while the fifth moves every cell at once.
+`setFontWeight` / `setFontWeightBold` (#928) re-bake through the same funnel and do **not** move
+it: the scan reads `█` at the `normal` weight whatever a configuration draws at.
 
 > **The funnel was called `recompute_cell` until 2026-08-19 (#772)**, which replaced it with
 > `bake_config` — the function that builds one *font configuration's* resources, cell included. The
@@ -193,8 +195,10 @@ far was found while doing something else, and none was found by the layer that o
   pointer coordinates by a device-px cell.
 
 The membership test, so the list can be derived rather than remembered: **does the value reach
-`bake_config`?** — i.e. is it one of the four selectors a configuration is keyed by, or the density
-every configuration is baked at. `setCursorContrast`/`setCursorThickness` (#580) do not — they are
+the ink scan or `device_cell` inside `bake_config`?** — i.e. is it the family, the size, the letter
+spacing or the line height of a configuration, or the density every configuration is baked at.
+Reaching `bake_config` alone is not enough since #928: the two weights key a configuration and
+re-bake it, but `Rasterizer::new` measures at `normal`, so they never reach the cell. `setCursorContrast`/`setCursorThickness` (#580) do not — they are
 draw-time scalars and are not instances, which is worth stating because they look like near
 neighbours. (The test named `recompute_cell` until #772 deleted it; same question, live name.)
 

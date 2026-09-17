@@ -27,6 +27,7 @@ use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
 use crate::config_registry::{ConfigId, ConfigKey, ConfigRegistry};
 use crate::context_loss::{ContextLiveness, ContextState, DEFAULT_RESTORE_TIMEOUT_MS, FrameAction};
+use crate::css_font::FontWeight;
 use crate::cursor::{
     Cursor, DEFAULT_CURSOR_CONTRAST, THICKNESS, cursor_cells_at, cursor_rects, cursor_thickness,
     guarded_cursor_colors, shape_from_id, shape_id,
@@ -68,6 +69,16 @@ const FONT_SIZE: f32 = 16.0;
 /// consumer whose terminals all share one non-default font pays exactly **one** bake for this
 /// configuration, and it is released the moment the last grid leaves it.
 const DEFAULT_FONT_FAMILY: &str = "monospace";
+
+/// A font weight a consumer named from JS: a number, or a weight keyword string (#928). `None` for
+/// anything [`FontWeight`] refuses.
+fn weight_from_js(v: &JsValue) -> Option<FontWeight> {
+    match (v.as_f64(), v.as_string()) {
+        (Some(n), _) => FontWeight::from_number(n),
+        (None, Some(s)) => FontWeight::from_keyword(&s),
+        (None, None) => None,
+    }
+}
 
 /// Unit-quad corners (triangle strip): geometry + per-cell glyph texture coordinate.
 const QUAD: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
@@ -1021,7 +1032,7 @@ impl ConfigTier {
 /// The **per-grid** tier — one terminal's own state (ADR-0021 D1/D2).
 ///
 /// Everything a consumer can set differently per terminal is a **selector** and lands here, including
-/// the four font/metric fields: they are per-grid *as settings*, while the machinery they key
+/// the six font/metric fields: they are per-grid *as settings*, while the machinery they key
 /// (`ConfigTier`) is not. `instance_vbo` is here rather than global because `uploaded` mirrors it —
 /// one shared buffer with N per-grid baselines would let one grid's upload silently invalidate
 /// another's — and `vao` followed it in #771, because a VAO records which buffer feeds the draw.
@@ -1031,7 +1042,7 @@ impl ConfigTier {
 /// load-bearing half: moving a field out of this struct breaks those methods at compile time.
 struct GridTier {
     /// The configuration this grid draws through — the atlas, rasteriser, glyph cache and cell it
-    /// selects into (#772). A **handle, not a copy**: the four selector fields below say what this
+    /// selects into (#772). A **handle, not a copy**: the six selector fields below say what this
     /// grid asked for, and this says which shared entry serves it. The two are kept in step by
     /// `select_config`, the only writer of either.
     config: ConfigId,
@@ -1077,6 +1088,11 @@ struct GridTier {
     /// consumer's family. The browser's text engine resolves it (with fallback); the renderer stays
     /// font-agnostic.
     font_family: String,
+    /// Consumer-injected weights for regular and bold text (#928); default CSS `normal` / `bold`.
+    /// Changed by `set_font_weight` / `set_font_weight_bold`, which join a configuration as a family
+    /// change does.
+    font_weight: FontWeight,
+    font_weight_bold: FontWeight,
     palette: Palette,
     /// The `cols`×`rows` grid last passed to [`resize_grid`](Self::resize_grid) — what this grid
     /// reports and what the frames fed to it are expected to carry.
@@ -1230,12 +1246,14 @@ impl JustermRenderer {
         self.grids.grid_at_mut(at)
     }
 
-    /// The configuration a grid's four selectors ask for (#772).
+    /// The configuration a grid's six selectors ask for (#772).
     fn key_of(&self, at: usize) -> ConfigKey {
         let grid = self.grid_at(at);
         ConfigKey::new(
             &grid.font_family,
             grid.font_size,
+            grid.font_weight,
+            grid.font_weight_bold,
             grid.letter_spacing,
             grid.line_height,
         )
@@ -1319,22 +1337,23 @@ impl JustermRenderer {
     /// and follows the buffer, #771). No atlas, rasteriser, glyph cache, program or shared quad
     /// buffer — those stay one per context / per configuration.
     ///
-    /// **The four selectors are this grid's font, and they are optional and trailing** (#773):
+    /// **The six selectors are this grid's font, and they are optional and trailing** (#773):
     /// `addGrid(palette, fg, bg)` takes the defaults (`"monospace"`, 16 CSS px, no letter spacing,
-    /// line height 1), and any of the four may be given instead. They are what the grid's atlas is
-    /// keyed by (#772), so a grid whose selectors match a sibling's **joins that sibling's atlas and
-    /// bakes nothing** — the whole economy of the middle tier, and the reason they belong here
-    /// rather than in a setter called a line later: a grid born at the defaults and moved
-    /// immediately would bake an atlas nobody asked for, once per registration.
+    /// line height 1, weights `"normal"` / `"bold"`), and any of the six may be given instead. A
+    /// weight takes what [`set_font_weight`](Self::set_font_weight) takes (#928). They are what the
+    /// grid's atlas is keyed by (#772), so a grid whose selectors match a sibling's **joins that
+    /// sibling's atlas and bakes nothing** — the whole economy of the middle tier, and the reason
+    /// they belong here rather than in a setter called a line later: a grid born at the defaults and
+    /// moved immediately would bake an atlas nobody asked for, once per registration.
     ///
-    /// A non-finite selector is ignored in favour of the default, and size / line height are floored
-    /// exactly as their setters floor them, so a grid cannot be born on a configuration
-    /// [`set_font_size`](Self::set_font_size) could not have produced.
+    /// A non-finite selector, or a weight outside those values, is ignored in favour of the default,
+    /// and size / line height are floored exactly as their setters floor them, so a grid cannot be
+    /// born on a configuration [`set_font_size`](Self::set_font_size) could not have produced.
     ///
     /// It is **not drawn** until [`set_viewport`](Self::set_viewport) places it, and until then it is
     /// not packed either: `render` skips a grid with no viewport before the pack, so feeding a hidden
     /// grid costs the scatter and nothing after it (#771).
-    // Three palette columns plus the four font/metric selectors; the selectors are optional and
+    // Three palette columns plus the six font/metric selectors; the selectors are optional and
     // TRAILING, the `apply_frame` precedent, so `addGrid(palette, fg, bg)` still reads as a call.
     #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = addGrid)]
@@ -1347,6 +1366,8 @@ impl JustermRenderer {
         font_size: Option<f32>,
         letter_spacing: Option<f32>,
         line_height: Option<f32>,
+        font_weight: Option<JsValue>,
+        font_weight_bold: Option<JsValue>,
     ) -> Result<u32, JsValue> {
         let palette =
             Palette::from_colors(&palette_colors, default_fg, default_bg).map_err(|e| {
@@ -1403,6 +1424,14 @@ impl JustermRenderer {
             font_size
                 .filter(|v| v.is_finite())
                 .map_or(FONT_SIZE, |v| v.max(1.0)),
+            font_weight
+                .as_ref()
+                .and_then(weight_from_js)
+                .unwrap_or(FontWeight::NORMAL),
+            font_weight_bold
+                .as_ref()
+                .and_then(weight_from_js)
+                .unwrap_or(FontWeight::BOLD),
             letter_spacing.filter(|v| v.is_finite()).unwrap_or(0.0),
             line_height
                 .filter(|v| v.is_finite())
@@ -1966,7 +1995,7 @@ impl JustermRenderer {
 
     /// Bind a renderer to the canvas matched by `canvas_selector`.
     ///
-    /// It arrives holding **no terminal and no font configuration** (#773): the palette and the four
+    /// It arrives holding **no terminal and no font configuration** (#773): the palette and the six
     /// font selectors belong to a grid, and [`add_grid`](Self::add_grid) is what creates one. So the
     /// first two calls a consumer makes are `new` then `addGrid`, and nothing is baked in between —
     /// there is nothing yet to key an atlas by.
@@ -2309,7 +2338,12 @@ impl JustermRenderer {
         resident: Option<&GlyphCache>,
         dpr: f32,
     ) -> Result<BakedConfig, JsValue> {
-        let mut rasterizer = Rasterizer::new(key.font_family(), key.font_size() * dpr)?;
+        let mut rasterizer = Rasterizer::new(
+            key.font_family(),
+            key.font_size() * dpr,
+            key.font_weight(),
+            key.font_weight_bold(),
+        )?;
         // The rasteriser measures the GLYPH box; the grid cell is that box plus the consumer's
         // spacing policy (#338). The atlas slot is the padded CELL (#359), so the rasteriser must
         // know the cell before anything is sized from `padded_size()`. And ask the implementation
@@ -2479,9 +2513,10 @@ impl JustermRenderer {
     /// configuration they now name (#772, per-grid since #773).
     ///
     /// It does **not** touch the drawing buffer, which it did until #773: the buffer is the
-    /// surface's, and a surface drawing N grids belongs to none of them. The consumer re-fits.
+    /// surface's, and a surface drawing N grids belongs to none of them. The consumer re-fits after
+    /// any selector that moves the cell — every one but the two weights, which do not.
     ///
-    /// The single site every one of the four setters goes through, so none of them can decide any of
+    /// The single site every one of the six setters goes through, so none of them can decide any of
     /// this differently. Three properties it owes, and each one is a bug that has been paid for
     /// here before:
     ///
@@ -2505,6 +2540,8 @@ impl JustermRenderer {
             (
                 g.font_size,
                 g.font_family.clone(),
+                g.font_weight,
+                g.font_weight_bold,
                 g.letter_spacing,
                 g.line_height,
             )
@@ -2516,7 +2553,14 @@ impl JustermRenderer {
         let key = self.key_of(at);
         if let Err(e) = self.select_config(at, key) {
             let g = self.grid_at_mut(at);
-            (g.font_size, g.font_family, g.letter_spacing, g.line_height) = prev;
+            (
+                g.font_size,
+                g.font_family,
+                g.font_weight,
+                g.font_weight_bold,
+                g.letter_spacing,
+                g.line_height,
+            ) = prev;
             return Err(e);
         }
         Ok(())
@@ -2567,6 +2611,40 @@ impl JustermRenderer {
             return Ok(());
         }
         self.adopt_selectors(at, |g| g.font_family = family)
+    }
+
+    /// Set the weight **one grid's** regular text is drawn at (#928): CSS `"normal"` / `"bold"`, a
+    /// `"100"`..`"900"` keyword, or a number in `[1, 1000]` — the values xterm.js's `fontWeight`
+    /// takes. Anything else is ignored. It joins the configuration keyed by the new weight, exactly
+    /// as a family change does (#772), and moves this grid only.
+    ///
+    /// The cell is measured at the `normal` weight whatever this is, so it does not move and no re-fit
+    /// is needed. Takes effect on the next [`render`](Self::render).
+    #[wasm_bindgen(js_name = setFontWeight)]
+    pub fn set_font_weight(&mut self, grid: u32, weight: JsValue) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        let Some(weight) = weight_from_js(&weight) else {
+            return Ok(());
+        };
+        if weight == self.grid_at(at).font_weight {
+            return Ok(());
+        }
+        self.adopt_selectors(at, |g| g.font_weight = weight)
+    }
+
+    /// Set the weight **one grid's** bold (SGR 1) text is drawn at (#928). Takes the same values as
+    /// [`set_font_weight`](Self::set_font_weight), and ignores anything else. Like it, this re-bakes
+    /// the atlas without moving the cell.
+    #[wasm_bindgen(js_name = setFontWeightBold)]
+    pub fn set_font_weight_bold(&mut self, grid: u32, weight: JsValue) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        let Some(weight) = weight_from_js(&weight) else {
+            return Ok(());
+        };
+        if weight == self.grid_at(at).font_weight_bold {
+            return Ok(());
+        }
+        self.adopt_selectors(at, |g| g.font_weight_bold = weight)
     }
 
     /// Adopt a spacing policy on one grid (#338/#359), or leave every field as it was.
@@ -3786,10 +3864,10 @@ impl GridTier {
     /// One terminal's state at rest: no cells, no cursor, no overlays, every consumer policy at
     /// its default. The caller supplies what a grid cannot default — its own GPU buffers
     /// (ADR-0021 D2), the configuration it selects into and the key that names it — which carries
-    /// the four font/metric **selectors** (D1: per-grid settings, even though the machinery they
+    /// the six font/metric **selectors** (D1: per-grid settings, even though the machinery they
     /// key is per-config) — its palette, and the grid it is sized to.
     ///
-    /// The four selectors are **unpacked from the key itself** rather than passed beside it, so the
+    /// The six selectors are **unpacked from the key itself** rather than passed beside it, so the
     /// grid's fields and the entry its handle names cannot be born disagreeing. `select_config` is
     /// the only thing that moves either afterwards, and it moves both.
     ///
@@ -3820,6 +3898,8 @@ impl GridTier {
             line_height: key.line_height(),
             font_size: key.font_size(),
             font_family: key.font_family().to_string(),
+            font_weight: key.font_weight(),
+            font_weight_bold: key.font_weight_bold(),
             grid_size,
             instances: Vec::new(),
             instance_count: 0,

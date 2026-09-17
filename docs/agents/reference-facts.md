@@ -947,6 +947,25 @@ the tie-breaker table had* no row for glyph bake geometry *was true when written
 | ⚠ **But ordinary text glyphs get `.none`.** The renderer applies a Nerd-Font table entry if there is one, else `.fit` **only when the codepoint is a symbol**, else nothing — so a Latin digraph like `Ǆ` is left to overflow, exactly as alacritty leaves it | ghostty | `src/renderer/generic.zig:3175` |
 | A constraint may span two cells when the next cell is blank (`constraint_width`, `max_constraint_width: u2 = 2`) — the width-2 axis justerm's #792 states as uncounted rather than covered | ghostty | `src/font/Glyph.zig:115` |
 
+## Font weight — what it reaches, and what the cell is measured at (#928, verified 2026-09-17)
+
+Read for #928, where the issue body said xterm.js feeds both weights into its cell measurement. **It
+does not**: neither measurement strategy puts a weight in the font it measures with, and a weight
+change does not re-measure. justerm measures at `normal` to match — the grounds, and the numbers that
+made it a decision, are in `docs/map/territory/cell-geometry.md`. **alacritty does the opposite** (last
+row), so this is 1 of 2 read, not a consensus. ghostty was **not** read for this; that is a gap, not
+an absence.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The cell is re-measured on a `fontFamily` or `fontSize` change only — the weights are not in the list | xterm.js | `src/browser/services/CharSizeService.ts:34` |
+| Both measurement strategies build their font from size and family alone: the DOM span sets `fontFamily` and `fontSize`, the canvas strategy sets `` `${fontSize}px ${fontFamily}` `` | xterm.js | `src/browser/services/CharSizeService.ts:95`, `:122` |
+| A weight change **does** clear the renderer and re-derive the size (`clear()` + `handleResize`), alongside family, size and spacing — the atlas rebuilds, the cell does not move | xterm.js | `src/browser/services/RenderService.ts:98-112` (`'fontWeightBold'` at `:105`) |
+| The glyph font takes the bold weight for a bold cell and the regular weight otherwise, as `` `${fontStyle} ${fontWeight} ${size}px ${family}` `` | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:530-533` |
+| A number is kept when `1 <= value <= 1000`; any other value is replaced by the option's **default** unless it is one of `normal`, `bold`, `100`..`900` | xterm.js | `src/common/services/OptionsService.ts:63`, `:167`, `:171` |
+| Defaults are `normal` and `bold` | xterm.js | `src/common/services/OptionsService.ts:26-27` |
+| ⚠ **The cell comes from the configured regular face.** `GlyphCache::new` loads metrics from the `regular` key, whose description is `font.normal()` — and `make_desc` uses the user's `style` (e.g. `Light`) in place of `Weight::Normal` whenever one is set. `compute_cell_size` then takes `average_advance` and `line_height` from those metrics | alacritty | `alacritty/src/renderer/text/glyph_cache.rs:83-85`, `:134`, `make_desc` at `:182-188`; `alacritty/src/display/mod.rs:1608-1615` |
+
 ## Renderer ink channels
 
 | Fact | Reference | Site |
