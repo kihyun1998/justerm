@@ -12,6 +12,7 @@ import {
   gridForBox,
   resolveCursorShape,
 } from "../src/justerm-renderer";
+import type { CursorStyle } from "../src/justerm-renderer";
 import type { DecodedFrame } from "../src/types";
 
 /** Minimal decoded frame: the `apply_damage`/cursor fields the adapter reads, defaulted so a test
@@ -386,5 +387,11 @@ describe("resolveCursorShape (#927)", () => {
     expect(resolveCursorShape(undefined, "block")).toBe(0);
     expect(resolveCursorShape(undefined, "underline")).toBe(1);
     expect(resolveCursorShape(undefined, "bar")).toBe(2);
+  });
+
+  it("draws a block for a style outside the three, including an inherited object key", () => {
+    for (const style of ["constructor", "toString", "__proto__", "banana"]) {
+      expect(resolveCursorShape(undefined, style as CursorStyle)).toBe(0);
+    }
   });
 });

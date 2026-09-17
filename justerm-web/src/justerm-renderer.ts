@@ -648,11 +648,18 @@ export function cursorCommand(frame: DecodedFrame): CursorCommand {
 /** The caret shape a consumer can choose as its default (#927). */
 export type CursorStyle = "block" | "underline" | "bar";
 
-const CURSOR_STYLE_SHAPE: Record<CursorStyle, number> = { block: 0, underline: 1, bar: 2 };
-
-/** The shape id to draw: the application's DECSCUSR shape, else the consumer's style (#927). */
+/** The shape id to draw: the application's DECSCUSR shape, else the consumer's style (#927). A style
+ * outside the three draws a block. */
 export function resolveCursorShape(appShape: number | undefined, style: CursorStyle): number {
-  return appShape ?? CURSOR_STYLE_SHAPE[style] ?? 0;
+  if (appShape !== undefined) return appShape;
+  switch (style) {
+    case "underline":
+      return 1;
+    case "bar":
+      return 2;
+    default:
+      return 0;
+  }
 }
 
 /** Coerce a decoder array to the exact typed array wasm-bindgen's `&[u32]`/`&[u16]` expect.

@@ -101,8 +101,10 @@ How a version gets there is [release](release.md).
     as the marker kind's, and both land in one slice.
   - **`cursorShape`'s three names and `kind`'s two** live only in prose. `kind`'s roster was never
     copied into a consumer as *values*. **`cursorShape`'s now is** (#927): `justerm-web`'s
-    `CURSOR_STYLE_SHAPE` maps `block`/`underline`/`bar` to `0`/`1`/`2` to resolve the consumer's
-    default under an unset application shape, and nothing checks that table against the decoder.
+    `resolveCursorShape` maps `block`/`underline`/`bar` to `0`/`1`/`2` to resolve the consumer's
+    default under an unset application shape, and nothing checks that mapping against the decoder.
+    It is a `switch`, not an object lookup, because the style arrives from JS unchecked and an
+    object lookup answers `"constructor"` with a function.
     The same class as `flags()`, at three members.
 - **What the named form buys is a roster that is enumerated rather than restated** — this section's
   own thesis, one surface up. The prose mapping ships *verbatim* into the published `.d.ts`, where
