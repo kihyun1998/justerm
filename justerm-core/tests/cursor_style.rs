@@ -118,6 +118,17 @@ fn decstr_clears_the_application_shape() {
 }
 
 #[test]
+fn decstr_turns_the_blink_mode_off() {
+    for seq in [&b"\x1b[5 q"[..], b"\x1b[?12h"] {
+        let mut t = Engine::new(80, 24);
+        t.feed(seq);
+        assert!(t.frame().cursor_blink, "precondition: {seq:?} blinks");
+        t.feed(b"\x1b[!p"); // DECSTR
+        assert!(!t.frame().cursor_blink, "after {seq:?}");
+    }
+}
+
+#[test]
 fn leaving_the_alt_screen_restores_the_shape_from_before_it() {
     // nvim under TERM=xterm-256color, measured (#927): `?1049h`, then `CSI 2 SP q` (terminfo `Se`)
     // inside the alternate screen, then `?1049l`.
