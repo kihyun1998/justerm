@@ -34,6 +34,8 @@
 import type { DecodedFrame as WasmFrame } from "justerm-wasm-decode";
 import type { JustermRenderer } from "justerm-renderer";
 import type { DecodedFrame as WebFrame } from "../src/types";
+import type { MouseEvents } from "../src/input";
+import type { MarkerKind as LocalMarkerKind } from "../src/markers";
 // #802: the containment assertion in section 3 needs both the widget and the surface it holds.
 import type { JustermRenderer as JustermRendererWidget } from "../src/justerm-renderer";
 import { JustermRenderer as JustermRendererClass } from "../src/justerm-renderer";
@@ -148,13 +150,30 @@ type ReviewedDecoderExports =
   // `underlineStyle()` / `underlineStyles`, so a consumer never imports the decoder for them.
   // They arrived here exactly as this section predicted — unreviewed, at the pin bump.
   | "underlineStyle"
-  | "UnderlineStyle";
+  | "UnderlineStyle"
+  // Mirrored, and the mirrors stay (§2 above): `src/markers.ts`'s `MarkerKind` and
+  // `src/input.ts`'s `MouseEvents`. Fired as predicted at the web-v0.15.0 pin bump. Their names
+  // agree just below; their values agree at runtime in `published-decode.test.ts` (§3).
+  | "MarkerKind"
+  | "markerKind"
+  | "MouseEventBits"
+  | "mouseEventBits";
 
 type UnreviewedDecoderExports = Exclude<
   Extract<keyof typeof import("justerm-wasm-decode"), string>,
   ReviewedDecoderExports
 >;
 holds<Equal<UnreviewedDecoderExports, never>>(true);
+
+/** The member names of the two hand-kept value spaces match the decoder's (#885). */
+type NumberKeys<T> = { [K in keyof T]: T[K] extends number ? K : never }[keyof T];
+holds<Equal<keyof typeof LocalMarkerKind, keyof (typeof import("justerm-wasm-decode"))["MarkerKind"]>>(true);
+holds<
+  Equal<
+    Uncapitalize<keyof typeof MouseEvents>,
+    Extract<NumberKeys<import("justerm-wasm-decode").MouseEventBits>, string>
+  >
+>(true);
 
 // ---------------------------------------------------------------------------------------------
 // 2. Widths — every column the renderer takes can carry what the decoder produces
