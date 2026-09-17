@@ -40,8 +40,9 @@ struct Flat {
     cursor_row: u16,
     cursor_col: u16,
     cursor_visible: bool,
-    /// Caret shape (`0` = Block, `1` = Underline, `2` = Bar) + blink (#81).
-    cursor_shape: u8,
+    /// Caret shape (`0` = Block, `1` = Underline, `2` = Bar, `None` = unset, #927) +
+    /// blink (#81).
+    cursor_shape: Option<u8>,
     cursor_blink: bool,
     /// Viewport scroll position for the consumer's scrollbar (#112 / ADR-0013):
     /// `display_offset` lines scrolled up from the bottom (0 = following), and
@@ -195,11 +196,11 @@ fn flatten(frame: &Frame) -> Flat {
         cursor_row: frame.cursor_row,
         cursor_col: frame.cursor_col,
         cursor_visible: frame.cursor_visible,
-        cursor_shape: match frame.cursor_shape {
+        cursor_shape: frame.cursor_shape.map(|shape| match shape {
             justerm_core::CursorShape::Block => 0,
             justerm_core::CursorShape::Underline => 1,
             justerm_core::CursorShape::Bar => 2,
-        },
+        }),
         cursor_blink: frame.cursor_blink,
         display_offset: frame.display_offset,
         scrollback_len: frame.scrollback_len,
@@ -313,10 +314,12 @@ impl DecodedFrame {
         self.flat.cursor_visible
     }
 
-    /// Caret shape: `0` = Block, `1` = Underline, `2` = Bar (DECSCUSR #89). The
-    /// consumer draws the shape; the engine only reports it (#81).
+    /// Caret shape the application set with DECSCUSR (#89): `0` = Block,
+    /// `1` = Underline, `2` = Bar — or `undefined` while it has not set one, when
+    /// the consumer draws its own default shape (#927). The consumer draws the
+    /// shape; the engine only reports it (#81).
     #[wasm_bindgen(getter, js_name = cursorShape)]
-    pub fn cursor_shape(&self) -> u8 {
+    pub fn cursor_shape(&self) -> Option<u8> {
         self.flat.cursor_shape
     }
 

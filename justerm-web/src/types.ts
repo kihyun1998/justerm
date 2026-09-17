@@ -107,8 +107,10 @@ export interface DecodedFrame {
   readonly linkTable?: readonly string[];
   /**
    * Cursor state (screen coords, 0-based). `cursorShape`: 0 = Block, 1 =
-   * Underline, 2 = Bar. `cursorBlink` is the *mode* — the blink timing is a
-   * web-side policy. Optional — a frame may omit them (treated as no cursor).
+   * Underline, 2 = Bar — the application's DECSCUSR shape, `undefined` while it
+   * has set none, when the renderer draws its `cursorStyle` (#927). `cursorBlink`
+   * is the *mode* — the blink timing is a web-side policy. Optional — a frame may
+   * omit them (treated as no cursor).
    */
   readonly cursorRow?: number;
   readonly cursorCol?: number;

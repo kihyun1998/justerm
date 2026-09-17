@@ -66,7 +66,7 @@ fn sample_frame() -> Frame {
         cursor_row: 0,
         cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
+        cursor_shape: None,
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
@@ -188,14 +188,31 @@ fn decode_frame_exposes_cursor_scalars() {
     frame.cursor_row = 9;
     frame.cursor_col = 19;
     frame.cursor_visible = false;
-    frame.cursor_shape = justerm_core::CursorShape::Bar;
+    frame.cursor_shape = Some(justerm_core::CursorShape::Bar);
     frame.cursor_blink = true;
     let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
     assert_eq!(df.cursor_row(), 9);
     assert_eq!(df.cursor_col(), 19);
     assert!(!df.cursor_visible());
-    assert_eq!(df.cursor_shape(), 2); // Bar (#81)
+    assert_eq!(df.cursor_shape(), Some(2)); // Bar (#81)
     assert!(df.cursor_blink());
+}
+
+#[wasm_bindgen_test]
+fn decode_frame_reports_an_unset_cursor_shape_as_undefined() {
+    let mut frame = sample_frame();
+    frame.cursor_shape = None;
+    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+    assert_eq!(df.cursor_shape(), None); // the consumer's default applies (#927)
+    for (shape, id) in [
+        (justerm_core::CursorShape::Block, 0),
+        (justerm_core::CursorShape::Underline, 1),
+        (justerm_core::CursorShape::Bar, 2),
+    ] {
+        frame.cursor_shape = Some(shape);
+        let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+        assert_eq!(df.cursor_shape(), Some(id));
+    }
 }
 
 #[wasm_bindgen_test]
@@ -240,7 +257,7 @@ fn underline_colour_column_carries_the_tagged_reference() {
         cursor_row: 0,
         cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
+        cursor_shape: None,
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
@@ -282,7 +299,7 @@ fn colour_and_flag_columns_carry_tagged_values() {
         cursor_row: 0,
         cursor_col: 0,
         cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
+        cursor_shape: None,
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,

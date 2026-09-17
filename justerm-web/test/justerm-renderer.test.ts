@@ -10,6 +10,7 @@ import {
   damageHeader,
   decorationWire,
   gridForBox,
+  resolveCursorShape,
 } from "../src/justerm-renderer";
 import type { DecodedFrame } from "../src/types";
 
@@ -365,12 +366,25 @@ describe("cursorCommand", () => {
     ).toEqual({ kind: "set", col: 5, row: 2, shape: 2 });
   });
 
-  it("defaults col/row/shape to 0 when visible but unspecified", () => {
+  it("defaults col/row to 0 and leaves the shape unset when visible but unspecified", () => {
     expect(cursorCommand(frame({ cursorVisible: true }))).toEqual({
       kind: "set",
       col: 0,
       row: 0,
-      shape: 0,
+      shape: undefined,
     });
+  });
+});
+
+describe("resolveCursorShape (#927)", () => {
+  it("draws the application's DECSCUSR shape over the consumer's style", () => {
+    expect(resolveCursorShape(2, "underline")).toBe(2);
+    expect(resolveCursorShape(0, "bar")).toBe(0); // an explicit block (`CSI 2 SP q`) is not unset
+  });
+
+  it("draws the consumer's style while the application has set none", () => {
+    expect(resolveCursorShape(undefined, "block")).toBe(0);
+    expect(resolveCursorShape(undefined, "underline")).toBe(1);
+    expect(resolveCursorShape(undefined, "bar")).toBe(2);
   });
 });
