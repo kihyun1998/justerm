@@ -8,7 +8,9 @@ viewport** and therefore physically cannot reassemble a line that wraps — so t
 that must live in core, while what the consumer does with the text (URL regex, `new URL()` validation,
 screen-reader phrasing) stays policy.
 
-Two consumers, one shape: OSC 8-less URL detection, and the a11y screen-reader mirror.
+One consumer: plain-text URL detection, which reaches a frame-mode widget one hovered row at a time
+through the consumer-wired `LinkPort` (#934). (The a11y screen-reader mirror was once listed here too;
+it reads rows from its own `CellMirror` and has never joined wraps.)
 
 ## Governing decisions
 
@@ -118,6 +120,9 @@ recorded SHA; a paraphrase drops the pin).
   the three sites themselves rather than in the ticket: the sibling-not-a-parameter API shape and the
   `O(scrollback)` figure on `viewport_logical_lines`, the trim premise a mid-run cut breaks at that
   function's trim, the ~1.0× measurement on `search`, and the field-not-an-argument note on
-  `set_word_separators`. `benches/wrap_run.rs` re-measures on demand.
+  `set_word_separators`. `benches/wrap_run.rs` re-measures on demand. **The zero is dated:** #934's
+  `LinkPort` tells a backend to answer from `viewport_logical_lines`, one call per question the
+  pointer's motion asks, so a consumer that wires links makes the unbounded walk reachable again —
+  bounded in count by motion, not in cost.
 - **`accessible_text` vs `viewport_logical_lines` overlap is unstated** — one is whole-buffer, one is
   viewport-plus-context, and no artifact says which a consumer should reach for.

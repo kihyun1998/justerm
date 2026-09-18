@@ -13,12 +13,27 @@ They share a name and almost nothing else.
 
 ## Governing decisions
 
-**None.**
+**No ADR.** Three maintainer calls, made on #934 — judgements, not derivations, so a stronger
+argument does not reopen them; the maintainer does. They were shown each option's consequences after
+an adversarial pass and a refuting pass over the options, both checked against source:
+
+- **Plain-text URLs reach a frame-mode widget through a consumer-wired `LinkPort`** — the backend
+  answers the hovered row's logical line from core on demand. Rejected: joining rows web-side (loses
+  a URL that wraps across the viewport's top edge, and supersedes ADR-0017's rejection of it),
+  shipping edge rows on the wire (a VERSION bump, paid every frame), and core running the pattern.
+- **The widget's cell mirror stores each cell's URI**, so OSC 8 links stay whole across Partial
+  frames with no wire change. The accepted cost: two opens of one URI that *touch* merge in the widget.
+  (What was shown at the time said "only adjacent opens merge" — the first implementation merged every
+  cell of a URI across the viewport, which the e2e caught; the contiguity rule below is what makes the
+  consequence that was shown true.)
+- **Hover shows the pointer cursor and an underline**, the underline through a new renderer setter.
+
+What those calls did not cover is recorded under *Design model* as derivations.
 
 - [ADR-0017 — mechanism vs policy](../../adr/0017-core-consumer-boundary-mechanism-vs-policy.md) —
   the split above *is* this record applied twice: storing declared links needs the buffer, so it is
-  core; deciding what counts as a URL is policy, so it is not. Core has no regex dependency as a
-  result
+  core; deciding what counts as a URL is policy, so it is not. (Its "no regex dependency" ground was
+  withdrawn by its own 2026-07-22 amendment; the policy ground stands.)
 - [ADR-0020 — what qualifies for the frame snapshot](../../adr/0020-what-qualifies-for-the-frame-snapshot.md)
   — why OSC 8 is **not** a consumer event: a hyperlink is per-cell state, not a point-in-time
   notification. The clearest worked example of its state-versus-event rule
@@ -71,7 +86,36 @@ They share a name and almost nothing else.
   a per-character cell map — it has the whole buffer and the consumer does not — and the consumer runs
   the regex and `new URL()` validation over that text, mapping matches back through the cells.
 - **Neither path knows about the other.** A detected URL is not stored, and a declared link is not
-  re-validated. Whether a cell can be both is answered by nothing.
+  re-validated. Where one cell is both, the widget follows the OSC 8 link (`LinkController` puts
+  declared links first); no engine-side artifact says so.
+
+### In the widget (#934) — derivations
+
+- **The widget owns hover and click; the consumer owns opening.** A link is live exactly where a
+  press would stay local (`pressGoesToApp`, Shift overriding), and hover asks that same question —
+  plus the consumer's `activates` gate, so a Ctrl-to-follow consumer gets no underline on a plain
+  hover. The deliberate divergence from xterm.js: its Linkifier activates under mouse tracking too;
+  #934 required that a press the application takes never opens a link.
+- **A click is a press and release on the same cell of one link.** Leaving the pressed cell during
+  the press makes the gesture a selection, so dragging to copy a URL does not open it. A double
+  click's second press presses no link; its first still opens, as in every reference.
+- **A web-side OSC 8 link is a contiguous run of one URI**, continuing past a row's end only where
+  the row soft-wraps. The frame-local index cannot identify an open across frames, so contiguity is
+  the proxy; it is what keeps eight separate "select" links on eight rows from hovering as one.
+- **Only pointer motion asks the port.** A frame drops or carries cached answers but never asks,
+  so the questions follow the rows the pointer crosses, whatever the output rate — a pointer
+  resting over streaming output asks nothing, and shows a link under it again on its next motion.
+  This is how "no per-frame IPC call" (#934) is met: the first cut asked once per frame under a
+  resting pointer (measured 100 asks in 100 scrolling frames).
+- **An answer is kept only while the mirror shows it cell for cell**: every character in the cell it
+  names, every other cell of its rows blank, the rows it spans wrapping into each other and the rows
+  around it not. Text-per-row was not enough — a row that starts to wrap keeps its text, and the
+  cached cut-off URL would open (the check pass found it in two independent reads).
+- **A whole-screen scroll carries the answers with the rows**; a region scroll leaves the check to
+  drop what moved.
+- **The hovered underline is a single underline drawn where the cell has none**, through the flags
+  the line reads (`line_flags`), so it follows every colour rule an `SGR 4` underline does. A cell
+  already underlined keeps its own style, so hover shows only as the pointer cursor there.
 
 ## Code
 
@@ -80,7 +124,13 @@ They share a name and almost nothing else.
 - `justerm-core/src/term.rs` — `Term::current_link` and the per-frame remap into `link_table`
 - `justerm-core/src/serialize.rs` — `Frame`'s `link_table`
 - `justerm-web/src/links.ts` — the URL regex and validation policy, over
-  [logical lines](logical-lines.md)
+  [logical lines](logical-lines.md); `LinkController`, `LinkPort`, `LinkOptions`
+- `justerm-web/src/link-tracker.ts` — `LinkTracker`, the widget's link state, and `hoverSpans`
+- `justerm-web/src/cell-mirror.ts` — `CellMirror.osc8Links`, the per-cell URI column
+- `justerm-web/src/pointer.ts` — `PointerRouter`'s link half and `cellAt`
+- `justerm-web/src/terminal.ts` — `TerminalOptions.links`, the hover presentation
+- `justerm-renderer/src/frame.rs` — `line_flags` in `pack_instances`; `overlay.rs` —
+  `Overlay::is_link_hovered`; `webgl.rs` — `set_link_hover`
 
 ## Reference behaviour
 
@@ -107,6 +157,8 @@ claim about another implementation's bit layout, in a comment, with no row.
 - [a decoded frame's columns are getters](../invariant/decoded-columns-are-getters.md) — `link` and
   `linkTable` meet a consumer as accessors, so `osc8Links` destructures them once before walking
   the span directory. That is load-bearing, not style
+- [a pointer coordinate is bounded by its producer](../invariant/pointer-coordinates-are-bounded-by-their-producer.md)
+  — the widget's link converter owes the bound, and refuses where its siblings clamp
 
 ## Blast radius
 
@@ -129,8 +181,15 @@ claim about another implementation's bit layout, in a comment, with no row.
   frame-local and belongs to the wire. `Hyperlink` still exposes `uri()` alone, and the `Arc::ptr_eq`
   accessor that would answer directly stays deliberately unshipped (no consumer asks). A consumer that
   wanted to ask *in engine coordinates* currently cannot.
-- **Nothing states whether the two paths may overlap.** A cell inside a declared OSC 8 link is also
-  text that the URL regex will match; which one a click follows is undefined by every artifact.
+- **The widget's overlap rule has no engine-side counterpart.** OSC 8 wins over a detected URL on one
+  cell in `LinkController`, and only there.
+- **A port answer's off-screen context is never checked.** The mirror holds the viewport only, so a
+  line whose head sits above the top (or whose tail sits below the bottom) is kept on what the
+  viewport shows of it. Reaching a wrong link needs identical on-screen text over a changed off-screen
+  part.
+- **One `lineAt` costs the backend a whole `viewport_logical_lines`**, since core has no one-row
+  entry point; the question count is bounded by motion, the cost per question is not.
+- **A widget with a11y wired keeps two viewport mirrors**, one each, applying every frame.
 - **The `HAS_EXTENDED` claim is unpinned**, and it is a statement about another project's bit layout.
 - **Detection is viewport-only by construction.** A URL entirely in scrollback is never detected,
   because the consumer only ever sees assembled *viewport* lines — a limitation no document states.

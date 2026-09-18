@@ -70,6 +70,11 @@ changing what `justerm-web` hands it.
 - [accessibility](../territory/accessibility.md) — the AT-selection bridge converts DOM text offsets
   rather than pixels, so the arithmetic differs, but the obligation is the same one and it is
   discharged (out-of-tree endpoints resolve to the tree's edges).
+- [hyperlinks](../territory/hyperlinks.md) — `pointer.ts` `cellAt`, the widget's link converter
+  (#934). It **refuses** rather than clamps: outside `0..cols` × `0..rows` it answers `undefined`, so
+  the remainder strip and a pointer past the edge hover no link. Clamping — right for a mouse report
+  or a selection anchor, which must name *some* cell — would hover the edge link from the strip.
+  A zero-height box resolves to `Infinity` and is refused by the same test.
 - [fit](../territory/fit.md) — the *source* of the remainder strip rather than a converter itself:
   flooring the grid from the container is what guarantees the out-of-range coordinate exists.
 
@@ -118,8 +123,11 @@ fix mentions a shared rule.
   unconditional that there is none (#502 closed as won't-do, its alternative (F)). So this was never
   a queued affordance — it was an affordance that depended on a model question, and the question
   resolved the other way. The rest of the bullet is unaffected: hover and link click are live and
-  need no object. The demo already carries an unbounded fourth converter
-  (`demo/main.ts` `cellFromEvent`, feeding `LinkController`); it is inert because an out-of-range
+  need no object. Link hover and click landed in the widget with #934 (`pointer.ts` `cellAt`, listed
+  above), and the demo's own converter below went with them — **the rest of this bullet is its
+  history, kept because the conditional-inertness reasoning is the reusable part.** The demo
+  carried an unbounded fourth converter
+  (`demo/main.ts` `cellFromEvent`, feeding `LinkController`); it was inert because an out-of-range
   coordinate simply misses the link map, and it is listed here so the next reader does not have to
   re-derive that. **That inertness was conditional and the condition was never stated — #819.** It
   holds only while the page derives its cell from the measured BOX, which takes `cellHeight` to `0`

@@ -1,9 +1,8 @@
 import type { Link } from "./links";
 import type { DecodedFrame, FlagBits } from "./types";
 
-/** One stored cell: the resolved glyph + its flag bits. No colour — the renderer
- * resolves and composites colour in wasm (#273), and the only reader here is the
- * a11y text mirror (#504). */
+/** One stored cell: the resolved glyph, its flag bits and its OSC 8 URI. No colour — the
+ * renderer resolves and composites colour in wasm (#273). */
 interface MirrorCell {
   symbol: string;
   flags: number;
@@ -20,10 +19,10 @@ const SPAN_STRIDE = 5;
  * it so scroll-op damage can be applied — a GPU renderer can neither shift retained
  * cells nor return their styling, so the shifted region is repainted from here.
  *
- * Text-only since #504. It fed the beamterm adapter's TypeScript compositing until
- * #273 moved compositing into the renderer's wasm; the colour half survived that as
- * per-frame work whose result the sole caller discarded. The scroll-op mirroring
- * below is the part that is genuinely load-bearing.
+ * Its readers are the a11y text mirror (row text) and the widget's link state
+ * (#934: each cell's OSC 8 URI, and the text a port answer is checked against).
+ * It carries no colour since #504, when its last colour reader moved into the
+ * renderer's wasm (#273).
  */
 export class CellMirror {
   private readonly cells: MirrorCell[];

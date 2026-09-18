@@ -431,8 +431,8 @@ export interface TerminalOptions {
   /** Fire-and-forget consumer notifications (#117) — title/bell/cwd. The widget
    * subscribes the source's {@link import("./types").FrameSource.subscribeEvents}
    * channel and routes each event to these callbacks. Independent of the DOM group
-   * above (works on an output-only widget). onLinkActivate stays with the link
-   * controller (#113), not this stream. */
+   * above (works on an output-only widget). Link activation is {@link links}, not
+   * this stream: a link is per-cell state, not an event (ADR-0020). */
   events?: EventHandlers;
   /** `OSC 52` clipboard requests (#841) — an application asking to write, or read,
    * the user's clipboard. Rides the same {@link events} subscription, but is not a

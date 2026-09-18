@@ -2,7 +2,7 @@
 // viewport's logical-line text + a per-char cell map (it has the whole buffer);
 // the consumer — here — runs the URL regex and `new URL()` validation over that
 // text and maps matches back through the cells. The policy (what a URL is) stays
-// web-side; core has no regex dependency.
+// web-side.
 
 /** A viewport logical line from the engine: assembled text + per-char cell. */
 export interface LogicalLine {
@@ -28,10 +28,10 @@ const SPAN_STRIDE = 5;
  * index are one link, its URI `linkTable[index - 1]`. Walks the span directory
  * the same way the renderer does, reading the per-cell `link` column.
  *
- * NB: a Partial frame ships only damaged spans, so a link's undamaged cells are
- * absent and its `cells` come out incomplete — the same partial-frame gap as the
- * highlight overlay (#140). Correct on Full frames; the consumer should run this
- * against a full-viewport frame (or the cell mirror once it carries links). */
+ * One frame's links only: a Partial frame ships only damaged spans, so a link's
+ * undamaged cells are absent from it. `TerminalOptions.links` keeps links whole
+ * across frames (#934) from the widget's cell mirror, which groups by contiguous
+ * runs rather than by this frame-local index. */
 export function osc8Links(frame: DecodedFrame): Link[] {
   const { spans, link, linkTable } = frame;
   if (!link || !linkTable) return [];

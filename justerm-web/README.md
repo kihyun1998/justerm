@@ -88,6 +88,13 @@ const term = new Terminal(source, renderer, {
   // The widget owns the pointer: a press goes to the application when it tracks the mouse, and to
   // this controller otherwise (Shift forces it local). Bind no mouse listeners of your own for it.
   selection: new SelectionController(mySelectionPort, getGeometry),
+  // Links ride the same pointer: OSC 8 links come from the frames, and plain-text URLs from the
+  // logical line your backend answers for the hovered row (core `viewport_logical_lines`).
+  // Opening one is yours — the widget never opens anything.
+  links: {
+    onActivate: (uri) => myShell.open(uri),
+    port: { lineAt: (row) => myBackend.logicalLineAt(row) },
+  },
   getGeometry,
 });
 ```
@@ -399,8 +406,12 @@ pnpm test:e2e     # playwright, drives the real wasm in headless Chromium
   covers the widget's wiring without a GL context.
 - **`CellMirror`** (`src/cell-mirror.ts`) — a viewport-sized **text** mirror (ADR-0011): it
   applies a frame's scroll op so the screen-reader row tree stays correct across scroll, and
-  serves row text + the column map (#152). Text-only since #504 — colour resolve and
+  serves row text + the column map (#152), and each cell's OSC 8 URI, so a link stays whole
+  across frames that repaint only part of it (#934). No colour since #504 — colour resolve and
   compositing live in the renderer's wasm (#273), so the widget maps no cells to draw ops.
+- **`LinkTracker`** (`src/link-tracker.ts`) — the widget's link state (#934): a `CellMirror`
+  for OSC 8 links, and the logical lines `LinkPort` answered for plain-text URLs, each kept
+  only while the mirror still shows it.
 - **`Terminal`** (`src/terminal.ts`) — wires a `FrameSource` to a `Renderer`.
 
 ## Licence
