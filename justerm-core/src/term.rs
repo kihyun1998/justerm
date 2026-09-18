@@ -4801,10 +4801,10 @@ impl Term {
         if self.on_alt {
             return false;
         }
-        let cols = self.grid.cols();
+        let (cols, kept) = (self.grid.cols(), self.cursor.row);
         // Move the rows above the cursor into history, so dropping history takes them
         // too: their absolute lines are unchanged by the move, so no holder moves.
-        for _ in 0..self.cursor.row {
+        for _ in 0..kept {
             let row = self.grid.scroll_up_recycle(Row::blank(cols));
             self.scrollback.push_back(row);
         }
@@ -4819,8 +4819,12 @@ impl Term {
         }
         // Nothing follows the kept line now, so it cannot continue onto the next row.
         self.end_wrap(0);
-        self.repeat_anchor = None;
-        self.display_offset = 0;
+        // `REP` reads back the cell the last print wrote. That cell is on the kept line
+        // whenever the anchor is armed, so it moves up with it; anywhere else it is gone.
+        self.repeat_anchor = self
+            .repeat_anchor
+            .filter(|&(row, _)| row == kept)
+            .map(|(_, col)| (0, col));
         self.scroll = None;
         self.mark_fully_damaged();
         true

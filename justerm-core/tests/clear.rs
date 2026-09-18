@@ -244,17 +244,20 @@ fn the_kept_line_stops_wrapping() {
     assert!(!e.grid().is_row_wrapped(0));
 }
 
-/// `REP` repeats the last printed glyph by reading back the cell it wrote. That cell's
-/// row just moved, so a repeat after `clear` has nothing to read and prints nothing.
+/// `REP` repeats the last printed glyph by reading back the cell it wrote. Out of band,
+/// `clear` must not change what a repeat that follows it prints — the cell moved to row 0
+/// with the kept line, and the repeat reads it there.
+///
+/// The print has to be the last thing fed: every CSI, CR or LF disarms the anchor, so a
+/// cursor move before `clear` leaves nothing for this to observe.
 #[test]
-fn a_repeat_after_clear_prints_nothing() {
+fn a_repeat_after_clear_repeats_the_last_glyph() {
     let mut e = Engine::new(10, 3);
     e.feed(b"l1\r\nl2\r\nab"); // "b" arms REP at (2, 1)
-    e.feed(b"\x1b[1;1H\x1b[2;1H"); // move to row 1 ("l2")
 
     e.clear();
-    e.feed(b"\x1b[3b");
+    e.feed(b"\x1b[2b");
 
-    assert_eq!(row_text(&e, 0), "l2");
-    assert_eq!(row_text(&e, 1), "");
+    assert_eq!(row_text(&e, 0), "abbb");
+    assert_eq!((e.cursor().row, e.cursor().col), (0, 4));
 }
