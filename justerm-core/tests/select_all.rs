@@ -29,9 +29,21 @@ fn leaves_the_view_where_it_is() {
     assert_eq!(
         term.selection_range(),
         vec![
-            SelectionSpan { row: 0, left: 0, right: 9 },
-            SelectionSpan { row: 1, left: 0, right: 9 },
-            SelectionSpan { row: 2, left: 0, right: 9 },
+            SelectionSpan {
+                row: 0,
+                left: 0,
+                right: 9
+            },
+            SelectionSpan {
+                row: 1,
+                left: 0,
+                right: 9
+            },
+            SelectionSpan {
+                row: 2,
+                left: 0,
+                right: 9
+            },
         ]
     );
     assert_eq!(term.selection_text().as_deref(), Some("l1\nl2\nl3\nl4\nl5"));
@@ -50,8 +62,16 @@ fn trims_blank_edges() {
     assert_eq!(
         term.selection_range(),
         vec![
-            SelectionSpan { row: 1, left: 2, right: 9 },
-            SelectionSpan { row: 2, left: 0, right: 1 },
+            SelectionSpan {
+                row: 1,
+                left: 2,
+                right: 9
+            },
+            SelectionSpan {
+                row: 2,
+                left: 0,
+                right: 1
+            },
         ]
     );
 }
@@ -92,7 +112,11 @@ fn wide_glyph_at_an_edge_is_whole() {
     assert_eq!(term.selection_text().as_deref(), Some("漢a漢"));
     assert_eq!(
         term.selection_range(),
-        vec![SelectionSpan { row: 0, left: 0, right: 4 }]
+        vec![SelectionSpan {
+            row: 0,
+            left: 0,
+            right: 4
+        }]
     );
 }
 
