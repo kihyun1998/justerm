@@ -104,7 +104,12 @@ than a mark. Two questions at the moment it is designed, not after:
 2. Is the answer written where the next author will hit it? A doc-comment on the invalidation
    helper is where the answer goes; a link from the territory note is what makes it findable.
 
-It also recurs on any **new destroyer**. `DECALN` and `ED 3` are both unimplemented and both blank
-content in place; `term.rs`'s `ED 3` arm already records an anchor-fixup obligation naming
-selection, markers and tracked points — and, consistent with this note's history, does not name
-search highlights.
+It also recurs on any **new destroyer**. `DECALN` is unimplemented and blanks content in place.
+`ED 3` was listed here beside it until #936 implemented it, and it turned out **not** to be a
+destroyer in this note's sense: it drops lines off the *front*, which is motion, so it rides the
+eviction funnel (`*_evict_oldest(n)`, now taking a count) and inherits all four answers from it —
+search highlights included, the holder this sentence used to record the obligation list omitting.
+`Engine::clear` is both at once: history and the rows above the cursor leave through the same
+funnel, and the rows below the kept line are blanked in place, where it answers per structure —
+marks on those rows **retire** (`dispose_markers_on_row`, as `ED 2`), tracked points stay
+**positional**, and the selection and highlights are cleared outright.

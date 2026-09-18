@@ -3522,3 +3522,29 @@ boolean so it need not ask — was measured and dropped: the controller's flag i
 bare click that selected nothing leaves it `true` while the engine reports empty text. A consumer
 trusting it would enable a Copy action with nothing to copy on **every click**. Making it true means
 asking the engine, which is the round-trip the boolean existed to avoid.
+
+## Dropping history — `ED 3` in band, and a Clear command out of band (#936, verified 2026-09-18)
+
+Two verbs that drop lines off the front of the buffer. For `ED 3` the four references converge on
+the primary screen and split on the alt screen; for the out-of-band Clear command there are only two
+references that have one, and they split on both the alt screen and what the cursor's line keeps.
+
+| Fact | Reference | Site |
+|---|---|---|
+| `ED 3` sets `savedlines = 0` behind the `eraseSavedLines` resource (default on) and touches neither the screen nor the cursor | xterm | `util.c:2051-2056` in `do_erase_display`; resource default `charproc.c:443` |
+| ⚠ `savedlines` is one scalar that `ToAlternate` / `FromAlternate` never swap, so `ED 3` on the alt screen drops the **primary's** history | xterm | `charproc.c:9523`, `:9542` (no `savedlines` in either) |
+| `ED 3` trims the *active* buffer's lines above the screen and lowers `ybase` and `ydisp` by the same count, floored at 0 — the alt buffer has none, so it does nothing there | xterm.js | `src/common/InputHandler.ts:1282-1292` |
+| `ClearMode::Saved` clears history, clamps the vi cursor, and drops a selection that intersects history, then marks the whole screen damaged | alacritty | `alacritty_terminal/src/term/mod.rs:1805-1817` |
+| `.scrollback => screens.active.eraseHistory(null)` — the active screen only | ghostty | `src/terminal/Terminal.zig:3397` |
+| `Terminal.clear()`: disposes every marker, makes the cursor's line line 0, drops the rest, pushes blank lines, zeroes `ydisp`/`ybase`/`y` (column untouched), fires a scroll event, refreshes every row. Out of band: it does not touch the parser | xterm.js | `src/browser/CoreBrowserTerminal.ts:1074-1088` |
+| `clear_screen` does **nothing on the alt screen** and reports the keybind unconsumed — *"this messes up the running programs knowledge of where the cursor is"* | ghostty | `src/Surface.zig:5167-5181`; `src/termio/Termio.zig:548-552` |
+| On the primary it clears the selection and the history, then — not at a prompt — erases the rows above the cursor, or — at a prompt — clears the whole screen and relies on the shell repainting after a form feed it sends | ghostty | `src/termio/Termio.zig:554-591` |
+
+**What justerm took, and which kind of call each was.** `ED 3` follows xterm, the binding reference,
+including on the alt screen; the other three do nothing there because their alt screen has no history
+of its own, which is the one axis on which justerm's shared-scrollback storage sides with xterm. That
+is a derivation. `Engine::clear` does nothing on the alt screen — ghostty's answer — and that one
+is the **maintainer's** call on #936, made with both references' behaviour in front of them. It
+keeps xterm.js's shape otherwise, with one derived divergence: the markers on the kept line survive
+it, because retiring the `CommandStart` of the command being typed loses that command from
+`command_lines` — the reason `EL` retires nothing (#750).

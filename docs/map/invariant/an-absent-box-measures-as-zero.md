@@ -112,7 +112,9 @@ because every value involved is finite and in range. The four measured shapes:
   input never runs (measured: 2 requests, a plausible finite offset, no `NaN`). That is a **probe
   artifact**, not a route — this note said it was the rule for the length of one commit, on the
   strength of that one measurement, until the RIS path was found by asking what *else* empties a
-  scrollback. `ED 3` had been checked and is unimplemented; `full_reset` had not.
+  scrollback. `ED 3` had been checked and was then unimplemented; `full_reset` had not. Since #936
+  there are two more routes of the same kind — `ED 3` and `Engine::clear` both take
+  `scrollback_len()` to `0` with no host action.
   `SelectionController`'s half of this bullet was **read, not run** until #819 ran it — see the
   next bullet, which is the same sentence with a number attached.
 - **The same drag, at the pointer converter — measured in a real browser, #819, and it is the

@@ -122,7 +122,7 @@ fn clears_the_selection_and_search_highlights() {
     e.select_all();
     let hits = e.search("abc");
     e.set_search_highlights(hits.clone());
-    e.set_active_search_match(Some(hits[0].clone()));
+    e.set_active_search_match(Some(hits[0]));
 
     e.clear();
 

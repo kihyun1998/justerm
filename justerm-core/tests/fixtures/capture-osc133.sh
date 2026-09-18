@@ -15,7 +15,7 @@
 # recorded in `tests/command_lines_capture.rs`:
 #
 #   1. a real `clear` emits `ESC[H ESC[2J ESC[3J` — ED 2 (handled) plus ED 3
-#      (unimplemented), so the fix's dominant path is confirmed real;
+#      (a no-op then; implemented by #936), so the fix's dominant path is confirmed real;
 #   2. `readline` emits a PARTIAL `ESC[K` at the cursor while the user edits — not
 #      the `\r ESC[K` whole-row redraw an earlier draft of the fix's rationale
 #      claimed. The claim was corrected against this recording;
