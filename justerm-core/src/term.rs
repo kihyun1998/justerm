@@ -381,8 +381,10 @@ pub struct Term {
     /// `BufferSet` (#177 S0): each a stable id bound to an absolute buffer line
     /// that re-anchors through eviction/scroll/reflow like a selection anchor. The
     /// active buffer's list is selected by `on_alt` — `markers`/`markers_mut`.
-    /// `alt_markers` stays empty while the alt guards (#158/#164) are in place; it
-    /// is disposed on alt-leave (xterm `clearAllMarkers`). `next_marker_id` hands
+    /// `alt_markers` holds the plain anchors `add_marker` makes on the alt screen
+    /// (#187); OSC 133 command marks never land there, because `add_command_mark`
+    /// returns on the alt screen (#192). It is disposed on alt-leave (xterm
+    /// `clearAllMarkers`). `next_marker_id` hands
     /// out monotonic ids across both buffers so ids never alias.
     normal_markers: VecDeque<Marker>,
     alt_markers: VecDeque<Marker>,
