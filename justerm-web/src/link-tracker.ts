@@ -159,10 +159,13 @@ export class LinkTracker {
     this.disposed = true;
   }
 
-  /** The lead cell of a wide pair for its trailing half; any other cell as is. */
-  private lead(cell: readonly [number, number]): readonly [number, number] {
+  /** The lead cell of a wide pair for its trailing half; any other cell as is; a cell outside the
+   * mirror (or before the first frame) as no cell. */
+  private lead(cell: readonly [number, number]): readonly [number, number] | undefined {
     const [row, col] = cell;
-    return col > 0 && this.mirror?.isSpacer(row, col) ? [row, col - 1] : cell;
+    const m = this.mirror;
+    if (!m || row < 0 || row >= m.rows || col < 0 || col >= m.cols) return undefined;
+    return col > 0 && m.isSpacer(row, col) ? [row, col - 1] : cell;
   }
 
   /** Drop the cached lines the mirror no longer shows, if a frame came since the last check. */

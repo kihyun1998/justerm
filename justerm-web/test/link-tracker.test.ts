@@ -520,3 +520,46 @@ describe("LinkTracker — press, drag and the consumer's gate (#934 check pass)"
     expect((hovers.at(-1) as Link).uri).toBe("http://a.io");
   });
 });
+
+describe("LinkTracker — a pointer cell outside the mirror (#934 reopen)", () => {
+  // The pointer's grid is the consumer's geometry; the mirror's is the last frame's. They differ
+  // until the frame after a resize lands.
+  it("a row below the mirror is no cell: no throw, the hover drops, the port is not asked", () => {
+    const port = new HeldPort();
+    const { t, hovers } = tracker({ port });
+    t.applyFrame(frame(0, { 0: { text: "docs", link: 1 } }, ["http://a.io"]));
+    t.pointer([0, 1]);
+
+    expect(() => t.pointer([ROWS + 8, COLS - 1])).not.toThrow();
+
+    expect(hovers.at(-1)).toBe("leave");
+    expect(port.asked).toEqual([0]);
+  });
+
+  it("a column past the mirror's width is no cell, not the next row's cell", () => {
+    const port = new HeldPort();
+    const { t, hovers } = tracker({ port });
+    t.applyFrame(frame(0, { 1: { text: "한docs", link: 1 } }, ["http://a.io"]));
+
+    // Row-major, (0, COLS + 1) lands on (1, 1) — the spacer of 한, inside the link.
+    t.pointer([0, COLS + 1]);
+
+    expect(hovers).toEqual([]);
+    expect(port.asked).toEqual([]);
+  });
+
+  it("a press and release below the mirror open nothing and do not throw", () => {
+    const { t, opened } = tracker();
+    t.applyFrame(frame(0, { 0: { text: "docs", link: 1 } }, ["http://a.io"]));
+
+    expect(() => {
+      t.press([ROWS + 8, 1], ev());
+      t.drag([ROWS + 8, 2]);
+      t.release([ROWS + 8, 1], ev());
+      t.press([0, 1], ev());
+      t.release([ROWS + 8, 1], ev());
+    }).not.toThrow();
+
+    expect(opened).toEqual([]);
+  });
+});
