@@ -184,6 +184,22 @@ Two things came out of it that are worth carrying rather than re-deriving:
   travels through the demo page's own handler, re-reads the missing box, and re-hides — agreeing with
   the wrong implementation instead of separating from it) to a bare `resize`.
 
+**A grid leaving the draw set of a living surface owes a present, by whichever door it leaves
+(#939).** The surface's
+loop is the only presenter, and the drawing buffer keeps the last frame until something presents —
+so a grid that stops being drawn stays on screen until a sibling happens to render, and forever when
+it was the last grid. `hide()` always presented (`clearViewport` + `present()` in `applyGrid`);
+`GridLease.release` did not until #939, which asks for a coalesced `requestRender` after
+`removeGrid`. **An ended surface presents nothing, and that is the other half of the rule, not a
+gap:** `surface.dispose()` latches `disposed` before it releases, so its own releases schedule
+nothing, and a sole tenant's frame is cancelled by the `surface.dispose()` that follows its release —
+so the last frame stays on a canvas the host still holds, and taking that canvas down is the host's,
+since the host holds it. **Why #775's browser test never saw it:** its probe
+presents before every read and pane B's content timer presents on every tick, so the stale frame was
+always overwritten before anyone looked — a proxy for *what a render would draw*, not *what is on
+screen*. The #939 test stops the timers, reads a composited screenshot with no present of its own, and
+takes its expected value from the same point with the canvas hidden rather than from a constant.
+
 ## Reference behaviour
 
 In `docs/agents/reference-facts.md` — **linked, never restated** (each row carries a `file:line` at a

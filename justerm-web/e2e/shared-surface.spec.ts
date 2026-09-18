@@ -1,3 +1,5 @@
+import { inflateSync } from "node:zlib";
+
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 
 import { DEMO_URL } from "../playwright.config";
@@ -541,6 +543,95 @@ test("ending one terminal releases only its grid, and the survivor still recover
   // The departed pane stays departed across the restore — a recovery that resurrected it would mean
   // the renderer had kept a grid the lease gave back.
   expect(loss.after.a.centre).toBe(UNPAINTED);
+});
+
+/**
+ * The composited `r,g,b` at a CSS-px point — what a person sees, read from a screenshot rather than
+ * from the drawing buffer, so no `present()` of the probe's own stands between the library and it.
+ *
+ * Decoded here rather than in the page: a 1x1 8-bit PNG is one scanline of a filter byte and one
+ * pixel, and with no left or upper neighbour every PNG filter reconstructs the stored bytes as-is.
+ */
+const compositedAt = async (page: Page, x: number, y: number): Promise<string> => {
+  const png = await page.screenshot({ clip: { x, y, width: 1, height: 1 } });
+  const idat: Buffer[] = [];
+  for (let at = 8; at < png.length; ) {
+    const len = png.readUInt32BE(at);
+    const type = png.toString("latin1", at + 4, at + 8);
+    if (type === "IHDR") {
+      expect(png[at + 8 + 8], "an 8-bit screenshot").toBe(8);
+      expect([2, 6], "an RGB or RGBA screenshot").toContain(png[at + 8 + 9]);
+    }
+    if (type === "IDAT") idat.push(png.subarray(at + 8, at + 8 + len));
+    at += 12 + len;
+  }
+  return [...inflateSync(Buffer.concat(idat)).subarray(1, 4)].join(",");
+};
+
+/** Wait for `n` animation frames through playwright's own poller, which anchors the wait (#731). */
+const frames = async (page: Page, n: number): Promise<void> => {
+  const start = await page.evaluate(() => {
+    const w = window as unknown as { __e2eFrames?: number };
+    if (w.__e2eFrames === undefined) {
+      w.__e2eFrames = 0;
+      const tick = (): void => {
+        w.__e2eFrames!++;
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    }
+    return w.__e2eFrames;
+  });
+  await page.waitForFunction(
+    (target) => ((window as unknown as { __e2eFrames?: number }).__e2eFrames ?? 0) >= target,
+    start + n,
+  );
+};
+
+const centreOf = (page: Page, selector: string): Promise<{ x: number; y: number }> =>
+  page.evaluate((s) => {
+    const r = document.querySelector(s)!.getBoundingClientRect();
+    return { x: Math.floor(r.left + r.width / 2), y: Math.floor(r.top + r.height / 2) };
+  }, selector);
+
+/**
+ * #939 — **disposing a placed terminal takes its last frame off the canvas by itself.**
+ *
+ * The #775 test above cannot see this: its probe presents before every read, and pane B's content
+ * timer presents on every tick. Here the timers are stopped, nothing on the page presents, and the
+ * reading is the composited screen — so the only thing that can clear pane A's rect is the release.
+ */
+test("disposing a placed terminal leaves the page, not its last frame, on screen (#939)", async ({
+  page,
+}) => {
+  // Stops both content timers; its own present lands before anything below is read.
+  const snap = await page.evaluate(() => window.__surfaceProbe!());
+  expectContextAlive(snap);
+  await frames(page, 2);
+
+  const a = await centreOf(page, "#pane-a");
+  const b = await centreOf(page, "#pane-b");
+  const before = await compositedAt(page, a.x, a.y);
+  // The instrument sees the canvas: pane A's own background, composited.
+  expect(before, "pane A before it ends").toBe(BG_A.split(",").slice(0, 3).join(","));
+
+  await page.getByTestId("end-a").click();
+  // The release's present is one frame away; a few more leave room for any other that was owed.
+  await frames(page, 4);
+  const after = await compositedAt(page, a.x, a.y);
+  const bAfter = await compositedAt(page, b.x, b.y);
+
+  // The expected value, measured rather than assumed: the same point with the canvas taken out.
+  await page.evaluate(() =>
+    document.querySelector<HTMLElement>("#surface")!.style.setProperty("visibility", "hidden"),
+  );
+  const bare = await compositedAt(page, a.x, a.y);
+
+  expect(bare, "the page under pane A must differ from pane A, or the check below is vacuous").not.toBe(
+    before,
+  );
+  expect(after, "pane A's rect after it ended shows the page, not its last frame").toBe(bare);
+  expect(bAfter, "the survivor is still drawn").toBe(BG_B.split(",").slice(0, 3).join(","));
 });
 
 /**

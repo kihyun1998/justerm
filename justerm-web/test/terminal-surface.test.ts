@@ -314,6 +314,65 @@ describe("TerminalSurface — the grid registry", () => {
     expect(backend.removed).not.toContain(b.id);
   });
 
+  it("presents after a release, so the released grid's pixels leave the canvas (#939)", () => {
+    // `hide()` clears a grid's viewport and presents; a release removes the grid and, until #939,
+    // presented nothing — the last frame it drew stayed on the canvas until a sibling happened to
+    // render, and forever when it was the last grid.
+    const { surface, backend, raf } = harness();
+    const a = surface.addGrid();
+    surface.addGrid();
+
+    a.release();
+    expect(raf.scheduled).toBe(1);
+
+    raf.flush();
+
+    // The present comes after the removal, or it draws the grid being released.
+    expect(backend.calls.filter((c) => c === "render" || c.startsWith("removeGrid"))).toEqual([
+      `removeGrid(${a.id})`,
+      "render",
+    ]);
+  });
+
+  it("coalesces several releases in one frame into one present (#939)", () => {
+    const { surface, backend, raf } = harness();
+    const leases = [surface.addGrid(), surface.addGrid(), surface.addGrid()];
+
+    for (const lease of leases) lease.release();
+    raf.flush();
+
+    expect(backend.calls.filter((c) => c === "render")).toHaveLength(1);
+  });
+
+  it("asks for no present when the surface itself ends (#939)", () => {
+    // A disposed surface presents nothing: the releases its own teardown makes must not leave a
+    // frame scheduled against it.
+    const { surface, backend, raf } = harness();
+    const a = surface.addGrid();
+    a.onEnd(() => a.release());
+    surface.addGrid();
+
+    surface.dispose();
+
+    expect(raf.scheduled).toBe(0);
+    raf.flush();
+    expect(backend.calls).not.toContain("render");
+  });
+
+  it("cancels a release's present when the surface ends right after — a sole tenant's dispose (#939)", () => {
+    // `JustermRenderer.dispose()` on the `create` path releases its lease and then ends the surface
+    // it composed: the frame the release asked for must not outlive the surface.
+    const { surface, backend, raf } = harness();
+    const a = surface.addGrid();
+
+    a.release();
+    expect(raf.scheduled).toBe(1);
+    surface.dispose();
+
+    expect(raf.scheduled).toBe(0);
+    raf.flush();
+    expect(backend.calls).not.toContain("render");
+  });
 });
 
 describe("TerminalSurface — one animation loop", () => {
