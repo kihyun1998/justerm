@@ -1097,7 +1097,9 @@ stopped (killing the `pnpm` wrapper can leave the `vite` child holding the port)
 Before trusting a red E2E from a worktree, check who owns the port —
 `netstat -ano | grep 5173` — and kill the stale listener rather than debugging the
 symptom. The same trap makes a *green* run untrustworthy when the other checkout
-happens to contain the fix.
+happens to contain the fix. *(Since #945 neither Playwright config adopts a listener, so
+this now fails at start with "is already used" instead —
+`docs/map/territory/browser-proof-harness.md`.)*
 
 **The same shape once broke cargo itself, and the fix is the general lesson (#608).** A
 worktree does not only break `../` in prose — it breaks any fact stated as a path in a

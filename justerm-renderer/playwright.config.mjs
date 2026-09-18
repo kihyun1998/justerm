@@ -19,7 +19,8 @@ export default defineConfig({
   webServer: {
     command: "node scripts/serve.mjs",
     url: `http://127.0.0.1:${PORT}/demo/index.html`,
-    reuseExistingServer: !process.env.CI,
+    // Never adopt a server already on the port: it may be another checkout's (#945).
+    reuseExistingServer: false,
     timeout: 20_000,
   },
 });
