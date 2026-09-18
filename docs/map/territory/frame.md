@@ -28,8 +28,9 @@ The *shape* is here; the bytes are [wire format](wire-format.md).
   one of them or refused.
 - **Scalars ride the header because a consumer cannot derive them from cell damage** and they change
   nearly every frame: caret row/col/visible/shape/blink, `display_offset`, `scrollback_len`,
-  `mouse_events`, `alt_screen`, `scroll`, and since v15 the marker-index basis (`evicted_total`,
-  `marker_epoch` — #490). `alt_screen` is the clearest case — buffer-global state
+  `mouse_events`, `alt_screen`, `scroll`, since v15 the marker-index basis (`evicted_total`,
+  `marker_epoch` — #490), and since v18 `modified_keys` (#941 — which modified C0-legacy keys the
+  current keyboard modes deliver distinctly; see [input encoding](input-encoding.md)). `alt_screen` is the clearest case — buffer-global state
   that viewport damage simply does not contain, which the a11y announce policy gates on.
 - **The basis scalars are the header's first entry that exists to make something *leave* it.** Every
   other scalar describes the terminal; these two describe how long a consumer's separately-pulled

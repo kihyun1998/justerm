@@ -214,14 +214,16 @@ same trace.
   the reason it does not (#844), over a published set derived from `lib.rs` rather than listed
 - `justerm-wasm-decode/src/lib.rs` — `Flags`/`flags()` (the eleven named bits),
   `UnderlineStyle`/`underlineStyle()` (the 3-bit field, #831), `MarkerKind`/`markerKind()` (the
-  `markerPositions` kind lane, #860) and `MouseEventBits`/`mouseEventBits()` (the
-  `mouseWantedEvents` mask, #884): the module-scope names a consumer reads a value space by.
+  `markerPositions` kind lane, #860), `MouseEventBits`/`mouseEventBits()` (the
+  `mouseWantedEvents` mask, #884) and `ModifiedKeyBits`/`modifiedKeyBits()` (the `modifiedKeys`
+  mask, #941): the module-scope names a consumer reads a value space by.
   Guarded respectively by `flags_map_covers_every_declared_cell_flag`; by `underline_style` taking
   the core enum, so its `match` is exhaustive over it; — because a `u32` argument can never be
   exhaustive over an enum — by `published_kind`, which `flatten` routes the lane through, plus
   `every_published_kind_is_reachable_through_the_accessor` for the reverse direction; and by
   `mouse_event_bits_covers_every_declared_member`, which asserts against `MouseEvents::all()`
-  rather than against a copy of its own list
+  rather than against a copy of its own list — and `modified_key_bits_covers_every_declared_member`
+  the same way against `ModifiedKeys::all()`, plus a check that no two fields name one bit
 - `justerm-wasm-decode/tests/wire_enum_stays_exhaustive.rs` — the scan that keeps every core enum
   this crate maps onto a published value exhaustive (#843); its own source list is the roster that
   #831 had to widen

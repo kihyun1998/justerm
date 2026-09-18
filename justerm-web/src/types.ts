@@ -178,7 +178,8 @@ export interface DecodedFrame {
    * key under the keyboard modes it has asked for (the kitty flags, `modifyOtherKeys` level 2),
    * as the {@link import("./input").ModifiedKeys} bitflags. Derived by core from the encoder
    * that encodes the key, so a consumer substituting a key in `beforeKey` can ask whether the
-   * application would have received the modifier. Optional — a frame may omit it.
+   * application would have received the modifier. Optional — a frame may omit it, and absence
+   * is *unknown*, not `0`: a legacy engine's mask is not empty (Shift+Tab is back-tab).
    */
   readonly modifiedKeys?: number;
   /**

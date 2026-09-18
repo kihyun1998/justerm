@@ -174,7 +174,11 @@ A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
   wanted-events mask (`mouse_events` u8 — v8, #129/ADR-0016, the routing bits DOWN/UP/WHEEL/DRAG/MOVE the
   active tracking mode reports; the consumer routes a mouse event to the app vs. local on it), the
   alt-screen flag (`alt_screen` u8 — v9, #149, whether the alternate screen is active; the a11y announce
-  policy #119 suppresses output reads on it), the marker-index basis (`evicted_total` u64 +
+  policy #119 suppresses output reads on it), the modified-keys mask (`modified_keys` u16 — v18, #941:
+  for Shift/Alt/Ctrl on Enter/Tab/Backspace/Escape, whether the modified press encodes differently
+  from the bare key under the keyboard modes the application asked for — derived by running
+  `encode_key` itself, so a consumer substituting a key knows whether the modifier would have
+  arrived), the marker-index basis (`evicted_total` u64 +
   `marker_epoch` u32 — v15, #490: lines evicted since RIS, and a counter that moves when a *pulled*
   marker index went stale for a reason that delta cannot express; together they let a consumer ask for
   the marker set once instead of being handed every live marker in every frame) and its check
@@ -928,6 +932,11 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   form (`CSI 1;5A`, `CSI 3;5~`) and this mechanism exists to resolve ambiguity, not to restate it
   — which is also where the two references part company, xterm routing `Delete` onto
   Backspace's own codepoint and ghostty declining to.
+  **What the two extensions decide reaches the consumer as a derived mask, not as the modes**
+  (#941): the frame's `modified_keys` says, per modifier and C0-legacy key, whether the modified
+  press encodes differently from the bare one. It is computed by running `encode_key` on both, so
+  it cannot disagree with the bytes sent — the kitty flags alone would mislead (report-events
+  without disambiguate is non-zero yet leaves `Shift+Enter` a plain CR).
   The kitty keyboard protocol (`CSI u` + a negotiated progressive-flag stack + key-release events) is a
   *stateful* superset deferred to #23; legacy here is a pure event→bytes function. (`?1016` SGR-pixel
   mouse — once mistakenly called out-of-bounds — is in scope: the consumer supplies the pixels, the

@@ -125,9 +125,10 @@ fn widening_the_span_within_the_frame_is_still_rejected_on_length_not_on_bounds(
     e.reset_damage(); // column, and the damage bracket then spans the full width
     e.feed(b"\x1b[2;1Hxyz"); // damage a few columns of the *other* row
     let mut frame = e.frame();
-    // The needle below is found by byte search, and a legacy engine's mask (`SHIFT_TAB`,
-    // bytes `02 00`) followed by the span count spells the same six bytes as this span's
-    // triple. Cleared so the search finds the span alone (#941).
+    // The needle below is found by byte search, and the header's tail — `mouse_events` and
+    // `alt_screen` (`00 00`), a legacy engine's mask (`SHIFT_TAB`, `02 00`), the span count
+    // (`02 00`) — spells the same six bytes as this span's triple. Cleared so the search finds
+    // the span alone (#941).
     frame.modified_keys = ModifiedKeys::empty();
     // Take the narrowest span rather than the first: the damage bracket spans out to the
     // previous cursor column, so which row is narrow depends on where the cursor was.
