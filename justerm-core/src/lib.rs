@@ -416,10 +416,11 @@ impl Engine {
         self.term.select_all();
     }
 
-    /// Clear the screen and scrollback, keeping the cursor's line as the new top
-    /// row — a terminal's Clear command. Out of band: it does not go through the
-    /// parser, so bytes the host is still writing are unaffected. Clears the
-    /// selection and search highlights; markers off the kept line are disposed
+    /// Clear the screen and scrollback, keeping the cursor's line at the top — its
+    /// whole logical line down to the cursor, so a wrapped prompt keeps its start. A
+    /// terminal's Clear command. Out of band: it does not go through the parser, so
+    /// bytes the host is still writing are unaffected. Clears the selection and
+    /// search highlights; markers off the kept rows are disposed
     /// (announced as [`TermEvent::MarkerDisposed`]), and `evicted_total` advances by
     /// the lines dropped. The next [`Engine::frame`] is `Full`.
     ///

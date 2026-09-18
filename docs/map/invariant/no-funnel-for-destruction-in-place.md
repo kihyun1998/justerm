@@ -107,9 +107,10 @@ than a mark. Two questions at the moment it is designed, not after:
 It also recurs on any **new destroyer**. `DECALN` is unimplemented and blanks content in place.
 `ED 3` was listed here beside it until #936 implemented it, and it turned out **not** to be a
 destroyer in this note's sense: it drops lines off the *front*, which is motion, so it rides the
-eviction funnel (`*_evict_oldest(n)`, now taking a count) and inherits all four answers from it —
+eviction funnel (`lines_left_the_front(n)`, shared with the scrollback cap) and inherits all four
+answers from it —
 search highlights included, the holder this sentence used to record the obligation list omitting.
-`Engine::clear` is both at once: history and the rows above the cursor leave through the same
-funnel, and the rows below the kept line are blanked in place, where it answers per structure —
+`Engine::clear` is both at once: history and the rows above the cursor's logical line leave through
+the same funnel, and the rows below the cursor are blanked in place, where it answers per structure —
 marks on those rows **retire** (`dispose_markers_on_row`, as `ED 2`), tracked points stay
 **positional**, and the selection and highlights are cleared outright.

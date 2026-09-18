@@ -4784,13 +4784,15 @@ impl Term {
 
     /// Clear the primary screen and its scrollback, keeping the cursor's line
     /// (#936) — a terminal's Clear command, out of band: the parser and whatever it
-    /// holds mid-sequence are untouched. The cursor's row becomes row 0 at the same
-    /// column; the rows above it and all of history are dropped, and the rows below
-    /// are blanked. The view returns to the bottom and the next frame is `Full`.
+    /// holds mid-sequence are untouched. The cursor's logical line, from its first
+    /// row on screen down to the cursor's row, moves to the top with the cursor on it
+    /// at the same column; the rows above it and all of history are dropped, and the
+    /// rows below the cursor are blanked. The view returns to the bottom and the next
+    /// frame is `Full`.
     ///
-    /// The selection and the search highlights are cleared. A marker on the kept
-    /// line stays on it; every other marker is disposed and announced. Tracked
-    /// points on dropped lines go; the rest shift with the kept line.
+    /// The selection and the search highlights are cleared. A marker on a kept row
+    /// stays on it; every other marker is disposed and announced. Tracked points on
+    /// dropped lines go; the rest shift with the kept rows.
     ///
     /// Returns `false` and changes nothing on the alt screen.
     pub fn clear(&mut self) -> bool {

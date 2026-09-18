@@ -29,10 +29,12 @@ misdiagnosed** before it was understood.
   divergence in the direction of the weaker reference.
 - **History leaves from the front in three ways, and all three are one funnel (#936).** The cap
   evicts one line per linefeed; `ED 3` drops all of it in band; `Engine::clear` drops it out of band
-  together with the rows above the cursor, which it first moves into history so that one drop takes
-  both — their absolute lines do not change in the move, so no holder moves until the drop. All
-  three call `erase_history`'s fixups (`*_evict_oldest(n)`), advance `evicted_total` by what left,
-  and clamp `display_offset`. The last is not optional: every viewport read computes
+  together with the rows above the cursor's logical line, which it first moves into history so that
+  one drop takes both — their absolute lines do not change in the move, so no holder moves until the
+  drop. All three go through `Term::lines_left_the_front(n)`, which advances `evicted_total` by what
+  left and repairs the four holders. Until the adversarial pass on #936 the cap kept its own copy of
+  that call list beside `erase_history`'s — two lists a fifth holder could reach one of. Each caller
+  clamps `display_offset` itself, and that is not optional: every viewport read computes
   `scrollback.len() - display_offset` (`selection_range`, `viewport_line`, `viewport_link_at`,
   `match_spans`), and an offset that outlives the history it pointed into underflows all of them.
   Until #936 this was written as an obligation on `ED 3`'s empty arm, and that list named three
@@ -51,12 +53,15 @@ misdiagnosed** before it was understood.
   region-scroll primitives
 - `justerm-core/src/term.rs` — `scrollback`, `scrollback_limit`, `alt_grid`, `on_alt`,
   `Term::linefeed` (the eviction), `Term::scroll_region_lines`, `Term::scrollback_len`,
-  `Term::erase_history` (`ED 3`), `Term::clear`
+  `Term::erase_history` (`ED 3`), `Term::clear`, `Term::lines_left_the_front`
 - `justerm-core/src/term/walk.rs` — the readers that treat the two as one buffer
 
 ## Reference behaviour
 
-**None** in `docs/agents/reference-facts.md`, although two claims here are explicitly comparative:
+- [Dropping history — `ED 3` in band, and a Clear command out of band](../../agents/reference-facts.md#dropping-history--ed-3-in-band-and-a-clear-command-out-of-band-936-verified-2026-09-18)
+  (#936)
+
+Nothing pinned for the rest, although two claims here are explicitly comparative:
 the accrual condition is *"verified against alacritty `region.start == 0`"*, and the SU divergence
 names xterm.js's `FIXME`. Both are exactly the shape this map treats as fragile — a comparison made
 once, in prose, about upstream code that moves.

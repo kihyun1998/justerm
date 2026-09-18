@@ -95,7 +95,8 @@ and why not baseline-diff (Mosh) or per-line seqno (wezterm): **ADR-0003**.
 - **Two ways to drop history, and they differ in who asks (#936).** `ED 3` (`CSI 3 J`) is in-band: the
   application erases the saved lines, the screen and cursor stay, and on the alt screen it drops the
   primary's history underneath (xterm). `clear()` is out of band — the consumer's Clear command, which
-  never touches the parser: the cursor's line becomes row 0, history and every other row go, and it
+  never touches the parser: the cursor's logical line (up to the cursor) moves to the top, history and
+  every other row go, and it
   returns `false` and does nothing on the alt screen (ghostty), leaving the keystroke to the TUI. Both
   drop lines off the *front*, so both advance `evicted_total` by the lines dropped and return the view
   to the bottom; a held absolute line rebases by that delta as it does after cap eviction.

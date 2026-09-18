@@ -113,10 +113,12 @@ the shell emits.
   widened, because the only argument for widening is symmetry — the tell ADR-0019's retracted first
   amendment was caught by. Its measured size is under "Known holes" below; the first version of
   this sentence quoted only the smaller half.
-- **`Engine::clear` keeps the marks on the line it keeps (#936)**, where xterm.js's `clear()`
-  disposes every marker. The reason is `EL`'s, one bullet up: the kept line is the prompt the user
+- **`Engine::clear` keeps the marks on what it keeps (#936)**, where xterm.js's `clear()`
+  disposes every marker. The reason is `EL`'s, one bullet up: what it keeps is the prompt the user
   is typing on, and disposing its `CommandStart` would drop that command from `command_lines` once
-  it runs. Every other mark goes — history and the rows above through `markers_evict_oldest(n)`,
+  it runs. That is also why it keeps the cursor's whole **logical** line rather than xterm.js's one
+  row: a command that wrapped puts `B` on a row above the cursor, and keeping only the cursor's row
+  disposed it (measured by the #936 refuter, `a_wrapped_command_line_is_kept_whole`). Every other mark goes — history and the rows above through `markers_evict_oldest(n)`,
   the blanked rows below through `dispose_markers_on_row` — and `ED 3` retires the marks in history
   the same way, which is what finally erases the pre-`clear` commands a real `clear` leaves in
   scrollback (`command_lines_capture.rs`). Pinned by `clear.rs::the_command_being_typed_is_still_reported`.

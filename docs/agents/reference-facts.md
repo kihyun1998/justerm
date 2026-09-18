@@ -3538,13 +3538,15 @@ references that have one, and they split on both the alt screen and what the cur
 | `.scrollback => screens.active.eraseHistory(null)` — the active screen only | ghostty | `src/terminal/Terminal.zig:3397` |
 | `Terminal.clear()`: disposes every marker, makes the cursor's line line 0, drops the rest, pushes blank lines, zeroes `ydisp`/`ybase`/`y` (column untouched), fires a scroll event, refreshes every row. Out of band: it does not touch the parser | xterm.js | `src/browser/CoreBrowserTerminal.ts:1074-1088` |
 | `clear_screen` does **nothing on the alt screen** and reports the keybind unconsumed — *"this messes up the running programs knowledge of where the cursor is"* | ghostty | `src/Surface.zig:5167-5181`; `src/termio/Termio.zig:548-552` |
-| On the primary it clears the selection and the history, then — not at a prompt — erases the rows above the cursor, or — at a prompt — clears the whole screen and relies on the shell repainting after a form feed it sends | ghostty | `src/termio/Termio.zig:554-591` |
+| On the primary it clears the selection and the history, then — not at a prompt — erases the rows above the cursor, or — at a prompt — clears the whole screen and relies on the shell repainting after a form feed it sends | ghostty | `src/termio/Termio.zig:554-595` (form feed `:594-595`) |
 
 **What justerm took, and which kind of call each was.** `ED 3` follows xterm, the binding reference,
 including on the alt screen; the other three do nothing there because their alt screen has no history
 of its own, which is the one axis on which justerm's shared-scrollback storage sides with xterm. That
 is a derivation. `Engine::clear` does nothing on the alt screen — ghostty's answer — and that one
 is the **maintainer's** call on #936, made with both references' behaviour in front of them. It
-keeps xterm.js's shape otherwise, with one derived divergence: the markers on the kept line survive
-it, because retiring the `CommandStart` of the command being typed loses that command from
-`command_lines` — the reason `EL` retires nothing (#750).
+keeps xterm.js's shape otherwise, with two derived divergences, both for the command being typed.
+It keeps the cursor's whole logical line up to the cursor rather than its one row, so a prompt and a
+command that wrapped keep their start; and the markers on what it keeps survive, because retiring
+the `CommandStart` of that command loses it from `command_lines` — the reason `EL` retires nothing
+(#750).
