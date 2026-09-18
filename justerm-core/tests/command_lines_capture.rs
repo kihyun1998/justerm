@@ -11,8 +11,8 @@
 //! Three things it measured that no synthetic fixture would have:
 //!
 //! 1. **A real `clear` emits `ESC[H ESC[2J ESC[3J`** — so `ED 2`, the arm this fix is
-//!    mostly about, is genuinely the dominant path. (`ED 3` is unimplemented here; see
-//!    the second test.)
+//!    mostly about, is genuinely the dominant path. `ED 3` then erases the marks that had
+//!    already scrolled into history (#936); see the second test.
 //! 2. **`readline` emits `ESC[K` on the row that carries `B`, while the command is
 //!    being typed** — four of them, one per backspace, all between `B` and `C`. That is
 //!    the reference-free half of why `EL` retires nothing: an `EL` rule has to answer
@@ -85,30 +85,20 @@ fn a_real_clear_leaves_only_the_commands_that_ran_after_it() {
     );
 }
 
-/// `ED 3` (erase scrollback) is in the recording and is a no-op here, so a mark that
-/// scrolled off survives a `clear` that a real terminal would have erased it with.
-///
-/// Recorded rather than filed: `ED 3` is unimplemented, and `term.rs`'s arm for it
-/// already carries the anchor-fixup obligation whoever implements it inherits. This
-/// test exists so that the obligation has a *measured* consequence attached to it
-/// instead of only a comment.
-///
-/// It is a **characterisation** test, not a proof of this fix — it is green with either
-/// half turned off, by construction, since it asserts that something does *not* happen.
-/// What it can fail on is the change it is aimed at: implementing `ED 3` without
-/// retiring the marks it erases will not move it, and implementing it *with* the fixup
-/// will, which is the moment to rewrite it.
+/// The same answer on a screen small enough that the early commands were in scrollback
+/// when `clear` ran: `ED 2` retires only the marks on the screen, and `ED 3` is what
+/// erases the ones that had scrolled into history (#936). Until #936 `ED 3` was a no-op
+/// and this test pinned the opposite — a pre-clear command still reported.
 #[test]
-fn ed_3_is_still_a_no_op_so_scrollback_marks_outlive_a_real_clear() {
+fn ed_3_erases_the_marks_a_real_clear_pushed_into_history() {
     // 3 rows, so the early commands are pushed into scrollback before the clear.
     let raw = include_bytes!("fixtures/osc133_clear.raw");
     let mut e = Engine::with_scrollback(40, 3, 200);
     e.feed(raw);
 
-    let cmds = commands(&e);
-    assert!(
-        cmds.iter().any(|c| c.contains("one") || c.contains("two")),
-        "a pre-clear command that reached scrollback is still reported, because \
-         ED 3 does not erase it: {cmds:?}"
+    assert_eq!(
+        commands(&e),
+        vec!["echo three\n".to_string(), "exit\n".to_string()],
+        "exactly the commands that ran after the clear"
     );
 }

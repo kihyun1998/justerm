@@ -123,12 +123,13 @@ impl Term {
         }
     }
 
-    /// Shift the selection up by one absolute line after the oldest history line
-    /// is evicted by the scrollback cap. An endpoint on the evicted line clamps to
-    /// the start of the new top line — column 0, left side — except in a Block,
-    /// which keeps its columns (the rule `selection_rotate_region` applies at a
-    /// region top). If the whole selection was on the evicted line, it is cleared.
-    pub(super) fn selection_evict_oldest(&mut self) {
+    /// Shift the selection up by `n` absolute lines after the oldest `n` lines
+    /// left the front of the buffer (the scrollback cap evicts one, `ED 3` all of
+    /// history). An endpoint on an evicted line clamps to the start of the new top
+    /// line — column 0, left side — except in a Block, which keeps its columns (the
+    /// rule `selection_rotate_region` applies at a region top). If the whole
+    /// selection was on evicted lines, it is cleared.
+    pub(super) fn selection_evict_oldest(&mut self, n: usize) {
         let Some((a, f)) = self
             .selection
             .as_ref()
@@ -136,20 +137,21 @@ impl Term {
         else {
             return;
         };
-        if a == 0 && f == 0 {
+        if a < n && f < n {
             self.selection = None;
             return;
         }
         if let Some(sel) = &mut self.selection {
             let block = sel.ty == SelectionType::Block;
             for end in [&mut sel.anchor, &mut sel.focus] {
-                if end.point.line == 0 {
+                if end.point.line < n {
+                    end.point.line = 0;
                     if !block {
                         end.point.col = 0;
                         end.side = Side::Left;
                     }
                 } else {
-                    end.point.line -= 1;
+                    end.point.line -= n;
                 }
             }
         }
