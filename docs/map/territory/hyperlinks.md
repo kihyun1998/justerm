@@ -28,6 +28,17 @@ an adversarial pass and a refuting pass over the options, both checked against s
   consequence that was shown true.)
 - **Hover shows the pointer cursor and an underline**, the underline through a new renderer setter.
 
+Two more, made after the implementation's check pass, on derivations it had produced:
+
+- **Only pointer motion asks the port** — kept over "also ask on frames", shown with the measured
+  100 asks per 100 scrolling frames of the first cut and the cost of the alternative (a new link
+  under a resting pointer appears only on its next motion).
+- **An already-underlined cell shows hover by the cursor alone** — kept over ghostty's switch to a
+  double underline.
+
+Declined on #934: a core one-row logical-line entry point — no consumer calls `lineAt` yet; see
+*Known holes*.
+
 What those calls did not cover is recorded under *Design model* as derivations.
 
 - [ADR-0017 — mechanism vs policy](../../adr/0017-core-consumer-boundary-mechanism-vs-policy.md) —
