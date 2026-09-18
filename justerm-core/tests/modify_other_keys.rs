@@ -352,6 +352,7 @@ fn a_named_key_is_untouched_while_the_mode_is_off() {
     assert_eq!(enc(&t, Key::Tab, Modifiers::CTRL), b"\t");
     assert_eq!(enc(&t, Key::Enter, Modifiers::CTRL), b"\r");
     assert_eq!(enc(&t, Key::Escape, Modifiers::CTRL), b"\x1b");
-    assert_eq!(enc(&t, Key::Backspace, Modifiers::ALT), b"\x7f");
+    // Not `CSI 27;3;127~`: legacy Alt, an ESC prefix on the bare DEL.
+    assert_eq!(enc(&t, Key::Backspace, Modifiers::ALT), b"\x1b\x7f");
     assert_eq!(enc(&t, Key::Tab, Modifiers::SHIFT), b"\x1b[Z");
 }

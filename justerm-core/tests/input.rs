@@ -318,3 +318,52 @@ fn focus_reporting_gated_by_1004() {
     assert_eq!(term.encode_focus(true).unwrap(), b"\x1b[I");
     assert_eq!(term.encode_focus(false).unwrap(), b"\x1b[O");
 }
+
+// ---- Alt on the named keys whose bare form is a C0 control ---------------------------------
+
+/// Legacy Alt is an ESC prefix on the key's own encoding, for Enter / Tab / Backspace / Escape
+/// as for a character — so `Alt+Backspace` reaches readline as `M-DEL` (backward-kill-word).
+#[test]
+fn alt_prefixes_esc_to_the_c0_named_keys() {
+    let term = Engine::new(80, 24);
+    let enc = |k, m| term.encode_key(key_mod(k, m)).unwrap();
+    assert_eq!(enc(Key::Enter, Modifiers::ALT), b"\x1b\r");
+    assert_eq!(enc(Key::Tab, Modifiers::ALT), b"\x1b\t");
+    assert_eq!(enc(Key::Backspace, Modifiers::ALT), b"\x1b\x7f");
+    assert_eq!(enc(Key::Escape, Modifiers::ALT), b"\x1b\x1b");
+    // The prefix goes on whatever the key otherwise encodes: Shift+Tab is back-tab.
+    assert_eq!(
+        enc(Key::Tab, Modifiers::ALT | Modifiers::SHIFT),
+        b"\x1b\x1b[Z"
+    );
+}
+
+/// Only Alt prefixes: the other modifiers on these keys keep their legacy bytes.
+#[test]
+fn non_alt_modifiers_leave_the_c0_named_keys_alone() {
+    let term = Engine::new(80, 24);
+    let enc = |k, m| term.encode_key(key_mod(k, m)).unwrap();
+    assert_eq!(enc(Key::Enter, Modifiers::CTRL), b"\r");
+    assert_eq!(enc(Key::Enter, Modifiers::SHIFT), b"\r");
+    assert_eq!(enc(Key::Backspace, Modifiers::CTRL), b"\x7f");
+    assert_eq!(enc(Key::Escape, Modifiers::SUPER), b"\x1b");
+    assert_eq!(enc(Key::Tab, Modifiers::empty()), b"\t");
+}
+
+/// The negotiated encodings answer first, so under them Alt is a parameter, not a prefix.
+#[test]
+fn alt_on_a_c0_named_key_is_a_parameter_under_the_negotiated_encodings() {
+    let mut term = Engine::new(80, 24);
+    term.feed(b"\x1b[>4;2m");
+    assert_eq!(
+        term.encode_key(key_mod(Key::Enter, Modifiers::ALT))
+            .unwrap(),
+        b"\x1b[27;3;13~"
+    );
+    term.feed(b"\x1b[>4;0m\x1b[>1u");
+    assert_eq!(
+        term.encode_key(key_mod(Key::Enter, Modifiers::ALT))
+            .unwrap(),
+        b"\x1b[13;3u"
+    );
+}

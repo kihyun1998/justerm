@@ -464,15 +464,21 @@ pub fn encode_key(
         Key::Delete => Some(tilde_key(3, ev.mods)),
         Key::PageUp => Some(tilde_key(5, ev.mods)),
         Key::PageDown => Some(tilde_key(6, ev.mods)),
-        Key::Enter => Some(vec![b'\r']),
-        Key::Backspace => Some(vec![0x7f]), // DEL, the PC-keyboard convention
-        Key::Escape => Some(vec![ESC]),
-        Key::Tab => {
-            if ev.mods.contains(Modifiers::SHIFT) {
-                Some(vec![ESC, b'[', b'Z']) // back-tab (CBT)
-            } else {
-                Some(vec![b'\t'])
+        Key::Enter | Key::Backspace | Key::Escape | Key::Tab => {
+            let bare: &[u8] = match ev.key {
+                Key::Enter => b"\r",
+                Key::Backspace => b"\x7f", // DEL, the PC-keyboard convention
+                Key::Escape => b"\x1b",
+                _ if ev.mods.contains(Modifiers::SHIFT) => b"\x1b[Z", // back-tab (CBT)
+                _ => b"\t",
+            };
+            // Alt is an ESC prefix on the key's own encoding, as for a character.
+            let mut out = Vec::with_capacity(bare.len() + 1);
+            if ev.mods.contains(Modifiers::ALT) {
+                out.push(ESC);
             }
+            out.extend_from_slice(bare);
+            Some(out)
         }
         Key::F(n) => function_key(n, ev.mods),
     }
