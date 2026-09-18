@@ -349,8 +349,27 @@ bitflags::bitflags! {
 
 /// The [`ModifiedKeys`] mask for a set of keyboard modes: each bit is set exactly when
 /// [`encode_key`], given the same modes, encodes that modified press differently from the
-/// bare key. Takes the same mode arguments as `encode_key`.
+/// bare key. Takes the same mode arguments as `encode_key`, and memoizes each of their 2 048
+/// combinations process-wide on first use.
 pub(crate) fn modified_keys(
+    app_cursor: bool,
+    app_keypad: bool,
+    kitty_flags: u8,
+    modify_other_keys_2: bool,
+) -> ModifiedKeys {
+    static MEMO: [std::sync::OnceLock<ModifiedKeys>; 2048] =
+        [const { std::sync::OnceLock::new() }; 2048];
+    let index = kitty_flags as usize
+        | (modify_other_keys_2 as usize) << 8
+        | (app_cursor as usize) << 9
+        | (app_keypad as usize) << 10;
+    *MEMO[index].get_or_init(|| {
+        derive_modified_keys(app_cursor, app_keypad, kitty_flags, modify_other_keys_2)
+    })
+}
+
+/// [`modified_keys`] without the memo.
+fn derive_modified_keys(
     app_cursor: bool,
     app_keypad: bool,
     kitty_flags: u8,

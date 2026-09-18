@@ -14,8 +14,8 @@ use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
 use crate::event::{ClipboardTarget, TermEvent, Terminator};
 use crate::grid::{ExtAttrs, Grid, Row};
 use crate::input::{
-    KeyEvent, ModifiedKeys, MouseEncoding, MouseEvent, MouseProtocol, encode_focus, encode_key,
-    encode_mouse, encode_paste,
+    KeyEvent, MouseEncoding, MouseEvent, MouseProtocol, encode_focus, encode_key, encode_mouse,
+    encode_paste,
 };
 use crate::search::Match;
 use crate::selection::{BufferPoint, Selection};
@@ -285,10 +285,6 @@ pub struct Term {
     /// `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md`, whose table this
     /// field is the fifth row of.
     modify_other_keys_2: bool,
-    /// The frame's [`ModifiedKeys`] mask for the current keyboard modes (#941), refreshed by
-    /// [`Self::refresh_modified_keys`] wherever `kitty_flags` or `modify_other_keys_2` is
-    /// written. `frame` reads it; debug builds re-derive it there and assert they agree.
-    modified_keys: ModifiedKeys,
     /// Consumer events (title / bell / cwd) accumulated since the last
     /// `drain_events` (#12). Pull, not push — see `event.rs`.
     events: Vec<TermEvent>,
@@ -1024,7 +1020,6 @@ impl Term {
             kitty_flags: 0,
             kitty_stack: Vec::new(),
             modify_other_keys_2: false,
-            modified_keys: crate::input::modified_keys(false, false, 0, false),
             events: Vec::new(),
             replies: Vec::new(),
             current_link: None,
@@ -1345,15 +1340,12 @@ impl Term {
             alt_screen: self.on_alt,
             // Which modified C0 keys reach the application under the current keyboard
             // modes (#941), derived from the encoder `encode_key` runs.
-            modified_keys: {
-                debug_assert_eq!(
-                    self.modified_keys,
-                    self.derive_modified_keys(),
-                    "the modified-keys mask is stale: a keyboard-mode write skipped \
-                     `refresh_modified_keys`"
-                );
-                self.modified_keys
-            },
+            modified_keys: crate::input::modified_keys(
+                self.app_cursor_keys,
+                self.application_keypad,
+                self.kitty_flags,
+                self.modify_other_keys_2,
+            ),
             scroll: self.scroll_delta(),
             spans,
             link_table,
@@ -2535,22 +2527,6 @@ impl Term {
             }
             _ => {}
         }
-        self.refresh_modified_keys();
-    }
-
-    /// The [`ModifiedKeys`] mask the current keyboard modes produce.
-    fn derive_modified_keys(&self) -> ModifiedKeys {
-        crate::input::modified_keys(
-            self.app_cursor_keys,
-            self.application_keypad,
-            self.kitty_flags,
-            self.modify_other_keys_2,
-        )
-    }
-
-    /// Re-derive the frame's [`ModifiedKeys`] mask after a keyboard-mode write (#941).
-    fn refresh_modified_keys(&mut self) {
-        self.modified_keys = self.derive_modified_keys();
     }
 
     /// DECRQM (CSI ? Ps $ p): report whether DEC private mode `Ps` is set —
@@ -3159,7 +3135,6 @@ impl Term {
         self.app_cursor_keys = false;
         self.bracketed_paste = false;
         self.modify_other_keys_2 = false; // xterm clears the modify resources on DECSTR too (#890)
-        self.refresh_modified_keys();
         self.grapheme_clustering = false; // ?2027 back to the wcwidth-compat default (#295)
         self.autowrap = true; // xterm default is ON (not the VT100 "off")
         self.insert_mode = false;
@@ -5961,7 +5936,6 @@ impl Perform for Term {
         if intermediates == [b'>'] && action == 'm' {
             if param_or(params, 0, 0) == 4 {
                 self.modify_other_keys_2 = param_or(params, 1, 0) >= 2;
-                self.refresh_modified_keys();
             }
             return;
         }
