@@ -354,6 +354,21 @@ describe("PointerRouter — links (#934)", () => {
     expect(links!.calls).toEqual([]);
   });
 
+  it("hands the hover's own event to the links, for the consumer's gate", () => {
+    const seen: Array<boolean | undefined> = [];
+    const router = new PointerRouter({
+      mask: () => 0,
+      getGeometry: () => GEOM,
+      send: () => {},
+      links: { pointer: (_c, e) => seen.push(e?.ctrlKey), press: () => {}, drag: () => {}, release: () => {} },
+      setTicking: () => {},
+    });
+
+    router.hover(at(5, 3, { ctrlKey: true }));
+
+    expect(seen).toEqual([true]);
+  });
+
   it("hands a local press's motion to the links, so a drag can end the click", () => {
     const { router, links } = rig(0, { links: true });
 

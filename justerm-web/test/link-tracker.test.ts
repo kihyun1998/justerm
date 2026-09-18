@@ -377,6 +377,20 @@ describe("LinkTracker — what keeps a port answer current (#934 check pass)", (
     expect(port.asked).toEqual([1, 1]);
   });
 
+  it("a cached line that the row above now wraps into is asked again", async () => {
+    const port = new HeldPort();
+    const { t } = tracker({ port });
+    t.applyFrame(frame(0, { 1: { text: "http://b.io" } }));
+    t.pointer([1, 4], ev());
+    await port.answer(lineOf(1, "http://b.io"));
+
+    // Row 0 fills and soft-wraps into row 1, whose text is unchanged: row 1 is no longer a line's start.
+    t.applyFrame(frame(1, { 0: { text: "x".repeat(COLS), wraps: true } }));
+    t.pointer([1, 5], ev());
+
+    expect(port.asked).toEqual([1, 1]);
+  });
+
   it("an answer whose cells do not sit where its text is shown is dropped", async () => {
     const port = new HeldPort();
     const { t, hovers } = tracker({ port });

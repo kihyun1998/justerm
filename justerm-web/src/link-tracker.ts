@@ -174,18 +174,14 @@ export class LinkTracker {
     this.lines = kept;
   }
 
-  /** Move the cached lines with a scroll op over rows `top..=bottom` (`count` > 0 = up). A whole-screen
-   * scroll moves every row, into scrollback included; a region scroll keeps only the lines outside it. */
+  /** Move the cached lines with a whole-screen scroll op (`count` > 0 = up), into scrollback included.
+   * A region scroll moves nothing here: the check drops what it moved away. */
   private scrollLines(top: number, bottom: number, count: number): void {
-    if (top === 0 && bottom === this.rows - 1) {
-      this.lines = this.lines.map((c) => ({
-        row: c.row - count,
-        line: { text: c.line.text, cells: c.line.cells.map(([r, col]) => [r - count, col] as [number, number]) },
-      }));
-      return;
-    }
-    const outside = (r: number): boolean => r < top || r > bottom;
-    this.lines = this.lines.filter((c) => outside(c.row) && c.line.cells.every(([r]) => outside(r)));
+    if (top !== 0 || bottom !== this.rows - 1) return;
+    this.lines = this.lines.map((c) => ({
+      row: c.row - count,
+      line: { text: c.line.text, cells: c.line.cells.map(([r, col]) => [r - count, col] as [number, number]) },
+    }));
   }
 
   private refresh(): void {
