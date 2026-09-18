@@ -124,6 +124,12 @@ What those calls did not cover is recorded under *Design model* as derivations.
   cached cut-off URL would open (the check pass found it in two independent reads).
 - **A whole-screen scroll carries the answers with the rows**; a region scroll leaves the check to
   drop what moved.
+- **A pointer cell outside the mirror is no cell**, read once at `LinkTracker.lead` so hover, press,
+  drag and release all agree. The pointer's grid is the consumer's `getGeometry`, the mirror's the
+  last frame's; they differ after a resize until the next frame, and permanently in a harness with
+  no backend to resize (PenTerm's check, 80×21 against 40×8 frames — the #934 reopen). A column
+  past the width does not throw: row-major indexing reads the next row's cell, so both axes are
+  bounded.
 - **The hovered underline is a single underline drawn where the cell has none**, through the flags
   the line reads (`line_flags`), so it follows every colour rule an `SGR 4` underline does. A cell
   already underlined keeps its own style, so hover shows only as the pointer cursor there.
