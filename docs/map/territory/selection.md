@@ -81,6 +81,32 @@ status.
 
   Both references keep the same two-event split
   ([`reference-facts.md` § two selection-out signals](../../agents/reference-facts.md#two-selection-out-signals-and-what-actually-guards-the-committing-one-914-verified-2026-09-16)).
+- **Select-all is two ordinary anchors, not a mode** (#935). `Term::select_all` needs no viewport
+  coordinate, which is the whole point: a frame-mode consumer holds only the viewport and would
+  otherwise have to scroll the user's view to the top and back to anchor there. Four things about it
+  are easy to get wrong:
+  - **It is a snapshot.** xterm.js keeps a flag (`isSelectAllActive`) and recomputes the extent on
+    every read, so its selection grows with output. Here the extent is two absolute anchors and the
+    three fixups plus reflow keep them on their content like any other selection's — a flag would
+    have needed its own arm in each. This is a *derivation* from the anchor model, and a better one
+    can overturn it.
+  - **Blank edges are trimmed**, first non-blank cell to last, and an all-blank buffer selects
+    nothing (ghostty `Screen.selectAll`). This was the **maintainer's call**, shown against
+    xterm.js's whole-buffer `[0,0]..[cols, ybase+rows-1]`, which copies a trailing run of newlines
+    from a half-empty screen. "Blank" is U+0020 with no combining mark — a combining carrier on a
+    space is content, as [only U+0020 can be padding](../invariant/only-u0020-can-be-padding.md)
+    requires, where ghostty's base-code-point test would drop it.
+  - **"All" is the active buffer**, floored by `abs_floor` on the alt screen, as xterm.js selects
+    its active buffer.
+  - **On the web it goes through `SelectionController.selectAll`, not the port directly**, because
+    the controller owns the two things the rest of the widget reads: `hasSelection` (so typing drops
+    it and a Shift+click extends it) and the change signal, which it fires as xterm.js's
+    `selectAll()` fires `onSelectionChange`. It does **not** feed primary: xterm.js feeds primary
+    only from a mouse selection, while ghostty's `select_all` copies — the references split.
+    `SelectionPort.selectAll` is optional (the #913 precedent), and the controller does nothing
+    without it. A select-all made **during a live drag** is extended by that drag's next move to
+    "buffer start → pointer"; xterm.js's flag outlives the drag. Unhandled, because it needs the
+    shortcut pressed with the button held.
 - **Anchors are absolute buffer coordinates** — `BufferPoint { line, col }`, where `line` indexes
   `[scrollback ++ screen]` from the oldest line. Not viewport coordinates.
 - **Why absolute**: it is invariant under a top-anchored scroll. A line evicted into scrollback grows
@@ -115,7 +141,7 @@ status.
 - `justerm-core/src/selection.rs` — `SelectionType`, `Side`, `SelectionSpan`, `BufferPoint`, `Anchor`,
   `Selection::ordered`
 - `justerm-core/src/term/selection.rs` — `Term::selection_begin` / `selection_extend` /
-  `selection_clear` / `selection_range` / `selection_text` / `accessible_text`; the three coordinate
+  `selection_clear` / `select_all` / `selection_range` / `selection_text` / `accessible_text`; the three coordinate
   fixups `selection_shift_below_margin` / `selection_evict_oldest` / `selection_rotate_region`; and
   the private `resolve` / `Resolved` that turn a selection into absolute bounds. Extracted from
   `term.rs` in #587. As with search, the crate now has **two** files named `selection.rs` — the
@@ -235,6 +261,9 @@ Check these after changing this territory:
   this defect), and why that signal never reads the field. #914 did close one smaller way it lied:
   the alt-click cursor move dropped its selection at the port and left the flag `true`, so the next
   keystroke's `clear()` dropped it a second time — that branch now clears the flag too.
+  **#935 added a third way**: `SelectionController.selectAll` sets the field unconditionally, while
+  core selects nothing on an all-blank buffer, and `SelectionPort.selectAll` returns `void`, so the
+  controller cannot know. The visible cost is small — a Shift+click on an empty pane extends nothing.
 - **Neither selection-out signal hears about a selection the widget did not make.** Two paths change
   the engine's selection without passing through `SelectionController`, so a consumer listening to
   `onSelectionChange` (#914) is not told:

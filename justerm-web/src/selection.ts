@@ -11,7 +11,7 @@ export type SelType = "char" | "word" | "line" | "block";
 /**
  * The control seam from the web widget to the engine's selection state. In
  * frame mode the consumer wires this to the backend, which calls core's
- * `selection_begin` / `selection_extend` / `selection_clear`; the resulting
+ * `selection_begin` / `selection_extend` / `selection_clear` / `select_all`; the resulting
  * overlay spans return on the next frame. Sibling to {@link FrameSource}: the
  * frame channel is read-only, this is the matching write channel.
  */
