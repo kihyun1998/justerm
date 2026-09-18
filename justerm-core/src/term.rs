@@ -2669,32 +2669,7 @@ impl Term {
                 // offset within `[0, len]`. The evicted row is parked for reuse.
                 if self.scrollback.len() > self.scrollback_limit {
                     self.recycled_row = self.scrollback.pop_front();
-                    // Every absolute index below just shifted by exactly one, which is
-                    // what makes this class of movement expressible as a scalar (#490).
-                    // Counted here rather than in `markers_evict_oldest` because the fact
-                    // is about the *buffer*, not about markers.
-                    //
-                    // **Scope, because the name over-promises.** This counts the
-                    // scrollback *cap* evicting one line; `erase_history` (`ED 3`, and
-                    // `clear`) counts the whole history it drops. Reflow also drops lines off the
-                    // front (`PaneReflow::evicted`, installed by replacing the deque) and
-                    // is deliberately not counted: it moves the survivors non-uniformly,
-                    // so no delta repairs them and `marker_epoch` signals it instead. A
-                    // holder rebasing off this number *without* also watching the epoch
-                    // gets a wrong answer across every resize.
-                    self.evicted_total += 1;
-                    // Every absolute index just shifted down by one; move the
-                    // selection with it so its anchors keep their content.
-                    self.selection_evict_oldest(1);
-                    // Query-derived highlights can't survive the index shift (see
-                    // the method doc); selection re-anchors, highlights invalidate.
-                    self.invalidate_search_highlights();
-                    // Markers are persistent anchors: shift them down with the
-                    // index, disposing any whose line was the evicted one (#118).
-                    self.markers_evict_oldest(1);
-                    // Same obligation for a position held outside the engine — the
-                    // one holder in this space that had no fixup at all (#691).
-                    self.tracked_evict_oldest(1);
+                    self.lines_left_the_front(1);
                     if self.display_offset > 0 {
                         // Scrolled up: evicting the oldest line advanced the
                         // viewport, so it must be repainted (the "frozen while
@@ -4777,13 +4752,34 @@ impl Term {
             return;
         }
         self.scrollback.clear();
+        self.lines_left_the_front(n);
+        self.display_offset = 0;
+        self.mark_fully_damaged();
+    }
+
+    /// Repair every holder of an absolute line after `n` lines left the front of the
+    /// buffer — the one funnel for the scrollback cap (one line per linefeed), `ED 3` and
+    /// [`Term::clear`]. Every absolute index shifted by exactly `n`, which is what makes
+    /// this class of movement expressible as a scalar (#490): `evicted_total` counts it
+    /// here, because the fact is about the *buffer*, not about any one holder.
+    ///
+    /// **Scope, because the name `evicted_total` over-promises.** Reflow also drops lines
+    /// off the front (`PaneReflow::evicted`, installed by replacing the deque) and does
+    /// not come through here: it moves the survivors non-uniformly, so no delta repairs
+    /// them and `marker_epoch` signals it instead. A holder rebasing off this number
+    /// *without* also watching the epoch gets a wrong answer across every resize.
+    ///
+    /// The holders, each with its own answer: the selection re-anchors (its ends keep
+    /// their content); query-derived search highlights cannot survive the shift and are
+    /// dropped; markers shift and those on a dropped line are disposed and announced
+    /// (#118); tracked points shift and those on a dropped line go (#691). The view is
+    /// the caller's, because the cap keeps it on the same content and `ED 3` returns it.
+    fn lines_left_the_front(&mut self, n: usize) {
         self.evicted_total += n as u64;
         self.selection_evict_oldest(n);
         self.invalidate_search_highlights();
         self.markers_evict_oldest(n);
         self.tracked_evict_oldest(n);
-        self.display_offset = 0;
-        self.mark_fully_damaged();
     }
 
     /// Clear the primary screen and its scrollback, keeping the cursor's line
@@ -4801,30 +4797,38 @@ impl Term {
         if self.on_alt {
             return false;
         }
-        let (cols, kept) = (self.grid.cols(), self.cursor.row);
-        // Move the rows above the cursor into history, so dropping history takes them
-        // too: their absolute lines are unchanged by the move, so no holder moves.
-        for _ in 0..kept {
+        let (cols, cursor) = (self.grid.cols(), self.cursor.row);
+        // The kept line is the cursor's whole logical line up to the cursor, so a prompt
+        // and a command that wrapped keep their start — as far up as the screen reaches.
+        let mut top = cursor;
+        while top > 0 && self.grid.is_row_wrapped(top - 1) {
+            top -= 1;
+        }
+        // Move the rows above it into history, so dropping history takes them too: their
+        // absolute lines are unchanged by the move, so no holder moves.
+        for _ in 0..top {
             let row = self.grid.scroll_up_recycle(Row::blank(cols));
             self.scrollback.push_back(row);
         }
-        self.cursor.row = 0;
+        let last = cursor - top;
+        self.cursor.row = last;
         self.erase_history();
         self.selection = None;
-        for row in 1..self.grid.rows() {
+        self.invalidate_search_highlights();
+        for row in last + 1..self.grid.rows() {
             let blanked = self.grid.row_mut(row);
             blanked.blank_in_place();
             blanked.purge_side_maps(0..cols);
             self.dispose_markers_on_row(row);
         }
-        // Nothing follows the kept line now, so it cannot continue onto the next row.
-        self.end_wrap(0);
-        // `REP` reads back the cell the last print wrote. That cell is on the kept line
+        // Nothing follows the cursor's row now, so it cannot continue onto the next row.
+        self.end_wrap(last);
+        // `REP` reads back the cell the last print wrote. That cell is on the cursor's row
         // whenever the anchor is armed, so it moves up with it; anywhere else it is gone.
         self.repeat_anchor = self
             .repeat_anchor
-            .filter(|&(row, _)| row == kept)
-            .map(|(_, col)| (0, col));
+            .filter(|&(row, _)| row == cursor)
+            .map(|(_, col)| (last, col));
         self.scroll = None;
         self.mark_fully_damaged();
         true

@@ -261,3 +261,37 @@ fn a_repeat_after_clear_repeats_the_last_glyph() {
     assert_eq!(row_text(&e, 0), "abbb");
     assert_eq!((e.cursor().row, e.cursor().col), (0, 4));
 }
+
+/// With no history and the cursor on row 0 nothing leaves the front, but the rows below are
+/// still blanked — the highlights on them go too. Nothing re-searches after `clear`, which
+/// writes no output, so a stale highlight would stay painted over blank rows.
+#[test]
+fn clears_the_highlights_with_no_history_to_drop() {
+    let mut e = Engine::new(10, 4);
+    e.feed(b"ab\r\nab\r\nab\x1b[H");
+    let hits = e.search("ab");
+    e.set_search_highlights(hits.clone());
+    e.set_active_search_match(Some(hits[2]));
+
+    e.clear();
+
+    let f = e.frame();
+    assert!(f.overlay.matches.is_empty());
+    assert!(f.overlay.active_match.is_empty());
+}
+
+/// A command long enough to wrap: the cursor is on its last row, and its `CommandStart` is
+/// on the first. The whole logical line is kept, so the command is still reported.
+#[test]
+fn a_wrapped_command_line_is_kept_whole() {
+    let mut e = Engine::new(12, 5);
+    e.feed(b"old\r\n\x1b]133;A\x07$ \x1b]133;B\x07echo a-long-command-that-wraps");
+    assert!(e.cursor().row > 1, "precondition: the command wrapped");
+
+    e.clear();
+
+    assert_eq!(row_text(&e, 0), "$ echo a-lon");
+    e.feed(b"\r\n\x1b]133;C\x07\x1b]133;D;0\x07");
+    let cmds: Vec<String> = e.command_lines().into_iter().map(|c| c.command).collect();
+    assert_eq!(cmds, vec!["echo a-long-command-that-wraps\n".to_string()]);
+}
