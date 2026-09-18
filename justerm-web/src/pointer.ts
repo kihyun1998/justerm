@@ -32,6 +32,27 @@ export interface LocalPointer {
   clear?(): void;
 }
 
+/** The link half of the pointer — the shape {@link import("./link-tracker").LinkTracker} has (#934).
+ * A cell is a viewport `[row, col]`, or `undefined` for a pointer outside the grid. */
+export interface LinkPointer {
+  /** A buttonless pointer is over `cell`; `undefined` also when a press there would not stay local. */
+  pointer(cell: readonly [number, number] | undefined): void;
+  /** A single primary press that stays local; `undefined` for one that can press no link. */
+  press(cell: readonly [number, number] | undefined, ev: MouseEventLike): void;
+  /** The release of a local primary press. */
+  release(cell: readonly [number, number] | undefined, ev: MouseEventLike): void;
+}
+
+/** The viewport cell under the pointer, or `undefined` when the pointer is outside the grid or the
+ * box cannot be measured. */
+function cellAt(ev: MouseEventLike, geom: CellGeometry | undefined): readonly [number, number] | undefined {
+  if (!geom) return undefined;
+  const col = Math.floor((ev.clientX - geom.originX) / geom.cellWidth);
+  const row = Math.floor((ev.clientY - geom.originY) / geom.cellHeight);
+  if (!(col >= 0 && col < geom.cols && row >= 0 && row < geom.rows)) return undefined;
+  return [row, col];
+}
+
 /** What a {@link PointerRouter} reads and drives. */
 export interface PointerRouterDeps {
   /** The latest frame's `mouseWantedEvents` mask. */
@@ -42,6 +63,8 @@ export interface PointerRouterDeps {
   send(event: MouseEvent): void;
   /** Where a press that stays local goes; absent, such a press does nothing. */
   local?: LocalPointer;
+  /** Where hover and a local primary click go for links (#934); absent, links are inert. */
+  links?: LinkPointer;
   /** Start or stop calling the local handler's `tick()` on a timer. */
   setTicking(on: boolean): void;
 }
@@ -79,12 +102,16 @@ export class PointerRouter {
       this.gesture = "app";
       return true;
     }
-    const local = this.deps.local;
-    if (!local) return false;
-    local.mouseDown(ev, ev.detail, (this.deps.mask() & MouseEvents.Down) !== 0);
-    if (ev.button === 0 && this.gesture === "none") {
-      this.gesture = "local";
-      this.deps.setTicking(true);
+    const { local, links } = this.deps;
+    if (!local && !links) return false;
+    local?.mouseDown(ev, ev.detail, (this.deps.mask() & MouseEvents.Down) !== 0);
+    if (ev.button === 0) {
+      // Only a single click presses a link: the second press of a double click selects a word.
+      links?.press(ev.detail === 1 ? cellAt(ev, this.deps.getGeometry()) : undefined, ev);
+      if (this.gesture === "none") {
+        this.gesture = "local";
+        if (local) this.deps.setTicking(true);
+      }
     }
     return true;
   }
@@ -106,15 +133,26 @@ export class PointerRouter {
   /** Motion over the element. */
   hover(ev: MouseEventLike): void {
     if (this.gesture !== "none" || ev.buttons !== 0) return;
+    const links = this.deps.links;
+    if (links) {
+      // Hover says what a press here would do, so it asks the press's own question.
+      links.pointer(pressGoesToApp(this.deps.mask(), ev) ? undefined : cellAt(ev, this.deps.getGeometry()));
+    }
     if ((this.deps.mask() & MouseEvents.Move) !== 0) this.report(ev, "motion");
+  }
+
+  /** The pointer left the element. */
+  leave(): void {
+    this.deps.links?.pointer(undefined);
   }
 
   /** A release during a gesture. */
   up(ev: MouseEventLike): void {
     if (this.gesture === "local") {
       this.gesture = "none";
-      this.deps.setTicking(false);
+      if (this.deps.local) this.deps.setTicking(false);
       this.deps.local?.mouseUp(ev);
+      this.deps.links?.release(cellAt(ev, this.deps.getGeometry()), ev);
       return;
     }
     if (this.gesture !== "app") return;

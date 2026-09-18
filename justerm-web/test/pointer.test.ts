@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PointerRouter, type LocalPointer, type PointerEventLike } from "../src/pointer";
+import { PointerRouter, type LinkPointer, type LocalPointer, type PointerEventLike } from "../src/pointer";
 import { MouseEvents, type CellGeometry, type MouseEvent } from "../src/input";
 
 // 10×20 px cells at the origin — pixel (col*10+2, row*20+5) is inside cell (col, row).
@@ -41,19 +41,39 @@ class RecordingLocal implements LocalPointer {
   }
 }
 
-function rig(mask: number, opts: { local?: boolean; geom?: () => CellGeometry | undefined } = {}) {
+/** A recording link handler with the shape `LinkTracker` has. */
+class RecordingLinks implements LinkPointer {
+  readonly calls: string[] = [];
+  private cell = (c: readonly [number, number] | undefined) => (c ? `${c[0]},${c[1]}` : "none");
+  pointer(cell: readonly [number, number] | undefined): void {
+    this.calls.push(`pointer(${this.cell(cell)})`);
+  }
+  press(cell: readonly [number, number] | undefined): void {
+    this.calls.push(`press(${this.cell(cell)})`);
+  }
+  release(cell: readonly [number, number] | undefined): void {
+    this.calls.push(`release(${this.cell(cell)})`);
+  }
+}
+
+function rig(
+  mask: number,
+  opts: { local?: boolean; links?: boolean; geom?: () => CellGeometry | undefined } = {},
+) {
   const sent: MouseEvent[] = [];
   const ticking: boolean[] = [];
   const local = opts.local === false ? undefined : new RecordingLocal();
+  const links = opts.links ? new RecordingLinks() : undefined;
   const state = { mask };
   const router = new PointerRouter({
     mask: () => state.mask,
     getGeometry: opts.geom ?? (() => GEOM),
     send: (e) => sent.push(e),
     local,
+    links,
     setTicking: (on) => ticking.push(on),
   });
-  return { router, sent, ticking, local, state };
+  return { router, sent, ticking, local, links, state };
 }
 
 describe("PointerRouter — a press the application tracks", () => {
@@ -253,6 +273,90 @@ describe("PointerRouter — presses with nothing to report", () => {
     expect(router.down(at(5, 3))).toBe(false);
     expect(sent).toEqual([]);
     expect(ticking).toEqual([]);
+  });
+});
+
+describe("PointerRouter — links (#934)", () => {
+  it("hovers the cell under a buttonless pointer when a press there would stay local", () => {
+    const { router, links } = rig(0, { links: true });
+
+    router.hover(at(5, 3));
+
+    expect(links!.calls).toEqual(["pointer(3,5)"]);
+  });
+
+  it("hovers nothing where the application would take the press, and does so again under Shift", () => {
+    const { router, links } = rig(NORMAL, { links: true });
+
+    router.hover(at(5, 3));
+    router.hover(at(5, 3, { shiftKey: true }));
+
+    expect(links!.calls).toEqual(["pointer(none)", "pointer(3,5)"]);
+  });
+
+  it("hovers nothing past the grid's last column or row", () => {
+    const { router, links } = rig(0, { links: true });
+
+    router.hover(at(80, 3));
+    router.hover(at(5, 24));
+    router.hover({ ...at(0, 0), clientX: -3 });
+
+    expect(links!.calls).toEqual(["pointer(none)", "pointer(none)", "pointer(none)"]);
+  });
+
+  it("hands a local primary click to the links as press and release, beside the selection", () => {
+    const { router, links, local } = rig(0, { links: true });
+
+    router.down(at(5, 3));
+    router.up(at(6, 3));
+
+    expect(links!.calls).toEqual(["press(3,5)", "release(3,6)"]);
+    expect(local!.calls).toEqual(["down(0,1,plain)", "up"]);
+  });
+
+  it("follows a link click to its release with no selection wired", () => {
+    const { router, links, ticking } = rig(0, { local: false, links: true });
+
+    expect(router.down(at(5, 3))).toBe(true);
+    expect(router.active).toBe(true);
+    router.up(at(5, 3));
+
+    expect(links!.calls).toEqual(["press(3,5)", "release(3,5)"]);
+    expect(ticking).toEqual([]);
+  });
+
+  it("gives the links nothing of a press the application takes", () => {
+    const { router, links } = rig(NORMAL, { links: true });
+
+    router.down(at(5, 3));
+    router.up(at(5, 3));
+
+    expect(links!.calls).toEqual([]);
+  });
+
+  it("a double click presses no link, so the second click cannot open it again", () => {
+    const { router, links } = rig(0, { links: true });
+
+    router.down(at(5, 3, { detail: 2 }));
+    router.up(at(5, 3));
+
+    expect(links!.calls).toEqual(["press(none)", "release(3,5)"]);
+  });
+
+  it("a non-primary press presses no link", () => {
+    const { router, links } = rig(0, { links: true });
+
+    router.down(at(5, 3, { button: 2, buttons: 2 }));
+
+    expect(links!.calls).toEqual([]);
+  });
+
+  it("leaving the element drops the hover", () => {
+    const { router, links } = rig(0, { links: true });
+
+    router.leave();
+
+    expect(links!.calls).toEqual(["pointer(none)"]);
   });
 });
 
