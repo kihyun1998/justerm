@@ -185,7 +185,9 @@ export interface GridLease {
   onEnd(end: () => void): void;
   /**
    * Hand the grid back, releasing its VAO, its instance buffer and — if it was the last grid on its
-   * font configuration — that configuration's atlas.
+   * font configuration — that configuration's atlas. Then asks the surface for a present, so the
+   * pixels the grid last drew leave the canvas (#939) — unless the surface has ended, which presents
+   * nothing.
    *
    * **Idempotent, and that is not the softening this replaced.** The `Renderer` port requires
    * `Terminal.dispose()` to be silent on a second call, so something must absorb it. What differs is
@@ -478,6 +480,7 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
     const lease = new Lease(grid, (l) => {
       this.leases.delete(l);
       this.backend.removeGrid(l.id);
+      this.requestRender();
     });
     this.leases.add(lease);
     return lease;
