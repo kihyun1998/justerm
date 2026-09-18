@@ -3969,21 +3969,59 @@ test.describe("links (#934)", () => {
     await appMouse(page, "OFF");
   });
 
-  test("under live output a stationary pointer ends on the link its row now shows", async ({ page }) => {
+  test("under live output a resting pointer never underlines what its row no longer shows", async ({ page }) => {
     await still(page);
     const at = await urlCell(page);
     const mid = await cell(page, at.row, at.col + 10);
     await page.mouse.move(mid.x, mid.y);
     await expect.poll(async () => (await probe(page)).hover).toEqual([at.row, at.col, at.col + URL.length - 1]);
 
-    // Rows move under the pointer while the port's answers are in flight.
+    // Rows move under the pointer; only motion asks the port, so a resting pointer asks nothing.
     await page.evaluate(() => window.__output!(true));
     await page.waitForTimeout(1500);
     await page.evaluate(() => window.__output!(false));
 
-    const rows = (await probe(page)).rows;
+    // Whatever it shows now is on the row the pointer is on and covers a URL that row shows.
+    const { hover, rows } = await probe(page);
+    if (hover && hover.length > 0) {
+      expect(hover[0]).toBe(at.row);
+      expect(rows[at.row]!.slice(hover[1]!, hover[2]! + 1)).toBe(URL);
+    }
+    // And one motion finds the link its row shows now.
     const col = rows[at.row]!.indexOf(URL);
-    const want = col >= 0 && col <= at.col + 10 && at.col + 10 < col + URL.length ? [at.row, col, col + URL.length - 1] : [];
-    await expect.poll(async () => (await probe(page)).hover ?? []).toEqual(want);
+    const next = await cell(page, at.row, col + 11);
+    await page.mouse.move(next.x, next.y);
+    await expect.poll(async () => (await probe(page)).hover).toEqual([at.row, col, col + URL.length - 1]);
+  });
+
+  test("a drag from one end of a link to the other selects it and opens nothing", async ({ page }) => {
+    await still(page);
+    const start = await cell(page, 4, 13);
+    const end = await cell(page, 4, 18);
+
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(end.x, end.y, { steps: 4 });
+    await page.mouse.up();
+
+    await page.waitForTimeout(200);
+    expect((await probe(page)).opens).toEqual([]);
+  });
+
+  test("an application that starts tracking presses under a resting pointer takes the hover away", async ({ page }) => {
+    await still(page);
+    const on = await cell(page, 5, 14);
+    await page.mouse.move(on.x, on.y);
+    await expect.poll(async () => (await probe(page)).cursor).toBe("pointer");
+
+    // The mode changes by a frame alone — the pointer does not move.
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll("button")].find((b) => b.textContent === "App mouse: OFF")!;
+      btn.click();
+    });
+
+    await expect.poll(async () => (await probe(page)).cursor).toBe("text");
+    expect((await probe(page)).hover).toEqual([]);
+    await appMouse(page, "OFF");
   });
 });
