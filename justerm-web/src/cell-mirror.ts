@@ -138,6 +138,11 @@ export class CellMirror {
     return this.cells[row * this.cols + col]!.symbol;
   }
 
+  /** Whether row `row` soft-wraps into the next one. */
+  wraps(row: number): boolean {
+    return (this.cells[row * this.cols + this.cols - 1]!.flags & this.F.wrapline) !== 0;
+  }
+
   /** Whether `(row, col)` is the trailing half of a wide pair. */
   isSpacer(row: number, col: number): boolean {
     return (this.cells[row * this.cols + col]!.flags & this.F.wide_char_spacer) !== 0;

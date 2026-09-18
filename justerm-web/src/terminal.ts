@@ -531,6 +531,8 @@ export class Terminal {
   private preeditEnd: TextareaAnchor | undefined;
   /** The link state (#934), when {@link TerminalOptions.links} is wired. */
   private links: LinkTracker | undefined;
+  /** The pointer router, once the DOM group is attached — a frame re-asks its hover question. */
+  private router: PointerRouter | undefined;
   /** Whether a frame is being applied, so a hover change inside it rides that frame's present. */
   private applyingFrame = false;
   /** The element's inline `cursor` from before a link was hovered, restored on leave. */
@@ -589,14 +591,16 @@ export class Terminal {
     }
     this.unsubscribe = this.source.subscribe((frame) => {
       this.renderer.applyFrame(frame);
+      // Before the links: they re-ask the hover's question against this frame's mask.
+      this.track(frame);
       this.applyingFrame = true;
       try {
         this.links?.applyFrame(frame);
+        this.router?.refresh();
       } finally {
         this.applyingFrame = false;
       }
       this.renderer.render();
-      this.track(frame);
       this.positionTextarea(frame);
       this.repaintPreedit();
     });
@@ -807,14 +811,14 @@ export class Terminal {
       clearInterval(tickTimer);
       tickTimer = on ? setInterval(() => o.selection?.tick(), SELECTION_TICK_MS) : undefined;
     };
-    const router = new PointerRouter({
+    const router = (this.router = new PointerRouter({
       mask: () => this.mask,
       getGeometry,
       send: (event) => sink.send({ kind: "mouse", event }),
       local: o.selection,
       links: this.links,
       setTicking,
-    });
+    }));
     const onMove = (e: MouseEvent): void => {
       router.move(e);
       if (!router.active) unfollow();
@@ -837,7 +841,8 @@ export class Terminal {
       window.addEventListener("mouseup", onUp);
     };
     const onHover = (e: MouseEvent): void => {
-      if (!onScrollbar(e)) router.hover(e);
+      if (onScrollbar(e)) router.leave();
+      else router.hover(e);
     };
     const onLeave = (): void => router.leave();
     element.addEventListener("mousedown", onDown);
@@ -1143,6 +1148,7 @@ export class Terminal {
     this.detach = [];
     this.links?.dispose();
     this.links = undefined;
+    this.router = undefined;
     const element = this.options?.element;
     if (element && this.cursorBeforeLink !== undefined) element.style.cursor = this.cursorBeforeLink;
     this.cursorBeforeLink = undefined;

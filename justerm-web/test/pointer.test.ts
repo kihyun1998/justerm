@@ -51,6 +51,9 @@ class RecordingLinks implements LinkPointer {
   press(cell: readonly [number, number] | undefined): void {
     this.calls.push(`press(${this.cell(cell)})`);
   }
+  drag(cell: readonly [number, number] | undefined): void {
+    this.calls.push(`drag(${this.cell(cell)})`);
+  }
   release(cell: readonly [number, number] | undefined): void {
     this.calls.push(`release(${this.cell(cell)})`);
   }
@@ -349,6 +352,36 @@ describe("PointerRouter — links (#934)", () => {
     router.down(at(5, 3, { button: 2, buttons: 2 }));
 
     expect(links!.calls).toEqual([]);
+  });
+
+  it("hands a local press's motion to the links, so a drag can end the click", () => {
+    const { router, links } = rig(0, { links: true });
+
+    router.down(at(5, 3));
+    router.move(at(6, 3, { buttons: 1 }));
+
+    expect(links!.calls).toEqual(["press(3,5)", "drag(3,6)"]);
+  });
+
+  it("asks the last hover's question again when a frame changes the mask", () => {
+    const { router, links, state } = rig(0, { links: true });
+    router.hover(at(5, 3));
+
+    state.mask = NORMAL; // the application starts tracking presses under a resting pointer
+    router.refresh();
+
+    expect(links!.calls).toEqual(["pointer(3,5)", "pointer(none)"]);
+  });
+
+  it("has no question to repeat before a hover, or after the pointer left", () => {
+    const { router, links } = rig(0, { links: true });
+
+    router.refresh();
+    router.hover(at(5, 3));
+    router.leave();
+    router.refresh();
+
+    expect(links!.calls).toEqual(["pointer(3,5)", "pointer(none)"]);
   });
 
   it("leaving the element drops the hover", () => {
