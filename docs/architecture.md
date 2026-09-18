@@ -909,6 +909,8 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   (d) **Bracketed paste (`?2004`)**: wrap pasted text in `CSI 200~`…`CSI 201~` so the app never
   mistakes paste content for typed control sequences (a real injection-safety boundary, not cosmetic).
   (e) **Backspace is DEL (`0x7f`), not BS (`0x08`)** — the standard PC-keyboard convention apps assume.
+  **Alt is an ESC prefix on the key's own bytes** — a character and, since #941, Enter / Tab /
+  Backspace / Escape too (`Alt+Backspace` = `ESC DEL`, readline's backward-kill-word).
   (f) **modifyOtherKeys (XTMODKEYS `CSI > 4 ; Pv m`, #890)**: `Pv >= 2` makes a *modified*
   character encode as `CSI 27 ; <1+mods> ; <codepoint> ~` instead of its ordinary form, which is
   what separates `Ctrl+I` from `Tab`, `Ctrl+[` from `Esc` and `Ctrl+M` from `Enter` — `vim` asks
@@ -943,6 +945,8 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   engine only formats them; landed in #28. The genuinely-excluded mode is `?1001` hilite tracking, a
   stateful handshake, not an encoding.) [#11]
 - **The kitty keyboard protocol is a negotiated flag stack that rewrites only what legacy can't express.**
+  **Each screen keeps its own flags and stack** (#941), swapped when the screen changes, so an
+  application that exits the alternate screen without popping cannot leave the shell in `CSI u`.
   An app enables it via `CSI > flags u` (push the current flags, set new), `CSI = flags ; mode u` (set in
   place — mode 1 replace / 2 or-in / 3 and-not), `CSI < n u` (pop n), and queries with `CSI ? u` → the
   engine replies `CSI ? flags u` on the #27 channel. These route by their leading `>`/`=`/`<`/`?`

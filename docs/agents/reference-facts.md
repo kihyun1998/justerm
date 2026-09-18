@@ -3550,3 +3550,30 @@ It keeps the cursor's whole logical line up to the cursor rather than its one ro
 command that wrapped keep their start; and the markers on what it keeps survive, because retiring
 the `CommandStart` of that command loses it from `command_lines` — the reason `EL` retires nothing
 (#750).
+
+## The kitty flag stack per screen, and legacy Alt on the C0 named keys (#941, verified 2026-09-18)
+
+Two encoder questions #941's lens and refuter raised while reading the frame's `modified_keys`
+mask, which reports whatever `encode_key` does and so inherits both.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The main and alternate screens keep separate kitty stacks, swapped in `swap_alt` and re-applied as the active mode | alacritty | `alacritty_terminal/src/term/mod.rs:726-729` |
+| `swap_alt` runs only when the screen actually changes (`?1049` set guarded by `!ALT_SCREEN`, reset by `ALT_SCREEN`) | alacritty | `alacritty_terminal/src/term/mod.rs:1946-1950`, `:2009-2013` |
+| A full reset clears both stacks | alacritty | `alacritty_terminal/src/term/mod.rs:1849-1850` |
+| `kitty_keyboard` is a field of `Screen`, one per screen; `switchScreen` does not reset it, so the alternate screen's survives between visits | ghostty | `src/terminal/Screen.zig:73`; `src/terminal/Terminal.zig:4271-4329` |
+| `Screen.reset` (full reset) clears it | ghostty | `src/terminal/Screen.zig:411` |
+| `?47`/`?1047`/`?1049` set saves the flags as `mainFlags` and loads `altFlags`; reset does the reverse. The swap sits in the mode handler with no already-on-alt check | xterm.js | `src/common/InputHandler.ts:2017-2021`, `:2262-2266` |
+| Push and pop pick `altStack` or `mainStack` by the active buffer | xterm.js | `src/common/InputHandler.ts:3598`, `:3624` |
+| Legacy Backspace is `^?` (`^H` with Ctrl), and Alt prefixes ESC to either | xterm.js | `src/common/input/Keyboard.ts:86-89` |
+| Legacy Enter is `ESC CR` with Alt; Escape is `ESC ESC` with Alt | xterm.js | `src/common/input/Keyboard.ts:107`, `:115` |
+| ⚠ Legacy Tab ignores Alt: `HT` | xterm.js | `src/common/input/Keyboard.ts:97` |
+| Legacy (`.set` = any state but modifyOtherKeys 2) Alt+Backspace `ESC DEL`, Alt+Tab `ESC HT`, Alt+Enter `ESC CR`; Alt+Escape `ESC ESC` in every state | ghostty | `src/input/function_keys.zig:138`, `:174`, `:202`, `:227`; `.set` semantics `src/input/key_encode.zig:652` |
+| A named key that has text (`\r`, `\t`, `\x7f`, `\x1b`) takes the alt-sends-esc path, which pushes ESC before the text | alacritty | `alacritty/src/input/keyboard.rs:122`, `:88` |
+| With `metaSendsEscape`, Meta prefixes ESC to the looked-up bytes of a key — the gate is `kd.nbytes != 0`, not a keysym class; the default (off) shifts the byte by 128 instead | xterm | `input.c:1482-1487`; table `ctlseqs.txt:2320-2345` |
+
+**What justerm took.** Stacks per screen, swapped only on a real switch, both cleared by RIS — the
+three references agree except that xterm.js swaps on a repeated set too, where alacritty and ghostty
+guard it; justerm guards. Alt as an ESC prefix on Enter / Tab / Backspace / Escape follows xterm's
+escape mode, alacritty and ghostty, and this encoder's own character rule; xterm.js is the outlier
+on Tab. `Ctrl+Backspace` (BS in xterm.js and ghostty, DEL here) was not changed.

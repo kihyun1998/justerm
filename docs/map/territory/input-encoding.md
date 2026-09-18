@@ -61,6 +61,14 @@ Nothing governs the encoding itself.
   and is asked after. (This bullet said the kitty half was *"deliberately deferred"* until
   2026-09-11, some two months after #23 shipped it; the same sentence survived a second time
   under `## Known holes`, which is what a claim held in two places does.)
+- **Legacy Alt is an ESC prefix on the key's own encoding — named keys included** (#941). A
+  character always had it; Enter / Tab / Backspace / Escape dropped Alt, so `Alt+Backspace` reached
+  readline as a bare DEL rather than `M-DEL` (backward-kill-word). The prefix now goes on whatever
+  the key otherwise encodes (`Alt+Shift+Tab` is `ESC CSI Z`). Under modifyOtherKeys 2 and kitty the
+  negotiated form answers first and Alt stays a parameter. **Tab is where the references split**:
+  xterm under `metaSendsEscape`, alacritty and ghostty prefix it; xterm.js alone sends a bare HT.
+  The prefix follows the majority and this encoder's own character rule — a derivation, not a call.
+  Only Alt: `Ctrl+Backspace` stays DEL, where xterm.js and ghostty send BS; not examined here.
 - **What the modes decide reaches the consumer as a derived mask** (#941, wire v18). A consumer
   that substitutes a key — PenTerm types `\` + CR for Shift+Enter, because legacy sends it as a
   plain CR — must not do so once the application asked for an encoding that carries Shift, and it
@@ -185,9 +193,10 @@ Nothing governs the encoding itself.
 
 ## Reference behaviour
 
-**One section** in `docs/agents/reference-facts.md` — modifyOtherKeys (#890), which is also the
-first time this territory's encoders were read against the trees rather than described. Everything
-else is still unpinned: the encoders are described as the legacy xterm
+**Two sections** in `docs/agents/reference-facts.md` — modifyOtherKeys (#890), which is also the
+first time this territory's encoders were read against the trees rather than described, and the
+kitty stack per screen plus legacy Alt on the C0 named keys (#941). Everything else is still
+unpinned: the encoders are described as the legacy xterm
 baseline, and the IME delete case cites xterm's `C0.DEL` in a comment — an implementation claim about
 a named reference with no pinned row, in the area where a wrong byte is invisible until an
 application misbehaves.
@@ -265,13 +274,16 @@ application misbehaves.
   (#941). The mask is the last frame's, the key is encoded against the live engine, and the window
   is up to one frame cadence after a kitty push/pop or XTMODKEYS. The mouse mask has the same lag
   but is safe because `encode_mouse` re-checks the live mask; a substitution is sent as typed text,
-  so core never sees the key it replaced. Unmeasured beyond reading; found by #941's lens.
-- **One kitty flag stack serves both screens.** `kitty_flags` / `kitty_stack` are not swapped on
-  `?1049`, so flags an application pushes on the alternate screen outlive it if it exits without
-  popping (a crash), and `encode_key` keeps sending `CSI u` to the shell. Pre-existing, but since
-  #941 a consumer deferring to `modified_keys` inherits it: `SHIFT_ENTER` stays set on the main
-  screen. The mask cannot be tested for this — it shares the encoder's model by construction.
-  Found by #941's lens and refuter (probe: `?1049h` · `CSI > 1 u` · `?1049l`).
+  so core never sees the key it replaced. Unmeasured beyond reading; found by #941's lens. **Handed
+  to PenTerm** (maintainer, 2026-09-18): its backend holds the engine and encodes every key, so it
+  can decide at encode time; nothing in core closes it.
+- ~~**One kitty flag stack serves both screens.**~~ — **closed in #941.** Flags an application
+  pushed on the alternate screen and never popped (a crash) kept the shell in `CSI u`, and since
+  `modified_keys` kept `SHIFT_ENTER` set there. Each screen now keeps its own flags and stack, swapped
+  when the screen actually changes; the alternate screen's survive between visits and RIS clears
+  both, as all three references do (rows in `reference-facts.md`). The mask could not have caught
+  it — it shares the encoder's model by construction — so the tests are on the encoder
+  (`tests/kitty.rs`). Found by #941's lens and refuter.
 - **Two mode sets have to agree across a crate boundary.** The web mirrors `input.rs`'s intent types
   by hand, the same ungated mirroring `types.ts` does for the frame.
 - ~~**In-progress IME composition is not rendered inline in the grid**~~ — **closed by #249**
