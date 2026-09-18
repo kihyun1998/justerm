@@ -22,6 +22,10 @@ export interface SelectionPort {
   extend(row: number, col: number, side: Side): void;
   /** Drop the selection. */
   clear(): void;
+  /** Select the whole buffer — core `select_all`, which takes no coordinate and does not move the
+   * view. Optional: a port without it cannot select all, and
+   * {@link SelectionController.selectAll} then does nothing. */
+  selectAll?(): void;
   /** The engine's selection text (core `selection_text`, computed on the backend
    * across scrollback), or `null` when nothing is selected. Async: in frame
    * mode it round-trips to the backend. */
@@ -41,6 +45,9 @@ export class StubSelectionPort implements SelectionPort {
   clear(): void {
     this.calls.push({ kind: "clear" });
   }
+  selectAll(): void {
+    this.calls.push({ kind: "selectAll" });
+  }
   /** The text the next {@link text} query resolves to (set by tests). */
   textValue: string | null = null;
   text(): Promise<string | null> {
@@ -52,7 +59,8 @@ export class StubSelectionPort implements SelectionPort {
 export type SelCall =
   | { kind: "begin"; row: number; col: number; side: Side; ty: SelType }
   | { kind: "extend"; row: number; col: number; side: Side }
-  | { kind: "clear" };
+  | { kind: "clear" }
+  | { kind: "selectAll" };
 
 /**
  * Copy the current selection to the clipboard: query the engine for its text
@@ -258,6 +266,19 @@ export class SelectionController {
     this.hasSelection = false;
     this.anchor = "";
     this.port.clear();
+    this.reportChange();
+  }
+
+  /**
+   * Select the whole buffer (#935), and report it on the change signal as xterm.js's `selectAll()`
+   * does. It is then a live selection: the typing drop clears it and a Shift+click extends it. A
+   * port without `selectAll` makes this a no-op.
+   */
+  selectAll(): void {
+    if (!this.port.selectAll) return;
+    this.port.selectAll();
+    this.hasSelection = true;
+    this.anchor = "all";
     this.reportChange();
   }
 
