@@ -244,7 +244,8 @@ describe("LinkTracker — plain-text URLs through the port (#934)", () => {
 
     t.applyFrame({ ...frame(0, { 1: { text: url } }), cols: COLS } as DecodedFrame); // same size
     expect(port.asked).toEqual([1]);
-    t.applyFrame({ ...frame(0, {}), rows: ROWS + 1 } as DecodedFrame);
+    // A taller grid still showing the same row: only the resize can make it ask again.
+    t.applyFrame({ ...frame(0, { 1: { text: url } }), rows: ROWS + 1 } as DecodedFrame);
 
     expect(port.asked).toEqual([1, 1]);
   });
