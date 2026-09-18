@@ -324,7 +324,8 @@ bitflags::bitflags! {
     /// Backspace, Escape — reach the application distinct from the bare key, under the
     /// keyboard modes currently in effect (#941). A set bit means the modifier survives the
     /// encoding; a clear bit means the application receives exactly what the bare key sends.
-    /// Carried on the frame as [`crate::Frame::modified_keys`], derived by [`modified_keys`].
+    /// Carried on the frame as [`crate::Frame::modified_keys`], derived from the encoder
+    /// [`crate::Term::encode_key`] runs.
     ///
     /// **No `#[non_exhaustive]` (#844): the question does not arise for a bitflags set.** New members
     /// are bits inside the value, not fields, and the type is built through `empty()` / `from_bits`,
@@ -349,7 +350,7 @@ bitflags::bitflags! {
 /// The [`ModifiedKeys`] mask for a set of keyboard modes: each bit is set exactly when
 /// [`encode_key`], given the same modes, encodes that modified press differently from the
 /// bare key. Takes the same mode arguments as `encode_key`.
-pub fn modified_keys(
+pub(crate) fn modified_keys(
     app_cursor: bool,
     app_keypad: bool,
     kitty_flags: u8,

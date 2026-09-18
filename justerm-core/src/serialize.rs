@@ -407,8 +407,8 @@ pub struct Frame {
     pub alt_screen: bool,
     /// Which modified presses of Enter / Tab / Backspace / Escape reach the application
     /// distinct from the bare key under the keyboard modes in effect — the kitty flags and
-    /// `modifyOtherKeys` level 2 (#941). Derived by [`crate::input::modified_keys`] from the
-    /// same encoder [`crate::Term::encode_key`] runs.
+    /// `modifyOtherKeys` level 2 (#941). Derived by running the same encoder
+    /// [`crate::Term::encode_key`] runs, on each modified press and on the bare key.
     pub modified_keys: ModifiedKeys,
     pub scroll: Option<ScrollOp>,
     pub spans: Vec<Span>,
