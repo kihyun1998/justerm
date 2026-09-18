@@ -124,8 +124,10 @@ impl Term {
     }
 
     /// Shift the selection up by one absolute line after the oldest history line
-    /// is evicted by the scrollback cap. An endpoint clamps to the new top; if
-    /// the whole selection was on the evicted line, it is cleared.
+    /// is evicted by the scrollback cap. An endpoint on the evicted line clamps to
+    /// the start of the new top line — column 0, left side — except in a Block,
+    /// which keeps its columns (the rule `selection_rotate_region` applies at a
+    /// region top). If the whole selection was on the evicted line, it is cleared.
     pub(super) fn selection_evict_oldest(&mut self) {
         let Some((a, f)) = self
             .selection
@@ -139,8 +141,17 @@ impl Term {
             return;
         }
         if let Some(sel) = &mut self.selection {
-            sel.anchor.point.line = a.saturating_sub(1);
-            sel.focus.point.line = f.saturating_sub(1);
+            let block = sel.ty == SelectionType::Block;
+            for end in [&mut sel.anchor, &mut sel.focus] {
+                if end.point.line == 0 {
+                    if !block {
+                        end.point.col = 0;
+                        end.side = Side::Left;
+                    }
+                } else {
+                    end.point.line -= 1;
+                }
+            }
         }
     }
 
