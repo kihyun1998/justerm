@@ -1,3 +1,4 @@
+import type { Link } from "./links";
 import type { DecodedFrame, FlagBits } from "./types";
 
 /** One stored cell: the resolved glyph + its flag bits. No colour — the renderer
@@ -6,6 +7,8 @@ import type { DecodedFrame, FlagBits } from "./types";
 interface MirrorCell {
   symbol: string;
   flags: number;
+  /** The OSC 8 URI the cell carries, resolved out of the frame-local link table (#934). */
+  link?: string;
 }
 
 const blank = (): MirrorCell => ({ symbol: " ", flags: 0 });
@@ -26,8 +29,8 @@ export class CellMirror {
   private readonly cells: MirrorCell[];
 
   constructor(
-    private readonly cols: number,
-    private readonly rows: number,
+    readonly cols: number,
+    readonly rows: number,
     private readonly F: FlagBits,
   ) {
     this.cells = Array.from({ length: cols * rows }, blank);
@@ -54,7 +57,7 @@ export class CellMirror {
     // loop cost one allocation per cell — and for `sideTable`, a full table rebuild per cluster
     // cell, measured at ~170x a local read (#657). Invisible to a plain-object fixture, where a
     // property read is free, which is why every test here was green through it.
-    const { spans, flags: flagsCol, extra: extraCol, codepoints, sideTable } = frame;
+    const { spans, flags: flagsCol, extra: extraCol, codepoints, sideTable, link: linkCol, linkTable } = frame;
     for (let s = 0; s < spans.length; s += SPAN_STRIDE) {
       const line = spans[s]!;
       const left = spans[s + 1]!;
@@ -71,7 +74,10 @@ export class CellMirror {
         // and "🚀‍" (emoji + trailing ZWJ) keep their base instead of rendering a bare mark.
         const marks = extra !== 0 ? sideTable[extra - 1]! : "";
         const symbol = code === 0 ? " " : String.fromCodePoint(code) + marks;
-        this.cells[line * this.cols + x] = { symbol, flags };
+        // A link index names a URI in THIS frame's table only, so the URI is what is stored.
+        const index = linkCol?.[idx] ?? 0;
+        const link = index !== 0 ? linkTable?.[index - 1] : undefined;
+        this.cells[line * this.cols + x] = link === undefined ? { symbol, flags } : { symbol, flags, link };
       }
     }
   }
@@ -105,6 +111,29 @@ export class CellMirror {
     let end = text.length;
     while (end > 0 && text[end - 1] === " ") end--;
     return { text: text.slice(0, end), columns: columns.slice(0, end) };
+  }
+
+  /** The viewport's OSC 8 links: cells carrying one URI are one link, in first-seen order. */
+  osc8Links(): Link[] {
+    const byUri = new Map<string, Array<readonly [number, number]>>();
+    for (let i = 0; i < this.cells.length; i++) {
+      const uri = this.cells[i]!.link;
+      if (uri === undefined) continue;
+      let cells = byUri.get(uri);
+      if (!cells) byUri.set(uri, (cells = []));
+      cells.push([Math.floor(i / this.cols), i % this.cols]);
+    }
+    return [...byUri].map(([uri, cells]) => ({ uri, cells }));
+  }
+
+  /** The stored symbol at `(row, col)` — a blank cell reads `" "`. */
+  symbolAt(row: number, col: number): string {
+    return this.cells[row * this.cols + col]!.symbol;
+  }
+
+  /** Whether `(row, col)` is the trailing half of a wide pair. */
+  isSpacer(row: number, col: number): boolean {
+    return (this.cells[row * this.cols + col]!.flags & this.F.wide_char_spacer) !== 0;
   }
 
   /** Shift rows `[top, bottom]` by `count` (>0 = up, exposing blanks at the

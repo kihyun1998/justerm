@@ -280,6 +280,62 @@ describe("CellMirror.rowCells (#152 column map)", () => {
 // frame: 10k reads of `sideTable[0]` cost 10.3 ms through the getter against 0.061 ms through a
 // local — 170x, and it grows with the table). Plain-object fixtures hide this completely, which is
 // why nothing caught it: to every other test in this file a property read is free (#657).
+describe("CellMirror.osc8Links (#934)", () => {
+  // `frame` above with a per-cell link index column and the frame-local URI table.
+  const linked = (
+    kind: number,
+    spans: { line: number; left: number; text: string; link: number }[],
+    linkTable: string[],
+    scroll?: { top: number; bottom: number; count: number },
+  ): DecodedFrame => ({
+    ...frame(kind, spans, scroll),
+    link: spans.flatMap((s) => [...s.text].map(() => s.link)),
+    linkTable,
+  });
+
+  it("keeps a link whole when a Partial frame repaints only part of it", () => {
+    const mirror = new CellMirror(8, 2, F);
+    mirror.applyFrame(linked(0, [{ line: 0, left: 0, text: "abcd", link: 1 }], ["http://a.io"]));
+
+    mirror.applyFrame(linked(1, [{ line: 0, left: 1, text: "B", link: 1 }], ["http://a.io"]));
+
+    expect(mirror.osc8Links()).toEqual([
+      { uri: "http://a.io", cells: [[0, 0], [0, 1], [0, 2], [0, 3]] },
+    ]);
+  });
+
+  it("resolves a cell's index against the table of the frame that carried it", () => {
+    const mirror = new CellMirror(8, 2, F);
+    mirror.applyFrame(linked(0, [{ line: 0, left: 0, text: "ab", link: 1 }], ["http://a.io"]));
+
+    // Index 1 names a different URI in this frame's table.
+    mirror.applyFrame(linked(1, [{ line: 1, left: 0, text: "cd", link: 1 }], ["http://b.io"]));
+
+    expect(mirror.osc8Links()).toEqual([
+      { uri: "http://a.io", cells: [[0, 0], [0, 1]] },
+      { uri: "http://b.io", cells: [[1, 0], [1, 1]] },
+    ]);
+  });
+
+  it("carries a link through a scroll op", () => {
+    const mirror = new CellMirror(4, 3, F);
+    mirror.applyFrame(linked(0, [{ line: 2, left: 0, text: "ab", link: 1 }], ["http://a.io"]));
+
+    mirror.applyFrame(linked(1, [], [], { top: 0, bottom: 2, count: 1 }));
+
+    expect(mirror.osc8Links()).toEqual([{ uri: "http://a.io", cells: [[1, 0], [1, 1]] }]);
+  });
+
+  it("a cell repainted without a link drops it", () => {
+    const mirror = new CellMirror(4, 1, F);
+    mirror.applyFrame(linked(0, [{ line: 0, left: 0, text: "ab", link: 1 }], ["http://a.io"]));
+
+    mirror.applyFrame(frame(1, [{ line: 0, left: 0, text: "a" }])); // a frame with no link column
+
+    expect(mirror.osc8Links()).toEqual([{ uri: "http://a.io", cells: [[0, 1]] }]);
+  });
+});
+
 describe("column reads (#657)", () => {
   it("reads each column getter once per frame, not once per cell", () => {
     const mirror = new CellMirror(8, 1, F);
@@ -291,7 +347,9 @@ describe("column reads (#657)", () => {
     const spans = new Uint32Array([0, 0, text.length - 1, 0, text.length]);
     const sideTable = ["\u0301"];
 
-    const reads = { spans: 0, flags: 0, extra: 0, codepoints: 0, sideTable: 0 };
+    const link = new Uint32Array(text.length);
+    const linkTable: string[] = [];
+    const reads = { spans: 0, flags: 0, extra: 0, codepoints: 0, sideTable: 0, link: 0, linkTable: 0 };
     const counting = {
       kind: 1,
       cols: 8,
@@ -316,12 +374,20 @@ describe("column reads (#657)", () => {
         reads.sideTable++;
         return sideTable;
       },
+      get link() {
+        reads.link++;
+        return link;
+      },
+      get linkTable() {
+        reads.linkTable++;
+        return linkTable;
+      },
     } as unknown as DecodedFrame;
 
     mirror.applyFrame(counting);
 
     // The mirror's output must not change — this is about how often it asks, not what it stores.
     expect(mirror.rowCells(0).text).toBe("éxxxxxx");
-    expect(reads).toEqual({ spans: 1, flags: 1, extra: 1, codepoints: 1, sideTable: 1 });
+    expect(reads).toEqual({ spans: 1, flags: 1, extra: 1, codepoints: 1, sideTable: 1, link: 1, linkTable: 1 });
   });
 });

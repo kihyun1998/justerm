@@ -1128,6 +1128,9 @@ struct GridTier {
     /// `match_spans`, and the `highlight_at` ranking (ActiveMatch > Selection > Match) is what makes
     /// its colour win where they overlap. Empty = no active match.
     active_match_spans: Vec<u32>,
+    /// The hovered link's spans (#934), same stride — drawn underlined. Set via
+    /// [`set_link_hover`](Self::set_link_hover). Empty = no link hovered.
+    link_hover_spans: Vec<u32>,
     /// The in-progress IME composition and the cell it is anchored to (#249, ADR-0028). Empty = no
     /// composition. Unlike every other retained state here this describes something the **engine
     /// never sees** — the preedit reaches no frame and no wire — so it can only arrive from the
@@ -1749,6 +1752,18 @@ impl JustermRenderer {
         let at = self.slot(grid)?;
         self.grid_at_mut(at)
             .set_active_match(active_spans, active_match_bg);
+        Ok(())
+    }
+
+    /// Set the hovered link's spans (#934): stride-3 `(row, left, right)` viewport triples, the
+    /// cells drawn underlined in the cell's own line colour. A span covering either half of a wide
+    /// pair covers both. Kept until the next call; empty spans clear it.
+    #[wasm_bindgen(js_name = setLinkHover)]
+    pub fn set_link_hover(&mut self, grid: u32, spans: Vec<u32>) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        let g = self.grid_at_mut(at);
+        g.link_hover_spans = spans;
+        g.needs_repack = true;
         Ok(())
     }
 
@@ -3396,6 +3411,7 @@ impl JustermRenderer {
             active: &self.grid_at(at).active_match_spans,
             selection: &self.grid_at(at).selection_spans,
             matches: &self.grid_at(at).match_spans,
+            link_hover: &self.grid_at(at).link_hover_spans,
             colors: self.grid_at(at).highlight_colors,
         };
         // #272: the RGB-space colour policy (bold→bright, dim, minimum-contrast, …), assembled from
@@ -3908,6 +3924,7 @@ impl GridTier {
             selection_spans: Vec::new(),
             match_spans: Vec::new(),
             active_match_spans: Vec::new(), // no active/focused match by default (#427)
+            link_hover_spans: Vec::new(),   // no link hovered (#934)
             preedit_run: Vec::new(),        // no composition open (#249)
             preedit_col: 0,
             preedit_row: 0,
