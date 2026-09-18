@@ -143,3 +143,15 @@ fn only_u0020_is_a_blank_edge() {
 
     assert_eq!(term.selection_text().as_deref(), Some("\u{a0}ab\u{a0}"));
 }
+
+/// A space carrying a combining mark is content, not padding: select-all keeps it at either
+/// edge, as a drag over the same cells does.
+#[test]
+fn a_space_with_a_combining_mark_is_not_a_blank_edge() {
+    let mut term = Engine::new(10, 3);
+    term.feed(" \u{301}ab \u{301}".as_bytes());
+
+    term.select_all();
+
+    assert_eq!(term.selection_text().as_deref(), Some(" \u{301}ab \u{301}"));
+}

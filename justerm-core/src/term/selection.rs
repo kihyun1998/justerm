@@ -78,7 +78,7 @@ impl Term {
     pub fn select_all(&mut self) {
         let floor = self.abs_floor();
         let last = self.scrollback.len() + self.grid.rows() - 1;
-        let non_blank = |cell: &crate::cell::Cell| cell.c() != ' ';
+        let non_blank = |cell: &crate::cell::Cell| cell.c() != ' ' || cell.is_combined();
         let first = (floor..=last).find_map(|line| {
             let col = self.abs_line(line).iter().position(non_blank)?;
             Some(BufferPoint { line, col })
