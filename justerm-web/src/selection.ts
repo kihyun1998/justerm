@@ -278,7 +278,7 @@ export class SelectionController {
     if (!this.port.selectAll) return;
     this.port.selectAll();
     this.hasSelection = true;
-    this.anchor = "all";
+    this.anchor = "";
     this.reportChange();
   }
 

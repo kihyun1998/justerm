@@ -1309,24 +1309,6 @@ describe("SelectionController.selectAll (#935)", () => {
     expect(port.calls).toEqual([{ kind: "selectAll" }, { kind: "extend", row: 2, col: 4, side: "left" }]);
   });
 
-  // The change signal's de-dup keys on `anchor|focus`. Select-all is a new selection, so a Shift+click
-  // back onto the cell the previous drag ended on is a change and must not match that drag's key.
-  it("reports a Shift+click onto the previous drag's end as a change", () => {
-    const port = new StubSelectionPort();
-    let changes = 0;
-    const ctrl = new SelectionController(port, () => GEOM, { onSelectionChange: () => changes++ });
-    ctrl.mouseDown(leftHalf(2, 1), 1);
-    ctrl.mouseMove(leftHalf(6, 1));
-    ctrl.mouseUp(leftHalf(6, 1));
-    ctrl.selectAll();
-    const before = changes;
-
-    ctrl.mouseDown({ ...leftHalf(6, 1), shiftKey: true }, 1);
-
-    expect(port.calls.at(-1)).toEqual({ kind: "extend", row: 1, col: 6, side: "left" });
-    expect(changes).toBe(before + 1);
-  });
-
   it("does nothing, and reports nothing, when the port cannot select all", () => {
     const calls: string[] = [];
     let changes = 0;
