@@ -1291,7 +1291,13 @@ renderer.setLinkHover = (spans) => {
   linkHover = [...spans];
   setLinkHover(spans);
 };
-window.__linkProbe = () => ({ opens: [...linkOpens], hover: linkHover, cursor: termContainer.style.cursor });
+window.__linkProbe = () => ({
+  opens: [...linkOpens],
+  hover: linkHover,
+  cursor: termContainer.style.cursor,
+  geom: getGeometry() ?? null,
+  rows: log.slice(viewTop(), viewTop() + ROWS),
+});
 
 term = new Terminal(source, renderer, {
   element: termContainer,
@@ -1779,7 +1785,15 @@ declare global {
     __thumbPressProbe?: () => ThumbPressProbe;
     __tickCount?: () => number;
     __selectionProbe?: () => { changes: number; primary: string };
-    __linkProbe?: () => { opens: string[]; hover: number[] | null; cursor: string };
+    __linkProbe?: () => {
+      opens: string[];
+      hover: number[] | null;
+      cursor: string;
+      geom: CellGeometry | null;
+      rows: string[];
+    };
+    /** Stop (`false`) or restart (`true`) the 300 ms output timer — #934's links stand still under it. */
+    __output?: (on: boolean) => void;
     /** Set by the e2e so an activated link is recorded without opening a tab. */
     __keepLinksHome?: boolean;
     __contextLossProbe?: () => Promise<ContextLossProbe>;
@@ -4271,6 +4285,10 @@ function appendTick(): void {
 // loop's re-pack disabled, because these frames were carrying it.
 let appendTimer = window.setInterval(appendTick, 300);
 render();
+window.__output = (on) => {
+  window.clearInterval(appendTimer);
+  if (on) appendTimer = window.setInterval(appendTick, 300);
+};
 
 /**
  * #818 — run `n` output ticks **synchronously**, the way the 300 ms timer would have, so a test can

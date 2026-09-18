@@ -317,6 +317,36 @@ describe("CellMirror.osc8Links (#934)", () => {
     ]);
   });
 
+  it("two runs of one URI apart from each other are two links", () => {
+    const mirror = new CellMirror(8, 2, F);
+    mirror.applyFrame(
+      linked(0, [
+        { line: 0, left: 0, text: "ab", link: 1 },
+        { line: 0, left: 6, text: "cd", link: 1 }, // ends on the last column of a row that does not wrap
+        { line: 1, left: 0, text: "ef", link: 1 },
+      ], ["http://a.io"]),
+    );
+
+    expect(mirror.osc8Links()).toEqual([
+      { uri: "http://a.io", cells: [[0, 0], [0, 1]] },
+      { uri: "http://a.io", cells: [[0, 6], [0, 7]] },
+      { uri: "http://a.io", cells: [[1, 0], [1, 1]] },
+    ]);
+  });
+
+  it("a run that soft-wraps into the next row is one link", () => {
+    const mirror = new CellMirror(4, 2, F);
+    const f = linked(0, [
+      { line: 0, left: 2, text: "ab", link: 1 },
+      { line: 1, left: 0, text: "cd", link: 1 },
+    ], ["http://a.io"]);
+    (f.flags as number[])[1] = F.wrapline; // the row's last cell carries the wrap
+
+    mirror.applyFrame(f);
+
+    expect(mirror.osc8Links()).toEqual([{ uri: "http://a.io", cells: [[0, 2], [0, 3], [1, 0], [1, 1]] }]);
+  });
+
   it("carries a link through a scroll op", () => {
     const mirror = new CellMirror(4, 3, F);
     mirror.applyFrame(linked(0, [{ line: 2, left: 0, text: "ab", link: 1 }], ["http://a.io"]));

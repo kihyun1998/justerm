@@ -3859,3 +3859,131 @@ test("a double-click selection reaches primary and reports a change (#914)", asy
   await expect.poll(async () => (await probe()).primary).not.toBe(afterClick.primary);
   expect((await probe()).changes).toBeGreaterThan(afterClick.changes);
 });
+
+// #934: links through the widget. The page wires `links` on its `Terminal` and binds no pointer
+// listener of its own, so every hover and click below travels element -> PointerRouter ->
+// LinkTracker -> the page's `onActivate`. The renderer's underline is recorded at the widget's
+// `setLinkHover` call, since the published renderer this page runs on may predate the binding.
+test.describe("links (#934)", () => {
+  const OSC8 = "https://example.com/osc8-select";
+  const URL = "https://github.com/kihyun1998/justerm";
+  const probe = (page: Page) => page.evaluate(() => window.__linkProbe!());
+
+  /** Stop the output so rows stand still, and keep activations from opening tabs. */
+  async function still(page: Page): Promise<void> {
+    await page.evaluate(() => {
+      window.__output!(false);
+      window.__keepLinksHome = true;
+    });
+  }
+  /** The page point at the centre of viewport cell `(row, col)`. */
+  async function cell(page: Page, row: number, col: number): Promise<{ x: number; y: number }> {
+    const g = (await probe(page)).geom!;
+    return { x: g.originX + (col + 0.5) * g.cellWidth, y: g.originY + (row + 0.5) * g.cellHeight };
+  }
+  /** The first visible row holding the plain URL, and the column it starts at. */
+  async function urlCell(page: Page): Promise<{ row: number; col: number }> {
+    await page.evaluate(() => window.__seedRows!(1));
+    const rows = (await probe(page)).rows;
+    const row = rows.findIndex((t) => t.includes(URL));
+    expect(row).toBeGreaterThanOrEqual(0);
+    return { row, col: rows[row]!.indexOf(URL) };
+  }
+  async function appMouse(page: Page, label: "OFF" | "?1000"): Promise<void> {
+    for (let i = 0; i < 4; i++) {
+      const btn = page.getByRole("button", { name: /^App mouse: / });
+      if ((await btn.textContent()) === `App mouse: ${label}`) return;
+      await btn.click();
+    }
+    throw new Error(`App mouse never reached ${label}`);
+  }
+
+  test("an OSC 8 link underlines and shows the pointer on hover, and lets go off it", async ({ page }) => {
+    await still(page);
+    const on = await cell(page, 0, 15); // inside row 0's "select" (columns 13..18)
+    const off = await cell(page, 0, 5);
+
+    await page.mouse.move(on.x, on.y);
+    await expect.poll(async () => (await probe(page)).hover).toEqual([0, 13, 18]);
+    expect((await probe(page)).cursor).toBe("pointer");
+
+    await page.mouse.move(off.x, off.y);
+    await expect.poll(async () => (await probe(page)).hover).toEqual([]);
+    expect((await probe(page)).cursor).toBe("text");
+  });
+
+  test("a click on an OSC 8 link opens it once, through the page's policy", async ({ page }) => {
+    await still(page);
+    const on = await cell(page, 1, 14);
+
+    await page.mouse.click(on.x, on.y);
+
+    await expect.poll(async () => (await probe(page)).opens).toEqual([OSC8]);
+  });
+
+  test("a plain URL is found through the port, underlined whole, and opened", async ({ page }) => {
+    await still(page);
+    const at = await urlCell(page);
+    const mid = await cell(page, at.row, at.col + 10);
+
+    await page.mouse.move(mid.x, mid.y);
+    await expect.poll(async () => (await probe(page)).hover).toEqual([at.row, at.col, at.col + URL.length - 1]);
+    await page.mouse.click(mid.x, mid.y);
+
+    await expect.poll(async () => (await probe(page)).opens).toEqual([URL]);
+  });
+
+  test("a press that becomes a drag off the link, and a double click, open nothing extra", async ({ page }) => {
+    await still(page);
+    const on = await cell(page, 2, 14);
+    const away = await cell(page, 2, 40);
+
+    await page.mouse.move(on.x, on.y);
+    await page.mouse.down();
+    await page.mouse.move(away.x, away.y, { steps: 4 });
+    await page.mouse.up();
+    await page.mouse.dblclick(on.x, on.y);
+
+    // The double click's first press opens; its second, which selects a word, does not.
+    await expect.poll(async () => (await probe(page)).opens).toEqual([OSC8]);
+    await page.waitForTimeout(200);
+    expect((await probe(page)).opens).toEqual([OSC8]);
+  });
+
+  test("over an application tracking presses a link is inert, and Shift makes it live", async ({ page }) => {
+    await still(page);
+    await appMouse(page, "?1000");
+    const on = await cell(page, 3, 14);
+
+    await page.mouse.move(on.x, on.y);
+    await page.mouse.click(on.x, on.y);
+    await page.waitForTimeout(200);
+    const inert = await probe(page);
+    expect(inert.opens).toEqual([]);
+    expect(inert.hover === null || inert.hover.length === 0).toBe(true);
+
+    await page.keyboard.down("Shift");
+    await page.mouse.click(on.x, on.y);
+    await page.keyboard.up("Shift");
+    await expect.poll(async () => (await probe(page)).opens).toEqual([OSC8]);
+    await appMouse(page, "OFF");
+  });
+
+  test("under live output a stationary pointer ends on the link its row now shows", async ({ page }) => {
+    await still(page);
+    const at = await urlCell(page);
+    const mid = await cell(page, at.row, at.col + 10);
+    await page.mouse.move(mid.x, mid.y);
+    await expect.poll(async () => (await probe(page)).hover).toEqual([at.row, at.col, at.col + URL.length - 1]);
+
+    // Rows move under the pointer while the port's answers are in flight.
+    await page.evaluate(() => window.__output!(true));
+    await page.waitForTimeout(1500);
+    await page.evaluate(() => window.__output!(false));
+
+    const rows = (await probe(page)).rows;
+    const col = rows[at.row]!.indexOf(URL);
+    const want = col >= 0 && col <= at.col + 10 && at.col + 10 < col + URL.length ? [at.row, col, col + URL.length - 1] : [];
+    await expect.poll(async () => (await probe(page)).hover ?? []).toEqual(want);
+  });
+});

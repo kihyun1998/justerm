@@ -113,17 +113,24 @@ export class CellMirror {
     return { text: text.slice(0, end), columns: columns.slice(0, end) };
   }
 
-  /** The viewport's OSC 8 links: cells carrying one URI are one link, in first-seen order. */
+  /** The viewport's OSC 8 links, in reading order: a run of cells carrying one URI is one link, and
+   * a run continues past a row's end only where that row soft-wraps. */
   osc8Links(): Link[] {
-    const byUri = new Map<string, Array<readonly [number, number]>>();
+    const links: Array<{ uri: string; cells: Array<readonly [number, number]> }> = [];
+    let run: (typeof links)[number] | undefined;
     for (let i = 0; i < this.cells.length; i++) {
       const uri = this.cells[i]!.link;
-      if (uri === undefined) continue;
-      let cells = byUri.get(uri);
-      if (!cells) byUri.set(uri, (cells = []));
-      cells.push([Math.floor(i / this.cols), i % this.cols]);
+      const col = i % this.cols;
+      // A run reaches this cell from the previous one on its row, or from a wrapped row's last cell.
+      const joined = col > 0 || (i > 0 && (this.cells[i - 1]!.flags & this.F.wrapline) !== 0);
+      if (uri === undefined) {
+        run = undefined;
+        continue;
+      }
+      if (!run || run.uri !== uri || !joined) links.push((run = { uri, cells: [] }));
+      run.cells.push([Math.floor(i / this.cols), col]);
     }
-    return [...byUri].map(([uri, cells]) => ({ uri, cells }));
+    return links;
   }
 
   /** The stored symbol at `(row, col)` — a blank cell reads `" "`. */
