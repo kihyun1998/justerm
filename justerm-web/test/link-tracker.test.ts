@@ -530,7 +530,9 @@ describe("LinkTracker — a pointer cell outside the mirror (#934 reopen)", () =
     t.applyFrame(frame(0, { 0: { text: "docs", link: 1 } }, ["http://a.io"]));
     t.pointer([0, 1]);
 
-    expect(() => t.pointer([ROWS + 8, COLS - 1])).not.toThrow();
+    // The first row past the mirror, and one far past it.
+    expect(() => t.pointer([ROWS, COLS - 1])).not.toThrow();
+    expect(() => t.pointer([ROWS + 8, 0])).not.toThrow();
 
     expect(hovers.at(-1)).toBe("leave");
     expect(port.asked).toEqual([0]);
@@ -542,6 +544,7 @@ describe("LinkTracker — a pointer cell outside the mirror (#934 reopen)", () =
     t.applyFrame(frame(0, { 1: { text: "한docs", link: 1 } }, ["http://a.io"]));
 
     // Row-major, (0, COLS + 1) lands on (1, 1) — the spacer of 한, inside the link.
+    t.pointer([0, COLS]);
     t.pointer([0, COLS + 1]);
 
     expect(hovers).toEqual([]);
