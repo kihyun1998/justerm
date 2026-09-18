@@ -133,6 +133,9 @@ translation layer here is re-solving a solved problem.
 Engine-owned. Type = char / word / line / **block**; anchor = point + **side (left/right)**.
 `selection_range()` → highlight; `selection_text()` → copy text (respects type, wide chars,
 wrapped-line joining, trailing-**padding** trim, **across scrollback** — the engine holds all cells).
+`select_all()` takes no coordinate: it selects the **active** buffer (the alt screen alone while it is
+up) from its first non-blank cell to its last, as a fixed snapshot that does not grow with later
+output, and selects nothing when every cell is blank. The view does not move.
 **Which characters separate words is the consumer's, not the engine's** (`set_word_separators`,
 default `DEFAULT_WORD_SEPARATORS`) — the walk is buffer-wide mechanism, the set is policy, per
 ADR-0017. Two properties of that seam are contract rather than detail: `' '` is forced into any

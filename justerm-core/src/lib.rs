@@ -409,6 +409,13 @@ impl Engine {
         self.term.selection_extend(row, col, side);
     }
 
+    /// Select the whole active buffer — scrollback and screen, or the alt screen alone —
+    /// from its first non-blank cell to its last, without moving the view. Nothing is
+    /// selected when every cell is blank.
+    pub fn select_all(&mut self) {
+        self.term.select_all();
+    }
+
     /// Replace the characters that end a word for [`SelectionType::Word`] — consumer
     /// policy injected into a core mechanism (ADR-0017). Defaults to
     /// [`DEFAULT_WORD_SEPARATORS`]. `' '` is forced in; see [`Term::set_word_separators`]

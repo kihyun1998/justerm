@@ -1273,3 +1273,57 @@ describe("SelectionController — the selection-changed signal (#914)", () => {
     ]);
   });
 });
+
+// #935 — select-all is an engine call with no coordinate: the controller forwards it, reports it
+// on the change signal as xterm.js's `selectAll()` fires `onSelectionChange`, and then treats it as
+// a live selection, so the typing drop and a Shift+click extend both find it.
+describe("SelectionController.selectAll (#935)", () => {
+  it("selects the whole buffer through the port and reports the change", () => {
+    const port = new StubSelectionPort();
+    let changes = 0;
+    const ctrl = new SelectionController(port, () => GEOM, { onSelectionChange: () => changes++ });
+
+    ctrl.selectAll();
+
+    expect(port.calls).toEqual([{ kind: "selectAll" }]);
+    expect(changes).toBe(1);
+  });
+
+  it("is a selection the typing drop then clears", () => {
+    const port = new StubSelectionPort();
+    const ctrl = controller(port);
+
+    ctrl.selectAll();
+    ctrl.clear();
+
+    expect(port.calls).toEqual([{ kind: "selectAll" }, { kind: "clear" }]);
+  });
+
+  it("is a selection a Shift+click extends", () => {
+    const port = new StubSelectionPort();
+    const ctrl = controller(port);
+
+    ctrl.selectAll();
+    ctrl.mouseDown({ ...leftHalf(4, 2), shiftKey: true }, 1);
+
+    expect(port.calls).toEqual([{ kind: "selectAll" }, { kind: "extend", row: 2, col: 4, side: "left" }]);
+  });
+
+  it("does nothing, and reports nothing, when the port cannot select all", () => {
+    const calls: string[] = [];
+    let changes = 0;
+    const port = {
+      begin: () => calls.push("begin"),
+      extend: () => calls.push("extend"),
+      clear: () => calls.push("clear"),
+      text: () => Promise.resolve(null),
+    };
+    const ctrl = new SelectionController(port, () => GEOM, { onSelectionChange: () => changes++ });
+
+    ctrl.selectAll();
+    ctrl.clear();
+
+    expect(changes).toBe(0);
+    expect(calls).toEqual([]); // no selection was believed in, so the typing drop sends nothing
+  });
+});

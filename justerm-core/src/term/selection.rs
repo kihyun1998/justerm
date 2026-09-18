@@ -22,7 +22,7 @@
 //! impl's methods are reached through the type, not the module path, so a private child
 //! module does not hide them.
 
-use crate::selection::{Anchor, Selection, SelectionSpan, SelectionType, Side};
+use crate::selection::{Anchor, BufferPoint, Selection, SelectionSpan, SelectionType, Side};
 
 use super::Term;
 
@@ -71,6 +71,35 @@ impl Term {
         }
     }
 
+    /// Select the active buffer from its first non-blank cell to its last, in absolute
+    /// coordinates — no viewport position is read and the view does not move. On the alt
+    /// screen that is the alt screen alone. A buffer with no non-blank cell leaves nothing
+    /// selected.
+    pub fn select_all(&mut self) {
+        let floor = self.abs_floor();
+        let last = self.scrollback.len() + self.grid.rows() - 1;
+        let non_blank = |cell: &crate::cell::Cell| cell.c() != ' ' || cell.is_combined();
+        let first = (floor..=last).find_map(|line| {
+            let col = self.abs_line(line).iter().position(non_blank)?;
+            Some(BufferPoint { line, col })
+        });
+        let end = (floor..=last).rev().find_map(|line| {
+            let col = self.abs_line(line).iter().rposition(non_blank)?;
+            Some(BufferPoint { line, col })
+        });
+        self.selection = first.zip(end).map(|(start, end)| Selection {
+            ty: SelectionType::Char,
+            anchor: Anchor {
+                point: start,
+                side: Side::Left,
+            },
+            focus: Anchor {
+                point: end,
+                side: Side::Right,
+            },
+        });
+    }
+
     /// Clear the selection.
     pub fn selection_clear(&mut self) {
         self.selection = None;
@@ -95,8 +124,10 @@ impl Term {
     }
 
     /// Shift the selection up by one absolute line after the oldest history line
-    /// is evicted by the scrollback cap. An endpoint clamps to the new top; if
-    /// the whole selection was on the evicted line, it is cleared.
+    /// is evicted by the scrollback cap. An endpoint on the evicted line clamps to
+    /// the start of the new top line — column 0, left side — except in a Block,
+    /// which keeps its columns (the rule `selection_rotate_region` applies at a
+    /// region top). If the whole selection was on the evicted line, it is cleared.
     pub(super) fn selection_evict_oldest(&mut self) {
         let Some((a, f)) = self
             .selection
@@ -110,8 +141,17 @@ impl Term {
             return;
         }
         if let Some(sel) = &mut self.selection {
-            sel.anchor.point.line = a.saturating_sub(1);
-            sel.focus.point.line = f.saturating_sub(1);
+            let block = sel.ty == SelectionType::Block;
+            for end in [&mut sel.anchor, &mut sel.focus] {
+                if end.point.line == 0 {
+                    if !block {
+                        end.point.col = 0;
+                        end.side = Side::Left;
+                    }
+                } else {
+                    end.point.line -= 1;
+                }
+            }
         }
     }
 

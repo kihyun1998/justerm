@@ -594,6 +594,73 @@ fn selection_follows_cap_eviction() {
     assert_eq!(term.selection_text().as_deref(), Some("L2"));
 }
 
+/// An endpoint on the evicted line clamps to the new top line **from its start** — column 0, left
+/// side — as a region rotate clamps one (#935). Keeping its column would cut the start of every
+/// new top line off the copy, once per evicted line.
+#[test]
+fn a_char_endpoint_evicted_by_the_cap_clamps_to_the_start_of_the_new_top_line() {
+    // Anchor on "cd" in history, focus at the end of L3.
+    let mut term = Engine::with_scrollback(6, 2, 2);
+    term.feed(b"ab cd\r\nefgh\r\nL2\r\nL3"); // sb=[ab cd, efgh], screen=[L2, L3]
+    term.scroll_up(2);
+    term.selection_begin(0, 3, Side::Left, SelectionType::Char);
+    term.scroll_to_bottom();
+    term.selection_extend(1, 1, Side::Right);
+    assert_eq!(term.selection_text().as_deref(), Some("cd\nefgh\nL2\nL3"));
+
+    term.feed(b"\r\nL4"); // evicts "ab cd"; sb=[efgh, L2], screen=[L3, L4]
+
+    assert_eq!(term.selection_text().as_deref(), Some("efgh\nL2\nL3"));
+}
+
+/// The same clamp when the evicted endpoint is the **focus** — a drag made upward, from the end of
+/// L3 back to the right edge of the space before "cd". The side resets too: a right side kept at
+/// column 0 would drop the new top line's first cell.
+#[test]
+fn an_upward_drag_evicted_by_the_cap_clamps_its_focus_the_same_way() {
+    let mut term = Engine::with_scrollback(6, 2, 2);
+    term.feed(b"ab cd\r\nefgh\r\nL2\r\nL3");
+    term.selection_begin(1, 1, Side::Right, SelectionType::Char);
+    term.scroll_up(2);
+    term.selection_extend(0, 2, Side::Right);
+    term.scroll_to_bottom();
+    assert_eq!(term.selection_text().as_deref(), Some("cd\nefgh\nL2\nL3"));
+
+    term.feed(b"\r\nL4");
+
+    assert_eq!(term.selection_text().as_deref(), Some("efgh\nL2\nL3"));
+}
+
+/// A block keeps its columns when its top row is evicted — a rectangle is the same columns on every
+/// row, so only the line clamps, as a region rotate leaves a block's columns alone.
+#[test]
+fn a_block_evicted_by_the_cap_keeps_its_columns() {
+    let mut term = Engine::with_scrollback(6, 2, 2);
+    term.feed(b"ab cd\r\nefgh\r\nL2\r\nL3");
+    term.scroll_up(2);
+    term.selection_begin(0, 1, Side::Left, SelectionType::Block);
+    term.scroll_to_bottom();
+    term.selection_extend(1, 2, Side::Right);
+    assert_eq!(term.selection_text().as_deref(), Some("b\nfg\n2\n3"));
+
+    term.feed(b"\r\nL4");
+
+    assert_eq!(term.selection_text().as_deref(), Some("fg\n2\n3"));
+}
+
+/// A select-all copy stays whole while output evicts its first line at the cap.
+#[test]
+fn select_all_stays_whole_under_eviction() {
+    let mut term = Engine::with_scrollback(10, 3, 2);
+    term.feed(b"   x1\r\nabcdef\r\nl3\r\nl4\r\nl5");
+    term.select_all();
+
+    term.feed(b"\r\nl6");
+    assert_eq!(term.selection_text().as_deref(), Some("abcdef\nl3\nl4\nl5"));
+    term.feed(b"\r\nl7");
+    assert_eq!(term.selection_text().as_deref(), Some("l3\nl4\nl5"));
+}
+
 /// A scroll-region scroll (top margin > 0) moves content *within* the screen, so
 /// absolute indices in the region shift — unlike a top-anchored scroll, which is
 /// absorbed by scrollback growth. The selection must rotate with the content.
