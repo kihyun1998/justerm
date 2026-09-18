@@ -1008,3 +1008,25 @@ pub fn encode_focus(focused: bool, enabled: bool) -> Option<Vec<u8>> {
     }
     Some(vec![ESC, b'[', if focused { b'I' } else { b'O' }])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every one of the 2 048 mode combinations reads its own mask through the memo (#941):
+    /// two combinations sharing a slot would hand one of them the other's answer.
+    #[test]
+    fn the_memo_agrees_with_the_derivation_for_every_mode_combination() {
+        for index in 0..2048usize {
+            let kitty = index as u8;
+            let mok2 = index & (1 << 8) != 0;
+            let cursor = index & (1 << 9) != 0;
+            let keypad = index & (1 << 10) != 0;
+            assert_eq!(
+                modified_keys(cursor, keypad, kitty, mok2),
+                derive_modified_keys(cursor, keypad, kitty, mok2),
+                "kitty={kitty:#04x} mok2={mok2} cursor={cursor} keypad={keypad}"
+            );
+        }
+    }
+}
