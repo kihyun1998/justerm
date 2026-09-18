@@ -13,8 +13,12 @@
 //! [`decoration`]: crate::decoration
 
 use crate::attrs::{
-    BLANK_SLOT, STRIKETHROUGH, UNDERLINE, glyph_field, is_concealed, is_dim, is_inverse,
+    BLANK_SLOT, STRIKETHROUGH, UNDERLINE, USTYLE_SHIFT, glyph_field, is_concealed, is_dim,
+    is_inverse,
 };
+
+/// The underline style field's value for a single straight line — what core writes for `SGR 4`.
+const SINGLE_UNDERLINE: u16 = 1 << USTYLE_SHIFT;
 use crate::color::gl_rgb;
 use crate::contrast::ensure_contrast_ratio;
 use crate::decoration::{
@@ -215,13 +219,14 @@ pub fn pack_instances(
                 overlay.highlight_at(row, col, partner)
             };
             let is_selection = !composed && overlay.is_selected(row, col, partner);
-            // #934: the hovered link adds the underline mark. The flags the line reads are these;
-            // everything that is about the glyph or its colours keeps reading `cell_flags`.
-            let line_flags = if overlay.is_link_hovered(row, col, partner) {
-                cell_flags | UNDERLINE
-            } else {
-                cell_flags
-            };
+            // #934: a hovered link draws a single underline where the cell has none of its own. The
+            // underline and the glyph field read these flags; the colour stages read `cell_flags`.
+            let line_flags =
+                if overlay.is_link_hovered(row, col, partner) && cell_flags & UNDERLINE == 0 {
+                    cell_flags | UNDERLINE | SINGLE_UNDERLINE
+                } else {
+                    cell_flags
+                };
             // #226: a Powerline / box-drawing / block glyph tiles with the bg — excluded from the
             // contrast demand and re-tinted under selection (classify the base codepoint).
             let exclude =
@@ -1353,7 +1358,8 @@ mod tests {
             &ColorPolicy::default(),
             &[],
         );
-        assert_eq!(got[8], (33 | GLYPH_UNDERLINE) as f32, "the hovered cell");
+        let single = u32::from(33 | GLYPH_UNDERLINE) | 1 << crate::attrs::GLYPH_USTYLE_SHIFT;
+        assert_eq!(got[8], single as f32, "the hovered cell");
         assert_eq!(got[INSTANCE_FLOATS + 8], 34.0, "the cell past the span");
     }
 
@@ -1376,7 +1382,32 @@ mod tests {
                 &[],
             )
         };
-        assert_eq!(pack(DIM, &[0, 0, 0]), pack(DIM | UNDERLINE, &[]));
+        // The cell core writes for `SGR 4`: the flag and the single style (#829).
+        assert_eq!(
+            pack(DIM, &[0, 0, 0]),
+            pack(DIM | UNDERLINE | SINGLE_UNDERLINE, &[])
+        );
+    }
+
+    #[test]
+    fn a_hovered_link_keeps_the_cells_own_underline_style() {
+        let p = palette();
+        // Double (2): a style a stray single (1) OR-ed into it would turn into another (3).
+        const DOUBLE: u16 = 2 << crate::attrs::USTYLE_SHIFT;
+        let pack = |link_hover: &[u32]| {
+            pack_instances(
+                &frame(&[0], &[0], &[33], &[UNDERLINE | DOUBLE]),
+                &p,
+                true,
+                &Overlay {
+                    link_hover,
+                    ..Overlay::default()
+                },
+                &ColorPolicy::default(),
+                &[],
+            )
+        };
+        assert_eq!(pack(&[0, 0, 0]), pack(&[]));
     }
 
     #[test]
