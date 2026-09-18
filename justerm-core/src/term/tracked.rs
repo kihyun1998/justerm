@@ -169,20 +169,21 @@ impl Term {
         });
     }
 
-    /// Shift tracked points down one absolute line after the oldest history line
-    /// is evicted past the scrollback cap; a point *on* that line has left the
-    /// buffer and is dropped. The tracked-point analogue of
-    /// `selection_evict_oldest` / `markers_evict_oldest`, and the site this whole
-    /// module was filed for (#691).
-    pub(super) fn tracked_evict_oldest(&mut self) {
-        // Scrollback eviction is primary-only (the alt screen has none).
-        self.normal_tracked.retain_mut(|p| {
-            if p.line == 0 {
-                false
-            } else {
-                p.line -= 1;
-                true
-            }
-        });
+    /// Shift tracked points down `n` absolute lines after the oldest `n` lines
+    /// left the front of the buffer; a point *on* one of them has left the buffer
+    /// and is dropped. The tracked-point analogue of `selection_evict_oldest` /
+    /// `markers_evict_oldest`, and the site this whole module was filed for (#691).
+    /// Both populations, for the reason given at `markers_evict_oldest`.
+    pub(super) fn tracked_evict_oldest(&mut self, n: usize) {
+        for list in [&mut self.normal_tracked, &mut self.alt_tracked] {
+            list.retain_mut(|p| {
+                if p.line < n {
+                    false
+                } else {
+                    p.line -= n;
+                    true
+                }
+            });
+        }
     }
 }

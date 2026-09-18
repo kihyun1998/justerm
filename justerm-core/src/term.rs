@@ -381,8 +381,10 @@ pub struct Term {
     /// `BufferSet` (#177 S0): each a stable id bound to an absolute buffer line
     /// that re-anchors through eviction/scroll/reflow like a selection anchor. The
     /// active buffer's list is selected by `on_alt` — `markers`/`markers_mut`.
-    /// `alt_markers` stays empty while the alt guards (#158/#164) are in place; it
-    /// is disposed on alt-leave (xterm `clearAllMarkers`). `next_marker_id` hands
+    /// `alt_markers` holds the plain anchors `add_marker` makes on the alt screen
+    /// (#187); OSC 133 command marks never land there, because `add_command_mark`
+    /// returns on the alt screen (#192). It is disposed on alt-leave (xterm
+    /// `clearAllMarkers`). `next_marker_id` hands
     /// out monotonic ids across both buffers so ids never alias.
     normal_markers: VecDeque<Marker>,
     alt_markers: VecDeque<Marker>,
@@ -393,7 +395,9 @@ pub struct Term {
     /// against what is current.
     ///
     /// `evicted_total` counts lines popped off the front of scrollback since
-    /// startup or RIS. Eviction shifts **every** live marker by the same −1, so
+    /// startup or RIS — one at a time by the scrollback cap, all of history at once
+    /// by `ED 3` and [`Term::clear`] (#936). Eviction shifts **every** live marker
+    /// by the same amount, so
     /// that whole class of movement is one number rather than M facts, and a
     /// consumer rebases a held line by the delta.
     ///
@@ -2667,31 +2671,7 @@ impl Term {
                 // offset within `[0, len]`. The evicted row is parked for reuse.
                 if self.scrollback.len() > self.scrollback_limit {
                     self.recycled_row = self.scrollback.pop_front();
-                    // Every absolute index below just shifted by exactly one, which is
-                    // what makes this class of movement expressible as a scalar (#490).
-                    // Counted here rather than in `markers_evict_oldest` because the fact
-                    // is about the *buffer*, not about markers.
-                    //
-                    // **Scope, because the name over-promises.** This counts the
-                    // scrollback *cap* evicting one line. Reflow also drops lines off the
-                    // front (`PaneReflow::evicted`, installed by replacing the deque) and
-                    // is deliberately not counted: it moves the survivors non-uniformly,
-                    // so no delta repairs them and `marker_epoch` signals it instead. A
-                    // holder rebasing off this number *without* also watching the epoch
-                    // gets a wrong answer across every resize.
-                    self.evicted_total += 1;
-                    // Every absolute index just shifted down by one; move the
-                    // selection with it so its anchors keep their content.
-                    self.selection_evict_oldest();
-                    // Query-derived highlights can't survive the index shift (see
-                    // the method doc); selection re-anchors, highlights invalidate.
-                    self.invalidate_search_highlights();
-                    // Markers are persistent anchors: shift them down with the
-                    // index, disposing any whose line was the evicted one (#118).
-                    self.markers_evict_oldest();
-                    // Same obligation for a position held outside the engine — the
-                    // one holder in this space that had no fixup at all (#691).
-                    self.tracked_evict_oldest();
+                    self.lines_left_the_front(1);
                     if self.display_offset > 0 {
                         // Scrolled up: evicting the oldest line advanced the
                         // viewport, so it must be repainted (the "frozen while
@@ -4753,29 +4733,109 @@ impl Term {
                     self.dispose_markers_on_row(row);
                 }
             }
-            // Notably **`3` (ED 3, erase scrollback) is not implemented** and falls through
-            // here as a no-op. Recorded rather than filed, because an unimplemented verb is
-            // not a defect — but whoever implements it inherits an obligation that is invisible
-            // from this site (#660's completeness pass): it would be the first verb that
-            // shortens the buffer *from the front* by N lines, so it needs both an anchor
-            // fixup (selection, markers **and** tracked points are absolute-from-oldest — three
-            // holders since #691, and the third has no frame to make its drift visible; the
-            // *fourth* is search highlights, which every list of this obligation has so far
-            // omitted — see the destruction-funnel invariant note) and a `display_offset`
-            // clamp. Without the second, `selection_range`'s `scrollback.len() - display_offset`
-            // underflows — and so do the same expressions in `viewport_line`,
-            // `viewport_link_at` and `match_spans`. alacritty's `ClearMode::Saved` arm does
-            // both (`term/mod.rs:1806-1811`).
-            //
-            // **A real `clear` emits it** — measured on the VM, `ESC[H ESC[2J ESC[3J`
-            // (`tests/fixtures/osc133_clear.raw`) — so this no-op is reached in ordinary
-            // traffic and not only by a test. Its visible consequence since #750: `ED 2`
-            // now retires the command marks on the screen while the ones that already
-            // scrolled off survive a `clear` a real terminal would have erased them with
-            // (`command_lines_capture.rs` pins that, so implementing this verb will move
-            // a test rather than silently changing an answer).
+            // xterm's addition: erase saved lines. The screen and the cursor are untouched.
+            3 => self.erase_history(),
             _ => {}
         }
+    }
+
+    /// Drop every scrollback line — `ED 3`, and the first step of [`Term::clear`]
+    /// (#936). The lines leave the *front* of the buffer, so every holder of an
+    /// absolute line is repaired exactly as the scrollback cap repairs it, `n` lines
+    /// at once: the selection clamps, markers and tracked points on the dropped lines
+    /// go, search highlights are dropped, and `evicted_total` advances by `n`. The
+    /// view returns to the bottom, since the history it was showing is gone.
+    ///
+    /// On the alt screen it drops the primary's history underneath, as xterm does;
+    /// every alt line sits above the dropped ones, so its holders only shift.
+    fn erase_history(&mut self) {
+        let n = self.scrollback.len();
+        if n == 0 {
+            return;
+        }
+        self.scrollback.clear();
+        self.lines_left_the_front(n);
+        self.display_offset = 0;
+        self.mark_fully_damaged();
+    }
+
+    /// Repair every holder of an absolute line after `n` lines left the front of the
+    /// buffer — the one funnel for the scrollback cap (one line per linefeed), `ED 3` and
+    /// [`Term::clear`]. Every absolute index shifted by exactly `n`, which is what makes
+    /// this class of movement expressible as a scalar (#490): `evicted_total` counts it
+    /// here, because the fact is about the *buffer*, not about any one holder.
+    ///
+    /// **Scope, because the name `evicted_total` over-promises.** Reflow also drops lines
+    /// off the front (`PaneReflow::evicted`, installed by replacing the deque) and does
+    /// not come through here: it moves the survivors non-uniformly, so no delta repairs
+    /// them and `marker_epoch` signals it instead. A holder rebasing off this number
+    /// *without* also watching the epoch gets a wrong answer across every resize.
+    ///
+    /// The holders, each with its own answer: the selection re-anchors (its ends keep
+    /// their content); query-derived search highlights cannot survive the shift and are
+    /// dropped; markers shift and those on a dropped line are disposed and announced
+    /// (#118); tracked points shift and those on a dropped line go (#691). The view is
+    /// the caller's, because the cap keeps it on the same content and `ED 3` returns it.
+    fn lines_left_the_front(&mut self, n: usize) {
+        self.evicted_total += n as u64;
+        self.selection_evict_oldest(n);
+        self.invalidate_search_highlights();
+        self.markers_evict_oldest(n);
+        self.tracked_evict_oldest(n);
+    }
+
+    /// Clear the primary screen and its scrollback, keeping the cursor's line
+    /// (#936) — a terminal's Clear command, out of band: the parser and whatever it
+    /// holds mid-sequence are untouched. The cursor's logical line, from its first
+    /// row on screen down to the cursor's row, moves to the top with the cursor on it
+    /// at the same column; the rows above it and all of history are dropped, and the
+    /// rows below the cursor are blanked. The view returns to the bottom and the next
+    /// frame is `Full`.
+    ///
+    /// The selection and the search highlights are cleared. A marker on a kept row
+    /// stays on it; every other marker is disposed and announced. Tracked points on
+    /// dropped lines go; the rest shift with the kept rows.
+    ///
+    /// Returns `false` and changes nothing on the alt screen.
+    pub fn clear(&mut self) -> bool {
+        if self.on_alt {
+            return false;
+        }
+        let (cols, cursor) = (self.grid.cols(), self.cursor.row);
+        // The kept line is the cursor's whole logical line up to the cursor, so a prompt
+        // and a command that wrapped keep their start — as far up as the screen reaches.
+        let mut top = cursor;
+        while top > 0 && self.grid.is_row_wrapped(top - 1) {
+            top -= 1;
+        }
+        // Move the rows above it into history, so dropping history takes them too: their
+        // absolute lines are unchanged by the move, so no holder moves.
+        for _ in 0..top {
+            let row = self.grid.scroll_up_recycle(Row::blank(cols));
+            self.scrollback.push_back(row);
+        }
+        let last = cursor - top;
+        self.cursor.row = last;
+        self.erase_history();
+        self.selection = None;
+        self.invalidate_search_highlights();
+        for row in last + 1..self.grid.rows() {
+            let blanked = self.grid.row_mut(row);
+            blanked.blank_in_place();
+            blanked.purge_side_maps(0..cols);
+            self.dispose_markers_on_row(row);
+        }
+        // Nothing follows the cursor's row now, so it cannot continue onto the next row.
+        self.end_wrap(last);
+        // `REP` reads back the cell the last print wrote. That cell is on the cursor's row
+        // whenever the anchor is armed, so it moves up with it; anywhere else it is gone.
+        self.repeat_anchor = self
+            .repeat_anchor
+            .filter(|&(row, _)| row == cursor)
+            .map(|(_, col)| (last, col));
+        self.scroll = None;
+        self.mark_fully_damaged();
+        true
     }
 
     /// Erase in line (EL): 0 = cursor→end, 1 = start→cursor, 2 = whole line.

@@ -416,6 +416,20 @@ impl Engine {
         self.term.select_all();
     }
 
+    /// Clear the screen and scrollback, keeping the cursor's line at the top — its
+    /// whole logical line down to the cursor, so a wrapped prompt keeps its start. A
+    /// terminal's Clear command. Out of band: it does not go through the parser, so
+    /// bytes the host is still writing are unaffected. Clears the selection and
+    /// search highlights; markers off the kept rows are disposed
+    /// (announced as [`TermEvent::MarkerDisposed`]), and `evicted_total` advances by
+    /// the lines dropped. The next [`Engine::frame`] is `Full`.
+    ///
+    /// Does nothing on the alt screen and returns `false`, so a consumer can leave
+    /// the keystroke to the application; `true` otherwise.
+    pub fn clear(&mut self) -> bool {
+        self.term.clear()
+    }
+
     /// Replace the characters that end a word for [`SelectionType::Word`] — consumer
     /// policy injected into a core mechanism (ADR-0017). Defaults to
     /// [`DEFAULT_WORD_SEPARATORS`]. `' '` is forced in; see [`Term::set_word_separators`]

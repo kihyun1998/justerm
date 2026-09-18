@@ -117,7 +117,7 @@ status.
 
   | what moves it | handler |
   |---|---|
-  | scrollback cap eviction | `Term::selection_evict_oldest`. An endpoint on the evicted line clamps to column 0 / Left of the new top line (a Block keeps its columns), the rule the region rotate already applied. Until #935 it kept its column, so an indented top line lost its first cells on every evicted line. Select-all made that routine, because its start sits on the oldest line (xterm.js `handleTrim` resets to `[0,0]`) |
+  | scrollback cap eviction, and `ED 3` / `Engine::clear` (#936) | `Term::selection_evict_oldest(n)` — one line for the cap, all of history at once for the other two, where an endpoint on *any* dropped line clamps and a selection wholly inside them is cleared (`clear` then drops the selection outright). An endpoint on the evicted line clamps to column 0 / Left of the new top line (a Block keeps its columns), the rule the region rotate already applied. Until #935 it kept its column, so an indented top line lost its first cells on every evicted line. Select-all made that routine, because its start sits on the oldest line (xterm.js `handleTrim` resets to `[0,0]`) |
   | an in-screen region / RI scroll moving content | `Term::selection_rotate_region` |
   | a **top-anchored sub-region** scroll growing scrollback while rows below the margin stay put, so their absolute index rises (#449) | `Term::selection_shift_below_margin` |
   | reflow re-splitting logical lines | `grid.rs`'s `reflow`, via tracked points |

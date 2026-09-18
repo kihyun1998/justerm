@@ -516,22 +516,27 @@ impl Term {
         }
     }
 
-    /// Shift markers down one absolute line after the oldest history line is
-    /// evicted; a marker *on* that line (abs 0) has left the buffer, so it is
-    /// disposed and announced (#118) — the marker analogue of
+    /// Shift markers down `n` absolute lines after the oldest `n` lines left the
+    /// front of the buffer; a marker *on* one of them (abs `< n`) has left the
+    /// buffer, so it is disposed and announced (#118) — the marker analogue of
     /// `selection_evict_oldest`, but a list with per-marker disposal.
-    pub(super) fn markers_evict_oldest(&mut self) {
-        // Scrollback eviction is primary-only (the alt screen has none).
+    ///
+    /// Both populations are walked. The front is always primary scrollback, which
+    /// every alt line sits above, so an alt marker only ever shifts — and the one
+    /// caller that can run on the alt screen is `ED 3` (#936).
+    pub(super) fn markers_evict_oldest(&mut self, n: usize) {
         let mut disposed = Vec::new();
-        self.normal_markers.retain_mut(|m| {
-            if m.line == 0 {
-                disposed.push(m.id);
-                false
-            } else {
-                m.line -= 1;
-                true
-            }
-        });
+        for list in [&mut self.normal_markers, &mut self.alt_markers] {
+            list.retain_mut(|m| {
+                if m.line < n {
+                    disposed.push(m.id);
+                    false
+                } else {
+                    m.line -= n;
+                    true
+                }
+            });
+        }
         for id in disposed {
             self.events.push(TermEvent::MarkerDisposed(id));
         }
