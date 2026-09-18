@@ -81,8 +81,14 @@ a justerm shape here wrong, only corroborate one.
 - **Isolation differs by suite, deliberately.** The web suite takes a fresh context per test; the
   renderer's screen proofs take a fresh browser per demo and burn the process's first navigation,
   whose composited copy is garbage.
-- **`reuseExistingServer` is on outside CI**, so a dev server already listening — from another
-  worktree — is silently adopted, and the suite then tests that checkout's sources.
+- **Neither suite adopts a server already on its port** (`reuseExistingServer: false`, #945). A
+  listener there may be another worktree's, and adopting it tests that checkout's sources — red
+  when a probe is missing, and **green** when the foreign tree happens to behave the same, which is
+  the case nothing catches. It bit on #649 and again on #945, and was one of #818's candidate causes.
+  Until #945 it was on outside CI, and the only guard was `scripts/thegraph/preflight.mjs`'s
+  port-owner check, which retired with that script (`42e3a70`) and was not moved anywhere. Now an
+  occupied port fails at start with *"is already used"*: stop the listener (your own `pnpm demo`
+  included) rather than re-enabling reuse.
 
 ## Code
 

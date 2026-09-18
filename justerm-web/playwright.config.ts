@@ -33,7 +33,8 @@ export default defineConfig({
   webServer: {
     command: "pnpm demo",
     url: DEMO_URL,
-    reuseExistingServer: !process.env.CI,
+    // Never adopt a server already on the port: it may be another checkout's (#945).
+    reuseExistingServer: false,
     timeout: 120_000,
   },
   projects: [
