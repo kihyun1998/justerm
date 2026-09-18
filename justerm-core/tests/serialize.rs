@@ -451,14 +451,14 @@ fn decode_rejects_superseded_version() {
     ));
 }
 
-/// The wire is gated at version 17 (the per-version changes are listed on `VERSION`
+/// The wire is gated at version 18 (the per-version changes are listed on `VERSION`
 /// in `serialize.rs`). Both the exported `WIRE_VERSION` constant and
-/// the byte the encoder emits must read 17 — the value the WASM decoder's
+/// the byte the encoder emits must read 18 — the value the WASM decoder's
 /// `wire_version()` mirrors in lockstep (ADR-0008), so a drift here trips before it
 /// can desync a binding.
 #[test]
-fn wire_version_is_seventeen() {
-    assert_eq!(justerm_core::WIRE_VERSION, 17);
+fn wire_version_is_eighteen() {
+    assert_eq!(justerm_core::WIRE_VERSION, 18);
     let mut term = Engine::new(1, 1);
     term.feed(b"x");
     let bytes = encode(&term.frame());
@@ -888,6 +888,7 @@ fn header_with_one_span(cols: u16, rows: u16, line: u16, left: u16, right: u16) 
     b.extend_from_slice(&0u32.to_le_bytes()); // marker_count (v16, #490)
     b.push(0); // mouse_events
     b.push(0); // alt_screen
+    b.extend_from_slice(&0u16.to_le_bytes()); // modified_keys (v18, #941)
     b.extend_from_slice(&1u16.to_le_bytes()); // span count
     b.extend_from_slice(&line.to_le_bytes());
     b.extend_from_slice(&left.to_le_bytes());

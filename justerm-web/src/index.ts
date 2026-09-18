@@ -228,6 +228,7 @@ export {
   geometryViolations,
   keyFromDom,
   Mod,
+  ModifiedKeys,
   MouseEvents,
   mouseFromDom,
   StubInputSink,

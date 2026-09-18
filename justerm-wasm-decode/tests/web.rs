@@ -16,7 +16,7 @@
 use justerm_core::{Cell, CellFlags, Color, Frame, FrameKind, Span, encode_color};
 use justerm_wasm_decode::{
     MarkerKind, UnderlineStyle, build_palette, decode_frame, flags, is_valid_regex, marker_kind,
-    mouse_event_bits, underline_style, wire_version,
+    modified_key_bits, mouse_event_bits, underline_style, wire_version,
 };
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::*;
@@ -75,6 +75,7 @@ fn sample_frame() -> Frame {
         marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
+        modified_keys: Default::default(),
         scroll: None,
         spans: vec![span(0, 0, "hi"), span(1, 5, "abc")],
         link_table: vec![],
@@ -144,6 +145,29 @@ fn mouse_wanted_events_crosses_the_boundary() {
         df.mouse_wanted_events() & b.r#move,
         0,
         "bare motion was not requested"
+    );
+}
+
+#[wasm_bindgen_test]
+fn modified_keys_crosses_the_boundary() {
+    use justerm_core::ModifiedKeys;
+    let mut frame = sample_frame();
+    frame.modified_keys = ModifiedKeys::SHIFT_ENTER | ModifiedKeys::SHIFT_TAB;
+    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+    assert_eq!(df.modified_keys(), frame.modified_keys.bits());
+
+    // Read through the published names, the way a consumer asks (#941).
+    let b = modified_key_bits();
+    assert_ne!(
+        df.modified_keys() & b.shift_enter,
+        0,
+        "Shift on Enter survives"
+    );
+    assert_ne!(df.modified_keys() & b.shift_tab, 0);
+    assert_eq!(
+        df.modified_keys() & b.ctrl_enter,
+        0,
+        "Ctrl on Enter was not set"
     );
 }
 
@@ -266,6 +290,7 @@ fn underline_colour_column_carries_the_tagged_reference() {
         marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
+        modified_keys: Default::default(),
         scroll: None,
         spans: vec![Span {
             line: 0,
@@ -308,6 +333,7 @@ fn colour_and_flag_columns_carry_tagged_values() {
         marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
+        modified_keys: Default::default(),
         scroll: None,
         spans: vec![Span {
             line: 0,

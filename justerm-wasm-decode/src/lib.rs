@@ -62,6 +62,9 @@ struct Flat {
     /// Whether the alternate screen is active (#149) — gates the a11y announce
     /// policy (#119), which the frame-mode consumer can't derive from damage.
     alt_screen: bool,
+    /// Modified-keys mask (#941) — which modified presses of Enter/Tab/Backspace/Escape
+    /// reach the application under the current keyboard modes.
+    modified_keys: u16,
     /// `(top, bottom, count)` of the frame's scroll op, applied before spans.
     scroll: Option<(u16, u16, i16)>,
     /// Per-cell base codepoint (`cell.c`), span order — the `codepoints` column.
@@ -209,6 +212,7 @@ fn flatten(frame: &Frame) -> Flat {
         marker_count: frame.marker_count,
         mouse_events: frame.mouse_events.bits(),
         alt_screen: frame.alt_screen,
+        modified_keys: frame.modified_keys.bits(),
         scroll: frame
             .scroll
             .map(|s| (s.top as u16, s.bottom as u16, s.count as i16)),
@@ -398,6 +402,16 @@ impl DecodedFrame {
     #[wasm_bindgen(getter, js_name = altScreen)]
     pub fn alt_screen(&self) -> bool {
         self.flat.alt_screen
+    }
+
+    /// The modified-keys mask (#941): which modified presses of Enter, Tab, Backspace and
+    /// Escape reach the application distinct from the bare key, under the keyboard modes the
+    /// application has asked for (the kitty flags, `modifyOtherKeys` level 2). Bit positions
+    /// are named by [`modified_key_bits`]. A clear bit means the application receives exactly
+    /// what the bare key sends.
+    #[wasm_bindgen(getter, js_name = modifiedKeys)]
+    pub fn modified_keys(&self) -> u16 {
+        self.flat.modified_keys
     }
 
     #[wasm_bindgen(getter, js_name = scrollTop)]
@@ -705,6 +719,58 @@ pub fn mouse_event_bits() -> MouseEventBits {
     }
 }
 
+/// The `ModifiedKeys` bit positions, exported so a consumer tests
+/// `frame.modifiedKeys & B.shiftEnter` without hard-coding bit values (#941). The values come
+/// straight from Rust `ModifiedKeys`, the same shape as [`MouseEventBits`] beside
+/// `mouseWantedEvents`. Read once and cache: the bits never change within a build.
+#[wasm_bindgen]
+pub struct ModifiedKeyBits {
+    #[wasm_bindgen(js_name = shiftEnter)]
+    pub shift_enter: u16,
+    #[wasm_bindgen(js_name = shiftTab)]
+    pub shift_tab: u16,
+    #[wasm_bindgen(js_name = shiftBackspace)]
+    pub shift_backspace: u16,
+    #[wasm_bindgen(js_name = shiftEscape)]
+    pub shift_escape: u16,
+    #[wasm_bindgen(js_name = altEnter)]
+    pub alt_enter: u16,
+    #[wasm_bindgen(js_name = altTab)]
+    pub alt_tab: u16,
+    #[wasm_bindgen(js_name = altBackspace)]
+    pub alt_backspace: u16,
+    #[wasm_bindgen(js_name = altEscape)]
+    pub alt_escape: u16,
+    #[wasm_bindgen(js_name = ctrlEnter)]
+    pub ctrl_enter: u16,
+    #[wasm_bindgen(js_name = ctrlTab)]
+    pub ctrl_tab: u16,
+    #[wasm_bindgen(js_name = ctrlBackspace)]
+    pub ctrl_backspace: u16,
+    #[wasm_bindgen(js_name = ctrlEscape)]
+    pub ctrl_escape: u16,
+}
+
+/// The `ModifiedKeys` bit constants (see [`ModifiedKeyBits`]).
+#[wasm_bindgen(js_name = modifiedKeyBits)]
+pub fn modified_key_bits() -> ModifiedKeyBits {
+    use justerm_core::ModifiedKeys as K;
+    ModifiedKeyBits {
+        shift_enter: K::SHIFT_ENTER.bits(),
+        shift_tab: K::SHIFT_TAB.bits(),
+        shift_backspace: K::SHIFT_BACKSPACE.bits(),
+        shift_escape: K::SHIFT_ESCAPE.bits(),
+        alt_enter: K::ALT_ENTER.bits(),
+        alt_tab: K::ALT_TAB.bits(),
+        alt_backspace: K::ALT_BACKSPACE.bits(),
+        alt_escape: K::ALT_ESCAPE.bits(),
+        ctrl_enter: K::CTRL_ENTER.bits(),
+        ctrl_tab: K::CTRL_TAB.bits(),
+        ctrl_backspace: K::CTRL_BACKSPACE.bits(),
+        ctrl_escape: K::CTRL_ESCAPE.bits(),
+    }
+}
+
 /// What a marker means, as the value published beside the lane that carries it (#860, #159).
 ///
 /// **A frame member crosses as a primitive; a value space's names live at module scope.** The kind
@@ -990,6 +1056,41 @@ mod tests {
             MouseEvents::all().bits(),
             "`mouseEventBits()` does not name every declared `MouseEvents` member — missing              {:#04x}. Add the field to `MouseEventBits` and to `mouse_event_bits()`; a JS consumer              has no other way to name it.",
             MouseEvents::all().bits() & !exported
+        );
+    }
+
+    /// Every declared `ModifiedKeys` member is nameable from JS, each once (#941). Guarded by
+    /// `ModifiedKeys::all()` like `mouse_event_bits_covers_every_declared_member`.
+    #[test]
+    fn modified_key_bits_covers_every_declared_member() {
+        use justerm_core::ModifiedKeys;
+        let b = modified_key_bits();
+        let named = [
+            b.shift_enter,
+            b.shift_tab,
+            b.shift_backspace,
+            b.shift_escape,
+            b.alt_enter,
+            b.alt_tab,
+            b.alt_backspace,
+            b.alt_escape,
+            b.ctrl_enter,
+            b.ctrl_tab,
+            b.ctrl_backspace,
+            b.ctrl_escape,
+        ];
+        let exported = named.iter().fold(0u16, |acc, b| acc | b);
+        assert_eq!(
+            exported,
+            ModifiedKeys::all().bits(),
+            "`modifiedKeyBits()` does not name every declared `ModifiedKeys` member — missing \
+             {:#06x}. Add the field to `ModifiedKeyBits` and to `modified_key_bits()`.",
+            ModifiedKeys::all().bits() & !exported
+        );
+        assert_eq!(
+            named.iter().map(|b| b.count_ones()).sum::<u32>(),
+            ModifiedKeys::all().bits().count_ones(),
+            "two `ModifiedKeyBits` fields name the same bit"
         );
     }
 
@@ -1750,6 +1851,16 @@ mod tests {
         let native = justerm_core::decode(&justerm_core::encode(&frame)).expect("decode");
         let flat = flatten(&native);
         assert_eq!(flat.mouse_events, frame.mouse_events.bits());
+    }
+
+    #[test]
+    fn flatten_carries_modified_keys_mask_through_the_wire() {
+        use justerm_core::ModifiedKeys;
+        let mut frame = partial(80, 24, vec![ascii_span(0, 0, "x")]);
+        frame.modified_keys = ModifiedKeys::SHIFT_ENTER | ModifiedKeys::CTRL_ESCAPE;
+        let native = justerm_core::decode(&justerm_core::encode(&frame)).expect("decode");
+        let flat = flatten(&native);
+        assert_eq!(flat.modified_keys, frame.modified_keys.bits());
     }
 
     // --- S3/AC2: flatten faithfully represents the native-decoded frame ---

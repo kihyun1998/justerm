@@ -271,3 +271,116 @@ fn neovim_kitty_session_answers_da1_query() {
         "DA1 query in the stream should have been answered"
     );
 }
+
+// ---- one flag stack per screen ----------------------------------------------------------------
+//
+// The main and alternate screens keep separate flags and stacks, swapped when the screen actually
+// changes; the alternate screen's state is kept across visits, and RIS clears both. Driven through
+// the query and through a Shift+Enter press, which is the key a pushed flag set changes.
+
+fn flags_now(t: &mut Engine) -> Vec<u8> {
+    t.drain_replies();
+    t.feed(b"\x1b[?u");
+    t.drain_replies()
+}
+
+fn shift_enter(t: &Engine) -> Vec<u8> {
+    t.encode_key(KeyEvent {
+        key: Key::Enter,
+        mods: Modifiers::SHIFT,
+        ..Default::default()
+    })
+    .expect("Enter encodes")
+}
+
+/// An application that pushes on the alternate screen and exits without popping (a crash)
+/// leaves the shell on the main screen in the legacy encoding.
+#[test]
+fn flags_pushed_on_the_alternate_screen_do_not_outlive_it() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?1049h\x1b[>1u");
+    assert_eq!(
+        shift_enter(&t),
+        b"\x1b[13;2u",
+        "the push took effect on the alt screen"
+    );
+    t.feed(b"\x1b[?1049l");
+    assert_eq!(flags_now(&mut t), b"\x1b[?0u");
+    assert_eq!(shift_enter(&t), b"\r");
+}
+
+#[test]
+fn flags_pushed_on_the_main_screen_do_not_reach_the_alternate_and_come_back() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>1u");
+    t.feed(b"\x1b[?1049h");
+    assert_eq!(flags_now(&mut t), b"\x1b[?0u");
+    assert_eq!(shift_enter(&t), b"\r");
+    t.feed(b"\x1b[?1049l");
+    assert_eq!(flags_now(&mut t), b"\x1b[?1u");
+    assert_eq!(shift_enter(&t), b"\x1b[13;2u");
+}
+
+/// Each screen's own stack: a pop on the alternate screen cannot reach the main screen's entries.
+#[test]
+fn a_pop_on_the_alternate_screen_pops_the_alternate_stack() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>5u\x1b[>9u"); // main: flags 9, stack [0, 5]
+    t.feed(b"\x1b[?1049h\x1b[>1u\x1b[<2u"); // alt: push 1, pop past its own stack
+    assert_eq!(flags_now(&mut t), b"\x1b[?0u");
+    t.feed(b"\x1b[?1049l\x1b[<u"); // main pops its own stack: 9 -> 5
+    assert_eq!(flags_now(&mut t), b"\x1b[?5u");
+}
+
+/// The alternate screen's state is kept between visits, as the screen's own state.
+#[test]
+fn the_alternate_screen_keeps_its_flags_between_visits() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?1049h\x1b[>1u\x1b[?1049l");
+    t.feed(b"\x1b[?1049h");
+    assert_eq!(flags_now(&mut t), b"\x1b[?1u");
+}
+
+/// A second enter while already on the alternate screen is not a switch, so it swaps nothing —
+/// through each mode, since `?1049` is guarded before the switch and `?47` / `?1047` are not.
+#[test]
+fn entering_the_alternate_screen_twice_swaps_once() {
+    for (enter, leave) in [
+        (&b"\x1b[?1049h"[..], &b"\x1b[?1049l"[..]),
+        (b"\x1b[?47h", b"\x1b[?47l"),
+        (b"\x1b[?1047h", b"\x1b[?1047l"),
+    ] {
+        let mut t = Engine::new(80, 24);
+        t.feed(b"\x1b[>1u");
+        t.feed(enter);
+        t.feed(enter);
+        t.feed(leave);
+        assert_eq!(flags_now(&mut t), b"\x1b[?1u", "{enter:?}");
+    }
+}
+
+/// `?47` and `?1047` switch screens too, so they swap the same state.
+#[test]
+fn every_alternate_screen_mode_swaps_the_flags() {
+    for (enter, leave) in [
+        (&b"\x1b[?47h"[..], &b"\x1b[?47l"[..]),
+        (b"\x1b[?1047h", b"\x1b[?1047l"),
+    ] {
+        let mut t = Engine::new(80, 24);
+        t.feed(b"\x1b[>1u");
+        t.feed(enter);
+        assert_eq!(flags_now(&mut t), b"\x1b[?0u", "{enter:?}");
+        t.feed(leave);
+        assert_eq!(flags_now(&mut t), b"\x1b[?1u", "{leave:?}");
+    }
+}
+
+#[test]
+fn ris_clears_both_screens_flags() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>1u\x1b[?1049h\x1b[>9u");
+    t.feed(b"\x1bc"); // RIS — back on the main screen
+    assert_eq!(flags_now(&mut t), b"\x1b[?0u");
+    t.feed(b"\x1b[?1049h");
+    assert_eq!(flags_now(&mut t), b"\x1b[?0u");
+}

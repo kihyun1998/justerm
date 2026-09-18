@@ -11,7 +11,7 @@ CSI 22;0t              x1     -
 CSI 2J                 x2     -
 CSI 30m                x1     frame
 CSI 94m                x2     frame
-CSI <u                 x1     keys
+CSI <u                 x1     frame keys
 CSI >1u                x1     -
 CSI ?1002h             x2     -
 CSI ?1002l             x2     frame mouse

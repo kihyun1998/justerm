@@ -14,7 +14,7 @@ CSI 2J                 x3     frame text
 CSI 6n                 x2     replies
 CSI 94m                x3     frame
 CSI >4;2m              x1     -
-CSI >4;m               x2     keys
+CSI >4;m               x2     frame keys
 CSI >c                 x1     replies
 CSI ?1004h             x1     -
 CSI ?1004l             x1     focus

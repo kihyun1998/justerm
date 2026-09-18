@@ -173,6 +173,16 @@ export interface DecodedFrame {
    */
   readonly mouseWantedEvents?: number;
   /**
+   * Modified-keys mask (#941) — `justerm-wasm-decode`'s `modifiedKeys` getter. Which modified
+   * presses of Enter, Tab, Backspace and Escape reach the application distinct from the bare
+   * key under the keyboard modes it has asked for (the kitty flags, `modifyOtherKeys` level 2),
+   * as the {@link import("./input").ModifiedKeys} bitflags. Derived by core from the encoder
+   * that encodes the key, so a consumer substituting a key in `beforeKey` can ask whether the
+   * application would have received the modifier. Optional — a frame may omit it, and absence
+   * is *unknown*, not `0`: a legacy engine's mask is not empty (Shift+Tab is back-tab).
+   */
+  readonly modifiedKeys?: number;
+  /**
    * Scroll op (applied before spans): rows `[scrollTop, scrollBottom]` shifted by
    * `scrollCount` (positive = up). Optional — absent/`hasScroll: false` means no
    * shift. The cell mirror applies it; a span-only frame omits it.

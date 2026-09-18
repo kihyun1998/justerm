@@ -174,7 +174,11 @@ A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
   wanted-events mask (`mouse_events` u8 — v8, #129/ADR-0016, the routing bits DOWN/UP/WHEEL/DRAG/MOVE the
   active tracking mode reports; the consumer routes a mouse event to the app vs. local on it), the
   alt-screen flag (`alt_screen` u8 — v9, #149, whether the alternate screen is active; the a11y announce
-  policy #119 suppresses output reads on it), the marker-index basis (`evicted_total` u64 +
+  policy #119 suppresses output reads on it), the modified-keys mask (`modified_keys` u16 — v18, #941:
+  for Shift/Alt/Ctrl on Enter/Tab/Backspace/Escape, whether the modified press encodes differently
+  from the bare key under the keyboard modes the application asked for — derived by running
+  `encode_key` itself, so a consumer substituting a key knows whether the modifier would have
+  arrived), the marker-index basis (`evicted_total` u64 +
   `marker_epoch` u32 — v15, #490: lines evicted since RIS, and a counter that moves when a *pulled*
   marker index went stale for a reason that delta cannot express; together they let a consumer ask for
   the marker set once instead of being handed every live marker in every frame) and its check
@@ -905,6 +909,8 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   (d) **Bracketed paste (`?2004`)**: wrap pasted text in `CSI 200~`…`CSI 201~` so the app never
   mistakes paste content for typed control sequences (a real injection-safety boundary, not cosmetic).
   (e) **Backspace is DEL (`0x7f`), not BS (`0x08`)** — the standard PC-keyboard convention apps assume.
+  **Alt is an ESC prefix on the key's own bytes** — a character and, since #941, Enter / Tab /
+  Backspace / Escape too (`Alt+Backspace` = `ESC DEL`, readline's backward-kill-word).
   (f) **modifyOtherKeys (XTMODKEYS `CSI > 4 ; Pv m`, #890)**: `Pv >= 2` makes a *modified*
   character encode as `CSI 27 ; <1+mods> ; <codepoint> ~` instead of its ordinary form, which is
   what separates `Ctrl+I` from `Tab`, `Ctrl+[` from `Esc` and `Ctrl+M` from `Enter` — `vim` asks
@@ -928,12 +934,19 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   form (`CSI 1;5A`, `CSI 3;5~`) and this mechanism exists to resolve ambiguity, not to restate it
   — which is also where the two references part company, xterm routing `Delete` onto
   Backspace's own codepoint and ghostty declining to.
+  **What the two extensions decide reaches the consumer as a derived mask, not as the modes**
+  (#941): the frame's `modified_keys` says, per modifier and C0-legacy key, whether the modified
+  press encodes differently from the bare one. It is computed by running `encode_key` on both, so
+  it cannot disagree with the bytes sent — the kitty flags alone would mislead (report-events
+  without disambiguate is non-zero yet leaves `Shift+Enter` a plain CR).
   The kitty keyboard protocol (`CSI u` + a negotiated progressive-flag stack + key-release events) is a
   *stateful* superset deferred to #23; legacy here is a pure event→bytes function. (`?1016` SGR-pixel
   mouse — once mistakenly called out-of-bounds — is in scope: the consumer supplies the pixels, the
   engine only formats them; landed in #28. The genuinely-excluded mode is `?1001` hilite tracking, a
   stateful handshake, not an encoding.) [#11]
 - **The kitty keyboard protocol is a negotiated flag stack that rewrites only what legacy can't express.**
+  **Each screen keeps its own flags and stack** (#941), swapped when the screen changes, so an
+  application that exits the alternate screen without popping cannot leave the shell in `CSI u`.
   An app enables it via `CSI > flags u` (push the current flags, set new), `CSI = flags ; mode u` (set in
   place — mode 1 replace / 2 or-in / 3 and-not), `CSI < n u` (pop n), and queries with `CSI ? u` → the
   engine replies `CSI ? flags u` on the #27 channel. These route by their leading `>`/`=`/`<`/`?`

@@ -319,6 +319,89 @@ impl MouseProtocol {
     }
 }
 
+bitflags::bitflags! {
+    /// Which modified presses of the four keys whose bare form is a C0 control — Enter, Tab,
+    /// Backspace, Escape — reach the application distinct from the bare key, under the
+    /// keyboard modes currently in effect (#941). A set bit means the modifier survives the
+    /// encoding; a clear bit means the application receives exactly what the bare key sends.
+    /// Carried on the frame as [`crate::Frame::modified_keys`], derived from the encoder
+    /// [`crate::Term::encode_key`] runs.
+    ///
+    /// **No `#[non_exhaustive]` (#844): the question does not arise for a bitflags set.** New members
+    /// are bits inside the value, not fields, and the type is built through `empty()` / `from_bits`,
+    /// never by struct literal.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+    pub struct ModifiedKeys: u16 {
+        const SHIFT_ENTER     = 1 << 0;
+        const SHIFT_TAB       = 1 << 1;
+        const SHIFT_BACKSPACE = 1 << 2;
+        const SHIFT_ESCAPE    = 1 << 3;
+        const ALT_ENTER       = 1 << 4;
+        const ALT_TAB         = 1 << 5;
+        const ALT_BACKSPACE   = 1 << 6;
+        const ALT_ESCAPE      = 1 << 7;
+        const CTRL_ENTER      = 1 << 8;
+        const CTRL_TAB        = 1 << 9;
+        const CTRL_BACKSPACE  = 1 << 10;
+        const CTRL_ESCAPE     = 1 << 11;
+    }
+}
+
+/// The [`ModifiedKeys`] mask for a set of keyboard modes: each bit is set exactly when
+/// [`encode_key`], given the same modes, encodes that modified press differently from the
+/// bare key. Takes the same mode arguments as `encode_key`, and memoizes each of their 2 048
+/// combinations process-wide on first use.
+pub(crate) fn modified_keys(
+    app_cursor: bool,
+    app_keypad: bool,
+    kitty_flags: u8,
+    modify_other_keys_2: bool,
+) -> ModifiedKeys {
+    static MEMO: [std::sync::OnceLock<ModifiedKeys>; 2048] =
+        [const { std::sync::OnceLock::new() }; 2048];
+    let index = kitty_flags as usize
+        | (modify_other_keys_2 as usize) << 8
+        | (app_cursor as usize) << 9
+        | (app_keypad as usize) << 10;
+    *MEMO[index].get_or_init(|| {
+        derive_modified_keys(app_cursor, app_keypad, kitty_flags, modify_other_keys_2)
+    })
+}
+
+/// [`modified_keys`] without the memo.
+fn derive_modified_keys(
+    app_cursor: bool,
+    app_keypad: bool,
+    kitty_flags: u8,
+    modify_other_keys_2: bool,
+) -> ModifiedKeys {
+    let enc = |key, mods| {
+        let ev = KeyEvent {
+            key,
+            mods,
+            ..Default::default()
+        };
+        encode_key(
+            &ev,
+            app_cursor,
+            app_keypad,
+            kitty_flags,
+            modify_other_keys_2,
+        )
+    };
+    let mut out = ModifiedKeys::empty();
+    let mut bit = 1u16;
+    for mods in [Modifiers::SHIFT, Modifiers::ALT, Modifiers::CTRL] {
+        for key in [Key::Enter, Key::Tab, Key::Backspace, Key::Escape] {
+            if enc(key, mods) != enc(key, Modifiers::empty()) {
+                out |= ModifiedKeys::from_bits_retain(bit);
+            }
+            bit <<= 1;
+        }
+    }
+    out
+}
+
 /// Mouse coordinate encoding — *how* a report is framed (default X10 vs DEC
 /// `?1006` SGR).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -381,15 +464,21 @@ pub fn encode_key(
         Key::Delete => Some(tilde_key(3, ev.mods)),
         Key::PageUp => Some(tilde_key(5, ev.mods)),
         Key::PageDown => Some(tilde_key(6, ev.mods)),
-        Key::Enter => Some(vec![b'\r']),
-        Key::Backspace => Some(vec![0x7f]), // DEL, the PC-keyboard convention
-        Key::Escape => Some(vec![ESC]),
-        Key::Tab => {
-            if ev.mods.contains(Modifiers::SHIFT) {
-                Some(vec![ESC, b'[', b'Z']) // back-tab (CBT)
-            } else {
-                Some(vec![b'\t'])
+        Key::Enter | Key::Backspace | Key::Escape | Key::Tab => {
+            let bare: &[u8] = match ev.key {
+                Key::Enter => b"\r",
+                Key::Backspace => b"\x7f", // DEL, the PC-keyboard convention
+                Key::Escape => b"\x1b",
+                _ if ev.mods.contains(Modifiers::SHIFT) => b"\x1b[Z", // back-tab (CBT)
+                _ => b"\t",
+            };
+            // Alt is an ESC prefix on the key's own encoding, as for a character.
+            let mut out = Vec::with_capacity(bare.len() + 1);
+            if ev.mods.contains(Modifiers::ALT) {
+                out.push(ESC);
             }
+            out.extend_from_slice(bare);
+            Some(out)
         }
         Key::F(n) => function_key(n, ev.mods),
     }
@@ -924,4 +1013,26 @@ pub fn encode_focus(focused: bool, enabled: bool) -> Option<Vec<u8>> {
         return None;
     }
     Some(vec![ESC, b'[', if focused { b'I' } else { b'O' }])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every one of the 2 048 mode combinations reads its own mask through the memo (#941):
+    /// two combinations sharing a slot would hand one of them the other's answer.
+    #[test]
+    fn the_memo_agrees_with_the_derivation_for_every_mode_combination() {
+        for index in 0..2048usize {
+            let kitty = index as u8;
+            let mok2 = index & (1 << 8) != 0;
+            let cursor = index & (1 << 9) != 0;
+            let keypad = index & (1 << 10) != 0;
+            assert_eq!(
+                modified_keys(cursor, keypad, kitty, mok2),
+                derive_modified_keys(cursor, keypad, kitty, mok2),
+                "kitty={kitty:#04x} mok2={mok2} cursor={cursor} keypad={keypad}"
+            );
+        }
+    }
 }

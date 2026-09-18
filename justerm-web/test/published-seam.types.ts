@@ -113,7 +113,9 @@ holds<Equal<NotMirrored, never>>(true);
  * `markerKind` (the `markerPositions` kind lane) and `MouseEventBits` / `mouseEventBits` (the
  * `mouseWantedEvents` mask). They are deliberately **not** pre-listed above — the value of this
  * section is the moment it goes red, which is the moment they become reachable, and adding the
- * entries early deletes exactly that. Three things are recorded here rather than on a ticket,
+ * entries early deletes exactly that. **Next in line (#941):** `ModifiedKeyBits` /
+ * `modifiedKeyBits` (the `modifiedKeys` mask), whose local copy is `src/input.ts`'s `ModifiedKeys`
+ * — owed the same two checks as `MouseEvents` below. Three things are recorded here rather than on a ticket,
  * because this is the one place the person who meets the red is certain to be standing:
  *
  * 1. **Nothing is currently wrong, and drifting fails quietly rather than lying.** Measured at
