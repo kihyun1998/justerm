@@ -122,3 +122,15 @@ fn the_mask_survives_the_wire() {
     assert_eq!(back.modified_keys, frame.modified_keys);
     assert!(back.modified_keys.contains(ModifiedKeys::SHIFT_ENTER));
 }
+
+/// Flags an application pushed on the alternate screen and never popped (a crash) do not
+/// reach the main screen's mask: each screen keeps its own kitty stack.
+#[test]
+fn the_mask_follows_the_screen_the_flags_were_pushed_on() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?1049h\x1b[>1u");
+    assert!(mask(&t).contains(ModifiedKeys::SHIFT_ENTER));
+    t.feed(b"\x1b[?1049l");
+    assert!(!mask(&t).contains(ModifiedKeys::SHIFT_ENTER));
+    assert_mask_agrees_with_encoder(&t);
+}

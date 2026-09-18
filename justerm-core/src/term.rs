@@ -274,6 +274,10 @@ pub struct Term {
     /// Saved `kitty_flags` for the protocol's push/pop stack (`CSI > u` pushes,
     /// `CSI < u` pops). Capped depth — overflow drops the oldest entry.
     kitty_stack: Vec<u8>,
+    /// The other screen's `kitty_flags` and `kitty_stack`: each screen keeps its own, and
+    /// [`Self::swap_kitty_keyboard`] exchanges them when the screen changes.
+    kitty_flags_inactive: u8,
+    kitty_stack_inactive: Vec<u8>,
     /// xterm's `modifyOtherKeys` at level 2 or above, asked for with
     /// `CSI > 4 ; Pv m` (XTMODKEYS) and what `vim` turns on at startup (#890).
     /// `encode_key` consults it *after* `kitty_flags`, because it belongs to the
@@ -1019,6 +1023,8 @@ impl Term {
             focus_events: false,
             kitty_flags: 0,
             kitty_stack: Vec::new(),
+            kitty_flags_inactive: 0,
+            kitty_stack_inactive: Vec::new(),
             modify_other_keys_2: false,
             events: Vec::new(),
             replies: Vec::new(),
@@ -2766,6 +2772,7 @@ impl Term {
         }
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
         self.grid.clear();
+        self.swap_kitty_keyboard();
         self.on_alt = true;
         self.display_offset = 0; // the alt screen has no scrollback to view
         self.selection = None; // a selection cannot survive a screen swap
@@ -2799,11 +2806,18 @@ impl Term {
         }
         self.alt_tracked.clear();
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
+        self.swap_kitty_keyboard();
         self.on_alt = false;
         self.display_offset = 0; // return to the primary at its bottom
         self.selection = None; // a selection cannot survive a screen swap
         self.invalidate_search_highlights(); // matches index the swapped-out buffer
         self.mark_fully_damaged();
+    }
+
+    /// Exchange the active screen's kitty keyboard flags and stack with the other screen's.
+    fn swap_kitty_keyboard(&mut self) {
+        std::mem::swap(&mut self.kitty_flags, &mut self.kitty_flags_inactive);
+        std::mem::swap(&mut self.kitty_stack, &mut self.kitty_stack_inactive);
     }
 
     fn enter_alt_screen(&mut self) {
