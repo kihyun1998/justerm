@@ -22,7 +22,7 @@
 //! impl's methods are reached through the type, not the module path, so a private child
 //! module does not hide them.
 
-use crate::selection::{Anchor, Selection, SelectionSpan, SelectionType, Side};
+use crate::selection::{Anchor, BufferPoint, Selection, SelectionSpan, SelectionType, Side};
 
 use super::Term;
 
@@ -69,6 +69,35 @@ impl Term {
         if let Some(sel) = &mut self.selection {
             sel.focus = focus;
         }
+    }
+
+    /// Select the active buffer from its first non-blank cell to its last, in absolute
+    /// coordinates — no viewport position is read and the view does not move. On the alt
+    /// screen that is the alt screen alone. A buffer with no non-blank cell leaves nothing
+    /// selected.
+    pub fn select_all(&mut self) {
+        let floor = self.abs_floor();
+        let last = self.scrollback.len() + self.grid.rows() - 1;
+        let non_blank = |cell: &crate::cell::Cell| cell.c() != ' ';
+        let first = (floor..=last).find_map(|line| {
+            let col = self.abs_line(line).iter().position(non_blank)?;
+            Some(BufferPoint { line, col })
+        });
+        let end = (floor..=last).rev().find_map(|line| {
+            let col = self.abs_line(line).iter().rposition(non_blank)?;
+            Some(BufferPoint { line, col })
+        });
+        self.selection = first.zip(end).map(|(start, end)| Selection {
+            ty: SelectionType::Char,
+            anchor: Anchor {
+                point: start,
+                side: Side::Left,
+            },
+            focus: Anchor {
+                point: end,
+                side: Side::Right,
+            },
+        });
     }
 
     /// Clear the selection.
