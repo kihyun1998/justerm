@@ -1,4 +1,4 @@
-import type { DecodedFrame } from "./types";
+import type { DecodedFrame, FlagBits } from "./types";
 
 /**
  * The renderer port — the small interface the widget drives.
@@ -60,6 +60,18 @@ export interface Renderer {
    * before this existed.
    */
   setPreedit?(col: number, row: number, codepoints: Uint32Array): number;
+  /**
+   * Underline the hovered link's cells, or clear it with empty spans (#934). `spans` is stride-3
+   * `(row, left, right)` viewport triples, `left..=right` inclusive. Kept until the next call.
+   *
+   * Optional: a renderer without it shows a hovered link by the pointer cursor alone.
+   */
+  setLinkHover?(spans: Uint32Array): void;
+  /**
+   * The decoder's cell flag bits. Read by the widget's link state (#934) to skip the trailing half
+   * of a wide pair; a renderer without it leaves that state unable to tell a spacer from a blank.
+   */
+  readonly cellFlags?: FlagBits;
   /**
    * Release what the renderer runs on its own behalf — its animation loop and any listener it
    * registered (#606). Called by {@link import("./terminal").Terminal.dispose}, **once**.

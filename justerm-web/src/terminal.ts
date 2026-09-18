@@ -16,6 +16,8 @@ import { WheelScroller, type ScrollOptions } from "./scroll-control";
 import { CompositionController } from "./composition";
 import { ClipboardController, type ClipboardOptions } from "./clipboard";
 import { dispatchTermEvent, type EventHandlers } from "./events";
+import { hoverSpans, LinkTracker } from "./link-tracker";
+import type { Link, LinkOptions } from "./links";
 
 /**
  * Whether a wheel notch reports to the app rather than scrolling scrollback
@@ -403,6 +405,20 @@ export interface TerminalOptions {
    * Omit it and a press the application does not take does nothing locally.
    */
   selection?: LocalPointer;
+  /**
+   * Clickable links (#934): OSC 8 links from the frame stream, and plain-text URLs through
+   * {@link import("./links").LinkOptions.port}. The widget decides hover and click from the pointer
+   * it already owns, so bind no pointer listeners for links either.
+   *
+   * A link is live where a press would stay local: over an application that tracks presses it is
+   * inert unless Shift is held, the same rule the selection follows. It opens on a single primary
+   * click whose press and release land on it. Hovering one sets the pointer cursor on
+   * {@link element} — a descendant with its own `cursor` style hides it — and underlines it through
+   * the renderer's `setLinkHover`.
+   *
+   * Needs {@link element} and a renderer that exposes `cellFlags`; without either, links are inert.
+   */
+  links?: LinkOptions;
   /** A local scroll request: scroll the viewport to this display offset (lines up
    * from the bottom). Three producers funnel to the SAME callback for one coherent
    * request: the wheel (normal buffer, no app tracking), the consumer's scrollbar
@@ -513,6 +529,12 @@ export class Terminal {
    * after it falls back to the frame stream instead of reaching past it for a run that may be
    * arbitrarily old — rows that have since scrolled away. */
   private preeditEnd: TextareaAnchor | undefined;
+  /** The link state (#934), when {@link TerminalOptions.links} is wired. */
+  private links: LinkTracker | undefined;
+  /** Whether a frame is being applied, so a hover change inside it rides that frame's present. */
+  private applyingFrame = false;
+  /** The element's inline `cursor` from before a link was hovered, restored on leave. */
+  private cursorBeforeLink: string | undefined;
   /** Latched by {@link Terminal.dispose} (#606): the widget's lifecycle is one-shot, so this both
    * keeps the renderer from being disposed twice and refuses a re-mount. */
   private disposed = false;
@@ -555,8 +577,24 @@ export class Terminal {
         "justerm-web: this Terminal was disposed — build a new one rather than re-mounting",
       );
     }
+    const element = this.options?.element;
+    const flagBits = this.renderer.cellFlags;
+    if (this.options?.links && element && flagBits) {
+      this.links = new LinkTracker({
+        flagBits,
+        options: this.options.links,
+        onHover: (link) => this.showLink(link, element),
+        onLeave: () => this.hideLink(element),
+      });
+    }
     this.unsubscribe = this.source.subscribe((frame) => {
       this.renderer.applyFrame(frame);
+      this.applyingFrame = true;
+      try {
+        this.links?.applyFrame(frame);
+      } finally {
+        this.applyingFrame = false;
+      }
       this.renderer.render();
       this.track(frame);
       this.positionTextarea(frame);
@@ -586,6 +624,22 @@ export class Terminal {
         if (events) dispatchTermEvent(e, events);
       });
     }
+  }
+
+  /** Present a hovered link: the renderer underlines it and the element shows the pointer cursor. */
+  private showLink(link: Link, element: HTMLElement): void {
+    this.renderer.setLinkHover?.(hoverSpans(link.cells, this.links?.rows ?? 0));
+    if (this.cursorBeforeLink === undefined) this.cursorBeforeLink = element.style.cursor;
+    element.style.cursor = "pointer";
+    if (!this.applyingFrame) this.renderer.render();
+  }
+
+  /** Undo {@link showLink}. */
+  private hideLink(element: HTMLElement): void {
+    this.renderer.setLinkHover?.(new Uint32Array(0));
+    element.style.cursor = this.cursorBeforeLink ?? "";
+    this.cursorBeforeLink = undefined;
+    if (!this.applyingFrame) this.renderer.render();
   }
 
   /** Wraps the consumer's sink so input that counts returns the view to the bottom (#913). */
@@ -758,6 +812,7 @@ export class Terminal {
       getGeometry,
       send: (event) => sink.send({ kind: "mouse", event }),
       local: o.selection,
+      links: this.links,
       setTicking,
     });
     const onMove = (e: MouseEvent): void => {
@@ -784,11 +839,14 @@ export class Terminal {
     const onHover = (e: MouseEvent): void => {
       if (!onScrollbar(e)) router.hover(e);
     };
+    const onLeave = (): void => router.leave();
     element.addEventListener("mousedown", onDown);
     element.addEventListener("mousemove", onHover);
+    element.addEventListener("mouseleave", onLeave);
     this.detach.push(() => {
       element.removeEventListener("mousedown", onDown);
       element.removeEventListener("mousemove", onHover);
+      element.removeEventListener("mouseleave", onLeave);
       unfollow();
       setTicking(false);
     });
@@ -1083,6 +1141,11 @@ export class Terminal {
     this.clipboardController = undefined;
     for (const off of this.detach) off();
     this.detach = [];
+    this.links?.dispose();
+    this.links = undefined;
+    const element = this.options?.element;
+    if (element && this.cursorBeforeLink !== undefined) element.style.cursor = this.cursorBeforeLink;
+    this.cursorBeforeLink = undefined;
     this.scroller = undefined;
     this.textarea?.remove();
     this.textarea = undefined;

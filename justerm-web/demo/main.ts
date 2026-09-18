@@ -15,12 +15,10 @@ import {
   BLINK_IDLE_TIMEOUT,
   CommandAnnounceController,
   CommandNavController,
-  computeLinks,
   copySelection,
   DecorationRegistry,
   DomAccessibleView,
   JustermRenderer,
-  LinkController,
   MarkerKind,
   MouseEvents,
   SCROLLBAR_THUMB_ATTRIBUTE,
@@ -114,7 +112,6 @@ const renderer = await JustermRenderer.create({
 });
 
 const canvas = document.querySelector<HTMLCanvasElement>("#term")!;
-canvas.style.cursor = "text";
 
 // The widget, assigned below once its wiring deps exist. Focus-restore paths
 // (accessible view, control buttons) return focus HERE — the real input target is
@@ -195,6 +192,8 @@ renderer.setDecorationSource((f) => decorations.decorationsForFrame(f));
 // `CommandNavController` catches the out-of-range half; only re-asking for the pair
 // catches the rest.
 const log: string[] = Array.from({ length: 8 }, (_, i) => `seed row ${i} — select · find=Ctrl-F`);
+/** #934: the URI of the OSC 8 link the demo lays over each seed row's "select". */
+const OSC8_DEMO_URI = "https://example.com/osc8-select";
 let displayOffset = 0;
 
 // S14 (#119): the screen-reader mirror. Mounted off-screen beside the canvas; it
@@ -1019,6 +1018,13 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
       flags[at] = renderer.cellFlags.blink;
     }
   }
+  // #934: an OSC 8 hyperlink over each seed row's "select", as an application's link arrives.
+  const link: number[] = new Array(n).fill(0);
+  for (let line = 0; line < ROWS; line++) {
+    const text = rows[line] ?? "";
+    const at = text.startsWith("seed row") ? [...text].indexOf("s", 9) : -1;
+    if (at >= 0) for (let i = 0; i < "select".length; i++) link[line * COLS + at + i] = 1;
+  }
   if (weightText) {
     for (let i = 0; i < 2 * WEIGHT_WIDTH; i++) {
       const at = WEIGHT_ROW * COLS + WEIGHT_COL + i;
@@ -1038,6 +1044,8 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     extra: new Array(n).fill(0),
     spans,
     sideTable: [],
+    link,
+    linkTable: [OSC8_DEMO_URI],
     displayOffset,
     scrollbackLen: maxOffset(),
     altScreen, // #149: drives the a11y announce policy (Alt screen button)
@@ -1129,7 +1137,6 @@ function render(out?: { scrollCount: number }): void {
       searchRulerMarks(searchRuler.lines, searchRuler.activeIndex, frame, SEARCH_RULER),
     ),
   );
-  updateLinks();
 }
 
 // --- S8 wiring: SelectionController → fake engine; the widget feeds it presses (#902) ---
@@ -1225,7 +1232,9 @@ const inputSink: InputSink = {
 // can't parent — so wrap the canvas in a relative container and hand THAT over. The
 // canvas keeps the pointer (selection); the textarea is the keyboard/IME target.
 const termContainer = document.createElement("div");
-Object.assign(termContainer.style, { position: "relative", width: "100vw", height: "100vh" });
+// The text cursor sits on the widget's element rather than the canvas, so the pointer cursor the
+// widget sets over a hovered link (#934) is not hidden by a child's own.
+Object.assign(termContainer.style, { position: "relative", width: "100vw", height: "100vh", cursor: "text" });
 document.body.insertBefore(termContainer, canvas);
 termContainer.appendChild(canvas);
 /** The page's search chord (Ctrl/Cmd+F) — claimed from the terminal, handled by the search box. */
@@ -1273,6 +1282,17 @@ window.__tickCount = () => tickCount;
 // LocalPointer — which a unit test driving the controller directly cannot reach.
 window.__selectionProbe = () => ({ changes: selectionChanges, primary: primaryBuffer });
 
+// #934: what the widget's link wiring did — the URIs it activated and the spans it last asked the
+// renderer to underline (recorded here, since the published renderer may predate the binding).
+const linkOpens: string[] = [];
+let linkHover: number[] | null = null;
+const setLinkHover = renderer.setLinkHover.bind(renderer);
+renderer.setLinkHover = (spans) => {
+  linkHover = [...spans];
+  setLinkHover(spans);
+};
+window.__linkProbe = () => ({ opens: [...linkOpens], hover: linkHover, cursor: termContainer.style.cursor });
+
 term = new Terminal(source, renderer, {
   element: termContainer,
   input: inputSink,
@@ -1280,6 +1300,23 @@ term = new Terminal(source, renderer, {
   // #902: the widget owns the pointer — it routes each press to the app or to this controller and
   // follows the gesture itself, so the page binds no mouse listeners for selection.
   selection: controller,
+  // #934: links. The widget owns hover and click; opening is this page's policy — a new tab with
+  // `opener` severed, as xterm's handler does. The port answers from the log the way a backend
+  // answers from core's `viewport_logical_lines` (the demo's rows never wrap).
+  links: {
+    onActivate: (uri) => {
+      linkOpens.push(uri);
+      console.log(`[link] open ${uri}`);
+      if (!window.__keepLinksHome) window.open(uri, "_blank", "noopener,noreferrer");
+    },
+    port: {
+      lineAt: (row) => {
+        const text = [...(log[viewTop() + row] ?? "")].slice(0, COLS).join("").replace(/ +$/, "");
+        const line: LogicalLine = { text, cells: [...text].map((_, c) => [row, c] as [number, number]) };
+        return Promise.resolve(text === "" ? undefined : line);
+      },
+    },
+  },
   // #901: the search chord is this page's, so the widget must not also send it to the shell. The
   // page's own `keydown` listener (below the search box) still opens the box as the event bubbles.
   // `__keyClaim` is the e2e's policy, asked only about the keys the page does not claim itself.
@@ -1742,6 +1779,9 @@ declare global {
     __thumbPressProbe?: () => ThumbPressProbe;
     __tickCount?: () => number;
     __selectionProbe?: () => { changes: number; primary: string };
+    __linkProbe?: () => { opens: string[]; hover: number[] | null; cursor: string };
+    /** Set by the e2e so an activated link is recorded without opening a tab. */
+    __keepLinksHome?: boolean;
     __contextLossProbe?: () => Promise<ContextLossProbe>;
     __rulerLayerProbe?: () => Promise<RulerLayerProbe>;
     __searchRulerProbe?: () => Promise<SearchRulerProbe>;
@@ -4202,80 +4242,7 @@ window.__searchProbe = (): SearchProbe => {
   };
 };
 
-// --- S10 wiring: link hover/click. The demo only exercises plain-URL detection
-// (regex) over the visible rows; OSC8 (osc8Links) is unit-tested. In frame mode
-// the logical-line text + cell map come from core (viewport_logical_lines); the
-// demo builds them from the unwrapped log directly.
-
-const linkLabel = document.createElement("div");
-linkLabel.style.cssText =
-  "position:fixed;bottom:8px;left:8px;display:none;background:#313244;color:#89b4fa;font:13px monospace;padding:4px 8px;border-radius:6px;z-index:10";
-document.body.append(linkLabel);
-
-const linkCtrl = new LinkController({
-  onHover: (l) => {
-    canvas.style.cursor = "pointer";
-    linkLabel.textContent = `🔗 ${l.uri}  (Ctrl/Cmd-click to open)`;
-    linkLabel.style.display = "block";
-  },
-  onLeave: () => {
-    canvas.style.cursor = "text";
-    linkLabel.style.display = "none";
-  },
-  // The library never opens anything — onActivate is the seam. *How* to open is
-  // consumer policy; this demo (a consumer) opens a new tab, severing `opener`
-  // for security (xterm's handleLink does the same). A native consumer (penterm)
-  // would call its shell-open instead.
-  onActivate: (uri) => {
-    console.log(`[link] open ${uri}`);
-    window.open(uri, "_blank", "noopener,noreferrer");
-  },
-});
-
-let lastPointer: [number, number] | undefined;
-
-function visibleLogicalLines(): LogicalLine[] {
-  const top = viewTop();
-  return log.slice(top, top + ROWS).map((text, r) => ({
-    text,
-    cells: [...text].map((_, c) => [r, c] as [number, number]),
-  }));
-}
-function updateLinks(): void {
-  const regex = visibleLogicalLines().flatMap((l) => computeLinks(l));
-  linkCtrl.setLinks([], regex);
-  if (lastPointer) linkCtrl.pointerMove(lastPointer[0], lastPointer[1]); // re-hover after re-set
-}
-// #819 — the fourth pointer converter on this page, and the one whose recorded disposition was
-// CONDITIONAL rather than safe. `pointer-coordinates-are-bounded-by-their-producer.md` grades it
-// inert because "an out-of-range coordinate simply misses the link map" — true only while this
-// page's cell is derived from the BOX, which takes `cellHeight` to 0 and the quotient to Infinity.
-// The moment a page derives its cell from the renderer, as this package's README recommends, the
-// same converter answers an IN-RANGE cell and hovers a link on a pane nobody can see. It is also
-// the widest trigger of the three readers: this listener runs on bare hover, with no press.
-function cellFromEvent(e: globalThis.MouseEvent): [number, number] | undefined {
-  const g = getGeometry();
-  if (!g) return undefined;
-  return [
-    Math.floor((e.clientY - g.originY) / g.cellHeight),
-    Math.floor((e.clientX - g.originX) / g.cellWidth),
-  ];
-}
-
-window.addEventListener("mousemove", (e) => {
-  if (e.buttons !== 0) return; // dragging → selection owns it, not link hover
-  const cell = cellFromEvent(e);
-  if (!cell) return;
-  lastPointer = cell;
-  linkCtrl.pointerMove(cell[0], cell[1]);
-});
-canvas.addEventListener("click", (e) => {
-  if (e.ctrlKey || e.metaKey) {
-    const cell = cellFromEvent(e);
-    if (!cell) return;
-    linkCtrl.click(cell[0], cell[1]);
-  }
-});
+// --- S10 wiring moved into the widget (#934): `links` on the Terminal options above. ---
 
 // Append a line every 300ms; follow the bottom only when not scrolled up. Each
 // append is "output" — search re-highlights (debounced) and links re-detect.

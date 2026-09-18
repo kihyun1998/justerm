@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MouseEventLike } from "../src/input";
-import { LinkTracker } from "../src/link-tracker";
+import { hoverSpans, LinkTracker } from "../src/link-tracker";
 import type { Link, LinkOptions, LogicalLine } from "../src/links";
 import type { DecodedFrame, FlagBits } from "../src/types";
 
@@ -85,6 +85,19 @@ function tracker(options: Partial<LinkOptions> = {}) {
   });
   return { t, hovers, opened };
 }
+
+describe("hoverSpans (#934)", () => {
+  it("runs each row's consecutive columns into one span and drops rows off the viewport", () => {
+    const cells: Array<[number, number]> = [
+      [-1, 7], [-1, 8], // wrapped in from above the top
+      [0, 3], [0, 4], [0, 5], [0, 9], // a gap splits the row
+      [1, 0], [1, 1],
+      [3, 0], // past the bottom of a 3-row viewport
+    ];
+
+    expect([...hoverSpans(cells, 3)]).toEqual([0, 3, 5, 0, 9, 9, 1, 0, 1]);
+  });
+});
 
 describe("LinkTracker — OSC 8 links from the frame stream (#934)", () => {
   it("hovers a link whole after a Partial frame repainted part of it", () => {

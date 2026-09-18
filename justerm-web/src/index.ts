@@ -133,7 +133,7 @@ export type { Dimensions, FitInput, FitPadding, ResizePort } from "./fit";
 // over the engine's logical lines (ADR-0017: core assembles, web matches). The
 // controller drives hover/leave/activate, OSC8 winning over regex on a cell.
 export { computeLinks, LinkController, osc8Links, URL_REGEX } from "./links";
-export type { Link, LogicalLine } from "./links";
+export type { Link, LinkOptions, LinkPort, LogicalLine } from "./links";
 // Accessibility (#119) — screen-reader mirror: hidden row tree (review) +
 // aria-live announce (cursor-anchored viewport diff, typed-echo dedup, alt-screen
 // suppress). Pure logic; the consumer injects the DOM sinks.

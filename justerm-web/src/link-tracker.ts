@@ -21,6 +21,19 @@ interface CachedLine {
 
 const NO_LINE: LogicalLine = { text: "", cells: [] };
 
+/** A link's cells as the renderer's stride-3 `(row, left, right)` spans: one per run of consecutive
+ * columns on a row, rows outside `0..rows` dropped. */
+export function hoverSpans(cells: ReadonlyArray<readonly [number, number]>, rows: number): Uint32Array {
+  const out: number[] = [];
+  for (const [row, col] of cells) {
+    if (row < 0 || row >= rows) continue;
+    const n = out.length;
+    if (n > 0 && out[n - 3] === row && out[n - 1] === col - 1) out[n - 1] = col;
+    else out.push(row, col, col);
+  }
+  return new Uint32Array(out);
+}
+
 /**
  * The widget's link state (#934): a viewport mirror of the frame stream for OSC 8 links, the
  * logical lines the {@link import("./links").LinkPort} answered for plain-text URLs, and the
@@ -55,6 +68,11 @@ export class LinkTracker {
         if (this.releaseEv) deps.options.onActivate(uri, this.releaseEv);
       },
     });
+  }
+
+  /** The viewport height of the last applied frame. */
+  get rows(): number {
+    return this.mirror?.rows ?? 0;
   }
 
   /** Fold a frame into the mirror, and drop every cached line it contradicts. */

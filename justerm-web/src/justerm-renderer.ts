@@ -419,6 +419,9 @@ export interface RendererBackend extends SurfaceBackend {
    * `TypeError` rather than a missing feature. A renderer without it is preedit-blind, which is the
    * state every consumer was in before #249. */
   setPreedit?(grid: number, col: number, row: number, codepoints: Uint32Array): number;
+  /** Retain the hovered link's spans (#934), drawn underlined; empty spans clear it. Optional for
+   * the reason {@link setPreedit} is: a `renderer-v*` tag publishes it. */
+  setLinkHover?(grid: number, spans: Uint32Array): void;
   /** Retain the flat decoration directory `[row, left, right, layer, bg, fg]…` (#393). */
   setDecorations(grid: number, spans: Uint32Array): void;
   /** Place the cursor: shape `0` block / `1` underline / `2` bar / `3` hollow (#270). */
@@ -2074,6 +2077,12 @@ export class JustermRenderer implements Renderer {
   setCursorBlinkTimeout(ms: number): void {
     this.blink.setIdleTimeout(ms);
     if (this.cursor) this.redrawCursor();
+  }
+
+  /** Underline the hovered link's cells, or clear it with empty spans (#934). Drawn at the next
+   * present; a renderer published before the binding draws no underline. */
+  setLinkHover(spans: Uint32Array): void {
+    this.backend.setLinkHover?.(this.lease.id, spans);
   }
 
   /**
