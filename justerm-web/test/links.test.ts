@@ -223,6 +223,96 @@ describe("LinkController — setLinks lifecycle (adversarial)", () => {
   });
 });
 
+describe("LinkController — a link is its cells, not its URI (#934)", () => {
+  type Ev = [string, string?];
+  const controller = (events: Ev[]) =>
+    new LinkController({
+      onHover: (l) => events.push(["hover", `${l.uri}@${l.cells[0]!.join(",")}`]),
+      onLeave: () => events.push(["leave"]),
+      onActivate: (uri) => events.push(["activate", uri]),
+    });
+  const at = (row: number, ...cols: number[]) => cols.map((c) => [row, c] as [number, number]);
+
+  it("moving between two links with one URI leaves the first and hovers the second", () => {
+    const events: Ev[] = [];
+    const ctrl = controller(events);
+    ctrl.setLinks([], [
+      { uri: "http://x.io", cells: at(0, 0, 1) },
+      { uri: "http://x.io", cells: at(0, 5, 6) },
+    ]);
+
+    ctrl.pointerMove(0, 1);
+    ctrl.pointerMove(0, 5);
+
+    expect(events).toEqual([["hover", "http://x.io@0,0"], ["leave"], ["hover", "http://x.io@0,5"]]);
+  });
+
+  it("a hovered link that moves under a stationary pointer is hovered again at its new cells", () => {
+    const events: Ev[] = [];
+    const ctrl = controller(events);
+    ctrl.setLinks([], [{ uri: "http://x.io", cells: at(1, 0, 1, 2) }]);
+    ctrl.pointerMove(1, 1);
+
+    // The next frame scrolled the line up a row, and a longer copy of it now sits under the pointer.
+    ctrl.setLinks([], [{ uri: "http://x.io", cells: at(1, 1, 2, 3) }]);
+
+    expect(events).toEqual([["hover", "http://x.io@1,0"], ["leave"], ["hover", "http://x.io@1,1"]]);
+  });
+
+  it("pointerLeave drops the hover", () => {
+    const events: Ev[] = [];
+    const ctrl = controller(events);
+    ctrl.setLinks([], [{ uri: "http://x.io", cells: at(0, 0) }]);
+    ctrl.pointerMove(0, 0);
+
+    ctrl.pointerLeave();
+    ctrl.setLinks([], [{ uri: "http://x.io", cells: at(0, 0) }]);
+
+    expect(events).toEqual([["hover", "http://x.io@0,0"], ["leave"]]);
+  });
+
+  it("activates when press and release land on the same link", () => {
+    const events: Ev[] = [];
+    const ctrl = controller(events);
+    ctrl.setLinks([], [{ uri: "http://x.io", cells: at(0, 0, 1, 2) }]);
+
+    ctrl.press(0, 0);
+    ctrl.release(0, 2);
+
+    expect(events).toEqual([["activate", "http://x.io"]]);
+  });
+
+  it("does not activate when the release lands off the pressed link", () => {
+    const events: Ev[] = [];
+    const ctrl = controller(events);
+    ctrl.setLinks([], [
+      { uri: "http://x.io", cells: at(0, 0, 1) },
+      { uri: "http://x.io", cells: at(0, 5, 6) },
+    ]);
+
+    ctrl.press(0, 0);
+    ctrl.release(0, 3); // off every link
+    ctrl.press(0, 0);
+    ctrl.release(0, 5); // onto the other link with the same URI
+    ctrl.press(0, 3);
+    ctrl.release(0, 0); // pressed off, released on
+
+    expect(events).toEqual([]);
+  });
+
+  it("a release consumes the press", () => {
+    const events: Ev[] = [];
+    const ctrl = controller(events);
+    ctrl.setLinks([], [{ uri: "http://x.io", cells: at(0, 0) }]);
+
+    ctrl.press(0, 0);
+    ctrl.release(0, 0);
+    ctrl.release(0, 0);
+
+    expect(events).toEqual([["activate", "http://x.io"]]);
+  });
+});
+
 describe("computeLinks — homograph/spoof guard (adversarial, xterm parity)", () => {
   // new URL() normalizes a Cyrillic-homograph or octal-IP host to a *different*
   // punycode/decimal host than the glyphs shown — a spoof. xterm rejects these

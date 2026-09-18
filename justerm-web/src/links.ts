@@ -2,7 +2,7 @@
 // viewport's logical-line text + a per-char cell map (it has the whole buffer);
 // the consumer — here — runs the URL regex and `new URL()` validation over that
 // text and maps matches back through the cells. The policy (what a URL is) stays
-// web-side; core has no regex dependency.
+// web-side.
 
 /** A viewport logical line from the engine: assembled text + per-char cell. */
 export interface LogicalLine {
@@ -18,6 +18,7 @@ export interface Link {
   cells: ReadonlyArray<readonly [number, number]>;
 }
 
+import type { MouseEventLike } from "./input";
 import type { DecodedFrame } from "./types";
 
 /** `[line, left, right, cell_offset, count]` — the cell span directory stride. */
@@ -27,10 +28,10 @@ const SPAN_STRIDE = 5;
  * index are one link, its URI `linkTable[index - 1]`. Walks the span directory
  * the same way the renderer does, reading the per-cell `link` column.
  *
- * NB: a Partial frame ships only damaged spans, so a link's undamaged cells are
- * absent and its `cells` come out incomplete — the same partial-frame gap as the
- * highlight overlay (#140). Correct on Full frames; the consumer should run this
- * against a full-viewport frame (or the cell mirror once it carries links). */
+ * One frame's links only: a Partial frame ships only damaged spans, so a link's
+ * undamaged cells are absent from it. `TerminalOptions.links` keeps links whole
+ * across frames (#934) from the widget's cell mirror, which groups by contiguous
+ * runs rather than by this frame-local index. */
 export function osc8Links(frame: DecodedFrame): Link[] {
   const { spans, link, linkTable } = frame;
   if (!link || !linkTable) return [];
@@ -101,6 +102,36 @@ export function computeLinks(line: LogicalLine, regex: RegExp = URL_REGEX): Link
 }
 
 /**
+ * The consumer-wired seam plain-text URL detection reads through (#934). In frame mode the backend
+ * answers from core's `viewport_logical_lines`: the logical line whose `cells` include viewport row
+ * `row`, or `undefined` when no line does. Asked on demand, for the row under the pointer — never
+ * once per frame. Sibling to {@link import("./selection").SelectionPort} and
+ * {@link import("./search").SearchPort}.
+ */
+export interface LinkPort {
+  lineAt(row: number): Promise<LogicalLine | undefined>;
+}
+
+/** The widget's link wiring (#934), handed over as `TerminalOptions.links`. */
+export interface LinkOptions {
+  /** A link was activated. Opening it is the consumer's policy; the widget never opens anything. */
+  onActivate(uri: string, ev: MouseEventLike): void;
+  /** Where plain-text URL detection reads its text. Omit it and only OSC 8 links are live. */
+  port?: LinkPort;
+  /** The URL pattern, run over each logical line. Defaults to {@link URL_REGEX}. */
+  regex?: RegExp;
+  /** Whether a press with these modifiers may activate a link. Defaults to every press. */
+  activates?(ev: MouseEventLike): boolean;
+}
+
+/** Two links are one link when they cover the same cells with the same URI. */
+function sameLink(a: Link | undefined, b: Link | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.uri !== b.uri || a.cells.length !== b.cells.length) return false;
+  return a.cells.every(([r, c], i) => r === b.cells[i]![0] && c === b.cells[i]![1]);
+}
+
+/**
  * Drives link hover/click against the current frame's links. Pure logic — no
  * DOM: the widget feeds it the pointer cell (mapped from pixels) and the link
  * sets; it fires hover/leave (underline + pointer cursor) and activate (open).
@@ -111,6 +142,8 @@ export class LinkController {
   private hovered: Link | undefined;
   /** Last pointer cell, so a frame's `setLinks` can re-resolve the hover there. */
   private last: readonly [number, number] | undefined;
+  /** The link under the last {@link press}, until its {@link release}. */
+  private pressed: Link | undefined;
   private readonly onHover: (link: Link) => void;
   private readonly onLeave: () => void;
   private readonly onActivate: (uri: string) => void;
@@ -139,11 +172,18 @@ export class LinkController {
     this.resolve(row, col);
   }
 
-  /** Transition the hover to the link (if any) at `(row, col)`. Compares by URI
-   * so re-setting equal links across frames doesn't churn leave/hover. */
+  /** The pointer left the grid, or its press would not act locally. Fires leave if hovering. */
+  pointerLeave(): void {
+    this.last = undefined;
+    if (this.hovered) this.onLeave();
+    this.hovered = undefined;
+  }
+
+  /** Transition the hover to the link (if any) at `(row, col)`. Compares by
+   * {@link sameLink}, so re-setting equal links across frames doesn't churn leave/hover. */
   private resolve(row: number, col: number): void {
     const link = this.linkAt(row, col);
-    if (link?.uri === this.hovered?.uri) {
+    if (sameLink(link, this.hovered)) {
       this.hovered = link; // keep state fresh, no event
       return;
     }
@@ -156,6 +196,19 @@ export class LinkController {
   click(row: number, col: number): void {
     const link = this.linkAt(row, col);
     if (link) this.onActivate(link.uri);
+  }
+
+  /** A press at `(row, col)`: remembers the link there for {@link release}. */
+  press(row: number, col: number): void {
+    this.pressed = this.linkAt(row, col);
+  }
+
+  /** A release at `(row, col)`: activates the link there when it is the pressed one. */
+  release(row: number, col: number): void {
+    const pressed = this.pressed;
+    this.pressed = undefined;
+    const link = this.linkAt(row, col);
+    if (link && sameLink(link, pressed)) this.onActivate(link.uri);
   }
 
   private linkAt(row: number, col: number): Link | undefined {

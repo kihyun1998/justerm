@@ -1,11 +1,13 @@
+import type { Link } from "./links";
 import type { DecodedFrame, FlagBits } from "./types";
 
-/** One stored cell: the resolved glyph + its flag bits. No colour — the renderer
- * resolves and composites colour in wasm (#273), and the only reader here is the
- * a11y text mirror (#504). */
+/** One stored cell: the resolved glyph, its flag bits and its OSC 8 URI. No colour — the
+ * renderer resolves and composites colour in wasm (#273). */
 interface MirrorCell {
   symbol: string;
   flags: number;
+  /** The OSC 8 URI the cell carries, resolved out of the frame-local link table (#934). */
+  link?: string;
 }
 
 const blank = (): MirrorCell => ({ symbol: " ", flags: 0 });
@@ -17,17 +19,17 @@ const SPAN_STRIDE = 5;
  * it so scroll-op damage can be applied — a GPU renderer can neither shift retained
  * cells nor return their styling, so the shifted region is repainted from here.
  *
- * Text-only since #504. It fed the beamterm adapter's TypeScript compositing until
- * #273 moved compositing into the renderer's wasm; the colour half survived that as
- * per-frame work whose result the sole caller discarded. The scroll-op mirroring
- * below is the part that is genuinely load-bearing.
+ * Its readers are the a11y text mirror (row text) and the widget's link state
+ * (#934: each cell's OSC 8 URI, and the text a port answer is checked against).
+ * It carries no colour since #504, when its last colour reader moved into the
+ * renderer's wasm (#273).
  */
 export class CellMirror {
   private readonly cells: MirrorCell[];
 
   constructor(
-    private readonly cols: number,
-    private readonly rows: number,
+    readonly cols: number,
+    readonly rows: number,
     private readonly F: FlagBits,
   ) {
     this.cells = Array.from({ length: cols * rows }, blank);
@@ -54,7 +56,7 @@ export class CellMirror {
     // loop cost one allocation per cell — and for `sideTable`, a full table rebuild per cluster
     // cell, measured at ~170x a local read (#657). Invisible to a plain-object fixture, where a
     // property read is free, which is why every test here was green through it.
-    const { spans, flags: flagsCol, extra: extraCol, codepoints, sideTable } = frame;
+    const { spans, flags: flagsCol, extra: extraCol, codepoints, sideTable, link: linkCol, linkTable } = frame;
     for (let s = 0; s < spans.length; s += SPAN_STRIDE) {
       const line = spans[s]!;
       const left = spans[s + 1]!;
@@ -71,7 +73,10 @@ export class CellMirror {
         // and "🚀‍" (emoji + trailing ZWJ) keep their base instead of rendering a bare mark.
         const marks = extra !== 0 ? sideTable[extra - 1]! : "";
         const symbol = code === 0 ? " " : String.fromCodePoint(code) + marks;
-        this.cells[line * this.cols + x] = { symbol, flags };
+        // A link index names a URI in THIS frame's table only, so the URI is what is stored.
+        const index = linkCol?.[idx] ?? 0;
+        const link = index !== 0 ? linkTable?.[index - 1] : undefined;
+        this.cells[line * this.cols + x] = link === undefined ? { symbol, flags } : { symbol, flags, link };
       }
     }
   }
@@ -105,6 +110,41 @@ export class CellMirror {
     let end = text.length;
     while (end > 0 && text[end - 1] === " ") end--;
     return { text: text.slice(0, end), columns: columns.slice(0, end) };
+  }
+
+  /** The viewport's OSC 8 links, in reading order: a run of cells carrying one URI is one link, and
+   * a run continues past a row's end only where that row soft-wraps. */
+  osc8Links(): Link[] {
+    const links: Array<{ uri: string; cells: Array<readonly [number, number]> }> = [];
+    let run: (typeof links)[number] | undefined;
+    for (let i = 0; i < this.cells.length; i++) {
+      const uri = this.cells[i]!.link;
+      const col = i % this.cols;
+      // A run reaches this cell from the previous one on its row, or from a wrapped row's last cell.
+      const joined = col > 0 || (i > 0 && (this.cells[i - 1]!.flags & this.F.wrapline) !== 0);
+      if (uri === undefined) {
+        run = undefined;
+        continue;
+      }
+      if (!run || run.uri !== uri || !joined) links.push((run = { uri, cells: [] }));
+      run.cells.push([Math.floor(i / this.cols), col]);
+    }
+    return links;
+  }
+
+  /** The stored symbol at `(row, col)` — a blank cell reads `" "`. */
+  symbolAt(row: number, col: number): string {
+    return this.cells[row * this.cols + col]!.symbol;
+  }
+
+  /** Whether row `row` soft-wraps into the next one. */
+  wraps(row: number): boolean {
+    return (this.cells[row * this.cols + this.cols - 1]!.flags & this.F.wrapline) !== 0;
+  }
+
+  /** Whether `(row, col)` is the trailing half of a wide pair. */
+  isSpacer(row: number, col: number): boolean {
+    return (this.cells[row * this.cols + col]!.flags & this.F.wide_char_spacer) !== 0;
   }
 
   /** Shift rows `[top, bottom]` by `count` (>0 = up, exposing blanks at the

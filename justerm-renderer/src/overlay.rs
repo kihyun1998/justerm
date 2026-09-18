@@ -105,6 +105,9 @@ pub struct Overlay<'a> {
     pub selection: &'a [u32],
     /// Search-match spans, same stride.
     pub matches: &'a [u32],
+    /// The hovered link's spans, same stride (#934) — cells drawn underlined. Not a highlight: it
+    /// adds the underline mark and leaves every colour channel to the rest of the stack.
+    pub link_hover: &'a [u32],
     pub colors: HighlightColors,
 }
 
@@ -144,6 +147,12 @@ impl Overlay<'_> {
     /// halves and its foreground treatments on one.
     pub fn is_selected(&self, row: u32, col: u32, partner: Option<u32>) -> bool {
         covers_pair(self.selection, row, col, partner)
+    }
+
+    /// Whether the hovered link covers `(row, col)`, with the same wide-pair rule as
+    /// [`highlight_at`](Self::highlight_at).
+    pub fn is_link_hovered(&self, row: u32, col: u32, partner: Option<u32>) -> bool {
+        covers_pair(self.link_hover, row, col, partner)
     }
 }
 

@@ -15,8 +15,8 @@ export { StubFrameSource } from "./frame-source";
 // Consumer events (#117) from core's drain_events, delivered out-of-band via
 // FrameSource.subscribeEvents. The union carries everything on that channel; the
 // title/bell/cwd notifications route to EventHandlers and the OSC 52 pair routes to
-// the clipboard controller below (#841). onLinkActivate stays with the link
-// controller (#113).
+// the clipboard controller below (#841). Link activation is `TerminalOptions.links`
+// (#934), not this channel.
 export { dispatchTermEvent } from "./events";
 export type {
   ClipboardQueryEvent,
@@ -133,7 +133,7 @@ export type { Dimensions, FitInput, FitPadding, ResizePort } from "./fit";
 // over the engine's logical lines (ADR-0017: core assembles, web matches). The
 // controller drives hover/leave/activate, OSC8 winning over regex on a cell.
 export { computeLinks, LinkController, osc8Links, URL_REGEX } from "./links";
-export type { Link, LogicalLine } from "./links";
+export type { Link, LinkOptions, LinkPort, LogicalLine } from "./links";
 // Accessibility (#119) — screen-reader mirror: hidden row tree (review) +
 // aria-live announce (cursor-anchored viewport diff, typed-echo dedup, alt-screen
 // suppress). Pure logic; the consumer injects the DOM sinks.

@@ -13,8 +13,12 @@
 //! [`decoration`]: crate::decoration
 
 use crate::attrs::{
-    BLANK_SLOT, STRIKETHROUGH, UNDERLINE, glyph_field, is_concealed, is_dim, is_inverse,
+    BLANK_SLOT, STRIKETHROUGH, UNDERLINE, USTYLE_SHIFT, glyph_field, is_concealed, is_dim,
+    is_inverse,
 };
+
+/// The underline style field's value for a single straight line — what core writes for `SGR 4`.
+const SINGLE_UNDERLINE: u16 = 1 << USTYLE_SHIFT;
 use crate::color::gl_rgb;
 use crate::contrast::ensure_contrast_ratio;
 use crate::decoration::{
@@ -215,6 +219,14 @@ pub fn pack_instances(
                 overlay.highlight_at(row, col, partner)
             };
             let is_selection = !composed && overlay.is_selected(row, col, partner);
+            // #934: a hovered link draws a single underline where the cell has none of its own. The
+            // underline and the glyph field read these flags; the colour stages read `cell_flags`.
+            let line_flags =
+                if overlay.is_link_hovered(row, col, partner) && cell_flags & UNDERLINE == 0 {
+                    cell_flags | UNDERLINE | SINGLE_UNDERLINE
+                } else {
+                    cell_flags
+                };
             // #226: a Powerline / box-drawing / block glyph tiles with the bg — excluded from the
             // contrast demand and re-tinted under selection (classify the base codepoint).
             let exclude =
@@ -580,7 +592,7 @@ pub fn pack_instances(
             // The gate is the union of what each band needs, so the #520 cost win survives: an
             // explicitly coloured underline with no strikethrough still skips the contrast loop
             // (`ensure_contrast_ratio`'s luminance work, on every cell in the viewport otherwise).
-            let needs_follow_fg = (cell_flags & UNDERLINE != 0 && explicit_line.is_none())
+            let needs_follow_fg = (line_flags & UNDERLINE != 0 && explicit_line.is_none())
                 || cell_flags & STRIKETHROUGH != 0;
             let follow_fg_line = if !needs_follow_fg {
                 line_fg
@@ -641,7 +653,7 @@ pub fn pack_instances(
                 } else {
                     (slots.get(idx).copied().unwrap_or(0), exclude)
                 };
-                glyph_field(slot, cell_flags, ink_class)
+                glyph_field(slot, line_flags, ink_class)
             };
 
             // #455: is this cell's background the pristine DEFAULT backdrop — the one surface #298
@@ -855,6 +867,7 @@ mod tests {
                 active: &[],
                 selection: &sel,
                 matches: &[],
+                link_hover: &[],
                 colors: HighlightColors {
                     selection_bg: 0x30_60_C0,
                     match_bg: 0x30_60_C0,
@@ -968,6 +981,7 @@ mod tests {
             active: &[],
             selection: &sel,
             matches: &[],
+            link_hover: &[],
             colors: HighlightColors {
                 selection_bg: 0x30_60_C0,
                 match_bg: 0x30_60_C0,
@@ -1076,6 +1090,7 @@ mod tests {
             active: &[],
             selection: &sel,
             matches: &[],
+            link_hover: &[],
             colors: HighlightColors {
                 selection_bg: 0x30_60_C0,
                 match_bg: 0x30_60_C0,
@@ -1324,6 +1339,105 @@ mod tests {
             &[],
         );
         assert_eq!(got[8], (33 | GLYPH_UNDERLINE) as f32);
+    }
+
+    #[test]
+    fn a_hovered_link_cell_is_underlined_and_its_neighbour_is_not() {
+        let p = palette();
+        let got = pack_instances(
+            &Frame {
+                cols: 2,
+                ..frame(&[0, 0], &[0, 0], &[33, 34], &[0, 0])
+            },
+            &p,
+            true,
+            &Overlay {
+                link_hover: &[0, 0, 0],
+                ..Overlay::default()
+            },
+            &ColorPolicy::default(),
+            &[],
+        );
+        let single = u32::from(33 | GLYPH_UNDERLINE) | 1 << crate::attrs::GLYPH_USTYLE_SHIFT;
+        assert_eq!(got[8], single as f32, "the hovered cell");
+        assert_eq!(got[INSTANCE_FLOATS + 8], 34.0, "the cell past the span");
+    }
+
+    #[test]
+    fn a_hovered_link_packs_like_an_sgr4_underline() {
+        let p = palette();
+        let pack = |flags: u16, link_hover: &[u32]| {
+            pack_instances(
+                &frame(&[0], &[0], &[33], &[flags]),
+                &p,
+                true,
+                &Overlay {
+                    link_hover,
+                    ..Overlay::default()
+                },
+                &ColorPolicy {
+                    min_contrast: 4.5,
+                    ..ColorPolicy::default()
+                },
+                &[],
+            )
+        };
+        // The cell core writes for `SGR 4`: the flag and the single style (#829).
+        assert_eq!(
+            pack(DIM, &[0, 0, 0]),
+            pack(DIM | UNDERLINE | SINGLE_UNDERLINE, &[])
+        );
+    }
+
+    #[test]
+    fn a_hovered_link_keeps_the_cells_own_underline_style() {
+        let p = palette();
+        // Double (2): a style a stray single (1) OR-ed into it would turn into another (3).
+        const DOUBLE: u16 = 2 << crate::attrs::USTYLE_SHIFT;
+        let pack = |link_hover: &[u32]| {
+            pack_instances(
+                &frame(&[0], &[0], &[33], &[UNDERLINE | DOUBLE]),
+                &p,
+                true,
+                &Overlay {
+                    link_hover,
+                    ..Overlay::default()
+                },
+                &ColorPolicy::default(),
+                &[],
+            )
+        };
+        assert_eq!(pack(&[0, 0, 0]), pack(&[]));
+    }
+
+    #[test]
+    fn a_hovered_link_underlines_a_wide_pair_whole() {
+        let p = palette();
+        let got = pack_instances(
+            &Frame {
+                cols: 2,
+                ..frame(
+                    &[0, 0],
+                    &[0, 0],
+                    &[40, 41],
+                    &[crate::attrs::WIDE_CHAR, crate::attrs::WIDE_CHAR_SPACER],
+                )
+            },
+            &p,
+            true,
+            &Overlay {
+                link_hover: &[0, 0, 0], // the lead column only
+                ..Overlay::default()
+            },
+            &ColorPolicy::default(),
+            &[],
+        );
+        assert_ne!(got[8] as u16 & GLYPH_UNDERLINE, 0, "the lead");
+        assert_ne!(
+            got[INSTANCE_FLOATS + 8] as u16 & GLYPH_UNDERLINE,
+            0,
+            "the spacer, covered through its partner"
+        );
     }
 
     #[test]
@@ -1706,6 +1820,7 @@ mod tests {
             active: &[],
             selection,
             matches,
+            link_hover: &[],
             colors: HighlightColors {
                 selection_bg: SEL_BG,
                 match_bg: MATCH_BG,
@@ -1985,6 +2100,7 @@ mod tests {
             active,
             selection,
             matches,
+            link_hover: &[],
             colors: HighlightColors {
                 selection_bg: SEL_BG,
                 match_bg: MATCH_BG,
@@ -2614,6 +2730,7 @@ mod tests {
             active: &[],
             selection,
             matches,
+            link_hover: &[],
             colors: HighlightColors {
                 selection_bg: bg,
                 match_bg: bg,
@@ -3971,6 +4088,7 @@ mod tests {
             active: &[],
             selection: sel,
             matches: &[],
+            link_hover: &[],
             colors: HighlightColors {
                 selection_bg: SEL_BG,
                 match_bg: MATCH_BG,
@@ -4058,6 +4176,7 @@ mod tests {
             active: &[],
             selection: &[0, 1, 1],
             matches: &[],
+            link_hover: &[],
             colors: HighlightColors {
                 selection_bg: SEL_BG,
                 match_bg: MATCH_BG,
@@ -4107,6 +4226,7 @@ mod tests {
                 active: &[],
                 selection: sel,
                 matches: &[],
+                link_hover: &[],
                 colors: HighlightColors {
                     selection_bg: SEL_BG,
                     match_bg: MATCH_BG,

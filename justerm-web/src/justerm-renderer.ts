@@ -419,6 +419,9 @@ export interface RendererBackend extends SurfaceBackend {
    * `TypeError` rather than a missing feature. A renderer without it is preedit-blind, which is the
    * state every consumer was in before #249. */
   setPreedit?(grid: number, col: number, row: number, codepoints: Uint32Array): number;
+  /** Retain the hovered link's spans (#934), drawn underlined; empty spans clear it. Optional for
+   * the reason {@link setPreedit} is: a `renderer-v*` tag publishes it. */
+  setLinkHover?(grid: number, spans: Uint32Array): void;
   /** Retain the flat decoration directory `[row, left, right, layer, bg, fg]…` (#393). */
   setDecorations(grid: number, spans: Uint32Array): void;
   /** Place the cursor: shape `0` block / `1` underline / `2` bar / `3` hollow (#270). */
@@ -2076,13 +2079,12 @@ export class JustermRenderer implements Renderer {
     if (this.cursor) this.redrawCursor();
   }
 
-  /**
-   * An IME composition started / ended (#592) — the caret stays put for the duration.
-   *
-   * Redraws immediately: no frame carries this (composition never reaches the engine), so waiting
-   * for one would leave the caret mid-phase until the next output — the same reason
-   * {@link setFocused} redraws.
-   */
+  /** Underline the hovered link's cells, or clear it with empty spans (#934). Drawn at the next
+   * present; a renderer published before the binding draws no underline. */
+  setLinkHover(spans: Uint32Array): void {
+    this.backend.setLinkHover?.(this.lease.id, spans);
+  }
+
   /**
    * Draw the composition into the grid and report where the caret belongs (#249, ADR-0028).
    *
@@ -2118,6 +2120,13 @@ export class JustermRenderer implements Renderer {
     return caretCol;
   }
 
+  /**
+   * An IME composition started / ended (#592) — the caret stays put for the duration.
+   *
+   * Redraws immediately: no frame carries this (composition never reaches the engine), so waiting
+   * for one would leave the caret mid-phase until the next output — the same reason
+   * {@link setFocused} redraws.
+   */
   setComposing(composing: boolean): void {
     this.blink.setComposing(composing);
     if (this.cursor) this.redrawCursor();

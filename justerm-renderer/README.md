@@ -35,7 +35,7 @@ something you can measure rather than assume.
 
 **Every per-grid export names the grid it acts on** (0.15.0, breaking). `applyFrame`, `applyDamage`,
 `setPalette`, `setOverlay`, `setActiveMatch`, `setDecorations`, `setCursor`, `clearCursor`,
-`setPreedit`, `cols`/`rows`, `cellWidth`/`cellHeight`/`cssCellWidth`/`cssCellHeight`, the
+`setPreedit`, `setLinkHover`, `cols`/`rows`, `cellWidth`/`cellHeight`/`cssCellWidth`/`cssCellHeight`, the
 font/metric setters and the colour/cursor policy scalars all take a grid id first and throw on one
 they do not know. The exports that belong to the surface — `render`, `setDevicePixelRatio`, the
 context-loss handlers, `cssWidth`/`cssHeight` — do not.
