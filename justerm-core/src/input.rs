@@ -319,6 +319,69 @@ impl MouseProtocol {
     }
 }
 
+bitflags::bitflags! {
+    /// Which modified presses of the four keys whose bare form is a C0 control — Enter, Tab,
+    /// Backspace, Escape — reach the application distinct from the bare key, under the
+    /// keyboard modes currently in effect (#941). A set bit means the modifier survives the
+    /// encoding; a clear bit means the application receives exactly what the bare key sends.
+    /// Carried on the frame as [`crate::Frame::modified_keys`], derived by [`modified_keys`].
+    ///
+    /// **No `#[non_exhaustive]` (#844): the question does not arise for a bitflags set.** New members
+    /// are bits inside the value, not fields, and the type is built through `empty()` / `from_bits`,
+    /// never by struct literal.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+    pub struct ModifiedKeys: u16 {
+        const SHIFT_ENTER     = 1 << 0;
+        const SHIFT_TAB       = 1 << 1;
+        const SHIFT_BACKSPACE = 1 << 2;
+        const SHIFT_ESCAPE    = 1 << 3;
+        const ALT_ENTER       = 1 << 4;
+        const ALT_TAB         = 1 << 5;
+        const ALT_BACKSPACE   = 1 << 6;
+        const ALT_ESCAPE      = 1 << 7;
+        const CTRL_ENTER      = 1 << 8;
+        const CTRL_TAB        = 1 << 9;
+        const CTRL_BACKSPACE  = 1 << 10;
+        const CTRL_ESCAPE     = 1 << 11;
+    }
+}
+
+/// The [`ModifiedKeys`] mask for a set of keyboard modes: each bit is set exactly when
+/// [`encode_key`], given the same modes, encodes that modified press differently from the
+/// bare key. Takes the same mode arguments as `encode_key`.
+pub fn modified_keys(
+    app_cursor: bool,
+    app_keypad: bool,
+    kitty_flags: u8,
+    modify_other_keys_2: bool,
+) -> ModifiedKeys {
+    let enc = |key, mods| {
+        let ev = KeyEvent {
+            key,
+            mods,
+            ..Default::default()
+        };
+        encode_key(
+            &ev,
+            app_cursor,
+            app_keypad,
+            kitty_flags,
+            modify_other_keys_2,
+        )
+    };
+    let mut out = ModifiedKeys::empty();
+    let mut bit = 1u16;
+    for mods in [Modifiers::SHIFT, Modifiers::ALT, Modifiers::CTRL] {
+        for key in [Key::Enter, Key::Tab, Key::Backspace, Key::Escape] {
+            if enc(key, mods) != enc(key, Modifiers::empty()) {
+                out |= ModifiedKeys::from_bits_retain(bit);
+            }
+            bit <<= 1;
+        }
+    }
+    out
+}
+
 /// Mouse coordinate encoding — *how* a report is framed (default X10 vs DEC
 /// `?1006` SGR).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

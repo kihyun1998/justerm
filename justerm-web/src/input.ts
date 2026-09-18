@@ -22,6 +22,28 @@ export const MouseEvents = {
   Move: 1 << 4,
 } as const;
 
+/**
+ * Which modified presses of Enter, Tab, Backspace and Escape reach the application distinct
+ * from the bare key under the keyboard modes it has asked for — the frame's
+ * {@link import("./types").DecodedFrame.modifiedKeys} mask (#941, mirroring core
+ * `ModifiedKeys`). A clear bit means the application receives exactly what the bare key sends,
+ * so `(frame.modifiedKeys & ModifiedKeys.ShiftEnter) === 0` is "Shift on Enter is lost".
+ */
+export const ModifiedKeys = {
+  ShiftEnter: 1 << 0,
+  ShiftTab: 1 << 1,
+  ShiftBackspace: 1 << 2,
+  ShiftEscape: 1 << 3,
+  AltEnter: 1 << 4,
+  AltTab: 1 << 5,
+  AltBackspace: 1 << 6,
+  AltEscape: 1 << 7,
+  CtrlEnter: 1 << 8,
+  CtrlTab: 1 << 9,
+  CtrlBackspace: 1 << 10,
+  CtrlEscape: 1 << 11,
+} as const;
+
 /** Modifier bitmask — the kitty scheme core uses (Shift=1, Alt=2, Ctrl=4, …). */
 export const Mod = {
   None: 0,

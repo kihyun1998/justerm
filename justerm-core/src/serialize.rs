@@ -10,7 +10,7 @@ use crate::cell::{Cell, CellFlags};
 use crate::color::Color;
 use crate::cursor::CursorShape;
 use crate::damage::ScrollOp;
-use crate::input::MouseEvents;
+use crate::input::{ModifiedKeys, MouseEvents};
 use crate::selection::SelectionSpan;
 use crate::term::MIN_COLUMNS;
 use core::num::NonZeroU32;
@@ -54,7 +54,7 @@ use std::collections::BTreeMap;
 ///   failure would have rejected frames every one of those decoders can otherwise read correctly,
 ///   which is a larger harm than one flattened mark.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 17; // v17 gives the cursor-shape byte an "unset" value, `CURSOR_SHAPE_UNSET`, for a frame whose application has not set a DECSCUSR shape — the consumer draws its own default then (#927) ; v16 removes the fourth overlay group — every live marker's absolute line — and adds `marker_count` (u32) to the header in its place: the group was measured at 37-70% of an 80x24 frame at ordinary OSC-133 densities and is the R3 violation ADR-0020 records against itself, so a consumer pulls the index once (`Engine::marker_index`, v15) and the count is its check against drift (#490). The *viewport* marker group stays: it is what command-announce consumes, it is row-filtered, and its population is bounded by MAX_MARKERS (#721) ; v15 adds the marker-index basis to the header — `evicted_total` (u64) and `marker_epoch` (u32) — so a consumer can pull the marker set once and keep it valid instead of being handed every live marker in every frame; the marker groups stayed one version as an oracle for the consumer index and the absolute-line one left in v16 (#490); v14 moves combining clusters and hyperlink refs off the fixed cell record (18 B -> 14 B) into per-span sparse groups, inlining the cluster (no side-table) but keeping the URI table interned, and widens every count/length prefix they use to u32 — the engine could hold a cluster, a URI, or a viewport its own decoder then rejected or, worse, mis-read as Ok (#621); v13 adds a per-span underline-colour group: sparse (col, Color) pairs for cells drawing a coloured underline (SGR 58, #520); v12 adds a fifth overlay group: the consumer-designated active search match's spans (#428); v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
+const VERSION: u8 = 18; // v18 adds the modified-keys mask (u16) to the header: which modified presses of Enter/Tab/Backspace/Escape reach the application under the kitty flags and modifyOtherKeys 2, so a consumer can tell before encoding whether a modifier survives (#941) ; v17 gives the cursor-shape byte an "unset" value, `CURSOR_SHAPE_UNSET`, for a frame whose application has not set a DECSCUSR shape — the consumer draws its own default then (#927) ; v16 removes the fourth overlay group — every live marker's absolute line — and adds `marker_count` (u32) to the header in its place: the group was measured at 37-70% of an 80x24 frame at ordinary OSC-133 densities and is the R3 violation ADR-0020 records against itself, so a consumer pulls the index once (`Engine::marker_index`, v15) and the count is its check against drift (#490). The *viewport* marker group stays: it is what command-announce consumes, it is row-filtered, and its population is bounded by MAX_MARKERS (#721) ; v15 adds the marker-index basis to the header — `evicted_total` (u64) and `marker_epoch` (u32) — so a consumer can pull the marker set once and keep it valid instead of being handed every live marker in every frame; the marker groups stayed one version as an oracle for the consumer index and the absolute-line one left in v16 (#490); v14 moves combining clusters and hyperlink refs off the fixed cell record (18 B -> 14 B) into per-span sparse groups, inlining the cluster (no side-table) but keeping the URI table interned, and widens every count/length prefix they use to u32 — the engine could hold a cluster, a URI, or a viewport its own decoder then rejected or, worse, mis-read as Ok (#621); v13 adds a per-span underline-colour group: sparse (col, Color) pairs for cells drawing a coloured underline (SGR 58, #520); v12 adds a fifth overlay group: the consumer-designated active search match's spans (#428); v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
 
 /// The header's cursor-shape byte when the application has not set a shape (#927).
 const CURSOR_SHAPE_UNSET: u8 = 0xFF;
@@ -405,6 +405,11 @@ pub struct Frame {
     /// accessibility announce policy (#119) gates on it (suppress TUI repaints).
     /// Rides the header like the cursor scalars (ADR-0014).
     pub alt_screen: bool,
+    /// Which modified presses of Enter / Tab / Backspace / Escape reach the application
+    /// distinct from the bare key under the keyboard modes in effect — the kitty flags and
+    /// `modifyOtherKeys` level 2 (#941). Derived by [`crate::input::modified_keys`] from the
+    /// same encoder [`crate::Term::encode_key`] runs.
+    pub modified_keys: ModifiedKeys,
     pub scroll: Option<ScrollOp>,
     pub spans: Vec<Span>,
     pub link_table: Vec<String>,
@@ -542,6 +547,8 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     out.push(frame.mouse_events.bits());
     // Alt-screen flag (#149): one byte in the header, like the cursor scalars.
     out.push(frame.alt_screen as u8);
+    // Modified-keys mask (#941): two bytes in the header.
+    out.extend_from_slice(&frame.modified_keys.bits().to_le_bytes());
     if let Some(s) = frame.scroll {
         out.extend_from_slice(&(s.top as u16).to_le_bytes());
         out.extend_from_slice(&(s.bottom as u16).to_le_bytes());
@@ -876,6 +883,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     let marker_count = r.u32()?;
     let mouse_events = MouseEvents::from_bits_retain(r.u8()?);
     let alt_screen = r.u8()? != 0;
+    let modified_keys = ModifiedKeys::from_bits_retain(r.u16()?);
     let scroll = if has_scroll {
         let top = r.u16()? as usize;
         let bottom = r.u16()? as usize;
@@ -1116,6 +1124,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         marker_count,
         mouse_events,
         alt_screen,
+        modified_keys,
         scroll,
         spans,
         link_table,

@@ -1338,6 +1338,14 @@ impl Term {
             // Alt-screen flag (#149): buffer-global state the consumer can't
             // derive from viewport damage; the a11y announce policy gates on it.
             alt_screen: self.on_alt,
+            // Which modified C0 keys reach the application under the current keyboard
+            // modes (#941), derived from the encoder `encode_key` runs.
+            modified_keys: crate::input::modified_keys(
+                self.app_cursor_keys,
+                self.application_keypad,
+                self.kitty_flags,
+                self.modify_other_keys_2,
+            ),
             scroll: self.scroll_delta(),
             spans,
             link_table,

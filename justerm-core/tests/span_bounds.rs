@@ -48,7 +48,9 @@
 //! (255 frames); the random half now lives in `robustness.rs`'s resize lane, which is where
 //! the odd geometry actually comes from.
 
-use justerm_core::{Color, DecodeError, Engine, Frame, FrameKind, ScrollOp, decode, encode};
+use justerm_core::{
+    Color, DecodeError, Engine, Frame, FrameKind, ModifiedKeys, ScrollOp, decode, encode,
+};
 use std::num::NonZeroU32;
 
 /// Header offsets (`serialize.rs`): MAGIC(2) · VERSION(1) · has_scroll(1) · kind(1) ·
@@ -122,7 +124,11 @@ fn widening_the_span_within_the_frame_is_still_rejected_on_length_not_on_bounds(
     e.feed(b"ab"); // deliberately short: filling the row parks the cursor at the last
     e.reset_damage(); // column, and the damage bracket then spans the full width
     e.feed(b"\x1b[2;1Hxyz"); // damage a few columns of the *other* row
-    let frame = e.frame();
+    let mut frame = e.frame();
+    // The needle below is found by byte search, and a legacy engine's mask (`SHIFT_TAB`,
+    // bytes `02 00`) followed by the span count spells the same six bytes as this span's
+    // triple. Cleared so the search finds the span alone (#941).
+    frame.modified_keys = ModifiedKeys::empty();
     // Take the narrowest span rather than the first: the damage bracket spans out to the
     // previous cursor column, so which row is narrow depends on where the cursor was.
     let narrow = frame

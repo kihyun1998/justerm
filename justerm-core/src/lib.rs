@@ -27,8 +27,8 @@ pub use damage::{LineDamage, ScrollOp, TermDamage};
 pub use event::{ClipboardTarget, TermEvent, Terminator};
 pub use grid::{Grid, Row};
 pub use input::{
-    Key, KeyAction, KeyEvent, KeypadKey, Modifiers, MouseAction, MouseButton, MouseEvent,
-    MouseEvents,
+    Key, KeyAction, KeyEvent, KeypadKey, ModifiedKeys, Modifiers, MouseAction, MouseButton,
+    MouseEvent, MouseEvents,
 };
 pub use logical::LogicalLine;
 pub use search::{Match, SearchOptions, is_valid_regex};
