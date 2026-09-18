@@ -249,7 +249,7 @@ describe("LinkTracker — plain-text URLs through the port (#934)", () => {
     expect(port.asked).toEqual([0, 2]);
   });
 
-  it("does not re-ask a blank row on every frame", async () => {
+  it("does not re-ask a blank row the pointer moves along while other rows change", async () => {
     const port = new HeldPort();
     const { t } = tracker({ port });
     t.applyFrame(frame(0, { 0: { text: "x" } }));
@@ -257,7 +257,9 @@ describe("LinkTracker — plain-text URLs through the port (#934)", () => {
     await port.answer(undefined);
 
     t.applyFrame(frame(1, { 0: { text: "y" } }));
+    t.pointer([2, 4]);
     t.applyFrame(frame(1, { 0: { text: "z" } }));
+    t.pointer([2, 5]);
 
     expect(port.asked).toEqual([2]);
   });
