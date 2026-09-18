@@ -2086,13 +2086,6 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * An IME composition started / ended (#592) — the caret stays put for the duration.
-   *
-   * Redraws immediately: no frame carries this (composition never reaches the engine), so waiting
-   * for one would leave the caret mid-phase until the next output — the same reason
-   * {@link setFocused} redraws.
-   */
-  /**
    * Draw the composition into the grid and report where the caret belongs (#249, ADR-0028).
    *
    * `row` is a **viewport** row — see the binding's own doc. The caller maps the composition's grid
@@ -2127,6 +2120,13 @@ export class JustermRenderer implements Renderer {
     return caretCol;
   }
 
+  /**
+   * An IME composition started / ended (#592) — the caret stays put for the duration.
+   *
+   * Redraws immediately: no frame carries this (composition never reaches the engine), so waiting
+   * for one would leave the caret mid-phase until the next output — the same reason
+   * {@link setFocused} redraws.
+   */
   setComposing(composing: boolean): void {
     this.blink.setComposing(composing);
     if (this.cursor) this.redrawCursor();
