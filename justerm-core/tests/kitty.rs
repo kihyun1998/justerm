@@ -341,14 +341,22 @@ fn the_alternate_screen_keeps_its_flags_between_visits() {
     assert_eq!(flags_now(&mut t), b"\x1b[?1u");
 }
 
-/// A second enter while already on the alternate screen is not a switch, so it swaps nothing.
+/// A second enter while already on the alternate screen is not a switch, so it swaps nothing —
+/// through each mode, since `?1049` is guarded before the switch and `?47` / `?1047` are not.
 #[test]
 fn entering_the_alternate_screen_twice_swaps_once() {
-    let mut t = Engine::new(80, 24);
-    t.feed(b"\x1b[>1u");
-    t.feed(b"\x1b[?1049h\x1b[?1049h");
-    t.feed(b"\x1b[?1049l");
-    assert_eq!(flags_now(&mut t), b"\x1b[?1u");
+    for (enter, leave) in [
+        (&b"\x1b[?1049h"[..], &b"\x1b[?1049l"[..]),
+        (b"\x1b[?47h", b"\x1b[?47l"),
+        (b"\x1b[?1047h", b"\x1b[?1047l"),
+    ] {
+        let mut t = Engine::new(80, 24);
+        t.feed(b"\x1b[>1u");
+        t.feed(enter);
+        t.feed(enter);
+        t.feed(leave);
+        assert_eq!(flags_now(&mut t), b"\x1b[?1u", "{enter:?}");
+    }
 }
 
 /// `?47` and `?1047` switch screens too, so they swap the same state.
