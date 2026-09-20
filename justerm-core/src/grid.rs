@@ -101,7 +101,7 @@ fn move_map<V>(map: &mut BTreeMap<usize, V>, src: std::ops::Range<usize>, dst: u
 /// flag-gate (read iff the cell's `COMBINED_PRESENT` / `LINK_PRESENT` /
 /// `UCOLOR_PRESENT` bit is set) is never bypassed.
 ///
-/// **No `#[non_exhaustive]` (#844), and the open question here is not the attribute.** A consumer
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)), and the open question here is not the attribute.** A consumer
 /// can build one — the derived `Default` is a public constructor — but `Row` has no public method
 /// and appears in no public signature, so nothing can be done with the value. What wants deciding
 /// is why it is re-exported at all.
@@ -710,7 +710,7 @@ pub(crate) fn reflow(
 
 /// The current screen: `rows` × `cols` cells.
 ///
-/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
 /// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
 /// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Clone, Debug)]
@@ -741,7 +741,7 @@ impl Grid {
     /// Ask this, not the last cell's `WRAPLINE` flag: soft-wrap is a property of the row and is
     /// stored there, so a cell never carries it on a live grid (#538). The flag still appears on
     /// the *wire*, derived onto a span's last cell at encode time, which is a different layer —
-    /// see `docs/architecture.md` §Cell on the two things called "cell" here.
+    /// see [`docs/architecture.md`](https://github.com/kihyun1998/justerm/blob/master/docs/architecture.md) §Cell on the two things called "cell" here.
     pub fn is_row_wrapped(&self, row: usize) -> bool {
         self.lines[row].is_wrapped()
     }
@@ -787,7 +787,7 @@ impl Grid {
     /// `rotate_left` moves whole-row `Vec` *handles* (24 bytes each), not cell
     /// data — cheap even at the screen's bounded row count, so the per-newline
     /// scrollback cost lives in the *eviction*, not here (see `scroll_up_recycle`
-    /// and ADR-0009).
+    /// and [ADR-0009](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0009-o1-scroll-in-grid-row-ring.md)).
     pub fn scroll_up_region(&mut self, top: usize, bottom: usize) {
         // Rotate the region's top line to its bottom, then blank it: every line
         // in the region shifts up one and the region's bottom becomes empty.

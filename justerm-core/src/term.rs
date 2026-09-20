@@ -48,7 +48,7 @@ mod tracked;
 
 /// Owns the authoritative screen state and applies VT actions to it.
 ///
-/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
 /// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
 /// sites, so the attribute would bind nothing it does not already bind.
 pub struct Term {
@@ -506,7 +506,7 @@ const DEFAULT_SCROLLBACK: usize = 10_000;
 /// A width-2 glyph occupies a `WIDE_CHAR` lead *and* the `WIDE_CHAR_SPACER` that
 /// stands for its second half, so one column cannot hold one — and a pair with only
 /// one half written is the malformed state every repair path in this crate keys off
-/// (ADR-0025 D4). `Term::with_scrollback` and [`Term::resize`] clamp `cols` up to
+/// ([ADR-0025](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0025-row-and-wide-pair-cell-state-ownership.md) D4). `Term::with_scrollback` and [`Term::resize`] clamp `cols` up to
 /// this, which is what makes D4 (*both halves of a pair move together*)
 /// unconditionally satisfiable rather than true only above some unstated width.
 ///
@@ -526,7 +526,7 @@ const DEFAULT_SCROLLBACK: usize = 10_000;
 pub const MIN_COLUMNS: usize = 2;
 
 /// The built-in word-boundary set for Word (semantic) selection — the default value of
-/// [`Term::set_word_separators`], and **policy the consumer may replace** (ADR-0017:
+/// [`Term::set_word_separators`], and **policy the consumer may replace** ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md):
 /// mechanism in core, policy injected).
 ///
 /// It is alacritty's `SEMANTIC_ESCAPE_CHARS` (`alacritty_terminal/src/term/mod.rs:45`
@@ -577,7 +577,7 @@ pub const DEFAULT_WORD_SEPARATORS: &str = ",│`|:\"' ()[]{}<>\t\u{3000}";
 /// asymmetry decides it: shipping an accessor nobody uses is hard to undo, adding one
 /// when a caller appears is free.
 ///
-/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
 /// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
 /// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -592,7 +592,7 @@ impl Hyperlink {
 
     /// The link target, exactly as the application declared it — never validated,
     /// never resolved. Whether it is a URL a consumer is willing to open is that
-    /// consumer's policy (ADR-0017), the same way colour resolution is.
+    /// consumer's policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), the same way colour resolution is.
     ///
     /// **One exception to "exactly":** a URI containing 14 or more unencoded `;` arrives
     /// cut short, because the parser this engine builds on passes at most 16 OSC fields.
@@ -692,7 +692,7 @@ pub const MAX_ROWS: usize = u16::MAX as usize;
 /// share one line, and scrollback eviction only drops a marker when its line reaches
 /// absolute 0 — so a stream that never emits a newline accumulates marks in a 24-row
 /// buffer without bound (measured: 70 000, #721). [`crate::Engine::feed`] is an untrusted
-/// entry point (ADR-0007), and unbounded allocation behind it is a defect class that
+/// entry point ([ADR-0007](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0007-robustness-testing-property-and-fuzz.md)), and unbounded allocation behind it is a defect class that
 /// record exists to catch.
 ///
 /// **A backstop, not a policy**, on the same terms as [`MAX_COLUMNS`]. Ordinary shell
@@ -711,7 +711,7 @@ pub const MAX_MARKERS: usize = u16::MAX as usize;
 /// two sequences are — a stream that emits `B`, dumps a full screen and then `C` names
 /// a command as long as the buffer. Re-extracting on demand made that a transient
 /// allocation; freezing it at `C` makes it resident, for as long as the mark lives, and
-/// [`crate::Engine::feed`] is an untrusted entry point (ADR-0007).
+/// [`crate::Engine::feed`] is an untrusted entry point ([ADR-0007](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0007-robustness-testing-property-and-fuzz.md)).
 ///
 /// **A display bound, not a semantic one.** [`CommandLine::command`]'s consumer
 /// announces it and lists it; a prefix is a usable answer and an absent one is not, so
@@ -843,7 +843,7 @@ struct CommandRecord {
 /// rides two frame groups, so every marker a consumer registers is something the
 /// renderer paints. A tracked point is private to whoever asked for it.
 ///
-/// **No `#[non_exhaustive]` (#844): the attribute is already implied.** The field is `pub(crate)`,
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): the attribute is already implied.** The field is `pub(crate)`,
 /// so no literal is possible outside this crate however many fields it grows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TrackedId(pub(crate) u32);
@@ -864,7 +864,7 @@ struct TrackedPoint {
 /// after `push_marker` — re-sending them per frame is the same class of waste as
 /// re-sending the line.
 ///
-/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
 /// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
 /// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -887,7 +887,7 @@ pub struct MarkerEntry {
 /// alt-screen switch therefore bumps the epoch even though no line moved: what the
 /// answer *describes* changed.
 ///
-/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
 /// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
 /// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -901,7 +901,7 @@ pub struct MarkerIndex {
 /// screen-reader command navigation. The consumer jumps prompt-to-prompt over
 /// these and announces `command` + a success/fail signal from `exit`.
 ///
-/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
 /// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
 /// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -936,7 +936,7 @@ pub struct CommandLine {
     ///   output does, moves this line while the absolute lines, `evicted_total` and
     ///   `marker_epoch` all stay put — a motion the absolute space does not have.
     ///   Carrying the instant is therefore *buildable but expensive*: a line-end counter
-    ///   **and** a generation of its own. ADR-0029 defers it (alternative D) and takes
+    ///   **and** a generation of its own. [ADR-0029](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md) defers it (alternative D) and takes
     ///   the re-ask discharge, which D3 grants this surface on its own merits;
     /// - **the screen.** The document is `[scrollback ++ primary]`, always. While the
     ///   alt screen is up [`Term::accessible_text`] returns the *alt* document, and this
@@ -1065,7 +1065,7 @@ impl Term {
     }
 
     /// What changed since the last `reset_damage()` — line ranges, each with a
-    /// changed column span. See ADR-0003.
+    /// changed column span. See [ADR-0003](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0003-damage-model-incremental-bounds.md).
     pub fn damage(&self) -> TermDamage {
         if self.full_damage {
             return TermDamage::Full;
@@ -1419,7 +1419,7 @@ impl Term {
 
     /// Number of lines currently held in scrollback history.
     /// Replace the word-boundary set used by Word (semantic) selection — the policy half
-    /// of `selection_begin(.., SelectionType::Word)`, injected per ADR-0017 (core owns
+    /// of `selection_begin(.., SelectionType::Word)`, injected per [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) (core owns
     /// the buffer walk, the consumer owns which characters separate words). The default
     /// is [`DEFAULT_WORD_SEPARATORS`].
     ///
@@ -1441,7 +1441,7 @@ impl Term {
     /// `word_start` / `word_end` are `pub(super)`, reached through
     /// [`Term::selection_begin`], so there is no call site for a consumer to inject into.
     /// This setter is the shape it would take (#545's, injected policy over a core
-    /// mechanism, ADR-0017).
+    /// mechanism, [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
     pub fn set_word_separators(&mut self, separators: &str) {
         let mut set: String = separators.to_owned();
         if !set.contains(' ') {
@@ -3395,7 +3395,7 @@ impl Term {
     /// population only where it moves: at the right edge of a full row it finds
     /// no stop and leaves the flag armed (#848), which is the same rule — clear
     /// where the verb moves the cursor — and CBT always moves. See
-    /// `docs/agents/reference-facts.md`.
+    /// [`docs/agents/reference-facts.md`](https://github.com/kihyun1998/justerm/blob/master/docs/agents/reference-facts.md).
     ///
     /// **What the divergence actually costs, stated as behaviour rather than as
     /// a flag.** On a full row, `CSI Z` then a print puts the character where

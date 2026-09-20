@@ -18,7 +18,7 @@ bitflags! {
     /// CapsLock=64, NumLock=128. Legacy xterm can only express the first three
     /// plus Meta-at-8, so `csi_param` remaps; kitty uses the bits directly (#23).
     ///
-    /// **No `#[non_exhaustive]` (#844): the question does not arise for a bitflags set.** New members
+    /// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): the question does not arise for a bitflags set.** New members
     /// are bits inside the value, not fields, and the type is built through `empty()` / `from_bits`,
     /// never by struct literal.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -71,7 +71,7 @@ impl Modifiers {
 /// literal character. The consumer produces these for *raw* keypad identity — it
 /// owns NumLock / key-location resolution (#83).
 ///
-/// **`#[non_exhaustive]` (#843).** A keypad namespace grows; a consumer *constructs*
+/// **`#[non_exhaustive]` ([#843](https://github.com/kihyun1998/justerm/issues/843)).** A keypad namespace grows; a consumer *constructs*
 /// these to hand to the encoder rather than matching on them, so an addition costs
 /// it nothing.
 #[non_exhaustive]
@@ -91,7 +91,7 @@ pub enum KeypadKey {
 /// A logical key press from the consumer (already decoded from the platform's
 /// keyboard event — justerm does not read hardware).
 ///
-/// **`#[non_exhaustive]` (#843).** Key namespaces grow — media keys, the kitty
+/// **`#[non_exhaustive]` ([#843](https://github.com/kihyun1998/justerm/issues/843)).** Key namespaces grow — media keys, the kitty
 /// protocol's additions — and the traffic here runs inward: a consumer builds a
 /// `Key` for [`crate::Engine::encode_key`] rather than matching one we hand it, so
 /// the attribute costs it nothing and makes the next VT slice additive.
@@ -123,7 +123,7 @@ pub enum Key {
 /// Press / repeat / release. Legacy reports only presses; the kitty protocol's
 /// "report event types" flag (bit 1) carries repeat and release too (#23).
 ///
-/// **Deliberately exhaustive (#843).** `Press` / `Repeat` / `Release` is the kitty
+/// **Deliberately exhaustive ([#843](https://github.com/kihyun1998/justerm/issues/843)).** `Press` / `Repeat` / `Release` is the kitty
 /// keyboard protocol's event space, closed. Left exhaustive on purpose, not by
 /// omission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -138,7 +138,7 @@ pub enum KeyAction {
 /// (defaults to `Press`), and consumer-supplied extras the kitty protocol's
 /// alternate-keys / associated-text flags report (all `None` for legacy).
 ///
-/// **No `#[non_exhaustive]` (#844).** 16 out-of-crate literal sites, and a `Default` already
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** 16 out-of-crate literal sites, and a `Default` already
 /// exists, so `KeyEvent { key, ..Default::default() }` absorbs a new field at the caller's choice
 /// rather than by imposition — the same reading as [`crate::Frame`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,7 +173,7 @@ impl Default for KeyEvent {
 /// Which mouse button an event concerns. `None` on a [`MouseEvent`] means bare
 /// motion with no button held.
 ///
-/// **Deliberately exhaustive (#843), and it is the case worth reading.** The set is
+/// **Deliberately exhaustive ([#843](https://github.com/kihyun1998/justerm/issues/843)), and it is the case worth reading.** The set is
 /// already open *at the data level* — [`MouseButton::Other`] carries any code we do
 /// not name — so the attribute would add nothing a caller could use. That is what
 /// separates this type from [`Key`], which has no catch-all: `Char` and `F` are
@@ -213,7 +213,7 @@ pub enum MouseButton {
 
 /// What the mouse did.
 ///
-/// **Deliberately exhaustive (#843).** `Press` / `Release` / `Motion` is what the
+/// **Deliberately exhaustive ([#843](https://github.com/kihyun1998/justerm/issues/843)).** `Press` / `Release` / `Motion` is what the
 /// mouse protocols **justerm models** report, closed — and the qualifier matters,
 /// because the unqualified version of this sentence is false. `?1001` hilite
 /// tracking reports something else entirely (`ctlseqs.txt`, the Hilite Mouse
@@ -221,7 +221,7 @@ pub enum MouseButton {
 /// as rustdoc confirms by refusing to link it from here. So the closure is scoped
 /// to the protocols that type names, and grows only if it does.
 ///
-/// It is left exhaustive on both of #843's axes anyway: closed as scoped, and
+/// It is left exhaustive on both of [#843](https://github.com/kihyun1998/justerm/issues/843)'s axes anyway: closed as scoped, and
 /// inward-only — nothing public hands one of these outward, so the attribute would
 /// cost a consumer nothing and buy nothing either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,10 +234,10 @@ pub enum MouseAction {
 /// A mouse event in viewport cell coordinates (0-based — the encoding shifts to
 /// 1-based on the wire).
 ///
-/// **No `#[non_exhaustive]` (#844).** 8 out-of-crate literal sites. Its growth cause is outside
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** 8 out-of-crate literal sites. Its growth cause is outside
 /// this crate — mouse protocols are invented elsewhere, and `MouseEvents` arrived that way — but
 /// the answer is a `Default`, as [`crate::KeyEvent`] already has, rather than an attribute;
-/// recorded as follow-up in `docs/map/territory/published-surface.md`.
+/// recorded as follow-up in [`docs/map/territory/published-surface.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/published-surface.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MouseEvent {
     /// The button, or `None` for bare motion (no button held).
@@ -278,7 +278,7 @@ bitflags::bitflags! {
     /// the single source `encode_mouse`'s restriction shares, so the wire mask and
     /// the encode-time gate cannot drift.
     ///
-    /// **No `#[non_exhaustive]` (#844): the question does not arise for a bitflags set.** New members
+    /// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): the question does not arise for a bitflags set.** New members
     /// are bits inside the value, not fields, and the type is built through `empty()` / `from_bits`,
     /// never by struct literal.
     #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -327,7 +327,7 @@ bitflags::bitflags! {
     /// Carried on the frame as [`crate::Frame::modified_keys`], derived from the encoder
     /// [`crate::Term::encode_key`] runs.
     ///
-    /// **No `#[non_exhaustive]` (#844): the question does not arise for a bitflags set.** New members
+    /// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): the question does not arise for a bitflags set.** New members
     /// are bits inside the value, not fields, and the type is built through `empty()` / `from_bits`,
     /// never by struct literal.
     #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -648,7 +648,7 @@ fn kitty_seq(number: u32, modified: Option<u8>, event: Option<u8>, terminator: u
 /// is not the `u` form the reference also offers, one of its three qualifying clauses is
 /// dropped, and named keys are in scope while `Delete` is not. All three, with what they
 /// were measured against, are in `docs/map/territory/input-encoding.md` and
-/// `docs/agents/reference-facts.md` (#890).
+/// [`docs/agents/reference-facts.md`](https://github.com/kihyun1998/justerm/blob/master/docs/agents/reference-facts.md) (#890).
 fn modify_other_key(key: Key, mods: Modifiers) -> Option<Vec<u8>> {
     let code = match key {
         Key::Char(c) => {
@@ -689,7 +689,7 @@ fn modify_other_key(key: Key, mods: Modifiers) -> Option<Vec<u8>> {
 /// **Ask the question of the parameter, not of the raw bits** — a gate on the bitflags
 /// admits a chord `csi_param` cannot then describe. Why that is a defect rather than a
 /// nicety, and the modifier it was reached through, are in
-/// `docs/map/territory/input-encoding.md`.
+/// [`docs/map/territory/input-encoding.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/input-encoding.md).
 fn char_qualifies(c: char, mods: Modifiers) -> Option<()> {
     if mods.difference(Modifiers::SHIFT).csi_param().is_none()
         && !(mods == Modifiers::SHIFT && c == ' ')

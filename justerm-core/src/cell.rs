@@ -7,9 +7,9 @@ bitflags::bitflags! {
     ///
     /// The high bits are intentionally left free so underline-style + underline
     /// colour and an OSC 8 hyperlink id can be added later without a format
-    /// change (see `docs/architecture.md` "Cell").
+    /// change (see [`docs/architecture.md`](https://github.com/kihyun1998/justerm/blob/master/docs/architecture.md) "Cell").
     ///
-    /// **No `#[non_exhaustive]` (#844): the question does not arise for a bitflags set.** New members
+    /// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): the question does not arise for a bitflags set.** New members
     /// are bits inside the value, not fields, and the type is built through `empty()` / `from_bits`,
     /// never by struct literal.
     #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -67,7 +67,7 @@ bitflags::bitflags! {
 /// moves — reflow, scroll, and the blank a wrapping wide glyph leaves behind. **One path needed an
 /// explicit carry and is worth naming rather than counting in**: `promote_cluster_to_wide` /
 /// `relocate_cluster_wide` *synthesise* the pair's spacer from the pen rather than moving it, so
-/// they take the style from the lead the same way they already take its extended attrs (ADR-0025
+/// they take the style from the lead the same way they already take its extended attrs ([ADR-0025](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0025-row-and-wide-pair-cell-state-ownership.md)
 /// D4). A refuting pass found that one; the other three are free.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 #[repr(u8)]
@@ -269,8 +269,8 @@ fn flag_words(f: u32) -> (u32, u32, u32) {
 /// `Eq` is a derived bitwise compare, which is exact because the packing is
 /// canonical — every logical cell maps to one bit pattern (unused bits stay 0).
 ///
-/// **No `#[non_exhaustive]` (#844).** Out-of-crate code builds one through `Cell::default()` rather
-/// than by literal, which is the consumer-chosen form of the same immunity to a new field — #843's
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** Out-of-crate code builds one through `Cell::default()` rather
+/// than by literal, which is the consumer-chosen form of the same immunity to a new field — [#843](https://github.com/kihyun1998/justerm/issues/843)'s
 /// rule (*an exhaustive type preserves the option to be forced*) as it lands on a struct.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Cell {

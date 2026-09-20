@@ -60,7 +60,7 @@ const VERSION: u8 = 18; // v18 adds the modified-keys mask (u16) to the header: 
 const CURSOR_SHAPE_UNSET: u8 = 0xFF;
 
 /// The wire-format version (the gating `VERSION` byte), exposed so a binding can
-/// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
+/// assert at load that its decoder matches the backend encoder (#34/[ADR-0008](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0008-wasm-decode-binding-separate-crate.md)).
 pub const WIRE_VERSION: u8 = VERSION;
 
 /// The largest `ScrollOp::count` magnitude this format can carry — the field rides
@@ -76,12 +76,12 @@ pub(crate) const MAX_SCROLL_COUNT: isize = i16::MAX as isize;
 
 /// Whether a frame redraws everything or just its spans.
 ///
-/// **Deliberately exhaustive (#843), and this one is closed by a louder gate than
+/// **Deliberately exhaustive ([#843](https://github.com/kihyun1998/justerm/issues/843)), and this one is closed by a louder gate than
 /// semver.** A new frame kind is a wire change, so it moves [`WIRE_VERSION`]
-/// (ADR-0008) — which a consumer cannot miss. `#[non_exhaustive]` would only soften
+/// ([ADR-0008](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0008-wasm-decode-binding-separate-crate.md)) — which a consumer cannot miss. `#[non_exhaustive]` would only soften
 /// the quieter of the two signals. Left exhaustive on purpose, not by omission.
 ///
-/// **`Default` is `Full` because the wire says so (#844).** The discriminant encodes as `0` and
+/// **`Default` is `Full` because the wire says so ([#844](https://github.com/kihyun1998/justerm/issues/844)).** The discriminant encodes as `0` and
 /// `Partial` as `1`, and every other field of a defaulted [`Frame`] is its own zero — a default
 /// that disagreed with the wire's zero byte would be two spellings of the same empty frame that
 /// do not round-trip to each other. It is not a claim that `Full` is the more useful kind.
@@ -123,11 +123,11 @@ pub enum FrameKind {
 /// `LINK_PRESENT` respectively). `decode` re-arms both from these maps' own entries.
 /// A `Span` built by hand for a test owes the same pairing.
 ///
-/// **No `#[non_exhaustive]` (#844), on #843's rule rather than on a lack of growth.** It does grow
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)), on [#843](https://github.com/kihyun1998/justerm/issues/843)'s rule rather than on a lack of growth.** It does grow
 /// with the wire — `combining`, `links` and `ucolors` all arrived as new groups — but the attribute
 /// is not what absorbs that. A `Default` would, at the caller's choice, and 15 out-of-crate literal
 /// sites are what it would spare; that is the follow-up recorded in
-/// `docs/map/territory/published-surface.md`, not this attribute.
+/// [`docs/map/territory/published-surface.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/published-surface.md), not this attribute.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Span {
     pub line: u16,
@@ -142,7 +142,7 @@ pub struct Span {
     /// attribute at parse time). Unlike `combining`/`links` this is a colour
     /// reference, not a side-table index, so it ships inline (no `_table` on the
     /// [`Frame`]). Kept off the per-cell record so a plain-text frame pays nothing
-    /// (ADR-0020: no inert per-cell payload).
+    /// ([ADR-0020](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0020-what-qualifies-for-the-frame-snapshot.md): no inert per-cell payload).
     ///
     /// Like `combining` and `links`, a column here is present iff its cell carries
     /// the matching bit ([`Cell::is_ucolored`]) — but that bit does **not** travel on
@@ -159,7 +159,7 @@ pub struct Span {
 /// reports where the marker currently sits, and `TermEvent::MarkerDisposed`
 /// signals when its line has left the buffer.
 ///
-/// **No `#[non_exhaustive]` (#844).** A `u32` newtype has no second field to gain, so the attribute
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** A `u32` newtype has no second field to gain, so the attribute
 /// would be permanent restriction bought against a change that cannot happen.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct MarkerId(pub u32);
@@ -169,9 +169,9 @@ pub struct MarkerId(pub u32);
 /// command-boundary role (prompt/command/output start, or command finished with
 /// its optional exit code). The engine only *parses and anchors* these — the
 /// success/failure colour, earcon and prompt-to-prompt navigation are consumer
-/// policy (ADR-0017), driven off the kind + exit the wire (#159) carries.
+/// policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), driven off the kind + exit the wire (#159) carries.
 ///
-/// **Deliberately exhaustive (#843), and the first draft of that sweep got this
+/// **Deliberately exhaustive ([#843](https://github.com/kihyun1998/justerm/issues/843)), and the first draft of that sweep got this
 /// one wrong — the compiler caught it.** The reasoning that failed: OSC 133 has
 /// more subcommands than the four modelled, and [`MarkerKind::Plain`] is already
 /// the shape an unrecognised mark takes, so a *consumer* meeting a new member has
@@ -182,13 +182,13 @@ pub struct MarkerId(pub u32);
 /// numeric wire triple, and marking this non-exhaustive forces a `_` arm there,
 /// which converts a future *compile error* into a silently wrong wire value. That
 /// is the exact trade [`FrameKind`] is left exhaustive for, one type over in this
-/// same file: a new member here moves [`WIRE_VERSION`] (ADR-0008), and a wire bump
+/// same file: a new member here moves [`WIRE_VERSION`] ([ADR-0008](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0008-wasm-decode-binding-separate-crate.md)), and a wire bump
 /// is a **louder** gate than semver, so the attribute would soften the quieter
 /// signal while removing the loud one.
 ///
 /// **The rule, stated by mechanism rather than by symptom**, because the first
 /// phrasing — *"a wire-carried enum stays exhaustive"* — misclassified at both
-/// ends. It over-captured [`DecodeError`], which ADR-0008 makes a wire contract by
+/// ends. It over-captured [`DecodeError`], which [ADR-0008](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0008-wasm-decode-binding-separate-crate.md) makes a wire contract by
 /// *name* yet which crosses the boundary through `Debug` (total, no arms) and is
 /// therefore free to take the attribute; and it under-captured
 /// [`crate::CursorShape`], which is not obviously "wire-carried" from its own
@@ -231,7 +231,7 @@ pub struct MarkerId(pub u32);
 /// consumer cannot opt back in. One direction is a default the consumer can
 /// change; the other is a decision taken on their behalf for good.
 ///
-/// **And #843 runs on two axes, not one.** The first draft wrote down only the
+/// **And [#843](https://github.com/kihyun1998/justerm/issues/843) runs on two axes, not one.** The first draft wrote down only the
 /// first, which left five calls looking arbitrary until a refuting pass named the
 /// gap. They answer different questions and neither substitutes for the other:
 ///
@@ -271,7 +271,7 @@ pub enum MarkerKind {
 /// carries the OSC 133 command-boundary role + exit code so the consumer can drive
 /// prompt-to-prompt navigation and success/fail signals (#160).
 ///
-/// **No `#[non_exhaustive]` (#844).** 25 out-of-crate literal sites and the same reading as
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** 25 out-of-crate literal sites and the same reading as
 /// [`crate::Span`]: it rides the wire and can grow, and what would absorb that is a `Default` the
 /// caller opts into, not an attribute imposed on every literal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -288,7 +288,7 @@ pub struct MarkerPosition {
 /// by `frame()` against the scroll offset so the engine stays the single
 /// anchoring authority.
 ///
-/// **No `#[non_exhaustive]` (#844).** It grows with the wire like [`crate::Frame`], and like
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** It grows with the wire like [`crate::Frame`], and like
 /// `Frame` it has a derived `Default`, so a new overlay group reaches an out-of-crate literal
 /// through `..Default::default()`.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -320,7 +320,7 @@ pub struct Overlay {
 /// once and referenced by [`Span::links`]. Grapheme clusters have **no** table —
 /// since v14 (#621) they are inlined at their column in [`Span::combining`],
 /// because nothing interned them and the table only bought an index to overflow.
-/// # `Default`, and why this type has one rather than `#[non_exhaustive]` (#844)
+/// # `Default`, and why this type has one rather than `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844))
 ///
 /// This struct grows for a reason outside any one decision: the VT tail is perpetual (#47) and each
 /// feature that reaches the consumer moves [`WIRE_VERSION`], which has gone v3 → v16. Every such
@@ -335,7 +335,7 @@ pub struct Overlay {
 /// expression` from outside the crate — functional-update syntax is banned too, leaving only
 /// `let mut f = Frame::default();` plus assignments. So the attribute does not *add* forward
 /// compatibility on top of `Default`; it removes the caller's choice of how to get it. That is the
-/// same trade #843 settled for the enums — *"an exhaustive type does not force anyone; it preserves
+/// same trade [#843](https://github.com/kihyun1998/justerm/issues/843) settled for the enums — *"an exhaustive type does not force anyone; it preserves
 /// their option to be forced"* — and it lands the same way here, with the extra note from
 /// [`FrameKind`] that a wire change already moves `WIRE_VERSION` where a consumer cannot miss it.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -356,7 +356,7 @@ pub struct Frame {
     /// consumer draws its own default shape then (#927).
     pub cursor_shape: Option<CursorShape>,
     pub cursor_blink: bool,
-    /// Viewport scroll position (#112 / ADR-0013), for the consumer's scrollbar.
+    /// Viewport scroll position (#112 / [ADR-0013](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0013-expose-scroll-position-in-frame.md)), for the consumer's scrollbar.
     /// `display_offset` = lines scrolled up from the bottom (0 = following the
     /// live screen); `scrollback_len` = history lines (total = `+ rows`). Ride in
     /// the header like the cursor — per-frame viewport state, not cell content.
@@ -403,7 +403,7 @@ pub struct Frame {
     /// Whether the alternate screen (`?1049`/`?47`) is active (#149). Buffer-global
     /// state a frame-mode consumer can't derive from viewport damage — the
     /// accessibility announce policy (#119) gates on it (suppress TUI repaints).
-    /// Rides the header like the cursor scalars (ADR-0014).
+    /// Rides the header like the cursor scalars ([ADR-0014](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0014-carry-interaction-overlays-in-the-frame.md)).
     pub alt_screen: bool,
     /// Which modified presses of Enter / Tab / Backspace / Escape reach the application
     /// distinct from the bare key under the keyboard modes in effect — the kitty flags and
@@ -420,7 +420,7 @@ pub struct Frame {
 
 /// Why a byte buffer could not be decoded into a [`Frame`].
 ///
-/// **`#[non_exhaustive]` (#843).** A decode error is displayed, never branched on
+/// **`#[non_exhaustive]` ([#843](https://github.com/kihyun1998/justerm/issues/843)).** A decode error is displayed, never branched on
 /// for correctness, so a new variant is one a consumer can safely fall through on.
 /// See the `BadScroll` note on [`DecodeError::BadGeometry`] — this attribute is what
 /// changes that trade.
@@ -487,14 +487,14 @@ pub enum DecodeError {
     /// header), whereas `BadScroll` would still be one of these six re-labelled. The trade
     /// above is unchanged for them and they stay merged.
     ///
-    /// **And the *against* half of that trade is now void (#843).** The paragraph rests on
+    /// **And the *against* half of that trade is now void ([#843](https://github.com/kihyun1998/justerm/issues/843)).** The paragraph rests on
     /// this enum being *"`pub` and not `#[non_exhaustive]`"*, which stopped being true when
     /// the attribute landed on it: a seventh variant is no longer a breaking change **for
     /// a Rust consumer**, so splitting `BadScroll` off no longer has to wait for a release
     /// that is breaking for some other reason.
     ///
     /// The qualifier is not pedantry. The variant *name* is a cross-language contract —
-    /// ADR-0008 has `justerm-wasm-decode` throw it as the JS `Error` message — and
+    /// [ADR-0008](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0008-wasm-decode-binding-separate-crate.md) has `justerm-wasm-decode` throw it as the JS `Error` message — and
     /// `#[non_exhaustive]` does nothing for that consumer. (It is already approximate
     /// there, since `BadVersion(11)` formats as more than a name.) The ecosystem vote
     /// points the same way for *this* type specifically: among justerm's own
@@ -771,12 +771,12 @@ pub const CELL_RECORD_LEN: usize = 14;
 /// **The record carries no grapheme or hyperlink reference (v14, #621).** Both were
 /// `u16` fields on every cell, and widening them to hold what the engine can
 /// legitimately store would have inflated a record every cell pays — the trade
-/// ADR-0008's Axis 4 already rejected in the other direction. They moved to sparse
+/// [ADR-0008](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0008-wasm-decode-binding-separate-crate.md)'s Axis 4 already rejected in the other direction. They moved to sparse
 /// per-[`Span`] groups instead, which is why this record *shrank* by 4 bytes:
 /// measured, −20.9% on an ordinary frame that carries neither.
 ///
 /// This is the single definition of the cell record layout — [`encode`] writes
-/// it per span cell, and an alternate consumer (the WASM decoder, #34/ADR-0008)
+/// it per span cell, and an alternate consumer (the WASM decoder, #34/[ADR-0008](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0008-wasm-decode-binding-separate-crate.md))
 /// reuses it to lay decoded cells out flat without re-implementing the layout,
 /// so the two cannot drift.
 pub fn encode_cell_record(cell: &Cell) -> [u8; CELL_RECORD_LEN] {

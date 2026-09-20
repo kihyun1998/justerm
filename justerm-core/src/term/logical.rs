@@ -4,7 +4,7 @@
 //! The returned shape and *why* this is core rather than consumer are stated in
 //! [`crate::logical`]. Read it there; this module is the `Term` half — the cell-aware
 //! assembly, which needs the whole buffer and so cannot live in a frame-mode consumer
-//! (ADR-0017).
+//! ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
 //!
 //! Two things are local to this site. It is the **first of the three alt-screen floor
 //! misses** (#113): the up-walk into scrollback stops at `abs_floor()`, because on the alt
@@ -24,12 +24,12 @@ use crate::logical::LogicalLine;
 use super::Term;
 
 impl Term {
-    /// The viewport's logical lines (#113/ADR-0017): each line's text plus a
+    /// The viewport's logical lines (#113/[ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)): each line's text plus a
     /// per-char map to its viewport `(row, col)`. Wide-char spacers are skipped
     /// and trailing blanks trimmed (so the text is 1:1 with `cells`). Empty rows
     /// are dropped. The cell-aware assembly the consumer can't do in frame mode.
     ///
-    /// **The run walk is unbounded on purpose** (`docs/architecture.md`), and this is the
+    /// **The run walk is unbounded on purpose** ([`docs/architecture.md`](https://github.com/kihyun1998/justerm/blob/master/docs/architecture.md)), and this is the
     /// one of the three walks where that costs anything: normally `O(viewport)`, but on a
     /// buffer whose whole scrollback is one soft-wrapped run it is `O(scrollback)` —
     /// measured at 7.3 ms against 17 µs for the same bytes as short lines. If a bound is
@@ -37,7 +37,7 @@ impl Term {
     ///
     /// - **It is a sibling, not a parameter.** Adding `max_run: Option<usize>` to this
     ///   signature is a breaking change; the crate's idiom for exactly this is
-    ///   [`Term::search`] / [`Term::search_with`], and #844 pinned the growth rule on the
+    ///   [`Term::search`] / [`Term::search_with`], and [#844](https://github.com/kihyun1998/justerm/issues/844) pinned the growth rule on the
     ///   options struct (*"a new option lands through `..Default::default()`"*). So a
     ///   `viewport_logical_lines_with` is additive — meaning 1.0.0 does not gate it.
     /// - **The hard part is the trim, not the counter** — see the trim below.

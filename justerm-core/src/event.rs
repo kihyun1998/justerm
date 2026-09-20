@@ -17,7 +17,7 @@ use crate::serialize::{MarkerId, MarkerKind};
 ///
 /// The engine relays this rather than choosing: a query event carries the
 /// terminator the request arrived with, and the consumer hands it back to the
-/// matching `report_*`. Under ADR-0017 the parse-time fact is a *mechanism* only
+/// matching `report_*`. Under [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) the parse-time fact is a *mechanism* only
 /// the engine can observe, while *which* terminator to send is policy — and a
 /// consumer cannot exercise a policy on a fact it was never given, which is what
 /// #836 measured: `bell_terminated` was discarded at the parser boundary before
@@ -27,7 +27,7 @@ use crate::serialize::{MarkerId, MarkerKind};
 /// `ctlseqs.txt:2020` — *"XTerm accepts either BEL or ST for terminating OSC
 /// sequences, and when returning information, uses the same terminator used in a
 /// query. While the latter is preferred, the former is supported for legacy
-/// applications."* Under ADR-0004 that outranks every implementation, this one
+/// applications."* Under [ADR-0004](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0004-spec-faithful-when-alacritty-omits.md) that outranks every implementation, this one
 /// included. **On the colour path** all three implementations that echo carry the
 /// terminator *outward with the request* rather than remembering it: alacritty
 /// binds it into the reply formatter it sends its consumer
@@ -55,10 +55,10 @@ use crate::serialize::{MarkerId, MarkerKind};
 /// [`crate::Engine::drain_events`] hands over a batch, so a consumer can hold two
 /// colour queries at once and answer them in either order; one remembered scalar
 /// could not say which exchange it belonged to. An occurrence's payload is
-/// detached from its instant by the queue — ADR-0029 D4 records the same shape
+/// detached from its instant by the queue — [ADR-0029](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md) D4 records the same shape
 /// for coordinates — so there is no re-ask and the fact must ride the event.
 ///
-/// **Exhaustive on purpose (#843's rule).** The space is closed at exactly two,
+/// **Exhaustive on purpose ([#843](https://github.com/kihyun1998/justerm/issues/843)'s rule).** The space is closed at exactly two,
 /// with a date for each (`ctlseqs.txt:2024-2028`), so there is no member a later
 /// slice may name and nothing for `#[non_exhaustive]` to preserve.
 ///
@@ -146,12 +146,12 @@ impl Terminator {
 /// member is what lets the value round-trip without the engine remembering
 /// anything.
 ///
-/// **`#[non_exhaustive]` (#843).** The set is open by the paragraph above: `q` and
+/// **`#[non_exhaustive]` ([#843](https://github.com/kihyun1998/justerm/issues/843)).** The set is open by the paragraph above: `q` and
 /// the eight cut buffers are in the sequence and unmodelled here, so a later slice
 /// may name one. A consumer meeting a member it does not know can decline the
 /// request, which is already how it refuses any of them.
 ///
-/// **ghostty reaches the same shape independently**, which #843 had recorded as
+/// **ghostty reaches the same shape independently**, which [#843](https://github.com/kihyun1998/justerm/issues/843) had recorded as
 /// impossible — its issue says Zig "has no such construct", and Zig does: a
 /// trailing `_` marks a non-exhaustive enum, used at 23 sites in that tree. The
 /// one that matters here is `src/terminal/clipboard.zig:2`, whose `Location` is
@@ -180,7 +180,7 @@ pub enum ClipboardTarget {
     /// **Relayed rather than resolved, and that is the boundary working.** The
     /// thing that decides what `s` means is a setting: xterm resolves `SELECT`
     /// through `DefaultSelection`, which is the `selectToClipboard` resource
-    /// (`button.c:2081`), and under ADR-0017 a setting is the consumer's. So the
+    /// (`button.c:2081`), and under [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) a setting is the consumer's. So the
     /// application's choice is carried through unchanged and the consumer
     /// resolves it against the configuration it owns.
     ///
@@ -206,7 +206,7 @@ pub enum ClipboardTarget {
 /// adding two — and what decided it was neither this slice nor any consumer we
 /// can see.
 ///
-/// **What decided it is `CLAUDE.md`'s own identity statement**: *"`justerm-core`
+/// **What decided it is [`CLAUDE.md`](https://github.com/kihyun1998/justerm/blob/master/CLAUDE.md)'s own identity statement**: *"`justerm-core`
 /// is not penterm-only — it is a reusable, independent crate."* That sentence
 /// says there are consumers we cannot edit, which is precisely what this
 /// attribute defends; a crate whose identity were "internal, used by penterm"
@@ -297,7 +297,7 @@ pub enum TermEvent {
     /// **`spec` is never empty**, so a consumer's colour parser is never handed a
     /// blank string. It is otherwise verbatim and unvalidated: the engine holds no
     /// palette and parses no colour, so `spec` may still be whitespace or
-    /// nonsense, and interpreting it is the consumer's (ADR-0017).
+    /// nonsense, and interpreting it is the consumer's ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
     SetPaletteColor { index: u8, spec: String },
     /// The app set the default foreground colour (OSC 10). Raw spec, forwarded
     /// for the consumer to apply — theme-agnostic, like [`SetBackground`](Self::SetBackground) (#122).
@@ -360,7 +360,7 @@ pub enum TermEvent {
     /// prompt, and a consumer that drops this event has refused the copy. The
     /// engine carries no allow/deny knob, which is where it parts company with
     /// alacritty — alacritty gates the same sequence behind a four-state config
-    /// (`alacritty_terminal/src/term/mod.rs:1706`, `:1727`). Under ADR-0017 that
+    /// (`alacritty_terminal/src/term/mod.rs:1706`, `:1727`). Under [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) that
     /// gate lives one layer out.
     ///
     /// **The reason once given for that was measurably wrong, and is corrected
@@ -369,7 +369,7 @@ pub enum TermEvent {
     /// alacritty's gate sits inside `alacritty_terminal`, the **engine** crate,
     /// with the policy *injected across the crate boundary* — `Osc52` is a field
     /// on that crate's `Config` (`:353`), written by the application at
-    /// `alacritty/src/config/ui_config.rs:125`. That is ADR-0017's own shape, so
+    /// `alacritty/src/config/ui_config.rs:125`. That is [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)'s own shape, so
     /// it was never a reason this crate *could not* hold an injected gate. The
     /// conclusion stands on the ADR alone, and on the fact that an engine which
     /// touches no clipboard buys nothing by putting a gate in front of a relay.
@@ -418,7 +418,7 @@ pub enum TermEvent {
     /// OSC 133 command mark, which the consumer never called for.
     ///
     /// The mirror of [`TermEvent::MarkerDisposed`], and it exists for the same reason
-    /// ADR-0020 R1 gives: an appearance is an occurrence, not state, so it rides this
+    /// [ADR-0020](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0020-what-qualifies-for-the-frame-snapshot.md) R1 gives: an appearance is an occurrence, not state, so it rides this
     /// queue rather than a frame field. Without it a consumer that pulled a marker
     /// index (`Engine::marker_index`) has no way to learn of a marker born after its
     /// pull — the population would only ever shrink.

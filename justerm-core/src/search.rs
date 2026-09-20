@@ -32,7 +32,7 @@ pub fn is_valid_regex(pattern: &str) -> bool {
 
 /// One literal match, inclusive on both ends, in absolute buffer coordinates.
 ///
-/// **No `#[non_exhaustive]` (#844).** 12 out-of-crate literal sites, and a consumer receives one
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** 12 out-of-crate literal sites, and a consumer receives one
 /// from `search` and hands it back to `match_spans` rather than building it — round-trip, not
 /// construction, so the attribute would restrict a use that does not exist.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -47,7 +47,7 @@ pub struct Match {
 /// Mirrors xterm.js's `ISearchOptions` (#314). The default (all off / smart-case) is exactly
 /// [`Term::search`](crate::Term::search).
 ///
-/// **No `#[non_exhaustive]` (#844).** 13 out-of-crate literal sites over a derived `Default`, so a
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** 13 out-of-crate literal sites over a derived `Default`, so a
 /// new option lands through `..Default::default()`. The mode set is also this crate's own to
 /// define, so there is no outside growth cause to defend against.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

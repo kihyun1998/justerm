@@ -51,7 +51,7 @@ use vte::Parser;
 /// borrows both the parser and the performer mutably at once — a single struct
 /// owning both could not satisfy the borrow checker.
 ///
-/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
 /// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
 /// sites, so the attribute would bind nothing it does not already bind.
 pub struct Engine {
@@ -99,7 +99,7 @@ impl Engine {
     /// under UTF-8 it maps an ill-formed byte to U+FFFD and *ignores* a properly
     /// encoded C1, with both escape hatches (`EXP_C2_CONTROLS`, `allowC1Printable`)
     /// off by default. Measurements and reference sites are in
-    /// `docs/agents/reference-facts.md`.
+    /// [`docs/agents/reference-facts.md`](https://github.com/kihyun1998/justerm/blob/master/docs/agents/reference-facts.md).
     ///
     /// Two visible consequences, stated so they are not re-discovered as bugs: an
     /// unrecognised 8-bit introducer leaves its payload to print as ordinary text,
@@ -336,7 +336,7 @@ impl Engine {
     }
 
     /// What changed since the last [`Engine::reset_damage`] — line ranges each
-    /// with a changed column span (see ADR-0003).
+    /// with a changed column span (see [ADR-0003](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0003-damage-model-incremental-bounds.md)).
     pub fn damage(&self) -> TermDamage {
         self.term.damage()
     }
@@ -431,7 +431,7 @@ impl Engine {
     }
 
     /// Replace the characters that end a word for [`SelectionType::Word`] — consumer
-    /// policy injected into a core mechanism (ADR-0017). Defaults to
+    /// policy injected into a core mechanism ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)). Defaults to
     /// [`DEFAULT_WORD_SEPARATORS`]. `' '` is forced in; see [`Term::set_word_separators`]
     /// for why that floor is load-bearing rather than defensive.
     pub fn set_word_separators(&mut self, separators: &str) {
@@ -488,7 +488,7 @@ impl Engine {
         self.term.search_with(query, opts)
     }
 
-    /// The viewport's logical lines (#113/ADR-0017): each soft-wrap-joined line's
+    /// The viewport's logical lines (#113/[ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)): each soft-wrap-joined line's
     /// text plus a per-char map to its viewport `(row, col)`. The buffer-wide
     /// mechanism for consumer-side URL detection — the consumer runs its own
     /// regex / `new URL()` over the text and maps matches back through `cells`.
@@ -602,7 +602,7 @@ impl Engine {
     /// different text.
     ///
     /// Mechanism only: which position is worth remembering, and what to do once it
-    /// is gone, stay with the consumer (ADR-0017). Release it with
+    /// is gone, stay with the consumer ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)). Release it with
     /// [`Engine::untrack_point`] — the engine cannot know when you are done.
     ///
     /// **The line is maintained; the column is carried, not tracked.** In-row edits
@@ -626,7 +626,7 @@ impl Engine {
     /// *do not move anything on account of this point*.
     ///
     /// An out-of-range coordinate is clamped rather than rejected, at both ends
-    /// (ADR-0026 D2/D3): the line into the buffer's range, the column to the grid
+    /// ([ADR-0026](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0026-outside-coordinates-are-bounded-once.md) D2/D3): the line into the buffer's range, the column to the grid
     /// width. That bound is applied here, at the read; a coordinate that was never
     /// in range to begin with is also **resolved by a reflow** (it maps to the top
     /// of the buffer), so "bounded once" holds for the site, not for the value.
@@ -656,7 +656,7 @@ impl Engine {
     /// **Why this is not shaped like its sibling.** [`Engine::marker_index`] carries a
     /// basis and an epoch because a consumer *must* hold its answer: it feeds an
     /// overview ruler that has to be current in every frame, and re-pulling per frame
-    /// is the `O(M)`-per-frame payload ADR-0020 R3 exists to forbid. This query is
+    /// is the `O(M)`-per-frame payload [ADR-0020](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0020-what-qualifies-for-the-frame-snapshot.md) R3 exists to forbid. This query is
     /// consumed when a user acts, so re-asking **is** the natural act — and here a
     /// re-ask always answers, because this population's frame of reference never
     /// changes. That is the property the sibling lacks, and the reason it needed the
@@ -668,7 +668,7 @@ impl Engine {
     /// same absolute indices, so one integer from here and the same integer from
     /// [`Engine::marker_index`] name different content, and neither tuple nor struct
     /// says which. [`Engine::tracked_point`] meets that ambiguity and answers `None`
-    /// rather than a number (ADR-0026 D2/D3); it can, because it is asked about *one*
+    /// rather than a number ([ADR-0026](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0026-outside-coordinates-are-bounded-once.md) D2/D3); it can, because it is asked about *one*
     /// point of unknown origin. This query enumerates a population whose screen is
     /// fixed by definition, so it answers — and states the screen here instead.
     ///
@@ -695,7 +695,7 @@ impl Engine {
     /// the captured columns), its jump line (CommandStart), and the exit code.
     /// This is a full-buffer query, wired to the frame-mode consumer over IPC like
     /// [`Engine::accessible_text`]; the web side has no scrollback cells to derive
-    /// it (ADR-0017 — buffer-wide text is core's).
+    /// it ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) — buffer-wide text is core's).
     ///
     /// **The text and the exit are frozen when the stream reveals them; only the line
     /// is derived (#750).** [`CommandLine::command`] is captured at the `133;C` that
@@ -712,7 +712,7 @@ impl Engine {
     /// **The answer is instantaneous — it describes the buffer it was asked of, and
     /// nothing on it dates it (#743). Re-ask; never keep it past the document it
     /// indexes, and never rebase it.** Same discharge as [`Engine::command_marks`] and
-    /// for the same two reasons (ADR-0029 D3): the clock is a user action, so the ask
+    /// for the same two reasons ([ADR-0029](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md) D3): the clock is a user action, so the ask
     /// *is* the act; and this population's frame of reference never flips, so a re-ask
     /// always answers. Absence means the command is gone **or** that its output has not
     /// started yet — both of which the next ask resolves. What absence never means is
@@ -745,7 +745,7 @@ impl Engine {
     /// The pull half of the marker surface. It shares [`Engine::command_lines`]'s
     /// *shape* — the consumer asks once and keeps the answer, rather than being handed
     /// every live marker inside every frame, which is `O(M)` payload per frame for a
-    /// quantity unrelated to what changed (ADR-0020 R3). It does **not** share its
+    /// quantity unrelated to what changed ([ADR-0020](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0020-what-qualifies-for-the-frame-snapshot.md) R3). It does **not** share its
     /// coordinate: only the lines *here* are buffer-absolute and rebasable by the
     /// `evicted_total` delta. [`CommandLine::line`] is a **document** line over
     /// [`Engine::accessible_text`], where soft-wrapped rows collapse — eviction moves it

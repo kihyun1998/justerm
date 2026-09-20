@@ -9,7 +9,7 @@ use crate::color::Color;
 /// erase (ED/EL) fill cleared cells with `bg` instead of `Default` and that
 /// *is* Background Color Erase (BCE), no structural change. See `term.rs`.
 ///
-/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
 /// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
 /// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Clone, Copy, Debug, Default)]
@@ -41,7 +41,7 @@ impl Pen {
 /// DECSCUSR sets one — and the consumer draws it, falling back to its own default
 /// shape (#927).
 ///
-/// **Deliberately exhaustive (#843) — and the reason is the wire, not the spec.**
+/// **Deliberately exhaustive ([#843](https://github.com/kihyun1998/justerm/issues/843)) — and the reason is the wire, not the spec.**
 ///
 /// An earlier draft of that sweep said "DECSCUSR's shape space, closed". **That is
 /// false**, and the counter-example is in this repository: `justerm-renderer` has
@@ -66,7 +66,7 @@ pub enum CursorShape {
 
 /// The input position, its pending-wrap state, and the current pen.
 ///
-/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
 /// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
 /// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Clone, Copy, Debug)]
@@ -76,7 +76,7 @@ pub struct Cursor {
     /// Deferred last-column wrap (xterm's "wrapnext"). Set when a print fills the
     /// last column: the cursor stays put and the actual line wrap happens on the
     /// *next* print. Eager wrapping here is the classic off-by-one that shifts
-    /// lines (see `docs/architecture.md` "Hidden VT state").
+    /// lines (see [`docs/architecture.md`](https://github.com/kihyun1998/justerm/blob/master/docs/architecture.md) "Hidden VT state").
     ///
     /// # The lifecycle, and why it is written here (#848)
     ///
@@ -126,7 +126,7 @@ pub struct Cursor {
     /// - **Cleared** by the positioning verbs. The exception is `HT`, and `CHT` which
     ///   repeats it: with no stop to move to they leave it armed (#848, #898). Checked
     ///   verb by verb against the references and recorded in
-    ///   `docs/agents/reference-facts.md`, not inferred.
+    ///   [`docs/agents/reference-facts.md`](https://github.com/kihyun1998/justerm/blob/master/docs/agents/reference-facts.md), not inferred.
     /// - **Restored** by `Term::restore_cursor` and by leaving the alt screen, each
     ///   of which then calls `Term::settle_restored_wrap`: a restored park that is
     ///   no longer at the last column becomes a column, the same translation
@@ -178,7 +178,7 @@ pub struct Cursor {
     /// the mode-gated arm carried invisibly for two releases.
     ///
     /// The rule is stated at the property because that is where it is true, the
-    /// same reason ADR-0025 D2 gives for the wrap link's per-verb table living in
+    /// same reason [ADR-0025](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0025-row-and-wide-pair-cell-state-ownership.md) D2 gives for the wrap link's per-verb table living in
     /// `Term::end_wrap`'s doc-comment.
     pub pending_wrap: bool,
     pub pen: Pen,

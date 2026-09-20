@@ -364,7 +364,7 @@ impl Term {
     /// The answer is instantaneous, and its lines are document lines into
     /// [`Term::accessible_text`] *on the primary screen* — the contract a caller reads
     /// is on `Engine::command_lines`, pinned by `tests/command_lines_document.rs`
-    /// (#743, ADR-0029 D6). Note the omission above is why absence here means *gone or
+    /// (#743, [ADR-0029](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md) D6). Note the omission above is why absence here means *gone or
     /// not yet complete* rather than the flat "disposed" that holds for
     /// [`Self::command_marks`]; both are absences a re-ask resolves, which is what
     /// D3.2 needs of them.
