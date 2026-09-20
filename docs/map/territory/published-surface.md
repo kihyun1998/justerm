@@ -34,6 +34,20 @@ How a version gets there is [release](release.md).
   later, so only the tag can judge it, while an ADR number in a registry blurb is wrong when typed.
   Catching it at PR time costs a commit; catching it at publish costs a re-tag, and npm never lets a
   version be re-published at all.
+- **A generated `.d.ts` is the third published surface, and the one an editor shows by default
+  (#951).** wasm-bindgen copies a crate's `///` comments into it **verbatim**, so the prose written
+  for a reader of this repository is what a consumer gets on hover. Measured on the published
+  `0.21.0`: 101 issue numbers and 51 rustdoc intra-doc links in `justerm_renderer.d.ts`, 39 issue
+  numbers and 5 ADR references in `justerm_wasm_decode.d.ts`. Neither crate is on docs.rs — both are
+  npm-only — so **the intra-doc link syntax resolved in no context that shipped**. Worse, the links
+  name *Rust* methods: of the 20 linked, **14 were not JS names at all** (`set_viewport` for
+  `setViewport`, `add_grid` for `addGrid`), so a tooltip told a consumer to call a method that is not
+  there. The same defect as the README's `applyFrame`, one layer down and systematic.
+- **Which surface a comment lands on decides the rule, not which crate it is in.** `justerm-core`
+  publishes to crates.io, so its `///` renders on docs.rs where an intra-doc link resolves and is
+  worth keeping. The two npm crates' comments render only as TypeScript, where the same syntax is
+  broken markdown. That is why the sweep for #951 stopped at the crate boundary rather than applying
+  one style everywhere.
 - **The same rule lands differently on the two surfaces, and the difference is what it can link.**
   A `description` is a bare string with nowhere to put a URL, so *any* pointer in it is unresolvable
   by construction. A README can link out, so only a **bare** one is rejected there —
@@ -254,8 +268,11 @@ same trace.
   this crate maps onto a published value exhaustive (#843); its own source list is the roster that
   #831 had to widen
 - `.github/scripts/check-published-readme.mjs` — the expiring-claim gate (publish-time)
-- `.github/scripts/check-published-pointers.mjs` — the repo-only-pointer gate for `description` +
-  published READMEs (every PR). It derives the package list by walking for manifests that carry a
+- `.github/scripts/check-published-pointers.mjs` — the repo-only-pointer gate. Default mode covers
+  `description` + published READMEs (every PR); `--pkg <dir>` covers the typings and JS glue in a
+  built wasm-pack output, and runs in the `renderer-proofs` and `wasm` jobs because those already
+  build one — generated typings cannot be gated beside the manifests, since they do not exist until
+  a build runs. It derives the package list by walking for manifests that carry a
   description rather than holding one, so a newly published package is covered the day it is added;
   it names what it cannot see (prose accuracy, expiring claims, contributor-only content such as
   build commands, a multi-line TOML description)

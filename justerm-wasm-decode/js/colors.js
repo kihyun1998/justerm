@@ -1,9 +1,9 @@
-// Colour helpers for the justerm-wasm-decode decoder (#36, ADR-0008).
+// Colour helpers for the justerm-wasm-decode decoder.
 //
 // The single hand-written JS mirror in the package: these decode justerm's
 // tagged-u32 colour-ref encoding (high byte = tag — 0 Default, 1 Indexed, 2 Rgb;
 // low 24 bits = payload). They live in JS, not WASM, because `resolveRgb` runs
-// per cell and a WASM call per cell would defeat the zero-copy design (#34 AC3).
+// per cell and a WASM call per cell would defeat the zero-copy design.
 // Kept in lockstep with Rust `encode_color` by a parity test (wasm-pack --node).
 
 /** Role for `Default` resolution: foreground. */

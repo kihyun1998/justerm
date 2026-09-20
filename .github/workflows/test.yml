@@ -173,6 +173,13 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
       - name: Proofs (dpr 1 / 1.1 / 1.5 / 2)
         run: pnpm run test:proofs
+      # wasm-bindgen copies a crate's `///` comments into the generated .d.ts verbatim, and that file
+      # is what an editor shows on hover. It reached npm carrying 101 issue numbers and 51 rustdoc
+      # intra-doc links, 14 of which named Rust methods the JS API does not have (#951). The .d.ts
+      # cannot be gated with the manifests in the `test` job because it does not exist until a build
+      # runs; `test:proofs` above has just produced one.
+      - name: Published typings carry no repo-only pointers
+        run: node ../.github/scripts/check-published-pointers.mjs --pkg pkg
 
   # justerm-web is a pnpm/TypeScript package with no cargo gate to hide behind, and until #341 nothing
   # in CI ran its typecheck or its 387 vitest cases. `tsconfig.json` now also covers `demo/` and `e2e/`
@@ -255,6 +262,9 @@ jobs:
         run: |
           wasm-pack build --target bundler --out-dir pkg-bundler justerm-wasm-decode
           node justerm-wasm-decode/scripts/finish-pkg.mjs justerm-wasm-decode/pkg-bundler
+      # Same gate as the renderer's, on the surface an editor shows for this package (#951).
+      - name: Published typings carry no repo-only pointers
+        run: node .github/scripts/check-published-pointers.mjs --pkg justerm-wasm-decode/pkg-bundler
       - name: Build (web)
         run: |
           wasm-pack build --target web --out-dir pkg-web justerm-wasm-decode

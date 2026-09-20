@@ -34,6 +34,14 @@
 //   Walks from the repo root and derives the package list rather than restating it: every manifest
 //   that carries a description is one whose description ships, and npm `private: true` is the only
 //   thing that stops it. A new published package is therefore covered on the day it is added.
+//
+//        node .github/scripts/check-published-pointers.mjs --pkg <dir>
+//   Scans a built wasm-pack output directory instead. A `.d.ts` is the third published surface and
+//   the one an editor shows on hover, but it does not exist until `wasm-pack build` runs — so this
+//   mode runs in the CI jobs that already build, not in the PR gate above. wasm-bindgen copies a
+//   crate's `///` comments into it verbatim, which is how 101 issue numbers and 51 rustdoc
+//   intra-doc links reached npm; 14 of those links named Rust methods the JS API does not have.
+//   Nothing there can link, so the `description` rule applies: no pointer at all.
 
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -85,6 +93,39 @@ function readmeProse(path) {
   return readFileSync(path, "utf8").replace(/\[[^\]]*\]\([^)]*\)/g, (link) =>
     link.replace(/[^\n]/g, " "),
   );
+}
+
+const pkgArg = process.argv.indexOf("--pkg");
+if (pkgArg !== -1) {
+  const dir = process.argv[pkgArg + 1];
+  if (!dir || !existsSync(dir)) {
+    console.error(`::error::--pkg needs a built package directory (got ${dir ?? "nothing"})`);
+    process.exit(2);
+  }
+  // Only the text a consumer reads: typings and the JS glue beside them.
+  const files = readdirSync(dir).filter((f) => f.endsWith(".d.ts") || f.endsWith(".js"));
+  if (files.length === 0) {
+    console.error(`::error::${dir} holds no .d.ts or .js — the build did not produce a package`);
+    process.exit(2);
+  }
+  let bad = 0;
+  for (const f of files) {
+    const text = readFileSync(join(dir, f), "utf8");
+    for (const [re, what] of [...UNRESOLVABLE, [/\]\((?:Self|crate)::/g, "a rustdoc intra-doc link"]]) {
+      for (const m of text.matchAll(re)) {
+        const line = text.slice(0, m.index).split("\n").length;
+        bad++;
+        console.error(
+          `::error file=${join(dir, f)},line=${line}::${f}:${line} carries ${what} ("${m[0]}") — ` +
+            `wasm-bindgen copied it out of a \`///\` comment. This is what an editor shows on hover, ` +
+            `and nothing in a .d.ts can link. Say what the method does; a rustdoc link must name the ` +
+            `JS method instead, since the Rust name is often not the exported one.`,
+        );
+      }
+    }
+  }
+  if (bad === 0) console.log(`${dir}: ${files.length} shipped files carry no repo-only pointers`);
+  process.exit(bad === 0 ? 0 : 1);
 }
 
 const surfaces = [];
