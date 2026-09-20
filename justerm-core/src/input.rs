@@ -16,7 +16,7 @@ bitflags! {
     /// Modifier keys held during an event. The bit values follow the **kitty**
     /// scheme (the superset): Shift=1, Alt=2, Ctrl=4, Super=8, Hyper=16, Meta=32,
     /// CapsLock=64, NumLock=128. Legacy xterm can only express the first three
-    /// plus Meta-at-8, so `csi_param` remaps; kitty uses the bits directly (#23).
+    /// plus Meta-at-8, so `csi_param` remaps; kitty uses the bits directly.
     ///
     /// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): the question does not arise for a bitflags set.** New members
     /// are bits inside the value, not fields, and the type is built through `empty()` / `from_bits`,
@@ -69,7 +69,7 @@ impl Modifiers {
 /// A numeric-keypad key. In application-keypad mode (DECNKM ?66 / DECKPAM, #74)
 /// these encode as the classic VT100/VT220 SS3 sequences; in numeric mode as the
 /// literal character. The consumer produces these for *raw* keypad identity — it
-/// owns NumLock / key-location resolution (#83).
+/// owns NumLock / key-location resolution.
 ///
 /// **`#[non_exhaustive]` ([#843](https://github.com/kihyun1998/justerm/issues/843)).** A keypad namespace grows; a consumer *constructs*
 /// these to hand to the encoder rather than matching on them, so an addition costs
@@ -121,7 +121,7 @@ pub enum Key {
 }
 
 /// Press / repeat / release. Legacy reports only presses; the kitty protocol's
-/// "report event types" flag (bit 1) carries repeat and release too (#23).
+/// "report event types" flag (bit 1) carries repeat and release too.
 ///
 /// **Deliberately exhaustive ([#843](https://github.com/kihyun1998/justerm/issues/843)).** `Press` / `Repeat` / `Release` is the kitty
 /// keyboard protocol's event space, closed. Left exhaustive on purpose, not by
@@ -272,7 +272,7 @@ pub enum MouseProtocol {
 }
 
 bitflags::bitflags! {
-    /// The mouse event categories the active tracking mode reports (#129) — the
+    /// The mouse event categories the active tracking mode reports — the
     /// routing mask the frame carries so a frame-mode consumer sends an event to
     /// the app (a wanted bit set) or keeps it local (selection/scrollback). It is
     /// the single source `encode_mouse`'s restriction shares, so the wire mask and
@@ -322,7 +322,7 @@ impl MouseProtocol {
 bitflags::bitflags! {
     /// Which modified presses of the four keys whose bare form is a C0 control — Enter, Tab,
     /// Backspace, Escape — reach the application distinct from the bare key, under the
-    /// keyboard modes currently in effect (#941). A set bit means the modifier survives the
+    /// keyboard modes currently in effect. A set bit means the modifier survives the
     /// encoding; a clear bit means the application receives exactly what the bare key sends.
     /// Carried on the frame as [`crate::Frame::modified_keys`], derived from the encoder
     /// [`crate::Term::encode_key`] runs.

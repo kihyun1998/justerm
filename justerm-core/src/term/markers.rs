@@ -92,8 +92,8 @@ impl Term {
         }
     }
 
-    /// Register a decoration marker at viewport `row`, returning its stable id
-    /// (#118). The row is resolved to an absolute buffer line (like a selection
+    /// Register a decoration marker at viewport `row`, returning its stable id.
+    /// The row is resolved to an absolute buffer line (like a selection
     /// anchor), so the marker tracks that content through scroll/eviction/reflow.
     pub fn add_marker(&mut self, row: usize) -> MarkerId {
         // On the alt screen this anchors an *alt-scoped* marker (#187): per-buffer
@@ -287,7 +287,7 @@ impl Term {
     }
 
     /// Retire every marker anchored to the **screen row** `row`, announcing each
-    /// through `TermEvent::MarkerDisposed` (#750).
+    /// through `TermEvent::MarkerDisposed`.
     ///
     /// Called where a verb blanks a **whole row in place**, which the three anchor
     /// fixups beside this one cannot see: they repair a marker when the buffer *moves*,
@@ -328,11 +328,11 @@ impl Term {
     }
 
     /// The OSC 133 command-boundary marks in buffer order — `(id, absolute line,
-    /// kind)` (#158). Plain decoration markers (#118) are excluded. The consumer
-    /// pairs prompt/command/finished marks and drives navigation/announce policy
-    /// (#160); core only parses and anchors them.
+    /// kind)`. Plain decoration markers are excluded. The consumer
+    /// pairs prompt/command/finished marks and drives navigation/announce policy;
+    /// core only parses and anchors them.
     ///
-    /// **Instantaneous, deliberately (#742).** The lines are undated and move on both
+    /// **Instantaneous, deliberately.** The lines are undated and move on both
     /// of `marker_index`'s axes, so the contract is *re-ask*, not *rebase* — see
     /// `Engine::command_marks` for the derivation, which is the docs.rs surface a
     /// consumer actually reads. Two properties keep that honest and are facts about
@@ -353,7 +353,7 @@ impl Term {
     }
 
     /// The executed shell commands recovered from OSC-133 marks, in buffer order
-    /// (#166) — the data behind screen-reader command navigation. Each
+    /// — the data behind screen-reader command navigation. Each
     /// [`CommandLine`] pairs a CommandStart(B) with the following OutputStart(C)
     /// to extract the *typed command* (the prompt before B and the output after C
     /// excluded via the captured columns, VSCode `extractCommandLine` parity), and
@@ -452,7 +452,7 @@ impl Term {
             .count()
     }
 
-    /// Remove a marker by id (#118). Disposing it fires `MarkerDisposed` so the
+    /// Remove a marker by id. Disposing it fires `MarkerDisposed` so the
     /// consumer's cleanup is one path whether the marker left by eviction or by
     /// this explicit call (xterm's `dispose()` likewise always fires onDispose).
     /// A no-op for an unknown/already-disposed id.
@@ -468,7 +468,7 @@ impl Term {
     }
 
     /// Every live marker of the active buffer, with the basis that keeps the answer
-    /// usable (#490). The pull half of the marker surface: a consumer asks once and
+    /// usable. The pull half of the marker surface: a consumer asks once and
     /// rebases per frame rather than being handed every marker in every frame.
     ///
     /// Ordering is the engine's own, which is the precedence a consumer joins

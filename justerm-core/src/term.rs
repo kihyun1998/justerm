@@ -162,7 +162,7 @@ pub struct Term {
     bracketed_paste: bool,
     /// Synchronized output (DEC ?2026): the app brackets a frame of output so the
     /// renderer can paint it atomically. The engine only *tracks* the flag — the
-    /// consumer owns the paint-hold and the spec-mandated timeout (#73).
+    /// consumer owns the paint-hold and the spec-mandated timeout.
     synchronized_output: bool,
     /// Color-scheme-update notifications (DEC ?2031): the app asked to be told
     /// when the light/dark scheme changes. The engine is theme-agnostic — it only
@@ -176,7 +176,7 @@ pub struct Term {
     grapheme_clustering: bool,
     /// Where the last content-producing print landed — `(row, col)` of that cluster's
     /// lead cell — or `None` when nothing has been printed since the last thing that
-    /// cleared it (#825).
+    /// cleared it.
     ///
     /// **One reader again — but the constraint the second one imposed is still binding.**
     /// `REP` (CSI b) reads the grapheme back off this cell, and for a while
@@ -305,7 +305,7 @@ pub struct Term {
     /// (1-based). Append-only (#26)"*), left behind when its field was deleted.
     current_link: Option<std::sync::Arc<str>>,
     /// Live OSC 8 `id=` groups: `"id;;uri"` → the allocation that key already named,
-    /// held **weakly** (#635).
+    /// held **weakly**.
     ///
     /// `Weak`, not `Arc`, is the whole lifetime story. A strong entry here would make
     /// every id'd link immortal for the life of the `Term` — precisely the leak #628
@@ -379,7 +379,7 @@ pub struct Term {
     /// funnel — read `invalidate_search_highlights`, which owns that decision and its
     /// grounds. Stated here because this comment enumerating the callers reads as the
     /// whole rule, and a reader who stops at it concludes the erase verbs were
-    /// forgotten (#750).
+    /// forgotten.
     active_search_highlight: Option<Match>,
     /// Engine-owned decoration markers (#118), split per buffer like xterm's
     /// `BufferSet` (#177 S0): each a stable id bound to an absolute buffer line
@@ -522,7 +522,7 @@ const DEFAULT_SCROLLBACK: usize = 10_000;
 /// clamped pair — so a justerm consumer must do that correlation itself: read the
 /// width back from [`Term::grid`] / the frame header and size the PTY from *that*,
 /// never from the value it requested. Sizing a PTY to one column leaves the
-/// application rendering for a width the buffer does not have (#547).
+/// application rendering for a width the buffer does not have.
 pub const MIN_COLUMNS: usize = 2;
 
 /// The built-in word-boundary set for Word (semantic) selection — the default value of
@@ -562,10 +562,10 @@ pub const DEFAULT_WORD_SEPARATORS: &str = ",│`|:\"' ()[]{}<>\t\u{3000}";
 /// — cheaper than the workaround it removes, on a call made once per hover.
 ///
 /// Cloning is a refcount bump; the allocation is shared with every cell of the same OSC 8
-/// open and released when the last row holding it dies (#628).
+/// open and released when the last row holding it dies.
 ///
 /// **A struct rather than a bare `Arc<str>`** for two reasons: it keeps `Arc` out of the
-/// published signature, and OSC 8's `id=` parameter (#635) lands here as a field without
+/// published signature, and OSC 8's `id=` parameter lands here as a field without
 /// changing the return type again. Same shape as alacritty's `Hyperlink`, for the same
 /// reasons (`alacritty_terminal/src/term/cell.rs`).
 ///
@@ -608,7 +608,7 @@ impl Hyperlink {
 const LINK_IDS_FIRST_SWEEP: usize = 16;
 
 /// How deep an XTWINOPS title stack goes before a push starts dropping the
-/// oldest entry (#823).
+/// oldest entry.
 ///
 /// Ten is **two implementations plus a spec inference**, not a clean sweep, and
 /// the difference is worth stating so nobody reads it as more than it is:
@@ -661,7 +661,7 @@ fn osc8_link_id(params: &[u8]) -> Option<&[u8]> {
 /// to a consumer even though the engine could hold it. Without the clamp that mismatch was
 /// silent — measured, `Engine::new(70_000, 2)` built a 70 000-column grid whose frame
 /// declared `cols = 4464` and decoded `Ok`, so a consumer laid out 4464 columns of a
-/// 70 000-column screen with nothing reporting the difference (#621).
+/// 70 000-column screen with nothing reporting the difference.
 ///
 /// No reference bounds a grid this way, and that is expected rather than a divergence:
 /// none of them serializes a grid, so none has a header field to overflow. This is the
@@ -678,7 +678,7 @@ pub const MAX_COLUMNS: usize = u16::MAX as usize;
 /// `u16` header field, same reasoning, same silent-clamp contract.
 pub const MAX_ROWS: usize = u16::MAX as usize;
 
-/// The most live markers one buffer will hold (#721).
+/// The most live markers one buffer will hold.
 ///
 /// Derived from the wire the same way [`MAX_COLUMNS`] is: the marker group's count
 /// are `u16`, so a population past `u16::MAX` encodes a wrapped count while writing
@@ -703,8 +703,8 @@ pub const MAX_ROWS: usize = u16::MAX as usize;
 /// channel scrollback eviction already uses for the same event.
 pub const MAX_MARKERS: usize = u16::MAX as usize;
 
-/// The longest command text an OSC-133 `OutputStart` mark will freeze, in `char`s
-/// (#750). A longer command is captured truncated to this many characters.
+/// The longest command text an OSC-133 `OutputStart` mark will freeze, in `char`s.
+/// A longer command is captured truncated to this many characters.
 ///
 /// **Why a bound at all** is [`MAX_MARKERS`]'s argument one field over: the *stream*
 /// decides the size. The text spans `[B, C)`, and nothing bounds how far apart those
@@ -818,7 +818,7 @@ struct Marker {
 }
 
 /// The part of a command that is **not** in the buffer, frozen on its `OutputStart`
-/// mark (#750).
+/// mark.
 ///
 /// Both fields are recorded at the instant they are first true, and neither can be
 /// recovered afterwards:
@@ -836,7 +836,7 @@ struct CommandRecord {
     exit: Option<i32>,
 }
 
-/// A stable handle to a tracked buffer position (#691), handed out by
+/// A stable handle to a tracked buffer position, handed out by
 /// [`Term::track_point`].
 ///
 /// It is deliberately **not** a [`MarkerId`]: a marker is a decoration anchor and
@@ -856,7 +856,7 @@ struct TrackedPoint {
     col: usize,
 }
 
-/// One live marker, as the pull query reports it (#490): its stable id, its
+/// One live marker, as the pull query reports it: its stable id, its
 /// **absolute** `[scrollback ++ screen]` line, and the static facts a consumer
 /// would otherwise have to re-learn from every frame.
 ///
@@ -874,7 +874,7 @@ pub struct MarkerEntry {
     pub kind: MarkerKind,
 }
 
-/// The answer to [`Term::marker_index`] (#490) — every live marker of the *active*
+/// The answer to [`Term::marker_index`] — every live marker of the *active*
 /// buffer, plus the basis that says how long the answer stays usable.
 ///
 /// The consumer keeps this and rebases per frame:
@@ -897,7 +897,7 @@ pub struct MarkerIndex {
     pub epoch: u32,
 }
 
-/// One executed shell command recovered from OSC-133 marks (#166), for
+/// One executed shell command recovered from OSC-133 marks, for
 /// screen-reader command navigation. The consumer jumps prompt-to-prompt over
 /// these and announces `command` + a success/fail signal from `exit`.
 ///
@@ -916,7 +916,7 @@ pub struct CommandLine {
     /// **It is an index into a document, so it is only meaningful together with the
     /// document it indexes** — the one [`Term::accessible_text`] returns *at the same
     /// instant, on the primary screen*. Neither half is expressible as a number on this
-    /// struct (#743), and they are the two that recur; they are not a proof of
+    /// struct, and they are the two that recur; they are not a proof of
     /// sufficiency. The hedge was earned: a mark whose row is erased in place also
     /// answers about content that is gone — on the primary screen, at one instant, and
     /// a re-ask reproduces it, so neither half below reaches it. That was **#750**, a
@@ -948,7 +948,7 @@ pub struct CommandLine {
     pub line: usize,
     /// The typed command text, prompt- and output-excluded (B→C columns).
     ///
-    /// **Frozen at the `133;C` that closed the command (#750)**, not re-read from the
+    /// **Frozen at the `133;C` that closed the command**, not re-read from the
     /// cells when you ask. Those cells are not reserved for it: a plain overwrite,
     /// `ICH`, `DCH` and an erase were each measured making the recorded column range
     /// name somebody else's content, and only the last of the four is a verb any
@@ -957,7 +957,7 @@ pub struct CommandLine {
     /// The CommandFinished(D) exit code, if the shell reported one and the
     /// command has finished.
     ///
-    /// **Recorded when `133;D` is parsed (#750)**, onto the mark that closed the
+    /// **Recorded when `133;D` is parsed**, onto the mark that closed the
     /// command — not paired here at query time. It lives in no cell, so nothing on
     /// screen can reconstruct it, and pairing over *survivors* re-parented a code onto
     /// the previous command as soon as a disposal broke the run.
@@ -1183,7 +1183,7 @@ impl Term {
     /// Suppressed while scrolled up — a content scroll must not shift the frozen
     /// viewport.
     ///
-    /// **The count is capped at the region's own height (#661).** Shifting a region
+    /// **The count is capped at the region's own height.** Shifting a region
     /// by more than its height moves every source row outside it, so the surplus
     /// names nothing a consumer can act on — while it does overflow the wire's
     /// `i16` and turn an up-scroll into a down-scroll: measured, a single
@@ -1487,8 +1487,7 @@ impl Term {
     /// Queue a color-scheme report (`CSI ? 997 ; 1 n` dark / `; 2 n` light) on the
     /// reply channel. The consumer calls this to answer a `ColorSchemeQuery` event
     /// or, when its scheme changes and `color_scheme_updates()` is set, to send the
-    /// unsolicited notification. The engine never stores or interprets the scheme
-    /// (#85).
+    /// unsolicited notification. The engine never stores or interprets the scheme.
     pub fn report_color_scheme(&mut self, dark: bool) {
         let ps = if dark { 1 } else { 2 };
         self.replies
@@ -1682,7 +1681,7 @@ impl Term {
         }
     }
 
-    /// Answer an OSC 52 [`TermEvent::QueryClipboard`] (#828): base64-encode the
+    /// Answer an OSC 52 [`TermEvent::QueryClipboard`]: base64-encode the
     /// consumer's text into the OSC 52 reply envelope, ST-terminated.
     ///
     /// The consumer hands the target back rather than the engine remembering
@@ -1711,7 +1710,7 @@ impl Term {
     ///
     /// The reply echoes the terminator the query arrived with, like every other
     /// reply this crate queues — settled for the whole channel rather than for
-    /// this sequence, which is where #828 left it (#836).
+    /// this sequence, which is where #828 left it.
     pub fn report_clipboard(
         &mut self,
         target: ClipboardTarget,
@@ -1729,11 +1728,11 @@ impl Term {
         self.replies.extend_from_slice(terminator.bytes());
     }
 
-    /// Answer an OSC 4 palette query (#122): wrap the consumer-supplied spec for
+    /// Answer an OSC 4 palette query: wrap the consumer-supplied spec for
     /// `index` in the OSC 4 reply envelope.
     ///
     /// The reply echoes the terminator the query arrived with, which the
-    /// consumer takes off the `Query…` event and hands back here (#836): the
+    /// consumer takes off the `Query…` event and hands back here: the
     /// spec says a terminal *"uses the same terminator used in a query"*
     /// (`ctlseqs.txt:2020`), and the engine cannot choose on the consumer's
     /// behalf because only the parser ever saw which byte arrived.
@@ -1743,11 +1742,11 @@ impl Term {
         self.replies.extend_from_slice(terminator.bytes());
     }
 
-    /// Answer an OSC 10 foreground query (#122): wrap the consumer-supplied spec
+    /// Answer an OSC 10 foreground query: wrap the consumer-supplied spec
     /// in the OSC 10 reply envelope.
     ///
     /// The reply echoes the terminator the query arrived with, which the
-    /// consumer takes off the `Query…` event and hands back here (#836): the
+    /// consumer takes off the `Query…` event and hands back here: the
     /// spec says a terminal *"uses the same terminator used in a query"*
     /// (`ctlseqs.txt:2020`), and the engine cannot choose on the consumer's
     /// behalf because only the parser ever saw which byte arrived.
@@ -1757,12 +1756,12 @@ impl Term {
         self.replies.extend_from_slice(terminator.bytes());
     }
 
-    /// Answer an OSC 11 background query (#122): wrap the consumer-supplied spec
+    /// Answer an OSC 11 background query: wrap the consumer-supplied spec
     /// (it knows its palette) in the OSC 11 reply envelope. The engine formats
     /// the envelope only — it never knows the colour.
     ///
     /// The reply echoes the terminator the query arrived with, which the
-    /// consumer takes off the `Query…` event and hands back here (#836): the
+    /// consumer takes off the `Query…` event and hands back here: the
     /// spec says a terminal *"uses the same terminator used in a query"*
     /// (`ctlseqs.txt:2020`), and the engine cannot choose on the consumer's
     /// behalf because only the parser ever saw which byte arrived.
@@ -1772,12 +1771,12 @@ impl Term {
         self.replies.extend_from_slice(terminator.bytes());
     }
 
-    /// Answer an OSC 12 cursor-colour query (#832): the same envelope one slot
+    /// Answer an OSC 12 cursor-colour query: the same envelope one slot
     /// over, terminated like its siblings. The consumer supplies the spec — it
     /// owns the palette, and the engine never learns the colour.
     ///
     /// The reply echoes the terminator the query arrived with, which the
-    /// consumer takes off the `Query…` event and hands back here (#836): the
+    /// consumer takes off the `Query…` event and hands back here: the
     /// spec says a terminal *"uses the same terminator used in a query"*
     /// (`ctlseqs.txt:2020`), and the engine cannot choose on the consumer's
     /// behalf because only the parser ever saw which byte arrived.
@@ -1939,7 +1938,7 @@ impl Term {
     /// separately (#7). The whole screen is damaged.
     ///
     /// `cols` is widened to [`MIN_COLUMNS`] — a narrower screen cannot hold a
-    /// width-2 glyph, so it is clamped rather than represented (#547).
+    /// width-2 glyph, so it is clamped rather than represented.
     pub fn resize(&mut self, cols: usize, rows: usize) {
         // Not a print — and not a parser callback either, which is the whole reason
         // [`Term::repeat_anchor`] is stated as a rule rather than as a list of
@@ -2427,7 +2426,7 @@ impl Term {
     }
 
     /// Whether bracketed-paste mode (DEC ?2004) is enabled. The input encoder
-    /// (#11) reads this to decide whether to wrap pasted text in markers.
+    /// reads this to decide whether to wrap pasted text in markers.
     pub fn bracketed_paste(&self) -> bool {
         self.bracketed_paste
     }
@@ -2436,7 +2435,7 @@ impl Term {
 
     /// Encode a key event to bytes using every mode that decides one: the active
     /// cursor-key mode (DECCKM), application keypad, the kitty keyboard-protocol
-    /// flags and `modifyOtherKeys` level 2 (#890). `encode_key` consults all four,
+    /// flags and `modifyOtherKeys` level 2. `encode_key` consults all four,
     /// and asks kitty first.
     pub fn encode_key(&self, ev: KeyEvent) -> Option<Vec<u8>> {
         encode_key(
@@ -2606,7 +2605,7 @@ impl Term {
     /// `evicts_to_scrollback` for the top one. When `wrapline` drives this, the blank that lands at
     /// the region's bottom *is* where the wrapped text is about to go — so the row that #540 would
     /// call "the one that lost its continuation to the blank" is in fact the row whose continuation
-    /// that blank **is** (#557).
+    /// that blank **is**.
     ///
     /// xterm.js threads the identical fact through the identical seam, in the opposite direction:
     /// `BufferService.scroll(eraseAttr, isWrapped)` stamps the *destination* row
@@ -3137,7 +3136,7 @@ impl Term {
     /// `reset_SGR_Colors`, which runs on **both** reset strengths. The other half
     /// of that block — resetting the indexed palette — is deliberately not
     /// mirrored, here or in [`Self::full_reset`], where the grounds are written
-    /// out (#835).
+    /// out.
     fn soft_reset(&mut self) {
         self.cursor.visible = true;
         self.cursor.pen = Pen::default();
@@ -4807,7 +4806,7 @@ impl Term {
     }
 
     /// Clear the primary screen and its scrollback, keeping the cursor's line
-    /// (#936) — a terminal's Clear command, out of band: the parser and whatever it
+    /// — a terminal's Clear command, out of band: the parser and whatever it
     /// holds mid-sequence are untouched. The cursor's logical line, from its first
     /// row on screen down to the cursor's row, moves to the top with the cursor on it
     /// at the same column; the rows above it and all of history are dropped, and the
@@ -5742,12 +5741,11 @@ impl Perform for Term {
         self.place_grapheme(c);
     }
 
-    /// A DCS is terminated: not a print, so the repeat is disarmed (#825). This method
+    /// A DCS is terminated: not a print, so the repeat is disarmed. This method
     /// exists for that alone — the payload is otherwise unhandled — and it is reachable
     /// in ordinary use: since #824 answered DA2, `vim` follows up with XTGETTCAP
     /// (`DCS + q <hex> ST`) queries this engine does not answer. Both halves of that
-    /// are pinned on recorded bytes rather than asserted — `tests/closed_loop_capture.rs`
-    /// (#891).
+    /// are pinned on recorded bytes rather than asserted — `tests/closed_loop_capture.rs`.
     ///
     /// The end of the DCS and not its start, which is both xterm's rule (its gate fires
     /// when the parser returns to the ground state) and the only half that can be shown
@@ -6091,7 +6089,7 @@ impl Perform for Term {
     }
 
     /// OSC dispatch (#12 event surface): title (0/2), cwd (7). OSC 8 hyperlink
-    /// is per-cell state, handled in its own slice (#26), not here.
+    /// is per-cell state, handled in its own slice, not here.
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
         // Not a print: the repeat is disarmed (#825, [`Term::repeat_anchor`]).
         self.repeat_anchor = None;

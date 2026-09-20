@@ -94,8 +94,8 @@ fn move_map<V>(map: &mut BTreeMap<usize, V>, src: std::ops::Range<usize>, dst: u
 /// underline-colour maps.
 ///
 /// The maps ride with the row through scroll / scrollback / reflow for free (the
-/// row is the unit that moves), which is why combining (#45), hyperlinks (#46),
-/// and underline colours (#520) live here rather than in global per-cell indices —
+/// row is the unit that moves), which is why combining, hyperlinks,
+/// and underline colours live here rather than in global per-cell indices —
 /// no leak, cleared on row reuse. `Row` derefs to `[Cell]`, so index/iterate/slice
 /// sites are unchanged; the maps are reached through the dedicated methods so the
 /// flag-gate (read iff the cell's `COMBINED_PRESENT` / `LINK_PRESENT` /
@@ -352,8 +352,7 @@ impl Row {
     /// entry set together, or *both cleared*. Clearing matters as much as setting:
     /// the promotion paths write over a column that may still hold a live entry, and
     /// they build the new cell by copying one that may still carry a presence bit,
-    /// so "set what is there" alone would leave either half of the gate dangling
-    /// (#521).
+    /// so "set what is there" alone would leave either half of the gate dangling.
     pub(crate) fn set_ext_attrs(&mut self, col: usize, attrs: ExtAttrs) {
         match attrs.link {
             Some(link) => self.set_link(col, link),
@@ -739,7 +738,7 @@ impl Grid {
     /// line?
     ///
     /// Ask this, not the last cell's `WRAPLINE` flag: soft-wrap is a property of the row and is
-    /// stored there, so a cell never carries it on a live grid (#538). The flag still appears on
+    /// stored there, so a cell never carries it on a live grid. The flag still appears on
     /// the *wire*, derived onto a span's last cell at encode time, which is a different layer —
     /// see [`docs/architecture.md`](https://github.com/kihyun1998/justerm/blob/master/docs/architecture.md) §Cell on the two things called "cell" here.
     pub fn is_row_wrapped(&self, row: usize) -> bool {

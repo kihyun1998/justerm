@@ -560,10 +560,10 @@ impl Term {
         }
     }
 
-    /// The whole buffer as one text document (#150): scrollback + screen assembled
+    /// The whole buffer as one text document: scrollback + screen assembled
     /// into logical lines (soft-wrap joined, wide-spacers skipped, trailing blanks
     /// trimmed at the logical end) — the accessible-view a screen reader reads as
-    /// a document, distinct from the viewport row tree (#119). Reuses the
+    /// a document, distinct from the viewport row tree. Reuses the
     /// selection extraction (`extract_lines`) over the full
     /// range. On the alt screen only the alt buffer is shown — its "scrollback" is
     /// the *primary* buffer's, not this app's — mirroring `viewport_logical_lines`'

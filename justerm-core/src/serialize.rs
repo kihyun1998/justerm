@@ -64,7 +64,7 @@ const CURSOR_SHAPE_UNSET: u8 = 0xFF;
 pub const WIRE_VERSION: u8 = VERSION;
 
 /// The largest `ScrollOp::count` magnitude this format can carry — the field rides
-/// as `i16` (#661).
+/// as `i16`.
 ///
 /// [`crate::Term::scroll_delta`] caps against **both** this and the scroll region's
 /// own height. The height alone is not enough: [`crate::MAX_ROWS`] is `u16::MAX`, so
@@ -97,8 +97,8 @@ pub enum FrameKind {
 /// A damaged column run on one line, with its cells.
 ///
 /// `combining` and `links` map a span-relative column to what that cell carries —
-/// combining clusters (#45) and hyperlinks (#46) live in per-row maps, so neither
-/// rides the cell. Since v14 (#621) both are **sparse wire groups of their own**,
+/// combining clusters and hyperlinks live in per-row maps, so neither
+/// rides the cell. Since v14 both are **sparse wire groups of their own**,
 /// not indices in the cell record, which is what removed the `u16` ceilings the
 /// engine could legitimately exceed.
 ///
@@ -150,11 +150,10 @@ pub struct Span {
     /// presence bits), so `decode` re-arms it from this map's own entries. A `Span`
     /// built by hand for a test owes the same pairing: an entry here without
     /// [`Cell::set_ucolored`] on the cell is a column the gated readers cannot see.
-    /// (#531)
     pub ucolors: BTreeMap<usize, Color>,
 }
 
-/// A stable handle to a buffer line, handed out by `Engine::add_marker` (#118).
+/// A stable handle to a buffer line, handed out by `Engine::add_marker`.
 /// Monotonic per engine. The consumer attaches a decoration to the id; the frame
 /// reports where the marker currently sits, and `TermEvent::MarkerDisposed`
 /// signals when its line has left the buffer.
@@ -164,7 +163,7 @@ pub struct Span {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct MarkerId(pub u32);
 
-/// What a marker means (#158). A plain `add_marker` decoration carries no
+/// What a marker means. A plain `add_marker` decoration carries no
 /// semantics ([`MarkerKind::Plain`]); OSC 133 shell-integration marks carry the
 /// command-boundary role (prompt/command/output start, or command finished with
 /// its optional exit code). The engine only *parses and anchors* these — the
@@ -251,7 +250,7 @@ pub struct MarkerId(pub u32);
 /// is not twice over.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkerKind {
-    /// A `add_marker` decoration anchor (#118) — no OSC-133 semantics.
+    /// A `add_marker` decoration anchor — no OSC-133 semantics.
     Plain,
     /// OSC `133;A` — the shell prompt begins here.
     PromptStart,
@@ -264,12 +263,12 @@ pub enum MarkerKind {
     CommandFinished(Option<i32>),
 }
 
-/// A marker projected onto the viewport (#118): its id, the row it sits on, and
-/// its kind (#159). Only markers visible in the current viewport are reported; an
+/// A marker projected onto the viewport: its id, the row it sits on, and
+/// its kind. Only markers visible in the current viewport are reported; an
 /// off-screen marker is omitted but still alive (death comes via `MarkerDisposed`,
 /// not absence — so the consumer can tell "scrolled away" from "gone"). The kind
 /// carries the OSC 133 command-boundary role + exit code so the consumer can drive
-/// prompt-to-prompt navigation and success/fail signals (#160).
+/// prompt-to-prompt navigation and success/fail signals.
 ///
 /// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** 25 out-of-crate literal sites and the same reading as
 /// [`crate::Span`]: it rides the wire and can grow, and what would absorb that is a `Default` the
@@ -281,7 +280,7 @@ pub struct MarkerPosition {
     pub kind: MarkerKind,
 }
 
-/// Interaction overlays projected onto the viewport (#108): highlight spans the
+/// Interaction overlays projected onto the viewport: highlight spans the
 /// engine carries on the frame so a frame-mode consumer can paint them without
 /// an in-process model query. Positions only — highlight colour is the
 /// consumer's (theme-agnostic). Coordinates are viewport rows/cols, re-projected
@@ -300,7 +299,7 @@ pub struct Overlay {
     /// consumer hands the highlight set back via `set_search_highlights` and the
     /// engine projects it here — mirroring how the engine-owned selection rides.
     pub matches: Vec<SelectionSpan>,
-    /// Engine-owned markers visible in this viewport (#118): persistent line
+    /// Engine-owned markers visible in this viewport: persistent line
     /// anchors for decorations. Unlike the selection (cleared on a screen swap)
     /// and search highlights (invalidated on output), markers re-anchor through
     /// buffer mutation and survive an alt-screen excursion; only their viewport
@@ -310,7 +309,7 @@ pub struct Overlay {
     /// `matches` the consumer designated via `set_active_search_highlight`
     /// (which match is active is consumer policy — next/prev navigation).
     /// Projected by the same mechanism as `matches`, and *also* present there —
-    /// the renderer's highlight ranking resolves the overlap (#424), not
+    /// the renderer's highlight ranking resolves the overlap, not
     /// exclusion here. Empty when nothing is designated.
     pub active_match: Vec<SelectionSpan>,
 }
@@ -318,11 +317,11 @@ pub struct Overlay {
 /// One serialized damage cycle: the decoded logical form that `encode`/`decode`
 /// round-trip. `link_table` holds this frame's OSC 8 hyperlink URIs, each shipped
 /// once and referenced by [`Span::links`]. Grapheme clusters have **no** table —
-/// since v14 (#621) they are inlined at their column in [`Span::combining`],
+/// since v14 they are inlined at their column in [`Span::combining`],
 /// because nothing interned them and the table only bought an index to overflow.
 /// # `Default`, and why this type has one rather than `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844))
 ///
-/// This struct grows for a reason outside any one decision: the VT tail is perpetual (#47) and each
+/// This struct grows for a reason outside any one decision: the VT tail is perpetual and each
 /// feature that reaches the consumer moves [`WIRE_VERSION`], which has gone v3 → v16. Every such
 /// bump used to edit **every** out-of-crate literal, because none of them could say "and the rest
 /// as usual" — 34 sites across five files, all spelling all 19 fields.
@@ -345,7 +344,7 @@ pub struct Frame {
     pub kind: FrameKind,
     /// Cursor row/col in screen coordinates (0-based), and whether the engine
     /// shows it (DECTCEM). Rides in the header because the cursor moves with
-    /// almost every frame (#38). *Drawing* the cursor — cell-invert / overlay —
+    /// almost every frame. *Drawing* the cursor — cell-invert / overlay —
     /// stays the consumer's renderer adapter; the engine only reports state.
     pub cursor_row: u16,
     pub cursor_col: u16,
@@ -353,7 +352,7 @@ pub struct Frame {
     /// The caret shape (DECSCUSR #89) and whether it blinks (att610 ?12, #81).
     /// Reported for the renderer; drawing/animation stays the consumer's.
     /// `cursor_shape` is `None` while the application has not set a shape, and the
-    /// consumer draws its own default shape then (#927).
+    /// consumer draws its own default shape then.
     pub cursor_shape: Option<CursorShape>,
     pub cursor_blink: bool,
     /// Viewport scroll position (#112 / [ADR-0013](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0013-expose-scroll-position-in-frame.md)), for the consumer's scrollbar.
@@ -362,7 +361,7 @@ pub struct Frame {
     /// the header like the cursor — per-frame viewport state, not cell content.
     pub display_offset: u32,
     pub scrollback_len: u32,
-    /// Lines popped off the front of scrollback since startup or RIS (#490). The
+    /// Lines popped off the front of scrollback since startup or RIS. The
     /// basis a consumer rebases a *pulled* marker index by: eviction shifts every
     /// absolute line by the same amount, so the whole class is one number.
     ///
@@ -374,7 +373,7 @@ pub struct Frame {
     pub evicted_total: u64,
     /// Bumped whenever a held marker line went stale for a reason `evicted_total`
     /// cannot express — a reflow, a region rotate that moved a surviving marker, an
-    /// alt-screen switch (#490). A consumer compares it against the epoch its index
+    /// alt-screen switch. A consumer compares it against the epoch its index
     /// was pulled at and re-pulls on a difference.
     ///
     /// Deliberately *not* bumped by a disposal: that arrives as
@@ -393,27 +392,27 @@ pub struct Frame {
     /// It cannot catch a create and a dispose inside one frame (the count is unchanged),
     /// which is why it is a net and not the mechanism.
     pub marker_count: u32,
-    /// The mouse tracking mode as a *wanted-events* mask (#129): which mouse
+    /// The mouse tracking mode as a *wanted-events* mask: which mouse
     /// event categories the app asked to receive, so the consumer routes an event
     /// to the app (bit set) or keeps it local. `empty()` = no reporting. Rides the
     /// header like the cursor — per-frame mode state the consumer reads, not cell
     /// content. Positions/encoding never cross; the backend encodes via
     /// `encode_mouse`.
     pub mouse_events: MouseEvents,
-    /// Whether the alternate screen (`?1049`/`?47`) is active (#149). Buffer-global
+    /// Whether the alternate screen (`?1049`/`?47`) is active. Buffer-global
     /// state a frame-mode consumer can't derive from viewport damage — the
-    /// accessibility announce policy (#119) gates on it (suppress TUI repaints).
+    /// accessibility announce policy gates on it (suppress TUI repaints).
     /// Rides the header like the cursor scalars ([ADR-0014](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0014-carry-interaction-overlays-in-the-frame.md)).
     pub alt_screen: bool,
     /// Which modified presses of Enter / Tab / Backspace / Escape reach the application
     /// distinct from the bare key under the keyboard modes in effect — the kitty flags and
-    /// `modifyOtherKeys` level 2 (#941). Derived by running the same encoder
+    /// `modifyOtherKeys` level 2. Derived by running the same encoder
     /// [`crate::Term::encode_key`] runs, on each modified press and on the bare key.
     pub modified_keys: ModifiedKeys,
     pub scroll: Option<ScrollOp>,
     pub spans: Vec<Span>,
     pub link_table: Vec<String>,
-    /// Interaction overlays for this viewport (#108): selection, search
+    /// Interaction overlays for this viewport: selection, search
     /// highlights, the active match, and markers — see [`Overlay`].
     pub overlay: Overlay,
 }
@@ -462,7 +461,7 @@ pub enum DecodeError {
     /// A part of the frame does not fit the geometry the frame itself declares: a span
     /// whose `left` is past its `right` (which would underflow the cell count), a span
     /// reaching past `cols` or sitting past `rows`, a sparse group entry keyed outside
-    /// its own span, or a scroll region whose `bottom` is past the last row (#582).
+    /// its own span, or a scroll region whose `bottom` is past the last row.
     ///
     /// One rule, one error: a coordinate describing a cell the frame says does not exist
     /// is malformed input, and the consumer must not be handed it.
@@ -479,7 +478,7 @@ pub enum DecodeError {
     /// a crate published in lockstep with an npm package, is the more expensive half of
     /// this trade today.
     ///
-    /// **That condition arrived, and only for the case it names (#663).**
+    /// **That condition arrived, and only for the case it names.**
     /// [`BadGeometry`](Self::BadGeometry) split off because #663 changes what `decode`
     /// *accepts*, so its release is the breaking one this paragraph was waiting for. It is
     /// not a precedent for splitting the six below: the new variant answers a comparison

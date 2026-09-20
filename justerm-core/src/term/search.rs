@@ -46,7 +46,7 @@ impl Term {
 
     /// Search with explicit [`SearchOptions`] — regex, whole-word, and a case-sensitivity override
     /// on top of the literal + smart-case [`search`](Self::search) (#314). Same coordinates,
-    /// soft-wrap join, spacer skip, and grapheme-mark inclusion (#304) as `search`.
+    /// soft-wrap join, spacer skip, and grapheme-mark inclusion as `search`.
     pub fn search_with(&self, query: &str, opts: SearchOptions) -> Vec<Match> {
         let q: Vec<char> = query.chars().collect();
         if q.is_empty() {
@@ -199,7 +199,7 @@ impl Term {
     /// highlight, like `selection_range`.
     ///
     /// **Both column ends are bounded here, and the `left` half is not an accident of
-    /// symmetry (#678).** A [`Match`]'s columns are *consumer-supplied* by design:
+    /// symmetry.** A [`Match`]'s columns are *consumer-supplied* by design:
     /// [`Term::set_active_search_match`] documents taking one the caller assembled
     /// outside the engine's own result set (the past-cap path, #436), and `Match`'s
     /// fields are public. So the usual guarantee — "the engine found it, therefore it is
@@ -268,7 +268,7 @@ impl Term {
         spans
     }
 
-    /// Set the search highlights to paint (#108). The consumer owns the
+    /// Set the search highlights to paint. The consumer owns the
     /// `Vec<Match>` (it drives next/prev); handing it back here lets `frame()`
     /// project the highlights onto the viewport. An empty vec clears them.
     pub fn set_search_highlights(&mut self, matches: Vec<Match>) {
@@ -279,18 +279,18 @@ impl Term {
     }
 
     /// Designate which member of the held highlight set is the *active* match
-    /// (#428) — the one the consumer's next/prev navigation currently points at.
+    /// — the one the consumer's next/prev navigation currently points at.
     /// `frame()` projects it into `overlay.active_match` (it also stays in
     /// `overlay.matches`; the renderer's ranking resolves the overlap, #424).
     /// `None` or an out-of-range index projects nothing; the designation resets
     /// whenever a new set is passed to [`set_search_highlights`](Self::set_search_highlights).
-    /// The index resolves to its span at call time (#436) — both designation
+    /// The index resolves to its span at call time — both designation
     /// APIs converge on one stored representation.
     pub fn set_active_search_highlight(&mut self, index: Option<usize>) {
         self.active_search_highlight = index.and_then(|i| self.search_highlights.get(i)).copied();
     }
 
-    /// Designate the *active* match by its absolute span (#436), independent of
+    /// Designate the *active* match by its absolute span, independent of
     /// the held highlight set — the past-cap path: a backend that caps its
     /// hand-over (the documented 1000, xterm's `highlightLimit`) can still give
     /// the current match its active emphasis, exactly as xterm creates the

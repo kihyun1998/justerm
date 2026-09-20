@@ -62,7 +62,7 @@ use crate::serialize::{MarkerId, MarkerKind};
 /// with a date for each (`ctlseqs.txt:2024-2028`), so there is no member a later
 /// slice may name and nothing for `#[non_exhaustive]` to preserve.
 ///
-/// ⚠ **The closure rests on the input space, not on the spec alone (#847).** ECMA-48
+/// ⚠ **The closure rests on the input space, not on the spec alone.** ECMA-48
 /// gives `ST` a third encoding — the 8-bit C1 `0x9C` — and it is absent here because
 /// [`crate::Engine::feed`] does not treat a lone `0x80..=0x9F` byte as a control at
 /// all, not because the spec stops at two. A reader who finds `0x9C` in `ctlseqs.txt`
@@ -85,7 +85,7 @@ pub enum Terminator {
     /// answered ST.
     ///
     /// **Read "any other byte that ends one" strictly: the 8-bit C1 `ST` (`0x9C`) is
-    /// not a fourth class (#847).** It does not end the string, so there is no event
+    /// not a fourth class.** It does not end the string, so there is no event
     /// to carry a terminator and nothing resolves to this variant — the OSC stays
     /// open instead. See [`crate::Engine::feed`] for why that is a contract.
     ///
@@ -113,7 +113,7 @@ impl Terminator {
     }
 }
 
-/// Which selection an `OSC 52` clipboard request names (#828).
+/// Which selection an `OSC 52` clipboard request names.
 ///
 /// A *value*, never the protocol byte, so a consumer never parses the sequence —
 /// the same reason [`TermEvent::SetPaletteColor`] carries a `u8` index rather
@@ -166,7 +166,7 @@ pub enum ClipboardTarget {
     ///
     /// The empty field is the common form in the wild rather than an edge case:
     /// it is what `tmux` 3.2a was measured emitting for both an ordinary
-    /// copy-mode copy and `set-buffer -w` (#828). Reading it as "unrecognised"
+    /// copy-mode copy and `set-buffer -w`. Reading it as "unrecognised"
     /// would drop the only emission this project has observed.
     Clipboard,
     /// The primary selection — the `p` field. On a platform with no primary
@@ -195,7 +195,7 @@ pub enum ClipboardTarget {
     /// tracked that mode could resolve `s` itself. justerm does not model 1041,
     /// which is a *declined* capability rather than an impossible one — the
     /// honest form of the claim, and the mode is unimplemented here like the
-    /// rest of the tail (#47).
+    /// rest of the tail.
     Selection,
 }
 
@@ -225,7 +225,7 @@ pub enum ClipboardTarget {
 ///   exhaustive, `justerm-wasm-decode` and `justerm-renderer` never name
 ///   `TermEvent`, and `justerm-web`'s `events.ts` mirrors this union by hand
 ///   rather than deriving it. **That mirror was narrower than this enum when the
-///   measurement was taken and no longer is in the same way (#841):** it now
+///   measurement was taken and no longer is in the same way:** it now
 ///   carries the `OSC 52` pair as well, and what stayed at title/bell/cwd is its
 ///   `EventHandlers` — the *notification* surface, not the channel. The cost
 ///   measured here is unaffected, since a hand-written mirror never had a
@@ -281,18 +281,18 @@ pub enum TermEvent {
     Cwd(String),
     /// The app requested 80/132-column mode (DECCOLM `?3`). justerm is
     /// dimension-free, so this is a *request* — the consumer may honor it by
-    /// calling `resize(cols, rows)`, or ignore it. `cols` is 80 or 132 (#82).
+    /// calling `resize(cols, rows)`, or ignore it. `cols` is 80 or 132.
     ColumnMode { cols: usize },
     /// The app queried the light/dark color scheme (DSR `CSI ? 996 n`). justerm
     /// is theme-agnostic, so the consumer (which knows the scheme) answers by
-    /// calling `Engine::report_color_scheme` (#85).
+    /// calling `Engine::report_color_scheme`.
     ColorSchemeQuery,
     /// The app set ANSI palette entry `index` to `spec` (OSC 4). One event per
     /// `index ; spec` pair the engine accepts — a pair whose index does not parse
-    /// as a `u8`, or whose spec is `?` (a query) or **empty** (#834), produces
+    /// as a `u8`, or whose spec is `?` (a query) or **empty**, produces
     /// none, and the pairs around it are unaffected either way. The cell still
     /// references `Indexed(index)` — only the consumer's `palette[index]` changes,
-    /// so the engine stays theme-agnostic (#122).
+    /// so the engine stays theme-agnostic.
     ///
     /// **`spec` is never empty**, so a consumer's colour parser is never handed a
     /// blank string. It is otherwise verbatim and unvalidated: the engine holds no
@@ -304,17 +304,17 @@ pub enum TermEvent {
     SetForeground(String),
     /// The app set the default background colour (OSC 11). The engine is
     /// theme-agnostic, so it forwards the raw spec string (`rgb:…`/`#…`) for the
-    /// consumer to parse and apply to its palette — it never holds hex (#122).
+    /// consumer to parse and apply to its palette — it never holds hex.
     SetBackground(String),
     /// The app reset palette entries to the theme default (OSC 104). `None` =
     /// the whole table (no argument); `Some(index)` = one entry, one event per
-    /// index given. The consumer restores its palette (#122).
+    /// index given. The consumer restores its palette.
     ResetPaletteColor(Option<u8>),
     /// The app queried ANSI palette entry `index` (OSC 4 with `?` for that pair);
-    /// the consumer answers with `report_palette_color` (#122).
+    /// the consumer answers with `report_palette_color`.
     QueryPaletteColor {
         index: u8,
-        /// The terminator `report_palette_color` must answer with (#836).
+        /// The terminator `report_palette_color` must answer with.
         terminator: Terminator,
     },
     /// The app set the cursor colour (OSC 12, #832). The third slot of the same
@@ -324,9 +324,9 @@ pub enum TermEvent {
     /// applies it.
     SetCursorColor(String),
     /// The app queried the cursor colour (OSC 12 with `?`); the consumer answers
-    /// with `report_cursor_color` (#832).
+    /// with `report_cursor_color`.
     QueryCursorColor {
-        /// The terminator `report_cursor_color` must answer with (#836).
+        /// The terminator `report_cursor_color` must answer with.
         terminator: Terminator,
     },
     /// The app reset the cursor colour to the theme default (OSC 112, #832). The
@@ -339,16 +339,16 @@ pub enum TermEvent {
     /// The app reset the default background to the theme default (OSC 111, #122).
     ResetBackground,
     /// The app queried the default foreground colour (OSC 10 with `?`); the
-    /// consumer answers with `report_foreground` (#122).
+    /// consumer answers with `report_foreground`.
     QueryForeground {
-        /// The terminator `report_foreground` must answer with (#836).
+        /// The terminator `report_foreground` must answer with.
         terminator: Terminator,
     },
     /// The app queried the default background colour (OSC 11 with `?`). The
     /// theme-agnostic engine relays it; the consumer answers with
-    /// `report_background` (#122), mirroring `ColorSchemeQuery`.
+    /// `report_background`, mirroring `ColorSchemeQuery`.
     QueryBackground {
-        /// The terminator `report_background` must answer with (#836).
+        /// The terminator `report_background` must answer with.
         terminator: Terminator,
     },
     /// The app asked for `text` to be put on `target` (`OSC 52` with a payload,
@@ -404,17 +404,17 @@ pub enum TermEvent {
     /// back. Same `Query…` + `report_…` shape as `OSC 4`/`10`/`11`/`12`.
     QueryClipboard {
         target: ClipboardTarget,
-        /// The terminator `report_clipboard` must answer with (#836).
+        /// The terminator `report_clipboard` must answer with.
         terminator: Terminator,
     },
     /// A decoration marker's line left the buffer — evicted past the scrollback
-    /// cap, or scrolled out of an in-screen region (#118). The handle is now
+    /// cap, or scrolled out of an in-screen region. The handle is now
     /// dead; the consumer drops the decoration bound to it. This is the
     /// frame-mode equivalent of xterm's `IMarker.onDispose` — disposal is a
     /// point-in-time fact (a marker absent from a frame may merely be scrolled
     /// off-screen), so it rides the event queue, not the frame overlay.
     MarkerDisposed(MarkerId),
-    /// A marker was created (#490) — by `add_marker`, or by the *stream* through an
+    /// A marker was created — by `add_marker`, or by the *stream* through an
     /// OSC 133 command mark, which the consumer never called for.
     ///
     /// The mirror of [`TermEvent::MarkerDisposed`], and it exists for the same reason
@@ -428,7 +428,7 @@ pub enum TermEvent {
     /// this event is that pull's incremental mirror. The consumer appends the entry with
     /// the basis it arrived on and rebases it exactly like a pulled one.
     ///
-    /// **The two are one fact and neither is usable alone (#737).** A single `feed` can
+    /// **The two are one fact and neither is usable alone.** A single `feed` can
     /// create a marker and then evict, so by the end of the batch the buffer's origin has
     /// moved out from under the line this event already carries. `Frame::evicted_total` is
     /// the basis at the *end* of that batch, so reading `line` against it misplaces the
@@ -436,7 +436,7 @@ pub enum TermEvent {
     /// with the event line, both frame bases, the epoch and `Frame::marker_count` all
     /// identical to the batch that evicted *first* and needs no adjustment at all.
     ///
-    /// **And a basis dates only a uniform move (#741).** Eviction shifts every marker by
+    /// **And a basis dates only a uniform move.** Eviction shifts every marker by
     /// the same amount, which is what one scalar can say; a reflow or a region rotate
     /// moves them *individually*, which is what `epoch` is for. A birth still queued when
     /// the epoch moves describes a buffer that no longer exists, and carrying only the
@@ -461,7 +461,7 @@ pub enum TermEvent {
         /// a `TypeError`, not a rounding question.
         evicted_total: u64,
         /// The marker generation this line belongs to — [`crate::MarkerIndex::epoch`] at
-        /// the moment of creation (#741). Two lines dated with different epochs are
+        /// the moment of creation. Two lines dated with different epochs are
         /// answers about different buffers and nothing rebases one onto the other, so a
         /// consumer adopts this entry only into the generation it names and lets the
         /// re-pull that the bump already forces supply it otherwise.

@@ -48,7 +48,7 @@ impl Term {
         }
     }
 
-    /// Track absolute buffer `(line, col)`, returning a stable id (#691). The
+    /// Track absolute buffer `(line, col)`, returning a stable id. The
     /// engine keeps the position on the content that is there now, through
     /// eviction, region scrolls and reflow, for as long as that **line** is in the
     /// buffer; [`Self::tracked_point`] reads it back and answers `None` once the line
@@ -56,7 +56,7 @@ impl Term {
     ///
     /// **A line, not the characters on it, and the distinction is load-bearing.**
     /// Erasing or overwriting the cells under a tracked point leaves it `Some` —
-    /// measured. That is deliberate rather than the marker defect one file over (#750):
+    /// measured. That is deliberate rather than the marker defect one file over:
     /// a tracked point is a *positional* reference whose only consumer asks "which
     /// occurrence was I on" and resolves by nearest position, so a point over rewritten
     /// content is still a serviceable answer, where a command mark asserts that a

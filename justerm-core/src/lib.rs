@@ -64,7 +64,7 @@ impl Engine {
     ///
     /// `cols` is widened to [`MIN_COLUMNS`] — a narrower screen cannot represent a
     /// width-2 glyph, so the engine clamps rather than accepting a size it would
-    /// have three different answers for (#547).
+    /// have three different answers for.
     pub fn new(cols: usize, rows: usize) -> Self {
         Engine {
             parser: Parser::new(),
@@ -85,7 +85,7 @@ impl Engine {
     /// engine only consumes the bytes it is handed.
     ///
     /// **The stream is UTF-8, and a lone `0x80..=0x9F` byte is ill-formed input
-    /// rather than a C1 control (#847).** So the 8-bit forms of the C1 controls are
+    /// rather than a C1 control.** So the 8-bit forms of the C1 controls are
     /// not interpreted: `0x9B` does not open a CSI, `0x9D` an OSC, `0x90` a DCS, and
     /// `0x9C` does not terminate a string — nor does `C2 9C`, the well-formed UTF-8
     /// encoding of U+009C. Send the 7-bit forms, which every one of them has:
@@ -112,7 +112,7 @@ impl Engine {
     /// Resize the screen to `cols` x `rows`. Rows that scroll off the top enter
     /// scrollback; the whole screen is damaged.
     ///
-    /// **The primary screen reflows; the alternate screen does not (#567).** On the
+    /// **The primary screen reflows; the alternate screen does not.** On the
     /// primary, soft-wrapped logical lines are re-split at the new width — scrollback
     /// included, since it is one buffer with the screen — so a long line keeps its tail
     /// instead of being truncated. Reflow is *not* gated on DECAWM: the wrap flag records
@@ -130,7 +130,7 @@ impl Engine {
     /// **Two pieces of application-written state, answered differently.** The tab-stop table is
     /// *extended*, never rebuilt: a resize that changes only the row count — or one that changes
     /// nothing, since this call has no early return — leaves it exactly as the application set it,
-    /// and a stop pushed outside a narrowed grid returns when the grid widens again (#849). The
+    /// and a stop pushed outside a narrowed grid returns when the grid widens again. The
     /// DECSTBM scroll region is **reset** to the full screen — but only when the geometry actually
     /// changed, since it is a range over the current screen and a resize to the size you already
     /// have redefines nothing. An application that set one re-sends it after a real resize; nothing
@@ -139,7 +139,7 @@ impl Engine {
     /// `cols` is widened to [`MIN_COLUMNS`] **silently**: a `resize(1, rows)` during
     /// a pane drag yields a two-column screen with no error. Read the resulting
     /// width back from [`Engine::grid`] or the frame header rather than assuming the
-    /// value passed here, and size the PTY from that same width (#547).
+    /// value passed here, and size the PTY from that same width.
     pub fn resize(&mut self, cols: usize, rows: usize) {
         self.term.resize(cols, rows);
     }
@@ -235,7 +235,7 @@ impl Engine {
     /// [`Color`] reference; [`Color::Default`] means the underline follows the
     /// glyph's foreground (the common case, and what a cell with no SGR 58 returns).
     /// Like the hyperlink, the colour rides a per-row side table, not the 12-byte
-    /// [`Cell`] (#520).
+    /// [`Cell`].
     pub fn underline_color_at(&self, row: usize, col: usize) -> Color {
         self.term.screen_underline_color_at(row, col)
     }
@@ -259,7 +259,7 @@ impl Engine {
     /// spec-mandated timeout** (a buggy app that never closes the block must not
     /// freeze the screen forever, and the engine has no clock). Poll this after
     /// `feed`; while it is `true`, defer applying frames, and apply once it
-    /// clears (or your own timeout fires). (#73)
+    /// clears (or your own timeout fires).
     pub fn synchronized_output(&self) -> bool {
         self.term.synchronized_output()
     }
@@ -268,7 +268,7 @@ impl Engine {
     /// The engine is theme-agnostic — it never knows the scheme. The consumer
     /// answers a [`TermEvent::ColorSchemeQuery`] (from `?996`) and, when its
     /// scheme changes *and* this is `true`, sends an unsolicited notification, in
-    /// both cases by calling [`Engine::report_color_scheme`] (#85).
+    /// both cases by calling [`Engine::report_color_scheme`].
     pub fn color_scheme_updates(&self) -> bool {
         self.term.color_scheme_updates()
     }
@@ -277,12 +277,12 @@ impl Engine {
     /// (dark) / `; 2 n` (light), drained via [`Engine::drain_replies`]. Call this
     /// to answer a [`TermEvent::ColorSchemeQuery`], or — guarded by
     /// [`Engine::color_scheme_updates`] — when the scheme changes. The engine only
-    /// formats the bit you pass; it stores no scheme (#85).
+    /// formats the bit you pass; it stores no scheme.
     pub fn report_color_scheme(&mut self, dark: bool) {
         self.term.report_color_scheme(dark);
     }
 
-    /// Answer an OSC 11 `QueryBackground` event (#122): the consumer hands back
+    /// Answer an OSC 11 `QueryBackground` event: the consumer hands back
     /// the current background spec (it owns the palette) and the engine queues
     /// the OSC 11 reply for `drain_replies`. Theme-agnostic — the engine never
     /// knows the colour, only formats the envelope.
@@ -290,26 +290,26 @@ impl Engine {
         self.term.report_background(spec, terminator);
     }
 
-    /// Answer an OSC 10 `QueryForeground` event (#122): queue the OSC 10 reply
+    /// Answer an OSC 10 `QueryForeground` event: queue the OSC 10 reply
     /// from the consumer-supplied spec. Theme-agnostic envelope-only.
     pub fn report_foreground(&mut self, spec: &str, terminator: Terminator) {
         self.term.report_foreground(spec, terminator);
     }
 
-    /// Answer an OSC 12 `QueryCursorColor` event (#832): queue the OSC 12 reply
+    /// Answer an OSC 12 `QueryCursorColor` event: queue the OSC 12 reply
     /// from the consumer-supplied spec. Theme-agnostic envelope-only, like its
     /// foreground and background siblings.
     pub fn report_cursor_color(&mut self, spec: &str, terminator: Terminator) {
         self.term.report_cursor_color(spec, terminator);
     }
 
-    /// Answer an OSC 4 `QueryPaletteColor` event (#122): queue the OSC 4 reply for
+    /// Answer an OSC 4 `QueryPaletteColor` event: queue the OSC 4 reply for
     /// `index` from the consumer-supplied spec. Theme-agnostic envelope-only.
     pub fn report_palette_color(&mut self, index: u8, spec: &str, terminator: Terminator) {
         self.term.report_palette_color(index, spec, terminator);
     }
 
-    /// Answer an OSC 52 [`TermEvent::QueryClipboard`] event (#828): base64-encode
+    /// Answer an OSC 52 [`TermEvent::QueryClipboard`] event: base64-encode
     /// the consumer's clipboard text into the OSC 52 reply envelope for
     /// [`Engine::drain_replies`].
     ///
@@ -330,7 +330,7 @@ impl Engine {
     /// keys as raw Windows key-records. The engine only tracks the flag — encoding
     /// the records (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`) is a non-goal (raw passthrough, no
     /// semantic conversion), so [`Engine::encode_key`] is unchanged. A ConPTY
-    /// consumer reads this to decide whether to emit the records itself (#86).
+    /// consumer reads this to decide whether to emit the records itself.
     pub fn win32_input_mode(&self) -> bool {
         self.term.win32_input_mode()
     }
@@ -366,7 +366,7 @@ impl Engine {
     /// The first-class scroll recorded since the last [`Engine::reset_damage`],
     /// if any — lets the renderer shift rows instead of redrawing them.
     ///
-    /// **`count` is capped at the scroll region's own height (#661).** Repeated
+    /// **`count` is capped at the scroll region's own height.** Repeated
     /// scrolls of one region accumulate into a single op between acks, and a flood
     /// accumulates far past the region: 32 KB of newlines in one [`Engine::feed`] is
     /// enough. Shifting a region by more than its height already moves every source
@@ -452,7 +452,7 @@ impl Engine {
     /// visible row, for the renderer to highlight. Empty when nothing is
     /// selected or the selection is fully scrolled off-screen.
     ///
-    /// **A span never ends inside a wide glyph** (#454). An endpoint landing on
+    /// **A span never ends inside a wide glyph**. An endpoint landing on
     /// half of a width-2 pair takes the whole pair, so a highlight cannot split
     /// a CJK glyph down the middle — which also means a span may be one column
     /// wider than the columns the caller's gesture named. On a `Block`
@@ -492,20 +492,20 @@ impl Engine {
     /// text plus a per-char map to its viewport `(row, col)`. The buffer-wide
     /// mechanism for consumer-side URL detection — the consumer runs its own
     /// regex / `new URL()` over the text and maps matches back through `cells`.
-    /// Also serves the a11y mirror (#119).
+    /// Also serves the a11y mirror.
     pub fn viewport_logical_lines(&self) -> Vec<LogicalLine> {
         self.term.viewport_logical_lines()
     }
 
     /// The whole buffer (scrollback + screen) as one text document for a
-    /// screen-reader accessible view (#150) — soft-wrap-joined, wide-spacers
+    /// screen-reader accessible view — soft-wrap-joined, wide-spacers
     /// skipped, trailing blanks trimmed at the logical end, `\n` between logical
     /// lines. A query seam the consumer summons (frame mode: over IPC, like
     /// [`selection_text`](Self::selection_text)); no wire-format change. On the
     /// alt screen only the alt buffer is shown.
     ///
     /// **This is the document [`CommandLine::line`] indexes, which makes that last
-    /// sentence a pairing obligation rather than a detail (#743):** ask both in the
+    /// sentence a pairing obligation rather than a detail:** ask both in the
     /// same breath and keep them together, because a document line is meaningless
     /// against a document sampled at another instant — and while the alt screen is up
     /// the two queries are about different buffers entirely. See
@@ -523,7 +523,7 @@ impl Engine {
     /// The match projected onto the viewport as inclusive-column spans per
     /// visible row, for the renderer to highlight.
     ///
-    /// **A span never ends inside a wide glyph** (#454), the same widening
+    /// **A span never ends inside a wide glyph**, the same widening
     /// [`selection_range`](Self::selection_range) applies. It matters more here,
     /// because a `Match` may be one the *caller* assembled: an out-of-range
     /// column is bounded onto the row's last cell, which is a trailing spacer
@@ -533,7 +533,7 @@ impl Engine {
         self.term.match_spans(m)
     }
 
-    /// Set the search highlights the frame should carry (#108). The
+    /// Set the search highlights the frame should carry. The
     /// consumer owns match navigation, so it hands the set to highlight back
     /// here; [`Engine::frame`] then projects them onto the viewport overlay
     /// alongside the selection. An empty vec clears the highlights.
@@ -542,10 +542,10 @@ impl Engine {
     }
 
     /// Designate which member of the held highlight set is the *active* match
-    /// (#428) — the one next/prev navigation currently points at (that choice is
+    /// — the one next/prev navigation currently points at (that choice is
     /// the consumer's policy). [`Engine::frame`] projects it into the overlay's
     /// `active_match` group; it also stays in `matches`, and the renderer's
-    /// highlight ranking resolves the overlap (#424). `None` or an out-of-range
+    /// highlight ranking resolves the overlap. `None` or an out-of-range
     /// index projects nothing. Passing a new set to
     /// [`set_search_highlights`](Self::set_search_highlights) resets the
     /// designation, so re-designate after every hand-over.
@@ -553,7 +553,7 @@ impl Engine {
         self.term.set_active_search_highlight(index);
     }
 
-    /// Designate the *active* match by its absolute span (#436), independent of
+    /// Designate the *active* match by its absolute span, independent of
     /// the held highlight set — the past-cap path. A backend that caps its
     /// hand-over (the documented 1000, xterm's `highlightLimit`) can still give
     /// the current match its active emphasis: xterm builds its active
@@ -569,13 +569,13 @@ impl Engine {
         self.term.set_active_search_match(m);
     }
 
-    /// Register a decoration marker at viewport `row`, returning its stable id
-    /// (#118). The marker anchors the content currently on that row and tracks
+    /// Register a decoration marker at viewport `row`, returning its stable id.
+    /// The marker anchors the content currently on that row and tracks
     /// it through scroll/eviction/reflow; [`Engine::frame`] reports its viewport
     /// position while visible. Use the id to remove it or to match the
     /// `TermEvent::MarkerDisposed` fired when its line leaves the buffer.
     ///
-    /// A buffer holds at most [`MAX_MARKERS`] live markers (#721) — the population is
+    /// A buffer holds at most [`MAX_MARKERS`] live markers — the population is
     /// also grown by the *stream*, through OSC 133 command marks, so it is bounded.
     /// Past the cap the **oldest** marker is retired and announced through the same
     /// `MarkerDisposed` event, so a consumer that already handles disposal needs no new
@@ -584,13 +584,13 @@ impl Engine {
         self.term.add_marker(row)
     }
 
-    /// Remove a marker by id (#118), firing `TermEvent::MarkerDisposed`. A no-op
+    /// Remove a marker by id, firing `TermEvent::MarkerDisposed`. A no-op
     /// for an unknown or already-disposed id.
     pub fn remove_marker(&mut self, id: MarkerId) {
         self.term.remove_marker(id);
     }
 
-    /// Track absolute buffer `(line, col)`, returning a stable id (#691): the
+    /// Track absolute buffer `(line, col)`, returning a stable id: the
     /// engine keeps the position on the content that is there now, through
     /// scrollback eviction, region scrolls and reflow.
     ///
@@ -616,7 +616,7 @@ impl Engine {
     }
 
     /// Where the point registered as `id` sits now, in the **active** screen's
-    /// coordinates — or `None` (#691).
+    /// coordinates — or `None`.
     ///
     /// `None` covers three cases, and a caller does not need to tell them apart:
     /// the content has left the buffer, the id is unknown or released, or the point
@@ -634,20 +634,20 @@ impl Engine {
         self.term.tracked_point(id)
     }
 
-    /// Release a tracked point (#691). A no-op for an unknown or already-released
+    /// Release a tracked point. A no-op for an unknown or already-released
     /// id.
     pub fn untrack_point(&mut self, id: TrackedId) {
         self.term.untrack_point(id);
     }
 
     /// The OSC 133 shell-integration command marks in buffer order — `(id,
-    /// absolute line, kind)` (#158). Excludes plain `add_marker` decorations.
+    /// absolute line, kind)`. Excludes plain `add_marker` decorations.
     /// The consumer pairs prompt/command/finished marks to drive prompt-to-prompt
-    /// navigation and command/exit announcements (#160); the engine only parses
+    /// navigation and command/exit announcements; the engine only parses
     /// the `133;A/B/C/D` sequences and anchors the marks.
     ///
     /// **The answer is instantaneous — it describes the buffer it was asked of, and
-    /// nothing on it dates it (#742). Re-ask; never keep it and never rebase it.**
+    /// nothing on it dates it. Re-ask; never keep it and never rebase it.**
     /// The lines move on *both* of the axes [`MarkerIndex`] carries a scalar for:
     /// scrollback eviction shifts every mark by the same amount, and a top-anchored
     /// `DECSTBM` region shifts the marks below its margin once per output line — the
@@ -676,7 +676,7 @@ impl Engine {
     /// else, where `marker_index`'s silence is ambiguous between that and *"you are on
     /// the other screen"*.
     ///
-    /// **A mark also dies when a whole row is blanked where it stands (#750).** Until
+    /// **A mark also dies when a whole row is blanked where it stands.** Until
     /// then the only deaths were the buffer *moving* — eviction, a region rotate, a
     /// reflow — and a `clear` left every mark on the screen alive over blank rows. `ED`
     /// now retires the marks on each whole row it blanks, through the same
@@ -690,7 +690,7 @@ impl Engine {
     }
 
     /// The executed shell commands recovered from OSC-133 marks, in buffer order
-    /// (#166) — the query behind screen-reader command navigation. Each
+    /// — the query behind screen-reader command navigation. Each
     /// [`CommandLine`] carries the typed command text (prompt/output excluded via
     /// the captured columns), its jump line (CommandStart), and the exit code.
     /// This is a full-buffer query, wired to the frame-mode consumer over IPC like
@@ -698,7 +698,7 @@ impl Engine {
     /// it ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) — buffer-wide text is core's).
     ///
     /// **The text and the exit are frozen when the stream reveals them; only the line
-    /// is derived (#750).** [`CommandLine::command`] is captured at the `133;C` that
+    /// is derived.** [`CommandLine::command`] is captured at the `133;C` that
     /// closes the command — the instant it is complete and on screen — and
     /// [`CommandLine::exit`] is written down when `133;D` is parsed. Neither is
     /// recoverable afterwards: re-reading the text through the recorded columns names
@@ -710,7 +710,7 @@ impl Engine {
     /// fixups already maintain.
     ///
     /// **The answer is instantaneous — it describes the buffer it was asked of, and
-    /// nothing on it dates it (#743). Re-ask; never keep it past the document it
+    /// nothing on it dates it. Re-ask; never keep it past the document it
     /// indexes, and never rebase it.** Same discharge as [`Engine::command_marks`] and
     /// for the same two reasons ([ADR-0029](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md) D3): the clock is a user action, so the ask
     /// *is* the act; and this population's frame of reference never flips, so a re-ask
@@ -740,7 +740,7 @@ impl Engine {
     }
 
     /// Every live marker of the active buffer with its **absolute** buffer line, plus
-    /// the basis that says how long the answer stays usable (#490).
+    /// the basis that says how long the answer stays usable.
     ///
     /// The pull half of the marker surface. It shares [`Engine::command_lines`]'s
     /// *shape* — the consumer asks once and keeps the answer, rather than being handed
@@ -757,9 +757,9 @@ impl Engine {
     /// `TermEvent::MarkerCreated` does — neither deliberately moves the epoch, so
     /// neither costs a re-pull. **Append it on the instant the event carries, not on the
     /// newest frame's**: a `feed` can create a marker and then evict, and those are two
-    /// different origins (#737).
+    /// different origins.
     ///
-    /// **Adopt a birth only into the generation it names (#741).** The event carries this
+    /// **Adopt a birth only into the generation it names.** The event carries this
     /// pull's whole triple — line, basis, [`MarkerIndex::epoch`] — because the basis dates
     /// only a *uniform* move. A reflow or a region rotate moves markers individually, so a
     /// line dated to the generation before one is not stale by a delta; it is an answer

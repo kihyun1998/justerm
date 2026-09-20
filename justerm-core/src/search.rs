@@ -44,7 +44,7 @@ pub struct Match {
 }
 
 /// Search modes beyond the default literal + smart-case (see [`Term::search_with`](crate::Term::search_with)).
-/// Mirrors xterm.js's `ISearchOptions` (#314). The default (all off / smart-case) is exactly
+/// Mirrors xterm.js's `ISearchOptions`. The default (all off / smart-case) is exactly
 /// [`Term::search`](crate::Term::search).
 ///
 /// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** 13 out-of-crate literal sites over a derived `Default`, so a
@@ -57,7 +57,7 @@ pub struct SearchOptions {
     /// Caveats vs a JS `RegExp` (xterm.js): the `regex` crate has **no lookaround/backreferences**
     /// and its `\w \d \b` are **Unicode-aware** by default. An **invalid or unsupported pattern
     /// yields no matches** (an empty result) rather than an error — the current API has no error
-    /// channel, so a consumer cannot distinguish a bad pattern from a genuine no-match (#314).
+    /// channel, so a consumer cannot distinguish a bad pattern from a genuine no-match.
     /// Smart-case (see [`case_sensitive`](Self::case_sensitive)) infers case from the *raw* pattern,
     /// so an uppercase metacharacter (`\B`, `\D`, `\x1B`…) can flip case-sensitivity — set
     /// `case_sensitive` explicitly, or use an inline `(?i)`/`(?-i)`, to be sure.

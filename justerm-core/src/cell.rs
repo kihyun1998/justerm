@@ -36,7 +36,7 @@ bitflags::bitflags! {
         ///
         /// **Wire-only.** The live grid holds this on the `Row` (`Grid::is_row_wrapped`); it used
         /// to live here, where every whole-cell write and clear destroyed it and ordinary typing
-        /// in the last column silently split the logical line (#538). The wire has no per-row
+        /// in the last column silently split the logical line. The wire has no per-row
         /// slot, so it is derived back onto a span's last cell at encode time — which is why the
         /// storage could move without a format change. On a cell read from the live grid this bit
         /// is never set.
@@ -47,7 +47,7 @@ bitflags::bitflags! {
     }
 }
 
-/// How a cell's underline is drawn — `SGR 4 : Ps` (#829).
+/// How a cell's underline is drawn — `SGR 4 : Ps`.
 ///
 /// **This is the storage, and `None` is a member of it.** There is no second boolean saying
 /// whether the cell is underlined: [`CellFlags::UNDERLINE`] survives as a *derived* view bit so
@@ -78,7 +78,7 @@ pub enum UnderlineStyle {
     /// `SGR 4` or `4:1` — one straight line.
     Single = 1,
     /// Two straight lines — `4:2`, and also the legacy `SGR 21`, which is the **only** value with
-    /// a second spelling (#830). Both land on this field, so `SGR 24` clears either of them.
+    /// a second spelling. Both land on this field, so `SGR 24` clears either of them.
     ///
     /// The legacy form is not unanimous in the prior art and the spec is what settles it: `vte`
     /// reads `21` as *cancel bold*, so an application meaning "stop bold" gets a double underline
@@ -86,10 +86,10 @@ pub enum UnderlineStyle {
     Double = 2,
     /// `4:3` — a curl. The mark #829 carries end to end.
     Curly = 3,
-    /// `4:4` — a dotted line (#830). Drawn with a whole number of dots per cell, so the pattern
+    /// `4:4` — a dotted line. Drawn with a whole number of dots per cell, so the pattern
     /// does not restart at a cell boundary.
     Dotted = 4,
-    /// `4:5` — a dashed line (#830). One period per cell, with the dash split across the boundary
+    /// `4:5` — a dashed line. One period per cell, with the dash split across the boundary
     /// so adjacent cells' dashes join.
     Dashed = 5,
 }
@@ -261,10 +261,10 @@ fn flag_words(f: u32) -> (u32, u32, u32) {
 }
 
 /// One character position: a base glyph, fg/bg colour references, and flags.
-/// Combining marks (#45) and an OSC 8 hyperlink (#46) attach via per-row maps,
+/// Combining marks and an OSC 8 hyperlink attach via per-row maps,
 /// signalled by the `COMBINED_PRESENT` / `LINK_PRESENT` bits — the cell itself is
-/// three packed words, no `Option` field. All access is through the accessor seam
-/// (#44); construct with [`Cell::from_parts`] or [`Cell::default`].
+/// three packed words, no `Option` field. All access is through the accessor seam;
+/// construct with [`Cell::from_parts`] or [`Cell::default`].
 ///
 /// `Eq` is a derived bitwise compare, which is exact because the packing is
 /// canonical — every logical cell maps to one bit pattern (unused bits stay 0).
@@ -318,7 +318,7 @@ impl core::fmt::Debug for Cell {
 impl Cell {
     /// Assemble a cell from its logical parts. The single construction seam —
     /// `Pen::cell` and the wire decoder funnel through here, so the bit-packing
-    /// lives in exactly one place (#44).
+    /// lives in exactly one place.
     pub fn from_parts(c: char, fg: Color, bg: Color, flags: CellFlags) -> Self {
         let mut cell = Cell {
             content: c as u32, // a `char` is <= U+10FFFF, so it fits the 21-bit field
@@ -361,7 +361,7 @@ impl Cell {
             == ' ' as u32
     }
 
-    /// How this cell's underline is drawn (#829). [`UnderlineStyle::None`] means not underlined —
+    /// How this cell's underline is drawn. [`UnderlineStyle::None`] means not underlined —
     /// there is no separate boolean to consult, and [`CellFlags::UNDERLINE`] is derived from this.
     pub fn underline_style(&self) -> UnderlineStyle {
         UnderlineStyle::from_bits((self.content & C_USTYLE_MASK) >> C_USTYLE_SHIFT)
@@ -396,7 +396,7 @@ impl Cell {
     }
 
     /// Does this column carry combining marks? When true, the cluster lives in
-    /// the row's combining map at this column (#45) — a flag-gated cache: never
+    /// the row's combining map at this column — a flag-gated cache: never
     /// read the map without first checking this bit.
     pub fn is_combined(&self) -> bool {
         self.content & C_COMBINED != 0
@@ -448,7 +448,7 @@ impl Cell {
     }
 
     /// Mark (or unmark) this column as carrying a non-default underline colour in
-    /// the row's ucolor map (#520). Mirror of [`Cell::set_linked`].
+    /// the row's ucolor map. Mirror of [`Cell::set_linked`].
     pub fn set_ucolored(&mut self, on: bool) {
         if on {
             self.bg |= BG_UCOLOR;
@@ -460,7 +460,7 @@ impl Cell {
     /// Add the given flags (leaving the others set). Sets the word bits directly —
     /// no round-trip through `flags()`/`store_flags`.
     ///
-    /// **The underline is a field, not a bit, so it is *replaced* rather than OR-ed (#829).**
+    /// **The underline is a field, not a bit, so it is *replaced* rather than OR-ed.**
     /// Bit-OR is the right operation for every other member and the wrong one for a 3-bit value:
     /// OR-ing `Dotted` (4) into a `Single` (1) cell yields `Dashed` (5), a style neither the
     /// caller nor the parser asked for, and a bit pattern no canonical cell has — which would
@@ -481,7 +481,7 @@ impl Cell {
 
     /// Clear the given flags (leaving the others as they are).
     ///
-    /// **Naming the underline clears the whole field (#829)**, whichever way it was named — the
+    /// **Naming the underline clears the whole field**, whichever way it was named — the
     /// `UNDERLINE` flag or a style value. Masking the bits off instead would turn one style into
     /// another (clearing `UNDERLINE`, which normalises to `Single` = `0b001`, subtracts a bit from
     /// `Curly` = `0b011` and leaves `Double`), so a method documented as clearing a flag would
@@ -526,7 +526,7 @@ impl Cell {
     }
 
     /// Is this the blank column vacated when a wide glyph wrapped off the right
-    /// edge (#113)? It holds no character; unlike a trailing spacer it has no
+    /// edge? It holds no character; unlike a trailing spacer it has no
     /// wide lead to its left, so only the *text* extractors skip it.
     pub fn is_leading_spacer(&self) -> bool {
         self.content & C_LEADING_SPACER != 0
@@ -563,7 +563,7 @@ impl Cell {
     }
 
     /// Does this **wire** cell end a soft-wrapped row? See `CellFlags::WRAPLINE` — on the live
-    /// grid this is always false and `Grid::is_row_wrapped` is the question to ask (#538).
+    /// grid this is always false and `Grid::is_row_wrapped` is the question to ask.
     pub fn is_wrapline(&self) -> bool {
         self.content & C_WRAP != 0
     }

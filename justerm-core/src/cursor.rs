@@ -39,7 +39,7 @@ impl Pen {
 /// The cursor's drawn shape (DECSCUSR / the renderer's caret glyph). The engine
 /// reports the application's choice on the frame as an `Option` — `None` until
 /// DECSCUSR sets one — and the consumer draws it, falling back to its own default
-/// shape (#927).
+/// shape.
 ///
 /// **Deliberately exhaustive ([#843](https://github.com/kihyun1998/justerm/issues/843)) — and the reason is the wire, not the spec.**
 ///
@@ -78,7 +78,7 @@ pub struct Cursor {
     /// *next* print. Eager wrapping here is the classic off-by-one that shifts
     /// lines (see [`docs/architecture.md`](https://github.com/kihyun1998/justerm/blob/master/docs/architecture.md) "Hidden VT state").
     ///
-    /// # The lifecycle, and why it is written here (#848)
+    /// # The lifecycle, and why it is written here
     ///
     /// **What the flag means:** *the cursor is logically one past the column it
     /// sits on.* That sentence is what every site below is measured against — but
@@ -96,7 +96,7 @@ pub struct Cursor {
     /// pending wrap"*, xterm.js `InputHandler.ts:919` via `_restrictCursor`). So a
     /// derived predicate would instruct the next author to *remove* a clear that
     /// four engines agree on. What separates `HT` is not a property of the verb; it
-    /// is that on `HT` the references agree the other way, 3-1 (#848).
+    /// is that on `HT` the references agree the other way, 3-1.
     ///
     /// The site-classes, which are what this comment can honestly enumerate:
     ///
@@ -112,7 +112,7 @@ pub struct Cursor {
     ///   Two sites, and they spend it in opposite directions: `Term::wrapline` performs
     ///   the deferred wrap and only then puts the flag down, and `Term::step_back`
     ///   under `?45` takes the park as the first unit of the move and therefore does
-    ///   **not** decrement the column (#80). **`Term::step_back` is reached by two verbs
+    ///   **not** decrement the column. **`Term::step_back` is reached by two verbs
     ///   since #873** — `BS` and `CSI D`, the second n times per sequence — so a change
     ///   to that spend now moves cursor-left as well; that is the whole point of the
     ///   step being shared, and it is xterm's shape (one `CursorBack` from `CASE_BS`
@@ -184,8 +184,8 @@ pub struct Cursor {
     pub pen: Pen,
     /// Whether the cursor is shown (DEC ?25). The engine only reports it.
     pub visible: bool,
-    /// The caret shape the application set with DECSCUSR (#89), or `None` when it
-    /// has not set one — the consumer's default shape applies then (#927).
+    /// The caret shape the application set with DECSCUSR, or `None` when it
+    /// has not set one — the consumer's default shape applies then.
     /// `CSI 0 SP q`, DECSTR and RIS clear it. Reported on the frame, drawn by the
     /// renderer.
     pub shape: Option<CursorShape>,

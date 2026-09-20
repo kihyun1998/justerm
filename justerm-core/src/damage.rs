@@ -21,7 +21,7 @@ pub struct LineDamage {
 /// **A reported `count` never exceeds `bottom - top + 1`** — see
 /// [`crate::Engine::scroll_delta`], which caps it. `count` is `isize` here and
 /// `i16` on the wire, so an uncapped accumulation overflowed the field and
-/// reversed the shift's direction (#661); the bound is also the point past which
+/// reversed the shift's direction; the bound is also the point past which
 /// the value stops meaning anything, since every source row is then outside the
 /// region. The cap is applied when the op is *read*, not while it accumulates, so
 /// a region that scrolls far and returns still reports its true small net.
