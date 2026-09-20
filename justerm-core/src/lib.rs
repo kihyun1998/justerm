@@ -211,7 +211,7 @@ impl Engine {
     /// coordinates as [`Engine::grid`]'s `cell(row, col)` — or `None` if that cell
     /// carries no declared link.
     ///
-    /// **One call, not two, since #628.** This returned a `NonZeroU32` index that a
+    /// **One call, not two.** An earlier shape returned a `NonZeroU32` index that a
     /// second method resolved against a buffer-wide pool; the pool is gone (it was never
     /// reclaimed, and nothing interned across opens that a shared `Arc` does not), so
     /// there is no index left to hand out.
@@ -230,7 +230,7 @@ impl Engine {
         self.term.screen_link_at(row, col)
     }
 
-    /// The underline colour (SGR 58, #520) at **screen** `(row, col)` — same
+    /// The underline colour (SGR 58) at **screen** `(row, col)` — same
     /// coordinates as [`Engine::grid`]'s `cell(row, col)`. A theme-agnostic
     /// [`Color`] reference; [`Color::Default`] means the underline follows the
     /// glyph's foreground (the common case, and what a cell with no SGR 58 returns).
@@ -243,7 +243,7 @@ impl Engine {
     /// The OSC 8 hyperlink **URI** at **viewport** `(row, col)` — the visible window
     /// including scrollback at the current scroll, same coordinates as
     /// [`Engine::viewport_line`] — or `None`. Mirror of [`Engine::link_at`], including
-    /// its #628 note about the vanished index.
+    /// its note about the vanished index.
     pub fn viewport_link_at(&self, row: usize, col: usize) -> Option<Hyperlink> {
         self.term.viewport_link_at(row, col)
     }
@@ -343,7 +343,7 @@ impl Engine {
 
     /// Build a serializable [`Frame`] of the current diff — the damaged spans
     /// (or every row, when `Full`), the recorded scroll op, and a frame-local
-    /// grapheme side-table. Pass it to [`encode`] for the wire (see #6). Reading
+    /// grapheme side-table. Pass it to [`encode`] for the wire. Reading
     /// a frame does not clear damage; call [`Engine::reset_damage`] on ack.
     pub fn frame(&self) -> Frame {
         self.term.frame()
@@ -467,7 +467,7 @@ impl Engine {
     /// selection.
     ///
     /// Widened onto whole wide-glyph pairs exactly as
-    /// [`selection_range`](Self::selection_range) is (#454) — a spacer extracts
+    /// [`selection_range`](Self::selection_range) is — a spacer extracts
     /// as nothing, so a range ending inside a pair would copy text the
     /// highlight does not show.
     pub fn selection_text(&self) -> Option<String> {
@@ -483,12 +483,12 @@ impl Engine {
     }
 
     /// Search with explicit [`SearchOptions`] — regex, whole-word, and a case-sensitivity override
-    /// beyond the literal + smart-case [`search`](Self::search) (#314).
+    /// beyond the literal + smart-case [`search`](Self::search).
     pub fn search_with(&self, query: &str, opts: SearchOptions) -> Vec<Match> {
         self.term.search_with(query, opts)
     }
 
-    /// The viewport's logical lines (#113/[ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)): each soft-wrap-joined line's
+    /// The viewport's logical lines ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)): each soft-wrap-joined line's
     /// text plus a per-char map to its viewport `(row, col)`. The buffer-wide
     /// mechanism for consumer-side URL detection — the consumer runs its own
     /// regex / `new URL()` over the text and maps matches back through `cells`.

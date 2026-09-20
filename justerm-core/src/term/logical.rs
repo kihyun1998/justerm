@@ -24,7 +24,7 @@ use crate::logical::LogicalLine;
 use super::Term;
 
 impl Term {
-    /// The viewport's logical lines (#113/[ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)): each line's text plus a
+    /// The viewport's logical lines ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)): each line's text plus a
     /// per-char map to its viewport `(row, col)`. Wide-char spacers are skipped
     /// and trailing blanks trimmed (so the text is 1:1 with `cells`). Empty rows
     /// are dropped. The cell-aware assembly the consumer can't do in frame mode.
@@ -42,7 +42,7 @@ impl Term {
     ///   `viewport_logical_lines_with` is additive — meaning 1.0.0 does not gate it.
     /// - **The hard part is the trim, not the counter** — see the trim below.
     ///
-    /// Closed as #206 with the reach measured at zero: nothing outside this crate's tests
+    /// The reach was measured at zero: nothing outside this crate's tests
     /// and benches calls this today. `benches/wrap_run.rs` re-measures on demand.
     pub fn viewport_logical_lines(&self) -> Vec<LogicalLine> {
         let rows = self.grid.rows();

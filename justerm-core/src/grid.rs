@@ -66,7 +66,7 @@ impl ExtAttrs {
     /// The family as the *pen* currently holds it — the other source besides a cell
     /// (`Row::ext_attrs_at`). Every print-path site that stamps a freshly built cell
     /// goes through here, so the gating rules live in one place and a later rider is
-    /// added once (#521/#528).
+    /// added once.
     pub(crate) fn from_pen(link: Option<Arc<str>>, ucolor: Option<Color>) -> ExtAttrs {
         ExtAttrs { link, ucolor }
     }

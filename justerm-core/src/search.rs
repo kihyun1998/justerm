@@ -9,7 +9,7 @@
 
 /// Whether `pattern` is a regex [`Term::search_with`](crate::Term::search_with) can run
 /// (`opts.regex = true`) — a `true` guarantees `search_with` will *build* the pattern, and a
-/// `false` is exactly the case it silently swallows into an empty result (#316 D2).
+/// `false` is exactly the case it silently swallows into an empty result.
 ///
 /// Validated under **case-insensitive** compilation, the most expansive: Unicode case-folding
 /// grows the compiled program, so a `true` here holds whichever case mode smart-case / the

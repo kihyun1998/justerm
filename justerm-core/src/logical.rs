@@ -17,9 +17,9 @@ pub struct LogicalLine {
     /// `BufferLine.translateToString(true)` an earlier version of this comment claimed. The
     /// spacer skip matches; the wrap join does not (that method spans one `BufferLine` —
     /// xterm pairs it with `Buffer.getWrappedRangeForLine`); and the trim still differs,
-    /// but on a **narrower** case than this comment used to name. Until #685 the trim was
-    /// `str::trim_end()`, the Unicode `White_Space` property, so it dropped a printed
-    /// U+00A0 / U+3000 / U+2003 as well. It now removes only `' '` — the codepoint a blank
+    /// but on a **narrower** case than this comment used to name. A `str::trim_end()` would
+    /// apply the Unicode `White_Space` property and drop a printed
+    /// U+00A0 / U+3000 / U+2003 as well; this removes only `' '` — the codepoint a blank
     /// cell packs, and therefore the only one that can be padding. What remains is a
     /// printed trailing **ASCII space**, which xterm keeps (it bounds by written extent)
     /// and this cannot, because `Cell` has no bit distinguishing a written `' '` from a

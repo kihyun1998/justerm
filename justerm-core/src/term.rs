@@ -536,15 +536,15 @@ pub const MIN_COLUMNS: usize = 2;
 ///
 /// Two properties of this list are load-bearing and neither is obvious:
 ///
-/// - **It is a literal set, not the Unicode `White_Space` property.** The predicate was
-///   `char::is_whitespace()` until #545, so every space-like codepoint ended a word —
+/// - **It is a literal set, not the Unicode `White_Space` property.** A
+///   `char::is_whitespace()` predicate would end a word at every space-like codepoint —
 ///   including the four `Line_Break=GL` (glue) ones U+00A0, U+2007, U+202F and U+205F,
 ///   whose whole purpose is "do not break here". A locale-formatted `1<NNBSP>234`
 ///   double-clicked as `1`. All three references are literal sets for the same reason.
 /// - **U+3000 is in it, and no reference's default has it.** It is the only
 ///   East-Asian-Wide codepoint `White_Space` accepts (measured over U+0000–U+10FFFF),
 ///   so on alacritty and xterm.js `　abc` is one word while justerm gives the useful
-///   answer. Keeping it was argued in #535 *on the grounds that core had no injection
+///   answer. Keeping it was once argued *on the grounds that core had no injection
 ///   point*; that ground is gone, so it survives here as a **default**, and a consumer
 ///   who wants reference-exact behaviour removes it.
 ///
@@ -691,7 +691,7 @@ pub const MAX_ROWS: usize = u16::MAX as usize;
 /// by the *stream*. `add_command_mark` appends per OSC 133 sequence, several marks can
 /// share one line, and scrollback eviction only drops a marker when its line reaches
 /// absolute 0 — so a stream that never emits a newline accumulates marks in a 24-row
-/// buffer without bound (measured: 70 000, #721). [`crate::Engine::feed`] is an untrusted
+/// buffer without bound (measured: 70 000). [`crate::Engine::feed`] is an untrusted
 /// entry point ([ADR-0007](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0007-robustness-testing-property-and-fuzz.md)), and unbounded allocation behind it is a defect class that
 /// record exists to catch.
 ///
@@ -919,7 +919,7 @@ pub struct CommandLine {
     /// struct, and they are the two that recur; they are not a proof of
     /// sufficiency. The hedge was earned: a mark whose row is erased in place also
     /// answers about content that is gone — on the primary screen, at one instant, and
-    /// a re-ask reproduces it, so neither half below reaches it. That was **#750**, a
+    /// a re-ask reproduces it, so neither half below reaches it. That was a
     /// defect in mark *lifetime* rather than in dating, and it is fixed at the
     /// lifetime: `ED` now retires the marks on each whole row it blanks, and the
     /// command's text and exit are frozen when the stream reveals them rather than
@@ -1200,7 +1200,7 @@ impl Term {
     /// region can legally be taller than any count that field can hold. In that
     /// corner the magnitude truncates. What it never does is wrap — a wrapped count
     /// arrives with the opposite sign and the consumer shifts the wrong way, which is
-    /// the whole of #661.
+    /// the whole reason the saturation is here.
     pub fn scroll_delta(&self) -> Option<ScrollOp> {
         if self.display_offset > 0 {
             return None;
@@ -1209,7 +1209,7 @@ impl Term {
     }
 
     /// Build a serializable [`Frame`] from the current damage + grid + grapheme
-    /// pool (#6). `Full` ships every row; `Partial` ships the damaged spans. The
+    /// pool. `Full` ships every row; `Partial` ships the damaged spans. The
     /// global side-table is remapped to **frame-local** indices — the engine pool
     /// is append-only and leaky, so a frame carries only the clusters its cells
     /// reference, renumbered, with each cell's `extra` rewritten to the local id.
@@ -1435,12 +1435,12 @@ impl Term {
     /// A consequence worth knowing before you narrow the set: this predicate is the only
     /// thing bounding the walk, so a set that omits the separators actually present in
     /// the buffer makes one double-click walk the whole soft-wrap run — measured at 11.7 ms
-    /// (release) selecting 801,920 chars (#206, closed with the reach at zero).
+    /// (release) selecting 801,920 chars.
     ///
     /// If a length bound is ever wanted, **it is a field beside this one, not an argument**:
     /// `word_start` / `word_end` are `pub(super)`, reached through
     /// [`Term::selection_begin`], so there is no call site for a consumer to inject into.
-    /// This setter is the shape it would take (#545's, injected policy over a core
+    /// This setter is the shape it would take (injected policy over a core
     /// mechanism, [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
     pub fn set_word_separators(&mut self, separators: &str) {
         let mut set: String = separators.to_owned();
@@ -1461,23 +1461,23 @@ impl Term {
         self.scrollback.len()
     }
 
-    /// Whether the app has an open synchronized-output block (DEC ?2026, #73).
+    /// Whether the app has an open synchronized-output block (DEC ?2026).
     pub fn synchronized_output(&self) -> bool {
         self.synchronized_output
     }
 
-    /// Whether the app enabled color-scheme-update notifications (DEC ?2031, #85).
+    /// Whether the app enabled color-scheme-update notifications (DEC ?2031).
     pub fn color_scheme_updates(&self) -> bool {
         self.color_scheme_updates
     }
 
-    /// Whether the app enabled grapheme-cluster mode (DEC ?2027, #295): emoji ZWJ / skin-tone /
+    /// Whether the app enabled grapheme-cluster mode (DEC ?2027): emoji ZWJ / skin-tone /
     /// flag / VS16 sequences are clustered into one cell. OFF (default) is per-char, wcwidth-compat.
     pub fn grapheme_clustering(&self) -> bool {
         self.grapheme_clustering
     }
 
-    /// Whether the app enabled win32-input-mode (DEC ?9001, #86). The engine does
+    /// Whether the app enabled win32-input-mode (DEC ?9001). The engine does
     /// not encode the raw key-records itself (a non-goal); a ConPTY consumer reads
     /// this to decide whether to emit them.
     pub fn win32_input_mode(&self) -> bool {
@@ -1710,7 +1710,7 @@ impl Term {
     ///
     /// The reply echoes the terminator the query arrived with, like every other
     /// reply this crate queues — settled for the whole channel rather than for
-    /// this sequence, which is where #828 left it.
+    /// this sequence alone.
     pub fn report_clipboard(
         &mut self,
         target: ClipboardTarget,
@@ -1935,7 +1935,7 @@ impl Term {
 
     /// Resize the screen to `cols` x `rows`. Rows dropped off the top (on shrink)
     /// enter scrollback. Column reflow of soft-wrapped lines is layered on top
-    /// separately (#7). The whole screen is damaged.
+    /// separately. The whole screen is damaged.
     ///
     /// `cols` is widened to [`MIN_COLUMNS`] — a narrower screen cannot hold a
     /// width-2 glyph, so it is clamped rather than represented.
@@ -3809,8 +3809,8 @@ impl Term {
 
     /// The column, on the cursor's row, of the cluster the cursor last printed into —
     /// or `None` when nothing precedes it on this row. Shared by the combining-mark
-    /// attach point and the mode-2027 join point, which each carried their own copy of
-    /// it before #825.
+    /// attach point and the mode-2027 join point, which each used to carry their own
+    /// copy of it.
     ///
     /// # Two cases, and why the first one is trustworthy again (#865, #869)
     ///
@@ -5743,7 +5743,7 @@ impl Perform for Term {
 
     /// A DCS is terminated: not a print, so the repeat is disarmed. This method
     /// exists for that alone — the payload is otherwise unhandled — and it is reachable
-    /// in ordinary use: since #824 answered DA2, `vim` follows up with XTGETTCAP
+    /// in ordinary use: with DA2 answered, `vim` follows up with XTGETTCAP
     /// (`DCS + q <hex> ST`) queries this engine does not answer. Both halves of that
     /// are pinned on recorded bytes rather than asserted — `tests/closed_loop_capture.rs`.
     ///
@@ -5758,7 +5758,7 @@ impl Perform for Term {
     /// | terminator | dashes without this line |
     /// |---|---|
     /// | `ESC \` (7-bit ST) | 1 — `esc_dispatch` disarms on the `\` |
-    /// | `0x9C` (8-bit ST, which DCS accepts where OSC refuses it — #847) | 4 |
+    /// | `0x9C` (8-bit ST, which DCS accepts where OSC refuses it) | 4 |
     /// | none; aborted by the `ESC` of the next sequence | 4 |
     ///
     /// So a test that feeds only `ESC \` proves nothing here, which is what the first
@@ -6088,7 +6088,7 @@ impl Perform for Term {
         }
     }
 
-    /// OSC dispatch (#12 event surface): title (0/2), cwd (7). OSC 8 hyperlink
+    /// OSC dispatch (the event surface): title (0/2), cwd (7). OSC 8 hyperlink
     /// is per-cell state, handled in its own slice, not here.
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
         // Not a print: the repeat is disarmed (#825, [`Term::repeat_anchor`]).

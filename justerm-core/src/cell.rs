@@ -32,7 +32,7 @@ bitflags::bitflags! {
         /// depend on knowing this column belongs to the wide char to its left.
         const WIDE_CHAR_SPACER = 1 << 9;
         /// A row that soft-wrapped (auto-wrap) into the next — distinguishing it from a hard
-        /// CR/LF line-end so reflow (#7) can merge and re-split logical lines.
+        /// CR/LF line-end so reflow can merge and re-split logical lines.
         ///
         /// **Wire-only.** The live grid holds this on the `Row` (`Grid::is_row_wrapped`); it used
         /// to live here, where every whole-cell write and clear destroyed it and ordinary typing
@@ -84,7 +84,7 @@ pub enum UnderlineStyle {
     /// reads `21` as *cancel bold*, so an application meaning "stop bold" gets a double underline
     /// here and keeps its bold. `SGR 22` is the arm that cancels bold.
     Double = 2,
-    /// `4:3` — a curl. The mark #829 carries end to end.
+    /// `4:3` — a curl.
     Curly = 3,
     /// `4:4` — a dotted line. Drawn with a whole number of dots per cell, so the pattern
     /// does not restart at a cell boundary.
@@ -403,14 +403,14 @@ impl Cell {
     }
 
     /// Does this column carry an OSC 8 hyperlink? When true, the URI lives in the
-    /// row's link map at this column (#46; the URI itself rather than an index into a
-    /// buffer-wide pool since #628) — flag-gated like combining: never read the link
+    /// row's link map at this column — the URI itself, not an index into a buffer-wide
+    /// pool — flag-gated like combining: never read the link
     /// map without first checking this bit.
     pub fn is_linked(&self) -> bool {
         self.bg & BG_LINK != 0
     }
 
-    /// Does this column carry a non-default underline colour (SGR 58, #520)? When
+    /// Does this column carry a non-default underline colour (SGR 58)? When
     /// true, the `Color` reference lives in the row's ucolor map at this column —
     /// flag-gated exactly like the hyperlink: never read the ucolor map without
     /// first checking this bit.
@@ -423,7 +423,7 @@ impl Cell {
         self.content = (self.content & !CODEPOINT_MASK) | c as u32;
     }
 
-    /// Overwrite the background colour (the BCE erase fill, #16), preserving the
+    /// Overwrite the background colour (the BCE erase fill), preserving the
     /// bg-word flag bits.
     pub fn set_bg(&mut self, bg: Color) {
         self.bg = pack_color(bg) | (self.bg & !(COLOR_VALUE_MASK | (0b11 << COLOR_MODE_SHIFT)));
@@ -506,8 +506,8 @@ impl Cell {
     /// Reset to a blank **default** cell — default background included.
     ///
     /// That is rarely what a terminal operation wants on its own: a blank the engine creates
-    /// carries the current background (BCE for an erase, and the same for a structural repair,
-    /// #530). Callers pair this with `set_bg`; `Term::free_cell` and the erase paths are the
+    /// carries the current background (BCE for an erase, and the same for a structural
+    /// repair). Callers pair this with `set_bg`; `Term::free_cell` and the erase paths are the
     /// places that do. Using it bare leaves an uncoloured notch in a coloured run.
     pub fn reset(&mut self) {
         *self = Cell::default();
@@ -543,9 +543,9 @@ impl Cell {
     ///
     /// The marker claims two things at once, and it has to go when **either** stops holding, or
     /// the text extractors keep skipping a column that is now a real blank: the row still
-    /// soft-wraps (`Term::end_wrap` owns that half — #538, #540), and the continuation still
+    /// soft-wraps (`Term::end_wrap` owns that half), and the continuation still
     /// begins with the wide lead that could not fit (`Term::repair_wrap_artefact_above` owns that
-    /// one — #534). Clearing is deliberately one-way: nothing here re-arms the marker, because a
+    /// one). Clearing is deliberately one-way: nothing here re-arms the marker, because a
     /// wide glyph typed at column 0 of the next row did not *wrap* from anywhere.
     pub fn clear_leading_spacer(&mut self) {
         self.content &= !C_LEADING_SPACER;
@@ -556,8 +556,8 @@ impl Cell {
     /// **Records** that the column is blank; it does not make it so. The caller must have
     /// written the blank first — this only ORs a marker onto whatever cell is there. Setting
     /// it over a live glyph leaves a cell the text extractors skip while a renderer still
-    /// draws it, which is exactly the defect #528 fixed (`Term::vacate_for_wrap` is the one
-    /// place that establishes the precondition; reflow is the other set site, #533).
+    /// draws it, which is the defect this precondition exists to prevent (`Term::vacate_for_wrap` is the one
+    /// place that establishes the precondition; reflow is the other set site).
     pub fn set_leading_spacer(&mut self) {
         self.content |= C_LEADING_SPACER;
     }

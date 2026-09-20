@@ -66,7 +66,7 @@ impl Modifiers {
     }
 }
 
-/// A numeric-keypad key. In application-keypad mode (DECNKM ?66 / DECKPAM, #74)
+/// A numeric-keypad key. In application-keypad mode (DECNKM ?66 / DECKPAM)
 /// these encode as the classic VT100/VT220 SS3 sequences; in numeric mode as the
 /// literal character. The consumer produces these for *raw* keypad identity — it
 /// owns NumLock / key-location resolution.
@@ -100,7 +100,7 @@ pub enum KeypadKey {
 pub enum Key {
     /// A printable character (the consumer's already-composed text).
     Char(char),
-    /// A numeric-keypad key (encoded per application-keypad mode, #83).
+    /// A numeric-keypad key (encoded per application-keypad mode).
     Keypad(KeypadKey),
     Up,
     Down,

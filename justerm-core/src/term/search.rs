@@ -39,13 +39,13 @@ impl Term {
     /// giant run and the same bytes as short lines, because it scans everything either way
     /// — the run is one big allocation instead of many small ones, same total work. A
     /// per-run cap here buys nothing, and xterm's search walk is uncapped for the same
-    /// reason (its 2048/direction cap is in the link provider, which runs a regex). #206.
+    /// reason (its 2048/direction cap is in the link provider, which runs a regex).
     pub fn search(&self, query: &str) -> Vec<Match> {
         self.search_with(query, SearchOptions::default())
     }
 
     /// Search with explicit [`SearchOptions`] — regex, whole-word, and a case-sensitivity override
-    /// on top of the literal + smart-case [`search`](Self::search) (#314). Same coordinates,
+    /// on top of the literal + smart-case [`search`](Self::search). Same coordinates,
     /// soft-wrap join, spacer skip, and grapheme-mark inclusion as `search`.
     pub fn search_with(&self, query: &str, opts: SearchOptions) -> Vec<Match> {
         let q: Vec<char> = query.chars().collect();
@@ -201,7 +201,7 @@ impl Term {
     /// **Both column ends are bounded here, and the `left` half is not an accident of
     /// symmetry.** A [`Match`]'s columns are *consumer-supplied* by design:
     /// [`Term::set_active_search_match`] documents taking one the caller assembled
-    /// outside the engine's own result set (the past-cap path, #436), and `Match`'s
+    /// outside the engine's own result set (the past-cap path), and `Match`'s
     /// fields are public. So the usual guarantee — "the engine found it, therefore it is
     /// in range" — does not hold on this path, and only the *index* form
     /// ([`Term::set_active_search_highlight`]) keeps it by construction.
@@ -211,7 +211,7 @@ impl Term {
     /// the rest painted — the shape that reads as "the highlight is fine" at a glance,
     /// and the reason this was not a visible defect for as long as it existed.
     ///
-    /// Bounded **here** rather than at the three storing intakes. #671 is the sibling but
+    /// Bounded **here** rather than at the three storing intakes. Selection's sibling fix is
     /// **not** the same shape: it did not touch `selection_range`, whose `left` is still
     /// unbounded — it clamped selection's *producer* (`Term::viewport_to_abs`), which made
     /// the read-site asymmetry unreachable. Search has no producer to clamp, because the
@@ -230,7 +230,8 @@ impl Term {
     /// old outcome was neither: it dropped one row and painted the rest. The cost of
     /// clamping is recorded with it in `reference-facts.md` — on a grid ending in a wide
     /// glyph the clamped column can be the pair's trailing spacer, so a span can cover half
-    /// a glyph (the #454 class), which hiding would not have produced.
+    /// a glyph — the class a span-covers-a-pair-whole rule exists for — which hiding would
+    /// not have produced.
     pub fn match_spans(&self, m: &Match) -> Vec<SelectionSpan> {
         let rows = self.grid.rows();
         let top = self.scrollback.len() - self.display_offset;
@@ -281,7 +282,7 @@ impl Term {
     /// Designate which member of the held highlight set is the *active* match
     /// — the one the consumer's next/prev navigation currently points at.
     /// `frame()` projects it into `overlay.active_match` (it also stays in
-    /// `overlay.matches`; the renderer's ranking resolves the overlap, #424).
+    /// `overlay.matches`; the renderer's ranking resolves the overlap).
     /// `None` or an out-of-range index projects nothing; the designation resets
     /// whenever a new set is passed to [`set_search_highlights`](Self::set_search_highlights).
     /// The index resolves to its span at call time — both designation
@@ -344,7 +345,7 @@ impl Term {
 }
 
 /// Whether the run `hay[i..i+len]` is bounded by non-word characters on both sides — the `\bword\b`
-/// sense for whole-word search (#314). A word char is alphanumeric or `_` (the regex `\w` set),
+/// sense for whole-word search. A word char is alphanumeric or `_` (the regex `\w` set),
 /// deliberately distinct from selection's semantic-selection set.
 ///
 /// **#545 made that set consumer-injectable and deliberately left this one alone**, so the two

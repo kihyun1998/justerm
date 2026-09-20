@@ -19,9 +19,9 @@ use crate::serialize::{MarkerId, MarkerKind};
 /// terminator the request arrived with, and the consumer hands it back to the
 /// matching `report_*`. Under [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) the parse-time fact is a *mechanism* only
 /// the engine can observe, while *which* terminator to send is policy — and a
-/// consumer cannot exercise a policy on a fact it was never given, which is what
-/// #836 measured: `bell_terminated` was discarded at the parser boundary before
-/// any event was queued.
+/// consumer cannot exercise a policy on a fact it was never given. That was
+/// measured, not assumed: `bell_terminated` was discarded at the parser boundary
+/// before any event was queued.
 ///
 /// **The spec settles the direction, not just the reference tally.**
 /// `ctlseqs.txt:2020` — *"XTerm accepts either BEL or ST for terminating OSC
@@ -202,9 +202,9 @@ pub enum ClipboardTarget {
 /// A consumer-facing event emitted while parsing the VT stream.
 ///
 /// **`#[non_exhaustive]`, so a consumer must carry a `_` arm and a new variant
-/// never breaks one.** Decided 2026-09-02, by the maintainer, while #828 was
-/// adding two — and what decided it was neither this slice nor any consumer we
-/// can see.
+/// never breaks one.** Decided 2026-09-02, by the maintainer, while a slice was
+/// adding two variants — and what decided it was neither that slice nor any
+/// consumer we can see.
 ///
 /// **What decided it is [`CLAUDE.md`](https://github.com/kihyun1998/justerm/blob/master/CLAUDE.md)'s own identity statement**: *"`justerm-core`
 /// is not penterm-only — it is a reusable, independent crate."* That sentence
@@ -233,7 +233,7 @@ pub enum ClipboardTarget {
 /// - **The window closes at `1.0.0`.** Adding this is free while the crate is
 ///   `0.x` and is *itself* a breaking change afterwards, while an enum without
 ///   it turns every future variant into a major bump. Conformance here is
-///   cumulative by design (#47 is a perpetual tail) and the two slices before
+///   cumulative by design — the VT tail is perpetual — and the two slices before
 ///   this one added three variants and two, so that rate is measured rather than
 ///   assumed.
 ///
@@ -256,7 +256,7 @@ pub enum ClipboardTarget {
 pub enum TermEvent {
     /// The window title is now this string.
     ///
-    /// Read the tense carefully: since #823 this is **not** only "the
+    /// Read the tense carefully: this is **not** only "the
     /// application set a title". Two paths emit it — `OSC 0`/`OSC 2`, and an
     /// XTWINOPS title *pop* (`CSI 23 t`) restoring what an earlier `CSI 22 t`
     /// saved. A consumer that treats it as "the title is now this" is correct
@@ -300,7 +300,7 @@ pub enum TermEvent {
     /// nonsense, and interpreting it is the consumer's ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
     SetPaletteColor { index: u8, spec: String },
     /// The app set the default foreground colour (OSC 10). Raw spec, forwarded
-    /// for the consumer to apply — theme-agnostic, like [`SetBackground`](Self::SetBackground) (#122).
+    /// for the consumer to apply — theme-agnostic, like [`SetBackground`](Self::SetBackground).
     SetForeground(String),
     /// The app set the default background colour (OSC 11). The engine is
     /// theme-agnostic, so it forwards the raw spec string (`rgb:…`/`#…`) for the
@@ -317,7 +317,7 @@ pub enum TermEvent {
         /// The terminator `report_palette_color` must answer with.
         terminator: Terminator,
     },
-    /// The app set the cursor colour (OSC 12, #832). The third slot of the same
+    /// The app set the cursor colour (OSC 12). The third slot of the same
     /// dynamic-colour sequence `SetForeground` and `SetBackground` ride, and
     /// theme-agnostic for the same reason: the raw spec is forwarded and the
     /// consumer — which owns the palette *and* the cursor's contrast guard —
@@ -329,14 +329,14 @@ pub enum TermEvent {
         /// The terminator `report_cursor_color` must answer with.
         terminator: Terminator,
     },
-    /// The app reset the cursor colour to the theme default (OSC 112, #832). The
+    /// The app reset the cursor colour to the theme default (OSC 112). The
     /// third member of the 110/111/112 reset family, and the one real
     /// applications emit most: `nvim` sends it on startup, on every alt-screen
     /// transition and on exit.
     ResetCursorColor,
-    /// The app reset the default foreground to the theme default (OSC 110, #122).
+    /// The app reset the default foreground to the theme default (OSC 110).
     ResetForeground,
-    /// The app reset the default background to the theme default (OSC 111, #122).
+    /// The app reset the default background to the theme default (OSC 111).
     ResetBackground,
     /// The app queried the default foreground colour (OSC 10 with `?`); the
     /// consumer answers with `report_foreground`.
@@ -351,8 +351,8 @@ pub enum TermEvent {
         /// The terminator `report_background` must answer with.
         terminator: Terminator,
     },
-    /// The app asked for `text` to be put on `target` (`OSC 52` with a payload,
-    /// #828). The engine has already base64-decoded it, and holds no clipboard
+    /// The app asked for `text` to be put on `target` (`OSC 52` with a payload).
+    /// The engine has already base64-decoded it, and holds no clipboard
     /// of its own.
     ///
     /// **This is a request, not a fact.** Whether the copy happens is the
@@ -364,7 +364,7 @@ pub enum TermEvent {
     /// gate lives one layer out.
     ///
     /// **The reason once given for that was measurably wrong, and is corrected
-    /// here rather than quietly dropped (#841, re-read 2026-09-10).** This said
+    /// here rather than quietly dropped (re-read 2026-09-10).** This said
     /// *"because alacritty **is** the consumer"*. It is not the distinction:
     /// alacritty's gate sits inside `alacritty_terminal`, the **engine** crate,
     /// with the policy *injected across the crate boundary* — `Osc52` is a field
@@ -393,7 +393,7 @@ pub enum TermEvent {
         target: ClipboardTarget,
         text: String,
     },
-    /// The app asked what is on `target` (`OSC 52` with a `?` payload, #828).
+    /// The app asked what is on `target` (`OSC 52` with a `?` payload).
     /// The consumer answers by calling `report_clipboard`, which encodes the
     /// reply — or declines, which is how a clipboard *read* is refused
     /// independently of a write.
