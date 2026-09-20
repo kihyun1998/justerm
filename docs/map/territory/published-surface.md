@@ -22,7 +22,7 @@ How a version gets there is [release](release.md).
 - **Immutability is the whole constraint.** crates.io and npm never rewrite a published artifact;
   only a yank comes back. Every other area is fixable by a commit — here a mistake is a permanent row
   in someone else's dependency graph.
-- **Three mechanised checks, deliberately at different moments.**
+- **Four mechanised checks, deliberately at different moments.**
   `justerm-wasm-decode/tests/readme_pins.rs` ties a constant the README *quotes* to the constant that
   owns it and fails on **every PR**. `.github/scripts/check-published-readme.mjs` rejects expiring
   claims — *"under construction"*, *"lands in #N"*, *"coming soon"* — at **publish time only**,
@@ -34,6 +34,39 @@ How a version gets there is [release](release.md).
   later, so only the tag can judge it, while an ADR number in a registry blurb is wrong when typed.
   Catching it at PR time costs a commit; catching it at publish costs a re-tag, and npm never lets a
   version be re-published at all.
+  `.github/scripts/check-published-rustdoc.mjs` applies the same rule to the **rendered rustdoc**
+  of every crate that reaches crates.io, also on every PR.
+- **A doc-comment on a published crate is the front page, not an internal note (#953).** The
+  hole two bullets down — *"doc-comments are a published surface with a narrower gate than
+  READMEs"* — was measured rather than estimated: **384 bare pointers across 56 of `justerm-core`'s
+  61 own pages** on the published `0.21.0`, plus `justerm` 0.5.1's `//!` ending *"See ADR-0010 in
+  the repository."* And the `description` gate was **pointing at it**: its failure message told
+  authors to put the pointer in the crate's `//!` header, the one published surface nothing read.
+  - **It reads `cargo doc` output, not sources, and that is load-bearing.** A link nested inside a
+    code span — `` `[CLAUDE.md](url)` `` — is a correctly-linked reference to any source scan and
+    renders as literal text to a reader. 14 sites came out that way from the mechanical linking
+    pass and **doubled** their own finding count, because the label and the URL then both read as
+    bare paths. Only the rendered page tells the two apart.
+  - **`#844` is an executable string, not prose.** `justerm-core/tests/public_struct_reasons.rs`
+    reads `l.contains("#844")` over a published struct's doc block, so rewriting a paragraph's
+    reasoning while dropping only the number reddens it (measured, on `Span`). `[#844](url)`
+    contains `#844` — linking is the only form that satisfies the test and the reader at once,
+    which is why the attribute rulings are linked where the provenance tickets are deleted.
+  - **What it cannot see, stated because the gate otherwise reads as more coverage than it is.**
+    The rustdoc **source view** (`src/<crate>/*.rs.html`, behind every item's `Source` link) is
+    the whole file — 1118 hits for `justerm-core`, 760 of them ordinary `//` comments — and is
+    deliberately out of scope, because `CLAUDE.md` sends the why and the measured value to
+    `docs/map/`, so a comment naming a territory note is that policy working. A page rustdoc
+    **inlined from a dependency** is skipped for a harder reason: `justerm` re-exports
+    `justerm-core = "0.6"`, and those 37 pages carry prose already on crates.io that no edit here
+    can reach. And the balanced-docblock extractor is *correct* rather than currently
+    load-bearing — swapping in the naive non-greedy one drops 9.3% of the scanned text and finds
+    the same 372 pointers — so a shrink there cannot redden the gate, and the scanned page,
+    docblock and character counts are printed on every run instead.
+  - **It is the first CI step that touches `justerm-facade` at all**, which the
+    [workspace-exclusion](../invariant/workspace-exclusion-is-gate-invisibility.md) note predicted:
+    the tombstone is outside the root workspace, so `cargo doc --workspace` never built it and its
+    own `--manifest-path` run had to be added beside the gate.
 - **The same rule lands differently on the two surfaces, and the difference is what it can link.**
   A `description` is a bare string with nowhere to put a URL, so *any* pointer in it is unresolvable
   by construction. A README can link out, so only a **bare** one is rejected there —
@@ -260,6 +293,13 @@ same trace.
   it names what it cannot see (prose accuracy, expiring claims, contributor-only content such as
   build commands, a multi-line TOML description)
 - Public doc-comments in `justerm-core/src/lib.rs` — they ship verbatim as the docs.rs page
+- `.github/scripts/check-published-rustdoc.mjs` — the repo-only-pointer gate for the **rendered
+  rustdoc** of every crates.io crate (every PR, after `cargo doc`). Derives its crate list from the
+  manifests that lack `publish = false`, reads `<div class="docblock">` on pages rustdoc generated
+  from the crate's own source, and hard-fails when a published crate's pages are absent. It names
+  what it cannot see: the source view, and any page inlined from a dependency
+- `justerm-facade/src/lib.rs` — the tombstone's `//!`, which is its whole docs.rs page and, before
+  the gate above, was reached by no CI step in this repository
 - `justerm-web/src/types.ts` — `DecodedFrame`, web's mirror of the published decoder's getters;
   width-agnostic by contract, so it gates a column's presence and never its width
 - `justerm-web/src/justerm-renderer.ts` — `RendererBackend`, web's mirror of the published
@@ -319,9 +359,19 @@ same trace.
 ## Known holes / open
 
 - **Zero governing records** for a surface whose defining property is that it cannot be corrected.
-- **Doc-comments are a published surface with a narrower gate than READMEs.** The expiring-claim
-  check reads READMEs only, which is how `Engine::resize` carried *"(Soft-wrap reflow lands in #7.)"*
-  on docs.rs for six weeks after #7 closed.
+- **Doc-comments are a published surface with a narrower gate than READMEs — narrower still, now
+  that the pointer half is closed.** `check-published-rustdoc.mjs` (#953) rejects a bare ADR or
+  issue number in the rendered docs; the **expiring-claim** check still reads READMEs only, which is
+  how `Engine::resize` carried *"(Soft-wrap reflow lands in #7.)"* on docs.rs for six weeks after #7
+  closed. That sentence would pass the new gate today: it names no number a reader must resolve,
+  only a promise that has since come false, and nothing judges promises on this surface.
+- **The rendered-rustdoc gate covers crates.io only, so the `.d.ts` surface is still open (#951).**
+  `justerm-renderer` and `justerm-wasm-decode` carry `publish = false`, so no docs.rs page exists
+  for them and this gate skips them by construction — but wasm-pack lifts their `///` comments
+  verbatim into the generated `.d.ts`, where an editor shows them on hover. Measured on the
+  published 0.21.0 tarballs: 141 issue numbers, and 14 intra-doc links naming Rust method names the
+  JS API does not have. That surface does not exist until `wasm-pack build` runs, so it needs its
+  own gate rather than a branch in this one.
 - **Only one constant is pinned.** `readme_pins.rs` covers `wireVersion()`; any other number a README
   quotes is unchecked, and a README that starts quoting a new one gets no pin unless someone adds it.
 - **Both seams are gated now (#646), but the decoder-side gate fires at the pin bump, not at the

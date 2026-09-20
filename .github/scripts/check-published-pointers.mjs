@@ -23,8 +23,14 @@
 // pointer is wrong the moment it is typed — so it is caught here, where a fix is a commit rather
 // than a re-tag, and where npm's refusal to re-publish a version cannot bite.
 //
+// A THIRD published surface has the same rule and a separate gate: a crate that reaches crates.io
+// gets a docs.rs page built from its `///` and `//!` comments, and `check-published-rustdoc.mjs`
+// holds those to the bare-vs-linked rule above. It is separate because the preconditions differ —
+// this script runs from a clean clone with no toolchain, that one reads `cargo doc` output.
+//
 // Deliberately NOT checked here: whether the prose is *accurate* or well written (a machine cannot
-// judge it), expiring maturity claims (the publish-time gate owns those), and contributor-only
+// judge it), expiring maturity claims (the publish-time gate owns those), doc-comments (the gate
+// named above), and contributor-only
 // content such as build commands — no pattern separates `pnpm build` in a usage example from
 // `pnpm build` in a Develop section, so that stays a human call. It also reads only a single-line
 // `description = "…"`; a multi-line TOML string would be skipped silently — no manifest has one
@@ -129,7 +135,9 @@ for (const h of hits) {
         ? `Either link it ([${h.quote}](https://github.com/kihyun1998/justerm/…)) or say the thing ` +
           `itself — the number means nothing to someone reading this on npm or crates.io.`
         : `A description has no room for a link: say what the package does, and put the pointer in ` +
-          `the crate's \`//!\` header or its README.`),
+          `the crate's \`//!\` header **as a link** or in its README. A bare number is no better ` +
+          `there — a crates.io crate's \`//!\` is its docs.rs front page, which ` +
+          `check-published-rustdoc.mjs holds to this same rule.`),
   );
 }
 process.exit(1);

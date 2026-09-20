@@ -45,6 +45,15 @@ jobs:
         run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+      # `justerm-facade` is the `justerm` 0.5.1 tombstone and is EXCLUDED from the root workspace,
+      # so the line above has never built it — the invariant note
+      # docs/map/invariant/workspace-exclusion-is-gate-invisibility.md records it as reached by no
+      # gate at all, and until this step that was still true. It publishes to crates.io, so docs.rs
+      # builds a page from its `//!`, and the pointer gate below needs that page to exist.
+      - name: Docs (the tombstone — outside the workspace, so --workspace misses it)
+        run: cargo doc --manifest-path justerm-facade/Cargo.toml --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
       # The prose counterpart of the rustdoc gate above: rustdoc checks links inside `///` comments,
       # and until now nothing checked the ones between the markdown docs. `docs/map/` is a link graph
       # whose entire value is edges that resolve, and it links OUT to docs/adr/ and to
@@ -92,6 +101,15 @@ jobs:
       # description cannot link, a README can.
       - name: Published surfaces carry no repo-only pointers
         run: node .github/scripts/check-published-pointers.mjs
+      # The same rule on the third published surface, and the one the gate above used to send
+      # pointers TO: a crate that reaches crates.io gets a docs.rs page built from its `///` and
+      # `//!` comments. Measured on the published 0.21.0 before this landed: 384 bare pointers
+      # across 56 of 61 own pages. It reads `cargo doc` output rather than sources — a link nested
+      # in a code span (`` `[CLAUDE.md](url)` ``) is correct-looking text and broken markup, and
+      # only the rendered page tells them apart — so it runs after the two doc steps above, and
+      # hard-fails rather than passing quietly when a published crate's pages are missing.
+      - name: Published rustdoc carries no repo-only pointers
+        run: node .github/scripts/check-published-rustdoc.mjs
 
   # justerm-renderer is EXCLUDED from the root workspace (its web-sys/glow deps are wasm32-only), so
   # `cargo test --workspace` above never touches it — for slices #259..#340 nothing gated it at all
