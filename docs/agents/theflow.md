@@ -736,9 +736,14 @@ that *describes* the behavior:
   publish-time phrase check below rejects *"lands in #N"* — but only in a
   **README**, and only at publish. `justerm-core/src/lib.rs`'s `Engine::resize`
   carried *"(Soft-wrap reflow lands in #7.)"* on docs.rs for six weeks after #7
-  closed (2026-06-17), because `resize` is a doc-comment, not a README. When you
-  close an issue a doc-comment *promises*, grep the sources for its number, not
-  just the READMEs. **And not only the sources** — the same rot in
+  closed (2026-06-17), because `resize` is a doc-comment, not a README. **That
+  exact sentence is now caught** — `check-published-rustdoc.mjs` (#953) rejects a
+  bare issue number anywhere in a crates.io crate's rendered docs, and `#7` is
+  one — but for the pointer, not the promise: an expiring claim carrying no
+  number ("coming soon") still ships from a doc-comment unread. So when you close
+  an issue a doc-comment *promises*, the grep that still earns its keep is for the
+  **promise**, not the number; a bare number can no longer be there. **And not
+  only the sources** — the same rot in
   `architecture.md` §Cadence was worse: it carried an *"Open question … Tracked in
   #13"* after #13 closed, and what shipped was not the design that paragraph
   predicted, so a reader planning work from it would have rebuilt a solved problem.
@@ -981,10 +986,19 @@ node .github/scripts/check-map-links.mjs docs CLAUDE.md CONTEXT.md README.md
 bad=0; for f in docs/map/territory/*.md docs/map/invariant/*.md; do \
   node .github/scripts/check-map-note.mjs "$f" || bad=1; done; exit $bad   # note SCHEMA ≠ note LINKS
 node .github/scripts/check-tool-pins.mjs
+RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path justerm-facade/Cargo.toml --no-deps   # the tombstone: --workspace cannot see it
+node .github/scripts/check-published-pointers.mjs
+node .github/scripts/check-published-rustdoc.mjs   # needs BOTH cargo doc runs above
 ```
-**The last two were missing from this list until 2026-08-03 (#545), and the omission cost a red
-CI.** Both are steps of the same `test` job as everything above them, so "I ran the local matrix"
-read as complete while two gates had never executed. The one that fired checks each map note's
+**This list has now gone stale the same way twice, which is the fact to carry rather than the
+entries.** The first time, the last two of the original block were missing until 2026-08-03 (#545)
+and the omission cost a red CI. The second, `check-published-pointers.mjs` shipped with #949 and
+was never added here — it sat in the `test` job unrepresented until #953, which found it while
+sweeping for something else. Both times the mechanism was identical: a step is added to the
+workflow, and this copy of the workflow is not the file being edited. Treat a green local matrix as
+evidence about the commands you ran, never about the job.
+Each is a step of the same `test` job as everything above it, so "I ran the local matrix"
+read as complete while gates had never executed. The one that fired checks each map note's
 **section schema** — an invariant note owes `## The fact` · `## Why it is cross-cutting` ·
 `## Territories it holds in` · `## What a violation looks like` · `## Discovery history` ·
 `## Where it will recur`, and a territory note its own six — plus resolution of every symbol named

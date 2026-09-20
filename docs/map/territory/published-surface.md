@@ -331,8 +331,9 @@ same trace.
 ## Cross-cutting invariants
 
 - [workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)
-  — the tombstone's README is published and reached by no gate at all, because the crate it belongs
-  to is outside every `--workspace` command
+  — the tombstone is outside every `--workspace` command, and the note now records the *other* half:
+  the two gates that reached it anyway both derive their work set from the tree, so a crate no
+  command names is still covered
 - [a decoded frame's columns are getters](../invariant/decoded-columns-are-getters.md) — what the
   published decoder hands a consumer is an accessor, not a property, and the width-agnostic mirror
   that makes the seam flexible is also what hides it: every fixture in the repo is a plain object,
@@ -359,12 +360,15 @@ same trace.
 ## Known holes / open
 
 - **Zero governing records** for a surface whose defining property is that it cannot be corrected.
-- **Doc-comments are a published surface with a narrower gate than READMEs — narrower still, now
-  that the pointer half is closed.** `check-published-rustdoc.mjs` (#953) rejects a bare ADR or
-  issue number in the rendered docs; the **expiring-claim** check still reads READMEs only, which is
-  how `Engine::resize` carried *"(Soft-wrap reflow lands in #7.)"* on docs.rs for six weeks after #7
-  closed. That sentence would pass the new gate today: it names no number a reader must resolve,
-  only a promise that has since come false, and nothing judges promises on this surface.
+- **Doc-comments are a published surface with a narrower gate than READMEs — and the hole that is
+  left is narrower than the old example suggests.** `check-published-rustdoc.mjs` (#953) rejects a
+  bare ADR or issue number in the rendered docs; the **expiring-claim** check still reads READMEs
+  only, which is how `Engine::resize` carried *"(Soft-wrap reflow lands in #7.)"* on docs.rs for six
+  weeks after #7 closed. **That sentence is now caught** — measured by planting it back into
+  `Engine::resize` and re-running the gate — but for the pointer's sake, not the promise's: `#7` is
+  a bare issue reference. What is still open is an expiring claim carrying **no number**
+  ("coming soon", "not yet implemented") in a doc-comment, which the README gate would reject and
+  nothing reads here. Do not read the closed half as the whole.
 - **The rendered-rustdoc gate covers crates.io only, so the `.d.ts` surface is still open (#951).**
   `justerm-renderer` and `justerm-wasm-decode` carry `publish = false`, so no docs.rs page exists
   for them and this gate skips them by construction — but wasm-pack lifts their `///` comments
