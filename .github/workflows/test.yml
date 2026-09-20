@@ -82,6 +82,16 @@ jobs:
       # together by a check that runs on every PR, not by a human remembering to grep.
       - name: Build-tool pins agree across workflows
         run: node .github/scripts/check-tool-pins.mjs
+      # A `description` and a README are registry front-matter, not internal notes, and
+      # `publish = false` hides that: it means "not to crates.io" only — wasm-pack lifts both fields
+      # into the npm package.json it generates. Two crates shipped "See ADR-0008" / "(ADR-0018,
+      # supersedes ADR-0002)" across 21 tags, and the READMEs beside them carried bare #258/#776/#810,
+      # before anyone read these as published text. Runs here rather than at publish (unlike
+      # check-published-readme.mjs) because an unresolvable pointer is wrong when typed, not when
+      # snapshotted — and npm never lets a version be re-published. A *linked* reference passes: a
+      # description cannot link, a README can.
+      - name: Published surfaces carry no repo-only pointers
+        run: node .github/scripts/check-published-pointers.mjs
 
   # justerm-renderer is EXCLUDED from the root workspace (its web-sys/glow deps are wasm32-only), so
   # `cargo test --workspace` above never touches it — for slices #259..#340 nothing gated it at all
