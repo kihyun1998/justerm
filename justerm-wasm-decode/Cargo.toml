@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "WASM decoder for justerm's wire format: structure-of-arrays cell columns + format-owned colour/flag helpers. See ADR-0008."
+description = "WASM decoder for justerm's wire format: structure-of-arrays cell columns + format-owned colour/flag helpers."
 readme = "README.md" # wasm-pack copies this into the npm package as its page
 # wasm-pack propagates these into the generated package.json (#478). Crate-level, not
 # `[workspace.package]`: the decoder's terms differ from justerm-core's (`tui`/`emulator`

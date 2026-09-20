@@ -9,13 +9,12 @@ IPC (e.g. a Tauri Channel), and in the webview this package decodes them into re
 
 The decoder owns the **fixed formats and standards** (the wire records, the colour-ref encoding, the
 flag bit positions, the xterm 16–255 colour formula). *Theme values* (your 16 ANSI colours + default
-fg/bg) and *render policy* (inverse/dim/bold→bright, the font atlas, the cursor) stay yours. See
-[ADR-0008](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0008-wasm-decode-binding-separate-crate.md).
+fg/bg) and *render policy* (inverse/dim/bold→bright, the font atlas, the cursor) stay yours.
 
 > Version-locked to the `justerm-core` crate: this package's version equals the engine version, so
 > pinning one `justerm-core` version gives you a matching encoder (native) + decoder (this).
 > `wireVersion()` lets you assert agreement at load. (The engine crate was renamed from `justerm` to
-> `justerm-core` in v0.6.0 — ADR-0010; the bare `justerm` name on crates.io is a frozen tombstone.)
+> `justerm-core` in v0.6.0; the bare `justerm` name on crates.io is a frozen tombstone.)
 
 ## Install
 
@@ -89,6 +88,7 @@ One entry per cell, in span order. `spans` is a flat directory: 5 `u32`s per spa
 |--------|------|---------|
 | `codepoints` | `Uint32Array` | base Unicode codepoint (not an atlas glyph id) |
 | `fg` / `bg` | `Uint32Array` | colour references — pass to `resolveRgb` |
+| `underlineColor` | `Uint32Array` | underline colour reference (`SGR 58`); `0` = follow the `fg` |
 | `flags` | `Uint16Array` | attribute + layout bits — test with `flags()` constants |
 | `extra` | `Uint32Array` | 1-based `sideTable` index for a grapheme cluster (`0` = none) |
 | `link` | `Uint32Array` | 1-based `linkTable` index for an OSC 8 hyperlink (`0` = none) |
@@ -153,7 +153,9 @@ same question: the engine derives the flag from the field, so they cannot disagr
 a reader that only knows `F.underline` keeps working and draws a plain line — which is why carrying
 the style did **not** move `wireVersion()`.
 
-Colour is separate and orthogonal: see `frame.underlineColor` (`SGR 58`) above.
+Colour is separate and orthogonal: the `underlineColor` column carries it per cell, as a colour
+reference you pass to `resolveRgb` like any other. A `0` there means the underline follows the
+cell's `fg`, which is the common case.
 
 ## License
 

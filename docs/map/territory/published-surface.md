@@ -22,12 +22,38 @@ How a version gets there is [release](release.md).
 - **Immutability is the whole constraint.** crates.io and npm never rewrite a published artifact;
   only a yank comes back. Every other area is fixable by a commit — here a mistake is a permanent row
   in someone else's dependency graph.
-- **Two mechanised checks, deliberately at different moments.**
+- **Three mechanised checks, deliberately at different moments.**
   `justerm-wasm-decode/tests/readme_pins.rs` ties a constant the README *quotes* to the constant that
   owns it and fails on **every PR**. `.github/scripts/check-published-readme.mjs` rejects expiring
   claims — *"under construction"*, *"lands in #N"*, *"coming soon"* — at **publish time only**,
   because an in-progress crate may honestly call itself a scaffold in the repo. Snapshotting that
   sentence onto a registry is what makes it a lie.
+  `.github/scripts/check-published-pointers.mjs` rejects a repo-only pointer — an ADR or issue
+  number — in a manifest `description` **or** a published README, on **every PR**. The moment
+  differs from the README gate for a reason: an expiring claim is honest when written and turns
+  later, so only the tag can judge it, while an ADR number in a registry blurb is wrong when typed.
+  Catching it at PR time costs a commit; catching it at publish costs a re-tag, and npm never lets a
+  version be re-published at all.
+- **The same rule lands differently on the two surfaces, and the difference is what it can link.**
+  A `description` is a bare string with nowhere to put a URL, so *any* pointer in it is unresolvable
+  by construction. A README can link out, so only a **bare** one is rejected there —
+  `[ADR-0010](…/0010-….md)` passes and a naked `ADR-0010` does not. That is why the gate blanks
+  markdown links before it reads, and why it blanks them with **same-length** whitespace: shortening
+  the text first drifts every reported line number upward, which sends the reader to the wrong line
+  (measured: `justerm-core/README.md` reported `:37` for a hit on `:57`).
+- **`publish = false` does not mean unpublished, and that reading shipped text to npm 21 times
+  (#941+).** It means *not to crates.io*; `justerm-wasm-decode` and `justerm-renderer` both reach npm
+  through `wasm-pack`, which lifts `description`, `keywords` and `readme` out of Cargo.toml into the
+  `pkg/package.json` it generates — a path the manifest itself never names. Both crates carried an
+  ADR pointer in `description` (*"See ADR-0008."*, *"(ADR-0018, supersedes ADR-0002)"*) from their
+  scaffold commit to v0.21.0, printed on the npm page to readers who cannot resolve either number.
+  The `keywords` lines above them already carry a comment saying wasm-pack propagates them; the field
+  one line up was read as an internal note anyway. **The registry, not the manifest's own `publish`
+  key, is what decides whether a string is published.**
+- **A `description` is the one published surface that cannot link.** That is the whole argument for
+  the rule, and it is why READMEs are exempt rather than swept along: a README reaches `docs/adr/`
+  by absolute URL and several do. A bare one-line blurb has nowhere to put the link, so a pointer in
+  it is unresolvable by construction — no judgement about prose style is needed, or made.
 - **The publish-time check fires after the tag is already pushed**, so a false positive costs a
   re-tag. That is why its phrase list is kept tight rather than thorough.
 - **What this surface publishes is mostly a map of *names*, and a name map is only as complete as
@@ -228,6 +254,11 @@ same trace.
   this crate maps onto a published value exhaustive (#843); its own source list is the roster that
   #831 had to widen
 - `.github/scripts/check-published-readme.mjs` — the expiring-claim gate (publish-time)
+- `.github/scripts/check-published-pointers.mjs` — the repo-only-pointer gate for `description` +
+  published READMEs (every PR). It derives the package list by walking for manifests that carry a
+  description rather than holding one, so a newly published package is covered the day it is added;
+  it names what it cannot see (prose accuracy, expiring claims, contributor-only content such as
+  build commands, a multi-line TOML description)
 - Public doc-comments in `justerm-core/src/lib.rs` — they ship verbatim as the docs.rs page
 - `justerm-web/src/types.ts` — `DecodedFrame`, web's mirror of the published decoder's getters;
   width-agnostic by contract, so it gates a column's presence and never its width

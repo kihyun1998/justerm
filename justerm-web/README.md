@@ -156,8 +156,8 @@ Two consequences are forced by WebGL binding one context to one canvas, and both
   **Hiding the DOM overlay is not by itself hiding the terminal, and the difference is measurable.**
   The pixels are on the *shared* canvas, not in your overlay, so what actually sets a pane aside is
   the box going away — `display: none` removes it, `observeViewportRect` fires, and your `undefined`
-  branch runs. Before that branch existed this case was the *worse* one: a removed box read back as
-  the origin `(0, 0)` and re-placed that grid, at full size, over its sibling.
+  branch runs. Wire that branch: without it a removed box reads back as the origin `(0, 0)`, and the
+  grid is re-placed there at full size, over its sibling.
 
   **So the rule is "only a hide that zeroes the box hides the terminal", and it is not a list of
   exceptions.** Every guard in this package keys on the same predicate (`width <= 0 || height <= 0`),
@@ -171,14 +171,12 @@ Two consequences are forced by WebGL binding one context to one canvas, and both
   If you hide by any route that keeps the box, **call `hide()` yourself** — the box is a truthful
   measurement there, so nothing can infer your intent from it.
 
-  **Fitting a hidden pane is safe, and it was not before #810.** `display: none` makes the box
-  `0x0`, and both sizing paths — `proposeDimensions` and the `resize` a widget does for you — now
-  answer *nothing to propose* for a box with no area, exactly as they already did for a `NaN` one. So
-  a `FitController` that keeps observing a hidden pane simply stops proposing, and the grid it had is
-  the grid it comes back with. Until #810 that box floored to the `2x1` minimum instead, your
-  `ResizePort` reflowed the engine through two columns, and on the alt screen — where a resize drops
-  rows rather than re-wrapping them — showing the pane back did not undo it. A box that is *measured*
-  and merely tiny still floors, which is the case the minimum exists for.
+  **Fitting a hidden pane is safe.** `display: none` makes the box `0x0`, and both sizing paths —
+  `proposeDimensions` and the `resize` a widget does for you — answer *nothing to propose* for a box
+  with no area, exactly as they do for a `NaN` one. So a `FitController` that keeps observing a
+  hidden pane simply stops proposing, and the grid it had is the grid it comes back with. A box that
+  is *measured* and merely tiny still floors to the `2x1` minimum, which is the case that minimum
+  exists for.
 - **A density change invalidates every device-px number you gave — including the rects.** Register
   `surface.onDensityChange`, and from it re-supply **both** the surface size and every terminal's
   origin:
@@ -200,24 +198,19 @@ Two consequences are forced by WebGL binding one context to one canvas, and both
   });
   ```
 
-  **`observeViewportRect` will not do the rects for you, and this bullet claimed it would until
-  #776.** It computes at the live ratio, but nothing *re-runs* it on a density change: its three
-  triggers are a `ResizeObserver` on the overlay and the canvas, a capture-phase `scroll`, and one
-  call at setup. A `ResizeObserver` on the default box reports CSS pixels, and a density change moves
+  **`observeViewportRect` will not do the rects for you.** It computes at the live ratio, but
+  nothing *re-runs* it on a density change: its three triggers are a `ResizeObserver` on the overlay
+  and the canvas, a capture-phase `scroll`, and one call at setup. A `ResizeObserver` on the default box reports CSS pixels, and a density change moves
   no CSS box — so it stays silent, and the last origin it sent is left scaled by the old ratio. On a
   monitor switch a pane at CSS x=500 then draws at half its offset, over its left sibling, with no
   error and every pixel plausible.
 
   **It also fires after a GL context restore that adopted a density which moved while the context
-  was dead (#808)** — the one density adoption with no call from anyone behind it. A notification
-  arriving during a loss is dropped rather than queued, so the renderer re-reads the live ratio when
-  it rebuilds; a **sole** tenant then repairs itself, because it derives its own drawing buffer, and
-  a **shared** one cannot, because the buffer and every rect are yours. Same handler, same
-  obligation — you do not have to distinguish the two cases. Measured on the two-terminal demo
-  before this landed: dpr 1 → 2 across one loss left the buffer at `900x340` under a surface now
-  reporting `450x170` CSS, with the right-hand pane's viewport entirely outside it and every pixel
-  of it transparent. No error was raised, and the left-hand pane was narrow enough to still fit and
-  look correct.
+  was dead** — the one density adoption with no call from anyone behind it. A notification arriving
+  during a loss is dropped rather than queued, so the renderer re-reads the live ratio when it
+  rebuilds; a **sole** tenant then repairs itself, because it derives its own drawing buffer, and a
+  **shared** one cannot, because the buffer and every rect are yours. Same handler, same obligation —
+  you do not have to distinguish the two cases.
 
   **You do not owe a frame here.** `resizeSurface` re-creates the drawing buffer, which clears it, so
   the widget presents once on the next animation frame after your handler returns — coalesced, so
@@ -267,9 +260,6 @@ widget mounted with its hidden textarea still in the DOM and still subscribed to
 so **the next frame your backend pushes throws** `no grid with id N`. Disposing the terminals first
 leaves nothing behind (2 textareas → 0, `surface.gridCount` already `0`, no throw from either call).
 
-This paragraph said `surface.dispose()` *"ends every terminal still attached"* until #776, which is
-the first code to tear a shared surface down.
-
 Three things disposal does **not** cover, so they are yours:
 
 - **Your `Terminal` widgets**, per the paragraph above, whenever you end the surface rather than the
@@ -313,14 +303,13 @@ renderer.isContextLost();    // has a loss been REPORTED to us
 renderer.isRestoreOverdue(); // …and did it miss its deadline
 ```
 
-### If you re-fit during a loss, fit again after it
+### A re-fit during a loss settles after recovery
 
-The one thing you may have to *do*, and it is narrow: a `resize()` that lands while the context is
-lost is **provisional**. The renderer commits the grid you asked for but defers reading the drawing
+A `resize()` that lands while the context is lost is **provisional**. The renderer commits the grid you asked for but defers reading the drawing
 buffer back — a dead context answers `0`, and adopting that would shrink the terminal to one cell —
 so any clamp the browser applies settles later, inside the first `render()` after recovery.
 
-**You no longer have to do anything about it.** The widget listens for `webglcontextrestored`, and
+**On a sole-tenant canvas you do not have to do anything about it.** The widget listens for `webglcontextrestored`, and
 on that event it renders (which is what settles the clamp), re-derives the drawing buffer from the
 grid it is holding, and re-writes the display box from what was actually granted. Both the grid and
 the box heal without a call from you.
@@ -329,10 +318,10 @@ the box heal without a call from you.
 that shares a canvas does not size the buffer — nothing below you can, since a buffer holding N
 grids in M font configurations has no cell to be a multiple of — so the re-derivation above is the
 sole tenant's alone. What a shared host owes is the same thing it owes on any density change, and it
-arrives through the same channel: `onDensityChange` fires after a restore that adopted a new ratio
-(#808). If the density did not move, nothing is owed and nothing fires.
+arrives through the same channel: `onDensityChange` fires after a restore that adopted a new ratio.
+If the density did not move, nothing is owed and nothing fires.
 
-Measured on the older shape, where nothing did that — asking for 4000 columns during a loss
+What the clamp looks like when it settles — asking for 4000 columns during a loss
 (`MAX_TEXTURE_SIZE` 8192, 9px cell):
 
 | | grid | display box |
@@ -357,8 +346,7 @@ Most consumers never reach this: it needs a requested grid larger than the brows
 real rather than pedantic: a browser destroys a context synchronously and only *queues* the event, so
 for a short window this returns `false` while every GL call is already dead. It is the honest thing
 to show a user and the wrong thing to gate drawing on — which is why the renderer guards its own work
-on a stricter predicate it does not export
-([ADR-0027](https://github.com/kihyun1998/justerm/blob/master/docs/adr/)).
+on a stricter predicate it does not export.
 
 ## What it does and does not do
 
@@ -367,8 +355,7 @@ highlights, exposes a screen-reader mirror and an accessible view, turns pointer
 events into intent.
 
 **Does not**: read a PTY, own a transport, pick colours, or run the terminal engine. Those
-are the host's — that boundary is why the engine stays independently testable
-([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/)).
+are the host's — that boundary is why the engine stays independently testable.
 
 ## Links
 
@@ -377,42 +364,25 @@ are the host's — that boundary is why the engine stays independently testable
 - [`justerm-core`](https://crates.io/crates/justerm-core) — the engine (Rust)
 - Architecture: [`docs/architecture.md`](https://github.com/kihyun1998/justerm/blob/master/docs/architecture.md)
 
-## Develop (in the repo)
+## Building blocks
 
-```bash
-pnpm install
-pnpm test         # vitest — the pure render core (no GL/wasm)
-pnpm typecheck    # tsc --noEmit, three tsconfig projects
-pnpm build        # tsup -> dist/
-pnpm demo         # NOT `vite demo` / `pnpm dlx vite demo`
-pnpm test:e2e     # playwright, drives the real wasm in headless Chromium
-```
+The widget is assembled from injected seams rather than built-in policy, so each of these is
+something you supply, replace or drive:
 
-> **Use `pnpm demo`, not `vite demo`.** `pnpm demo` runs the project's Vite with
-> `vite.config.ts`, which sets `root: demo` and loads `vite-plugin-wasm` +
-> `vite-plugin-top-level-await` (required to instantiate the two wasm-bindgen modules)
-> and excludes them from esbuild dep-optimization. `vite demo` passes `demo` as the
-> *root*, so Vite looks for config at `demo/vite.config.ts` (absent) and runs
-> config-less — the wasm modules then fail to instantiate
-> (`Cannot read properties of undefined (reading '__wbindgen_externrefs')`).
-
-## Architecture
-
-- **`FrameSource`** (`src/types.ts`) — abstract source of `DecodedFrame`s. Frame mode
-  wires it to the consumer's IPC channel; in-wasm mode to an in-browser engine.
-  `StubFrameSource` drives it by hand for tests/demos.
-- **`Renderer`** port (`src/renderer.ts`) — the small interface the widget drives.
-  `JustermRenderer` is the real adapter (wraps `justerm-renderer`, WASM + WebGL2); a fake
-  covers the widget's wiring without a GL context.
-- **`CellMirror`** (`src/cell-mirror.ts`) — a viewport-sized **text** mirror (ADR-0011): it
-  applies a frame's scroll op so the screen-reader row tree stays correct across scroll, and
-  serves row text + the column map (#152), and each cell's OSC 8 URI, so a link stays whole
-  across frames that repaint only part of it (#934). No colour since #504 — colour resolve and
-  compositing live in the renderer's wasm (#273), so the widget maps no cells to draw ops.
-- **`LinkTracker`** (`src/link-tracker.ts`) — the widget's link state (#934): a `CellMirror`
-  for OSC 8 links, and the logical lines `LinkPort` answered for plain-text URLs, each kept
-  only while the mirror still shows it.
-- **`Terminal`** (`src/terminal.ts`) — wires a `FrameSource` to a `Renderer`.
+- **`FrameSource`** — where `DecodedFrame`s come from. In production this is your IPC channel;
+  `StubFrameSource` drives it by hand in tests and demos.
+- **`Renderer`** — the small interface the widget paints through. `JustermRenderer` is the real
+  adapter over [`justerm-renderer`](https://www.npmjs.com/package/justerm-renderer) (WASM +
+  WebGL2); supplying a fake covers the widget's wiring with no GL context.
+- **`Terminal`** — wires a `FrameSource` to a `Renderer` and owns focus, input and selection.
+- **`CellMirror`** — a viewport-sized *text* mirror of the screen. It applies each frame's scroll
+  op so the screen-reader row tree stays correct across scroll, and serves row text, the column
+  map, and each cell's OSC 8 URI so a link stays whole across frames that repaint only part of it.
+  It holds no colour: resolving and compositing colour happens in the renderer's WASM.
+- **`SelectionController`**, **`SearchController`**, **`LinkController`**,
+  **`ClipboardController`**, **`AccessibilityController`**, **`Scrollbar`**, **`FitController`** —
+  each drives one behaviour through a port you implement, so transport, clipboard and theme stay
+  yours.
 
 ## Licence
 

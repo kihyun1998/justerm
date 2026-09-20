@@ -7,8 +7,8 @@ and emits a viewport snapshot, damage, scroll ops, and extractable text. It is *
 
 - **No I/O** — the caller feeds bytes (`feed(&[u8])`); justerm-core never touches a PTY/SSH/socket.
 - **No IPC** — it provides a binary *format*, not transport.
-- **No rendering** — a renderer draws (the family's first-party [`justerm-renderer`](https://github.com/kihyun1998/justerm/tree/master/justerm-renderer),
-  WebGL2, replacing the third-party [`beamterm`](https://github.com/junkdog/beamterm)).
+- **No rendering** — a renderer draws. The family ships one:
+  [`justerm-renderer`](https://www.npmjs.com/package/justerm-renderer) (WASM + WebGL2).
 - **Theme-agnostic** — colours are *references* (Default / Indexed / RGB), never resolved hex; the
   consumer resolves them.
 
@@ -48,13 +48,10 @@ assert_eq!(term.grid().cell(0, 0).fg(), Color::Indexed(1));
 
 ## Docs
 
-- [`CLAUDE.md`](https://github.com/kihyun1998/justerm/blob/master/CLAUDE.md) — identity, boundary invariants, conventions, working method.
-- [`CONTEXT.md`](https://github.com/kihyun1998/justerm/blob/master/CONTEXT.md) — glossary.
 - [`docs/architecture.md`](https://github.com/kihyun1998/justerm/blob/master/docs/architecture.md) — the contract: cell, damage, viewport/scroll,
-  cadence, selection, serialization, engine API — plus a **Hidden VT state** checklist (with where to
-  look in reference impls) for implementers.
-- [`docs/adr/`](https://github.com/kihyun1998/justerm/tree/master/docs/adr) — key decisions (build on `vte`, not `alacritty_terminal`; adopt then
-  replace `beamterm` with the first-party `justerm-renderer`, ADR-0002 → ADR-0018).
+  cadence, selection, serialization, engine API.
+- [`CONTEXT.md`](https://github.com/kihyun1998/justerm/blob/master/CONTEXT.md) — glossary.
+- [`docs/adr/`](https://github.com/kihyun1998/justerm/tree/master/docs/adr) — the decision records behind the design.
 
 ## Web consumers
 
@@ -63,8 +60,8 @@ native `decode` compiled to WASM and published to npm, version-locked to this cr
 encoder and the webview decoder share one implementation (no TypeScript mirror to drift). It decodes
 into structure-of-arrays cell columns and ships the **format-owned** helpers (`resolveRgb` /
 `buildPalette` / `flags`); the *theme values* (your palette) and *render policy* (atlas, cursor) stay
-the consumer's adapter. See [`justerm-wasm-decode/README.md`](https://github.com/kihyun1998/justerm/blob/master/justerm-wasm-decode/README.md) and
-[ADR-0008](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0008-wasm-decode-binding-separate-crate.md).
+the consumer's adapter. See
+[`justerm-wasm-decode`](https://www.npmjs.com/package/justerm-wasm-decode) for its API.
 
 ## License
 
