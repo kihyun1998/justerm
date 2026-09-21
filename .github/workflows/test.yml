@@ -183,6 +183,21 @@ jobs:
         working-directory: .
       - name: Install deps
         run: pnpm install --frozen-lockfile
+      # The renderer's `.d.ts` — the same fourth published surface the `wasm` job gates for the
+      # decoder. `test:proofs` below builds the package anyway, but the build is pulled ahead and
+      # named so this gate does not sit behind a browser run: a flaky proof must not be able to
+      # stop a prose defect from being reported. The second `build:wasm` inside `test:proofs` is
+      # then a cargo no-op. `--target web --dev` rather than the published `bundler` on purpose —
+      # it is what this job already has, and the prose is the same doc-comments either way
+      # (measured: the two differ only in wasm-pack's own init-function docs, and the gate passes
+      # on both).
+      - name: Build the renderer package (for the .d.ts gate below)
+        run: pnpm run build:wasm
+      # `working-directory: .` because this job defaults to `justerm-renderer`, where the script
+      # does not exist. The same reason the pnpm install above carries it.
+      - name: Published .d.ts carries no repo-only prose
+        working-directory: .
+        run: node .github/scripts/check-published-dts.mjs justerm-renderer/pkg
       # The pixel helpers all nine proofs read their evidence through, plus the #731 harness-shape
       # rule the specs themselves must hold. Fast, browserless.
       - name: Unit (demo/proof.js helpers + harness shape)
@@ -273,6 +288,15 @@ jobs:
         run: |
           wasm-pack build --target bundler --out-dir pkg-bundler justerm-wasm-decode
           node justerm-wasm-decode/scripts/finish-pkg.mjs justerm-wasm-decode/pkg-bundler
+      # The `.d.ts` is the fourth published prose surface, after a manifest `description`, a README
+      # (#949) and the rendered rustdoc (#953). wasm-bindgen copies a `///` comment into it verbatim,
+      # and an editor shows that on hover — read more often than the README by anyone calling the
+      # API. It cannot be gated before this step, because it does not exist until wasm-pack runs.
+      # Measured on the published 0.21.0 tarballs before this landed: 164 bare pointers and 20 links
+      # whose LABEL named a Rust method the same file declares under a different name, so a consumer
+      # following the tooltip called something that was not there.
+      - name: Published .d.ts carries no repo-only prose
+        run: node .github/scripts/check-published-dts.mjs justerm-wasm-decode/pkg-bundler
       - name: Build (web)
         run: |
           wasm-pack build --target web --out-dir pkg-web justerm-wasm-decode

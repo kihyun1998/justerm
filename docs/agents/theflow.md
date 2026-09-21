@@ -990,11 +990,23 @@ RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path justerm-facade/Cargo.toml -
 node .github/scripts/check-published-pointers.mjs
 node .github/scripts/check-published-rustdoc.mjs   # needs BOTH cargo doc runs above
 ```
+**The `.d.ts` gate is in two other jobs**, because the file it reads does not exist until
+`wasm-pack` runs — and locally you must `touch` the source first, or a doc-comment edit leaves
+cargo thinking the crate is fresh and the previous artifact is re-emitted:
+```
+touch justerm-renderer/src/webgl.rs justerm-wasm-decode/src/lib.rs
+wasm-pack build --target bundler --out-dir pkg-bundler justerm-wasm-decode
+node justerm-wasm-decode/scripts/finish-pkg.mjs justerm-wasm-decode/pkg-bundler   # brings colors.d.ts in
+wasm-pack build --target bundler --out-dir pkg justerm-renderer
+node .github/scripts/check-published-dts.mjs justerm-wasm-decode/pkg-bundler justerm-renderer/pkg
+```
 **This list has now gone stale the same way twice, which is the fact to carry rather than the
 entries.** The first time, the last two of the original block were missing until 2026-08-03 (#545)
 and the omission cost a red CI. The second, `check-published-pointers.mjs` shipped with #949 and
 was never added here — it sat in the `test` job unrepresented until #953, which found it while
-sweeping for something else. Both times the mechanism was identical: a step is added to the
+sweeping for something else. #951 added the block above **in the same change that added the
+gate**, which is the only version of this that works. Both times it failed, the mechanism was
+identical: a step is added to the
 workflow, and this copy of the workflow is not the file being edited. Treat a green local matrix as
 evidence about the commands you ran, never about the job.
 Each is a step of the same `test` job as everything above it, so "I ran the local matrix"
