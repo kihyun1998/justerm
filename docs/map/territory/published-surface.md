@@ -36,8 +36,8 @@ How a version gets there is [release](release.md).
   version be re-published at all.
   `.github/scripts/check-published-rustdoc.mjs` applies the same rule to the **rendered rustdoc**
   of every crate that reaches crates.io, also on every PR, and
-  `.github/scripts/check-published-dts.mjs` applies it to the **generated `.d.ts`** of the two npm
-  packages — in the jobs that build them, since that file does not exist until `wasm-pack` runs.
+  `.github/scripts/check-published-package.mjs` applies it to **every text file the two npm packages
+  publish** — in the jobs that build them, since none of it exists until `wasm-pack` runs.
 - **The `.d.ts` carries a defect the other surfaces cannot have: a name the reader can act on and
   should not (#951).** wasm-bindgen copies a `///` verbatim and renames the method underneath it,
   so `addGrid`'s own tooltip said *"draws only once [`set_viewport`] says where"* one line above a
@@ -49,9 +49,13 @@ How a version gets there is [release](release.md).
     a `.d.ts` comment is JSDoc, tsserver hands it to the editor as markdown, and
     `[ADR-0021](https://…)` opens. It is also why a *dead* target is worse than none — every link
     wasm-bindgen ships is `](Self::x)`, which draws a clickable thing that goes nowhere.
-  - **What the gate could not see, until the issue's own number caught it**: it read only ` * `
-    lines, and `colors.d.ts` is hand-written with a `//` header carrying `(#36)` — reported clean.
-    An instrument that cannot see a thing and a thing that is not there produce the same output.
+  - **What the gate could not see — twice, the same shape, and the second one got past review.**
+    It read only ` * ` lines, so `colors.d.ts`'s `//` header carrying `(#36)` was reported clean;
+    that was caught before merge. It then scanned `*.d.ts`, so **`colors.js` — hand-written, three
+    pointers, shipped in the same package — was invisible**, and that one merged. The scope is now
+    derived from `package.json`'s `files`, npm's own allowlist, so "what is published" is answered
+    by the package instead of by an extension guess. The lesson is not the two files: it is that a
+    gate named after a file type had already decided its own answer.
   - **Locally, `touch` the source before rebuilding.** A doc-comment changes no code, so cargo can
     call the crate fresh and `wasm-pack` re-emits the previous `.d.ts`. That produced two false
     green mutation results here. CI has nothing to reuse, so the trap only bites whoever is
@@ -325,12 +329,13 @@ same trace.
   what it cannot see: the source view, and any page inlined from a dependency
 - `justerm-facade/src/lib.rs` — the tombstone's `//!`, which is its whole docs.rs page and, before
   the gate above, was reached by no CI step in this repository
-- `.github/scripts/check-published-dts.mjs` — the same rule on the **generated type declarations**
-  of the two npm packages, run in `wasm` and `renderer-proofs` because it reads what `wasm-pack`
-  produced. It
-  takes the package directory, hard-fails on one holding no declaration file, and checks a link's label
-  against that file's own declarations rather than a roster. It names what it cannot see: a `//`
-  line is read but never shown in a hover, and the targets it reports are dead in every case
+- `.github/scripts/check-published-package.mjs` — the same rule on **every text file the two npm
+  packages publish**, run in `wasm` and `renderer-proofs` because it reads what `wasm-pack`
+  produced. It takes the package directory, derives the file set from that package's own `files`
+  allowlist rather than from an extension, hard-fails on a directory that is not a built package,
+  and checks a link's label against the carrying file's own declarations rather than a roster. It
+  names what it cannot see: a `//` line is read but never shown in a hover, and the targets it
+  reports are dead in every case
 - `justerm-renderer/src/webgl.rs` · `justerm-wasm-decode/src/lib.rs` — the `///` comments that
   become those two declaration files verbatim. `justerm-wasm-decode/js/colors.d.ts` is hand-written and
   ships beside them
@@ -406,7 +411,7 @@ same trace.
 - **The rendered-rustdoc gate covers crates.io only; the `.d.ts` has its own (#951).** No docs.rs
   page exists for `justerm-renderer` or `justerm-wasm-decode`, so that gate skips them by
   construction — but wasm-pack lifts their `///` comments verbatim into the generated `.d.ts`,
-  which an editor shows on hover. `check-published-dts.mjs` covers it, in the two jobs that build
+  which an editor shows on hover. `check-published-package.mjs` covers it, in the two jobs that build
   the packages rather than in the `test` job, because the surface does not exist until
   `wasm-pack build` runs.
 - **Only one constant is pinned.** `readme_pins.rs` covers `wireVersion()`; any other number a README

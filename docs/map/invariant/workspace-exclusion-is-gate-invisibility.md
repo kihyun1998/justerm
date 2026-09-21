@@ -66,7 +66,7 @@ loudly, instead of dragging a wasm32-only crate into the host test run.
 Non-derivable half — **which gates compensate, and which do not.** `test.yml` names
 `justerm-renderer` explicitly in its own job (fmt, test, clippy, build, rustdoc — each by
 `--manifest-path`), and a sixth in `renderer-proofs` that reaches it **without naming a manifest
-at all**: `check-published-dts.mjs` (#951) reads the package `wasm-pack` produced, so what it
+at all**: `check-published-package.mjs` (#951) reads the package `wasm-pack` produced, so what it
 gates is an artifact rather than a crate. `fuzz` is reached only by
 `cargo check --manifest-path fuzz/Cargo.toml`.
 `justerm-facade` was reached by **nothing** for most of its life, deliberately: it is frozen, so

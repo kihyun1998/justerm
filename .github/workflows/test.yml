@@ -197,7 +197,7 @@ jobs:
       # does not exist. The same reason the pnpm install above carries it.
       - name: Published .d.ts carries no repo-only prose
         working-directory: .
-        run: node .github/scripts/check-published-dts.mjs justerm-renderer/pkg
+        run: node .github/scripts/check-published-package.mjs justerm-renderer/pkg
       # The pixel helpers all nine proofs read their evidence through, plus the #731 harness-shape
       # rule the specs themselves must hold. Fast, browserless.
       - name: Unit (demo/proof.js helpers + harness shape)
@@ -296,7 +296,7 @@ jobs:
       # whose LABEL named a Rust method the same file declares under a different name, so a consumer
       # following the tooltip called something that was not there.
       - name: Published .d.ts carries no repo-only prose
-        run: node .github/scripts/check-published-dts.mjs justerm-wasm-decode/pkg-bundler
+        run: node .github/scripts/check-published-package.mjs justerm-wasm-decode/pkg-bundler
       - name: Build (web)
         run: |
           wasm-pack build --target web --out-dir pkg-web justerm-wasm-decode
