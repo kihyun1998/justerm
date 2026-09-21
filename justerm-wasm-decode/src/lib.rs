@@ -53,7 +53,7 @@ struct Flat {
     /// pulled marker index went stale for a reason the eviction delta cannot express.
     evicted_total: u64,
     marker_epoch: u32,
-    /// How many markers are live in the active buffer (#490, v16) — the drift check
+    /// How many markers are live in the active buffer (v16) — the drift check
     /// for a consumer maintaining a pulled index.
     marker_count: u32,
     /// Mouse wanted-events mask (#129) — the routing bits the active tracking
@@ -73,7 +73,7 @@ struct Flat {
     /// `justerm_core::encode_color`) — the `fg`/`bg` columns.
     fg: Vec<u32>,
     bg: Vec<u32>,
-    /// Per-cell underline colour ref (SGR 58, #520) as a tagged u32, `0` = Default
+    /// Per-cell underline colour ref (SGR 58) as a tagged u32, `0` = Default
     /// (follow the fg) — the `underlineColor` column. Densified from the wire's
     /// sparse per-span group: a cell with no coloured underline reads `0`.
     underline_color: Vec<u32>,
@@ -104,7 +104,7 @@ struct Flat {
     /// consumer picks the highlight colour (theme-agnostic).
     selection_spans: Vec<u32>,
     match_spans: Vec<u32>,
-    /// The consumer-designated ACTIVE search match's spans (#428, v12), same
+    /// The consumer-designated ACTIVE search match's spans (v12), same
     /// `OVERLAY_STRIDE` layout as `match_spans` — a separate directory so the
     /// renderer's active channel reads it directly. The active member is also
     /// present in `match_spans` (ranking, not exclusion, resolves the overlap).
@@ -274,7 +274,7 @@ fn flatten_overlay_spans(spans: &[justerm_core::SelectionSpan]) -> Vec<u32> {
 /// zero-copy typed-array column per field (`codepoints`/`fg`/`bg`/`underlineColor`/
 /// `flags`/`extra`/`link`) plus the `spans` directory — so a consumer reads
 /// `frame.fg[i]` with no byte-offset knowledge and no per-cell boundary crossing
-/// (#34/#35).
+///.
 #[wasm_bindgen]
 pub struct DecodedFrame {
     flat: Flat,
@@ -299,7 +299,7 @@ impl DecodedFrame {
     }
 
     /// Cursor row (screen coords, 0-based). The consumer draws the caret here by
-    /// cell-invert / overlay — justerm only reports where it is (#38).
+    /// cell-invert / overlay — justerm only reports where it is.
     #[wasm_bindgen(getter, js_name = cursorRow)]
     pub fn cursor_row(&self) -> u16 {
         self.flat.cursor_row
@@ -318,17 +318,17 @@ impl DecodedFrame {
         self.flat.cursor_visible
     }
 
-    /// Caret shape the application set with DECSCUSR (#89): `0` = Block,
+    /// Caret shape the application set with DECSCUSR: `0` = Block,
     /// `1` = Underline, `2` = Bar — or `undefined` while it has not set one, when
-    /// the consumer draws its own default shape (#927). The consumer draws the
-    /// shape; the engine only reports it (#81).
+    /// the consumer draws its own default shape. The consumer draws the
+    /// shape; the engine only reports it.
     #[wasm_bindgen(getter, js_name = cursorShape)]
     pub fn cursor_shape(&self) -> Option<u8> {
         self.flat.cursor_shape
     }
 
     /// Whether the caret blinks (att610 `?12`). The engine reports the mode; the
-    /// renderer does the animation (#81).
+    /// renderer does the animation.
     #[wasm_bindgen(getter, js_name = cursorBlink)]
     pub fn cursor_blink(&self) -> bool {
         self.flat.cursor_blink
@@ -336,7 +336,7 @@ impl DecodedFrame {
 
     /// Lines the viewport is scrolled up from the bottom (`0` = following the
     /// live screen). With `scrollbackLen`, sizes the
-    /// consumer's scrollbar thumb (#112 / [ADR-0013](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0013-expose-scroll-position-in-frame.md)).
+    /// consumer's scrollbar thumb ([ADR-0013](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0013-expose-scroll-position-in-frame.md)).
     #[wasm_bindgen(getter, js_name = displayOffset)]
     pub fn display_offset(&self) -> u32 {
         self.flat.display_offset
@@ -348,7 +348,7 @@ impl DecodedFrame {
         self.flat.scrollback_len
     }
 
-    /// Lines evicted from the front of scrollback since RIS (#490). Rebase a marker
+    /// Lines evicted from the front of scrollback since RIS. Rebase a marker
     /// line pulled earlier by the delta against the value you pulled it at.
     ///
     /// `f64` rather than `u64`: the field is 64-bit on the wire so it cannot wrap in
@@ -362,13 +362,13 @@ impl DecodedFrame {
 
     /// Bumped when a pulled marker index went stale for a reason the eviction delta
     /// cannot express — a reflow, a region scroll that moved a marker, an alt-screen
-    /// switch (#490). Re-pull when it differs from the epoch you pulled at.
+    /// switch. Re-pull when it differs from the epoch you pulled at.
     #[wasm_bindgen(getter, js_name = markerEpoch)]
     pub fn marker_epoch(&self) -> u32 {
         self.flat.marker_epoch
     }
 
-    /// How many markers are live in the active buffer (#490, v16).
+    /// How many markers are live in the active buffer (v16).
     ///
     /// Compare it against the size of a pulled index: a mismatch means the index has
     /// drifted — most likely because the create/dispose events are not being forwarded —
@@ -384,7 +384,7 @@ impl DecodedFrame {
         self.flat.scroll.is_some()
     }
 
-    /// The mouse wanted-events mask (#129): which event categories the active
+    /// The mouse wanted-events mask: which event categories the active
     /// tracking mode reports (bit 0 DOWN, 1 UP, 2 WHEEL, 3 DRAG, 4 MOVE). `0` =
     /// no reporting. The consumer routes a mouse/wheel event to the app when its
     /// bit is set, else keeps it local (selection / scrollback). Encoding the
@@ -395,8 +395,8 @@ impl DecodedFrame {
         self.flat.mouse_events
     }
 
-    /// Whether the alternate screen (`?1049`/`?47`) is active (#149). The a11y
-    /// announce policy (#119) suppresses output reads here — a full-screen TUI
+    /// Whether the alternate screen (`?1049`/`?47`) is active. The a11y
+    /// announce policy suppresses output reads here — a full-screen TUI
     /// repaint isn't "new output". Buffer-global state the consumer can't derive
     /// from viewport damage.
     #[wasm_bindgen(getter, js_name = altScreen)]
@@ -404,7 +404,7 @@ impl DecodedFrame {
         self.flat.alt_screen
     }
 
-    /// The modified-keys mask (#941): which modified presses of Enter, Tab, Backspace and
+    /// The modified-keys mask: which modified presses of Enter, Tab, Backspace and
     /// Escape reach the application distinct from the bare key, under the keyboard modes the
     /// application has asked for (the kitty flags, `modifyOtherKeys` level 2). Bit positions
     /// are named by `modifiedKeyBits`. A clear bit means the application receives exactly
@@ -430,8 +430,8 @@ impl DecodedFrame {
     }
 
     /// Per-cell base codepoints (`cell.c` as `u32`), in span order — one of the
-    /// structure-of-arrays cell columns (#35). Zero-copy view into WASM memory;
-    /// the bulk data reaches JS with no per-cell boundary crossing (#34 AC3).
+    /// structure-of-arrays cell columns. Zero-copy view into WASM memory;
+    /// the bulk data reaches JS with no per-cell boundary crossing.
     ///
     /// # Lifetime (applies to every column + `spans`)
     /// The returned array views WASM memory directly; it is invalidated if that
@@ -457,7 +457,7 @@ impl DecodedFrame {
         unsafe { js_sys::Uint32Array::view(&self.flat.bg) }
     }
 
-    /// Per-cell underline colour references (SGR 58, #520) as tagged `u32`s (as
+    /// Per-cell underline colour references (SGR 58) as tagged `u32`s (as
     /// `DecodedFrame.fg`). `0` = `Default` — the underline follows the fg. Only
     /// cells drawing a coloured underline carry a non-zero value; resolve with
     /// `resolveRgb`, the same as `fg`/`bg`.
@@ -488,7 +488,7 @@ impl DecodedFrame {
     /// Span directory: 5 `u32`s per span — `line, left, right, cell_offset,
     /// cell_count` — where `cell_offset` indexes the cell columns (cell k of a
     /// span is column index `cell_offset + k`). JS walks this directory, never per
-    /// cell (#34 AC3). Same zero-copy view lifetime as the columns.
+    /// cell. Same zero-copy view lifetime as the columns.
     #[wasm_bindgen(getter)]
     pub fn spans(&self) -> js_sys::Uint32Array {
         unsafe { js_sys::Uint32Array::view(&self.flat.spans) }
@@ -513,7 +513,7 @@ impl DecodedFrame {
         self.flat.link_table.clone()
     }
 
-    /// The live selection projected onto the viewport (#108), `OVERLAY_STRIDE`
+    /// The live selection projected onto the viewport, `OVERLAY_STRIDE`
     /// u32s per span (`row`, `left`, `right`, inclusive cols). The consumer
     /// paints the highlight; the colour is the consumer's (theme-agnostic). Same
     /// zero-copy view lifetime as the cell columns.
@@ -522,7 +522,7 @@ impl DecodedFrame {
         unsafe { js_sys::Uint32Array::view(&self.flat.selection_spans) }
     }
 
-    /// The search highlights projected onto the viewport (#108), same
+    /// The search highlights projected onto the viewport, same
     /// `(row, left, right)` triple layout as `selectionSpans`.
     /// Set on the backend via `Engine::set_search_highlights`.
     #[wasm_bindgen(getter, js_name = matchSpans)]
@@ -530,12 +530,12 @@ impl DecodedFrame {
         unsafe { js_sys::Uint32Array::view(&self.flat.match_spans) }
     }
 
-    /// The *active* (current) search match's spans (#428, v12), same
+    /// The *active* (current) search match's spans (v12), same
     /// `(row, left, right)` triple layout as `matchSpans`.
     /// Designated on the backend via `Engine::set_active_search_highlight`
     /// (which match is active is the consumer's next/prev policy); also present
     /// in `matchSpans` — the renderer's highlight ranking
-    /// resolves the overlap (#424), not exclusion here. Empty when nothing is
+    /// resolves the overlap, not exclusion here. Empty when nothing is
     /// designated.
     #[wasm_bindgen(getter, js_name = activeMatchSpans)]
     pub fn active_match_spans(&self) -> js_sys::Uint32Array {
@@ -544,7 +544,7 @@ impl DecodedFrame {
 
     /// Decoration markers visible in this viewport, **five u32s per marker**:
     /// `id`, `row`, `kind`, `exitPresent`, `exitBits`. Name the `kind` lane with `markerKind()` rather than
-    /// copying a roster (#860). An off-screen marker is absent (still alive); disposal
+    /// copying a roster. An off-screen marker is absent (still alive); disposal
     /// arrives out-of-band via the backend's `MarkerDisposed` event, so absence
     /// here is "scrolled away", not "gone".
     #[wasm_bindgen(getter, js_name = markerPositions)]
@@ -565,7 +565,7 @@ pub fn wire_version() -> u8 {
 /// Whether `pattern` is a regex the engine's `search_with(regex)` can run — the
 /// **same `regex` dialect**, so the web validates a regex-mode query as-you-type
 /// instead of guessing with JS `RegExp` (whose grammar differs and would misjudge,
-/// reproducing the silent bad-pattern-vs-no-match gap, #316 D2). Thin delegate to
+/// reproducing the silent bad-pattern-vs-no-match gap). Thin delegate to
 /// `justerm_core::is_valid_regex` — no JS mirror to drift.
 #[wasm_bindgen(js_name = isValidRegex)]
 pub fn is_valid_regex(pattern: &str) -> bool {
@@ -573,13 +573,13 @@ pub fn is_valid_regex(pattern: &str) -> bool {
 }
 
 /// The `CellFlags` bit positions, exported so a consumer tests `flags[i] & F.bold`
-/// without hard-coding bit values (#36). The values come straight from Rust
+/// without hard-coding bit values. The values come straight from Rust
 /// `CellFlags`, so there is no JS mirror to drift. Read once and cache (e.g.
 /// destructure the result): the bits never change within a build.
 ///
 /// **This covers the flags and nothing else.** A `flags[i]` word also carries the underline
 /// *style* — a 3-bit field, not a flag — and no mask here can answer "which of six", so that half
-/// is `underlineStyle` (#831). The two together are the whole word a consumer needs to name.
+/// is `underlineStyle`. The two together are the whole word a consumer needs to name.
 #[wasm_bindgen]
 pub struct Flags {
     pub bold: u16,
@@ -614,7 +614,7 @@ pub fn flags() -> Flags {
     }
 }
 
-/// How a cell's underline is drawn — the value of `SGR 4 : Ps` (#831).
+/// How a cell's underline is drawn — the value of `SGR 4 : Ps`.
 ///
 /// **A field, not a flag, and that is why it needs its own export.** `Flags` hands out one bit
 /// per attribute because each of those questions is yes-or-no; this one is "which of six", so a
@@ -647,7 +647,7 @@ pub enum UnderlineStyle {
     Dashed = 5,
 }
 
-/// The underline style carried by one `flags[i]` word (#831).
+/// The underline style carried by one `flags[i]` word.
 ///
 /// Pass the word straight from `DecodedFrame.flags`; the style lives in bits this API does not
 /// make you know, which is the point — it delegates to `justerm_core`'s
@@ -678,7 +678,7 @@ pub fn underline_style(flags: u16) -> UnderlineStyle {
 }
 
 /// The `MouseEvents` bit positions, exported so a consumer tests
-/// `frame.mouseWantedEvents & B.wheel` without hard-coding bit values (#884). The values come
+/// `frame.mouseWantedEvents & B.wheel` without hard-coding bit values. The values come
 /// straight from Rust `MouseEvents`, so there is no JS mirror to drift. Read once and cache: the
 /// bits never change within a build.
 ///
@@ -688,7 +688,7 @@ pub fn underline_style(flags: u16) -> UnderlineStyle {
 /// consumer unable to tell `mouseEvents()` from `mouseWantedEvents` at a glance.
 ///
 /// This is a mask, so it takes `Flags`'s shape rather than `MarkerKind`'s: new members are
-/// bits *inside* the value and no enum can answer "which of five" about a set. #860's rule places
+/// bits *inside* the value and no enum can answer "which of five" about a set. That rule places
 /// it — a value space's names live at module scope — and the shape follows from the value being a
 /// set rather than a choice.
 #[wasm_bindgen]
@@ -719,7 +719,7 @@ pub fn mouse_event_bits() -> MouseEventBits {
 }
 
 /// The `ModifiedKeys` bit positions, exported so a consumer tests
-/// `frame.modifiedKeys & B.shiftEnter` without hard-coding bit values (#941). The values come
+/// `frame.modifiedKeys & B.shiftEnter` without hard-coding bit values. The values come
 /// straight from Rust `ModifiedKeys`, the same shape as `MouseEventBits` beside
 /// `mouseWantedEvents`. Read once and cache: the bits never change within a build.
 #[wasm_bindgen]
@@ -770,7 +770,7 @@ pub fn modified_key_bits() -> ModifiedKeyBits {
     }
 }
 
-/// What a marker means, as the value published beside the lane that carries it (#860, #159).
+/// What a marker means, as the value published beside the lane that carries it.
 ///
 /// **A frame member crosses as a primitive; a value space's names live at module scope.** The kind
 /// rides *inside* `markerPositions`, a `Uint32Array`, so it cannot be a named
@@ -785,11 +785,11 @@ pub fn modified_key_bits() -> ModifiedKeyBits {
 /// in prose.
 ///
 /// The discriminants are the wire's, and adding one moves `WIRE_VERSION` ([ADR-0008](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0008-wasm-decode-binding-separate-crate.md)) — a louder
-/// gate than semver, which is why `justerm_core::MarkerKind` stays exhaustive (#843).
+/// gate than semver, which is why `justerm_core::MarkerKind` stays exhaustive.
 #[wasm_bindgen]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkerKind {
-    /// An `add_marker` decoration anchor (#118) — no OSC-133 semantics.
+    /// An `add_marker` decoration anchor — no OSC-133 semantics.
     Plain = 0,
     /// OSC `133;A` — the shell prompt begins here.
     PromptStart = 1,
@@ -851,7 +851,7 @@ pub fn marker_kind(kind: u32) -> Option<MarkerKind> {
     })
 }
 
-/// Resolve a 16-colour ANSI scheme into the full xterm 256-colour table (#36).
+/// Resolve a 16-colour ANSI scheme into the full xterm 256-colour table.
 ///
 /// Slots `0..16` are the supplied ANSI colours (the theme's values); `16..256`
 /// are the fixed xterm 6×6×6 cube + grayscale ramp, computed here so a consumer
@@ -887,9 +887,9 @@ pub fn build_palette(ansi: &[u32]) -> Vec<u32> {
 /// `DecodeError` variant name ([ADR-0008](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0008-wasm-decode-binding-separate-crate.md)) — the validation a hand-written TS
 /// decoder would otherwise have to re-implement (and fuzz). A real `Error`, not
 /// a string primitive: a consumer's `catch (e) { e.message }` reads the variant
-/// rather than `undefined`, and the throw carries a stack (#662). Identical
+/// rather than `undefined`, and the throw carries a stack. Identical
 /// bytes yield a frame identical to the native `justerm_core::decode` (the
-/// build-parity test, #34 AC2).
+/// build-parity test).
 #[wasm_bindgen(js_name = decodeFrame)]
 pub fn decode_frame(bytes: &[u8]) -> Result<DecodedFrame, JsValue> {
     // `JsValue::from_str` would throw the *string* — `wasm_bindgen` throws an

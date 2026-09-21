@@ -1141,10 +1141,10 @@ struct GridTier {
     preedit_row: u32,
     /// The consumer-injected blend colours for the overlay kinds (policy #115).
     highlight_colors: HighlightColors,
-    /// Draw bold text in the bright (8–15) ANSI colour (#223/#272), consumer policy (xterm's
+    /// Draw bold text in the bright (8–15) ANSI colour, consumer policy (xterm's
     /// `drawBoldTextInBrightColors`). Default on, as xterm; toggled via `set_bold_to_bright`.
     bold_to_bright: bool,
-    /// Minimum WCAG fg/bg contrast ratio (#225/#272), consumer policy (xterm's `minimumContrastRatio`).
+    /// Minimum WCAG fg/bg contrast ratio, consumer policy (xterm's `minimumContrastRatio`).
     /// `1.0` = off (default). Set via `set_minimum_contrast_ratio`; clamped to `[1, 21]`.
     min_contrast: f32,
     /// Force a SELECTED cell's fg to this packed `0xRRGGBB` (#227/#272, xterm's `selectionForeground`).
@@ -1327,7 +1327,7 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// Register a terminal grid and return its id (#770).
+    /// Register a terminal grid and return its id.
     ///
     /// The new grid is **registered but not drawn** — it holds its own per-grid state from this
     /// moment, and draws only once `setViewport` says where. That order is
@@ -1337,14 +1337,14 @@ impl JustermRenderer {
     /// It costs **one** of the per-grid tier and nothing of the other two: one GPU instance buffer
     /// **and the VAO that points at it** ([ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md) D2 — no selector, not shareable, cheap to create;
     /// a VAO's whole content is *which* buffer feeds the draw, so it cannot be shared byte-for-byte
-    /// and follows the buffer, #771). No atlas, rasteriser, glyph cache, program or shared quad
+    /// and follows the buffer). No atlas, rasteriser, glyph cache, program or shared quad
     /// buffer — those stay one per context / per configuration.
     ///
-    /// **The six selectors are this grid's font, and they are optional and trailing** (#773):
+    /// **The six selectors are this grid's font, and they are optional and trailing**:
     /// `addGrid(palette, fg, bg)` takes the defaults (`"monospace"`, 16 CSS px, no letter spacing,
     /// line height 1, weights `"normal"` / `"bold"`), and any of the six may be given instead. A
-    /// weight takes what `setFontWeight` takes (#928). They are what the
-    /// grid's atlas is keyed by (#772), so a grid whose selectors match a sibling's **joins that
+    /// weight takes what `setFontWeight` takes. They are what the
+    /// grid's atlas is keyed by, so a grid whose selectors match a sibling's **joins that
     /// sibling's atlas and bakes nothing** — the whole economy of the middle tier, and the reason
     /// they belong here rather than in a setter called a line later: a grid born at the defaults and
     /// moved immediately would bake an atlas nobody asked for, once per registration.
@@ -1355,7 +1355,7 @@ impl JustermRenderer {
     ///
     /// It is **not drawn** until `setViewport` places it, and until then it is
     /// not packed either: `render` skips a grid with no viewport before the pack, so feeding a hidden
-    /// grid costs the scatter and nothing after it (#771).
+    /// grid costs the scatter and nothing after it.
     // Three palette columns plus the six font/metric selectors; the selectors are optional and
     // TRAILING, the `apply_frame` precedent, so `addGrid(palette, fg, bg)` still reads as a call.
     #[allow(clippy::too_many_arguments)]
@@ -1462,14 +1462,14 @@ impl JustermRenderer {
         Ok(id.raw())
     }
 
-    /// Unregister a grid and release the GPU buffer it owned (#770).
+    /// Unregister a grid and release the GPU buffer it owned.
     ///
     /// This is the *session-close* operation, not the hide one: hiding is
     /// `clearViewport`, which keeps every byte resident so coming back is
     /// a placement rather than a rebuild. Removing and re-adding a grid to hide it would
-    /// reintroduce exactly the re-attach cost Epic #287 exists to remove.
+    /// reintroduce exactly the re-attach cost the shared surface exists to remove.
     ///
-    /// Errors on an unknown id. Since #773 **every** grid is removable, the first one included:
+    /// Errors on an unknown id. **Every** grid is removable, the first one included:
     /// there is no longer a grid whose lifetime someone other than the consumer owns.
     #[wasm_bindgen(js_name = removeGrid)]
     pub fn remove_grid(&mut self, grid: u32) -> Result<(), JsValue> {
@@ -1490,14 +1490,14 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// Place a grid on the shared drawing buffer, in **device pixels**, top-left origin (#770).
+    /// Place a grid on the shared drawing buffer, in **device pixels**, top-left origin.
     ///
-    /// A placed grid is a drawn grid — the state #771's draw loop reads. The GL flip to a
+    /// A placed grid is a drawn grid — the state the draw loop reads. The GL flip to a
     /// bottom-origin y belongs to the site that issues `gl.viewport`, not here: this is the rect
     /// the consumer measured, stored as measured.
     ///
     /// Errors on an unknown id and on a rect with no area. It errors on **no grid in particular**:
-    /// since #773 every rect has one producer — the consumer's measured box — so there is no grid
+    /// every rect has one producer — the consumer's measured box — so there is no grid
     /// whose placement someone else owns.
     #[wasm_bindgen(js_name = setViewport)]
     pub fn set_viewport(
@@ -1531,7 +1531,7 @@ impl JustermRenderer {
             .map_err(|e| JsValue::from_str(&e.message()))
     }
 
-    /// Stop drawing a grid **without unregistering it** (#770) — the hidden-workspace state.
+    /// Stop drawing a grid **without unregistering it** — the hidden-workspace state.
     ///
     /// Every byte of the grid's state survives: its packed instances, its upload baseline, its
     /// palette, its cursor and overlays. Nothing is re-baked when it comes back, because nothing
@@ -1539,7 +1539,7 @@ impl JustermRenderer {
     /// DOM box reads back as zero, so a rect retained across the hide would be a copy that can be
     /// wrong on the way back.
     ///
-    /// Every grid is hideable, the first one included (#773) — a rect has one producer now, the
+    /// Every grid is hideable, the first one included — a rect has one producer now, the
     /// consumer's measured box, so there is no grid that would go on painting after being hidden.
     #[wasm_bindgen(js_name = clearViewport)]
     pub fn clear_viewport(&mut self, grid: u32) -> Result<(), JsValue> {
@@ -1548,7 +1548,7 @@ impl JustermRenderer {
             .map_err(|e| JsValue::from_str(&e.message()))
     }
 
-    /// How many grids are registered, drawn or not (#770). Zero on a fresh renderer (#773).
+    /// How many grids are registered, drawn or not. Zero on a fresh renderer.
     ///
     /// Registry *state*, not a diagnostic counter: it answers what this renderer holds, which the
     /// consumer put there. ([ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md) D5 leaves where diagnostics like `packs` live to whoever adds
@@ -1559,7 +1559,7 @@ impl JustermRenderer {
     }
 
     /// How many distinct font configurations this renderer holds resources for — i.e. how many
-    /// glyph atlases exist (#772).
+    /// glyph atlases exist.
     ///
     /// This is what makes sharing **observable** rather than asserted: six terminals in one font
     /// answer `1`, and a seventh that changes its font answers `2`. Ghostty exposes the same number
@@ -1570,7 +1570,7 @@ impl JustermRenderer {
         self.configs.len()
     }
 
-    /// Number of atlas bakes run so far (#772 diagnostic) — every configuration built from nothing,
+    /// Number of atlas bakes run so far (a diagnostic) — every configuration built from nothing,
     /// plus every in-place rebuild of one (a DPR change, a context restore).
     ///
     /// The consumer/proofs read the **delta** across an operation, as they do with
@@ -1587,7 +1587,7 @@ impl JustermRenderer {
         self.bake_count
     }
 
-    /// Whether a grid currently has a viewport, i.e. whether it draws (#770). Errors on an unknown
+    /// Whether a grid currently has a viewport, i.e. whether it draws. Errors on an unknown
     /// id — the same answer `setViewport` gives, so a stale handle cannot read as "not drawn".
     #[wasm_bindgen(js_name = isGridDrawn)]
     pub fn is_grid_drawn(&self, grid: u32) -> Result<bool, JsValue> {
@@ -1596,10 +1596,10 @@ impl JustermRenderer {
             .map_err(|e| JsValue::from_str(&e.message()))
     }
 
-    /// Consume a decoded **damage** frame directly (#277 adapter): scatter its span-ordered
+    /// Consume a decoded **damage** frame directly (the damage adapter): scatter its span-ordered
     /// cells into the persistent grid, then resolve + pack the full viewport. A Full frame wipes
     /// the grid first, a scroll op shifts it before spans — so a Partial frame (the common case)
-    /// no longer misaligns as dense row-major. Grapheme clusters (#285) ride the `extra` column
+    /// no longer misaligns as dense row-major. Grapheme clusters ride the `extra` column
     /// + `side_table` and are resolved to text at scatter (the index is frame-local).
     ///
     /// `header` carries the frame's scalars, `[cols, rows, kind, has_scroll, scroll_top,
@@ -1648,7 +1648,7 @@ impl JustermRenderer {
     /// ([ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md)): a composition is browser-owned, reaches no frame and no wire, so the consumer is
     /// the only possible source and must re-push on every `compositionupdate`. Skipping an update
     /// whose data is unchanged is worth doing — a real IME emits one settling update per syllable
-    /// where nothing moved (measured, #249).
+    /// where nothing moved (measured).
     ///
     /// The run may extend past the anchor's row end: it shifts left to stay whole rather than
     /// clipping (`preedit::range` — crate-private, so no link from this page). Width is per codepoint, the same
@@ -1672,18 +1672,18 @@ impl JustermRenderer {
         Ok(self.grid_at_mut(at).set_preedit(col, row, codepoints))
     }
 
-    /// Swap the palette + default fg/bg for a **live theme change** (#405) — the renderer-side of a
+    /// Swap the palette + default fg/bg for a **live theme change** — the renderer-side of a
     /// theme picker or a runtime scheme swap, so a consumer need not tear down and rebuild the
     /// renderer to recolour. `palette_colors` is the 256 pre-built indexed colours (as the
     /// constructor takes); `default_fg`/`default_bg` the theme's defaults. Consumer policy
     /// ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)): the palette *values* are the consumer's (theme-agnostic core), the *mechanism*
     /// (re-resolve every retained cell against the new palette) is the renderer's.
     ///
-    /// Marks the buffer dirty so the next `render` re-packs (#421) and the change
+    /// Marks the buffer dirty so the next `render` re-packs and the change
     /// shows with no new frame — like `setOverlay` (a no-op until the first `apply_damage`; the
     /// direct `apply_frame` path reflects the new palette on its next call). The re-pack is all that
     /// is needed: it re-resolves every cell's colour against the new palette, and the render's clear
-    /// reads `default_bg` fresh. #298 translucency no longer needs a uniform re-push here — since #455
+    /// reads `default_bg` fresh. Translucency no longer needs a uniform re-push here:
     /// its trigger is the packer's per-cell `bg_default` provenance flag, which is palette-independent.
     ///
     /// `setOverlay`: Self::set_overlay
@@ -1700,14 +1700,14 @@ impl JustermRenderer {
             .set_palette(palette_colors, default_fg, default_bg)
     }
 
-    /// Set the selection / search highlight overlay (#271): the two span directories (stride-3
+    /// Set the selection / search highlight overlay: the two span directories (stride-3
     /// `(row, left, right)` viewport triples, exactly as `justerm-wasm-decode` `selectionSpans` /
-    /// `matchSpans` ship them) plus their blend colours (packed `0xRRGGBB`, consumer policy #115 —
+    /// `matchSpans` ship them) plus their blend colours (packed `0xRRGGBB`, consumer policy —
     /// the renderer is theme-agnostic). A covered cell blends the colour over a non-default / inverse
     /// background so its own colour shows through, or paints it solid over the default background; a
     /// selection wins over a match on a cell both cover.
     ///
-    /// Marks the buffer dirty so the next `render` re-packs (#421) — a selection
+    /// Marks the buffer dirty so the next `render` re-packs — a selection
     /// dragged with no new frame shows because the consumer renders after. Possible only on the
     /// damage path, which retains the dense grid; the direct `apply_frame` path reflects the new
     /// overlay on its next call. Pass empty span lists to clear the highlight.
@@ -1718,7 +1718,7 @@ impl JustermRenderer {
     /// viewport changes *or* the selection changes — exactly as it re-issues `set_cursor`. Stale spans
     /// do not panic (an out-of-range span simply highlights nothing), but an in-range stale span
     /// highlights the wrong cells until the next call. Unlike beamterm, whose spans ride each decoded
-    /// frame, this renderer cannot self-refresh — the split mirrors the cursor's, and #273 wires both.
+    /// frame, this renderer cannot self-refresh — the split mirrors the cursor's, and the widget wires both.
     ///
     /// `setCursor`: Self::set_cursor
     #[wasm_bindgen(js_name = setOverlay)]
@@ -1735,7 +1735,7 @@ impl JustermRenderer {
             .set_overlay(selection_spans, match_spans, selection_bg, match_bg)
     }
 
-    /// Set the *active* (focused/current) search-match spans + their background (#427) — the xterm
+    /// Set the *active* (focused/current) search-match spans + their background — the xterm
     /// `activeMatchBackground` decoration, ranked **above the selection** (`highlight_at`). Additive
     /// beside `setOverlay`: the consumer pushes the current search result here
     /// as the search box navigates (`next`/`prev`), independent of the selection, so a user text
@@ -1755,7 +1755,7 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// Set the hovered link's spans (#934): stride-3 `(row, left, right)` viewport triples, the
+    /// Set the hovered link's spans: stride-3 `(row, left, right)` viewport triples, the
     /// cells drawn underlined in the cell's own line colour. A span covering either half of a wide
     /// pair covers both. Kept until the next call; empty spans clear it.
     #[wasm_bindgen(js_name = setLinkHover)]
@@ -1767,7 +1767,7 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// Set the marker-anchored decorations for this frame (#393/#120). `spans` is the flat
+    /// Set the marker-anchored decorations for this frame. `spans` is the flat
     /// `DECORATION_STRIDE` (`row, left, right, layer, bg, fg`) directory the consumer projects
     /// from its `DecorationRegistry` + core's markers — `layer` `0` = bottom (under the highlight) /
     /// `1` = top (over it), `bg`/`fg` **absolute** packed `0xRRGGBB` used **verbatim** (the consumer
@@ -1775,14 +1775,14 @@ impl JustermRenderer {
     /// ref for the renderer to resolve), or the wire's `NO_REF` sentinel for "no override". Pass an
     /// empty array to clear. Consumer-projected (the model is the consumer's; the renderer only
     /// composites, [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)). Marks the buffer dirty; the next `render`
-    /// re-packs (#421).
+    /// re-packs.
     #[wasm_bindgen(js_name = setDecorations)]
     pub fn set_decorations(&mut self, grid: u32, spans: Vec<u32>) -> Result<(), JsValue> {
         let at = self.slot(grid)?;
         self.grid_at_mut(at).set_decorations(spans)
     }
 
-    /// Place the cursor (#270). `shape`: `0` block, `1` underline, `2` bar, `3` hollow block.
+    /// Place the cursor. `shape`: `0` block, `1` underline, `2` bar, `3` hollow block.
     /// `color` is the cursor's own `0xRRGGBB`; `text_color` the glyph colour a block paints under
     /// itself (xterm's `cursorAccent`, alacritty's `text_color`). Colours are resolved by the
     /// consumer — the renderer stays theme-agnostic.
@@ -1791,13 +1791,13 @@ impl JustermRenderer {
     /// declared with `FRAG_SRC` in this file) and is resolved per fragment. So any cursor change —
     /// move, blink, shape — takes effect on the next `render` alone: one uniform,
     /// no re-pack and no instance upload. Blink phase is the consumer's policy, exactly as
-    /// `blink_on` is (#282) — call `clearCursor` for the off phase.
+    /// `blink_on` is — call `clearCursor` for the off phase.
     ///
     /// A block *could* have been an instance: it is a colour override on the cell, not geometry,
     /// and both references draw it that way. It is not one because [ADR-0018](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0018-justerm-renderer.md)
     /// ([`docs/adr/0018-justerm-renderer.md`](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0018-justerm-renderer.md)) makes that **the contract, not an
     /// optimisation** — a blink tick produces no terminal output, so a block packed into the
-    /// instances could not blink off without the consumer re-feeding the frame (an early #270 draft
+    /// instances could not blink off without the consumer re-feeding the frame (an early draft
     /// did exactly that). Two consequences follow rather than cause it: un-painting would need a
     /// re-pack, and per-fragment resolution keeps the ordering free, since the instance colours
     /// arrive already inverse-swapped and the glyph already concealed.
@@ -1834,9 +1834,9 @@ impl JustermRenderer {
     /// The number of columns this grid was last sized to by `resizeGrid` —
     /// exactly that, and nothing else reads it.
     ///
-    /// **It is an echo, and until #773 it was not.** While the renderer sized the drawing buffer
+    /// **It is an echo, and it has not always been one.** While the renderer sized the drawing buffer
     /// from the grid it could refuse one it could not draw, so this reported the grid actually
-    /// adopted and a clamp was visible here (#339). The buffer belongs to the *surface* now — N
+    /// adopted and a clamp was visible here. The buffer belongs to the *surface* now — N
     /// grids in M cell sizes share it — so `resizeSurface` adopts what the
     /// browser granted and a consumer that asked for more than fits learns it from
     /// `cssWidth`, never from this.
@@ -1897,10 +1897,10 @@ impl JustermRenderer {
     /// Set the background cell opacity: `0` = fully transparent, `1` = opaque (default). The
     /// consumer injects this policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)) to make the terminal background see-through to the
     /// page/desktop behind the canvas, while glyph pixels stay opaque. Clamped to `[0, 1]`; takes
-    /// effect on the next `render` (#298).
+    /// effect on the next `render`.
     ///
     /// **A translucent background contributes to a cell's colour in proportion to how translucent
-    /// it is** (#317 §2, fixed 2026-08-18). It used to contribute in full: an antialiased glyph
+    /// it is** (fixed 2026-08-18). It used to contribute in full: an antialiased glyph
     /// edge mixed toward the background colour with the coverage as its weight while the alpha
     /// said that background was only `alpha` present, so at `0` a half-covered pixel came out half
     /// background — a colour the caller had asked to be absent. At `1` nothing changed and nothing
@@ -1908,13 +1908,13 @@ impl JustermRenderer {
     ///
     /// **A non-finite value falls back to `1.0` (opaque), like every other float setter here.**
     /// `f32::clamp` compares with `<` / `>`, both false for `NaN`, so a bare clamp *passes NaN
-    /// through* — and this was the only float setter on this type without the guard (#577). The
+    /// through* — and this was the only float setter on this type without the guard. The
     /// consequence was not a wrong background: a `NaN` here reaches every fragment's alpha, so
     /// glyph pixels go transparent too and the whole terminal disappears with no error anywhere.
     /// Measured, not reasoned: booting the widget at `NaN` read `[30,30,46,0]` on a background
     /// cell **and `[205,214,244,0]` inside a glyph**, against `[…,128]` / `[…,255]` for a valid
     /// `0.5`. (The measurement stands; the expression it was taken against was
-    /// `mix(u_bg_alpha, 1.0, cov)`, which #317 §2 replaced — the `NaN` now reaches the colour
+    /// `mix(u_bg_alpha, 1.0, cov)`, which the coverage-weighted form replaced — the `NaN` now reaches the colour
     /// through the same uniform as well, so the failure is if anything less subtle.)
     ///
     /// Reachable from type-correct consumer code, which is why the guard is here and not at the
@@ -1928,27 +1928,27 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// Draw bold text in the bright (8–15) ANSI colour (#223/#272) — xterm's
+    /// Draw bold text in the bright (8–15) ANSI colour — xterm's
     /// `drawBoldTextInBrightColors`. A bold `Indexed(0..=7)` foreground resolves to its `8..=15`
     /// bright variant; `Rgb`/`Indexed(8..=255)` foregrounds and non-bold cells are unaffected. On by
     /// default (xterm's default). Consumer policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)): the mechanism (index remap at resolve)
     /// is the renderer's, the on/off is the consumer's. Marks the buffer dirty; the next
-    /// `render` re-packs (#421), so a live toggle shows without a new frame.
+    /// `render` re-packs, so a live toggle shows without a new frame.
     #[wasm_bindgen(js_name = setBoldToBright)]
     pub fn set_bold_to_bright(&mut self, grid: u32, enabled: bool) -> Result<(), JsValue> {
         let at = self.slot(grid)?;
         self.grid_at_mut(at).set_bold_to_bright(enabled)
     }
 
-    /// Set (or clear) the selection foreground override (#227/#272) — xterm's `selectionForeground`.
+    /// Set (or clear) the selection foreground override — xterm's `selectionForeground`.
     /// A packed `0xRRGGBB` forces the fg of every **selected** cell (never a search match) to that
     /// colour; it still flows through the minimum-contrast pass. Pass `undefined` to clear it and keep
-    /// each cell's own fg (the default). Consumer policy (#115), focus-independent. Selection is a
-    /// property of the cell, not of the bg winner (#430): on a selected cell inside the ACTIVE search
+    /// each cell's own fg (the default). Consumer policy, focus-independent. Selection is a
+    /// property of the cell, not of the bg winner: on a selected cell inside the ACTIVE search
     /// match this fg paints over the *active-match* background — pick the two colours to read on each
     /// other, or set `setMinimumContrastRatio` (it corrects
     /// against the final composited bg). Marks the buffer dirty; the next `render`
-    /// re-packs (#421).
+    /// re-packs.
     #[wasm_bindgen(js_name = setSelectionForeground)]
     pub fn set_selection_foreground(
         &mut self,
@@ -1959,13 +1959,13 @@ impl JustermRenderer {
         self.grid_at_mut(at).set_selection_foreground(color)
     }
 
-    /// Set the minimum WCAG fg/bg contrast ratio (#225/#272) — xterm's `minimumContrastRatio`. Below
+    /// Set the minimum WCAG fg/bg contrast ratio — xterm's `minimumContrastRatio`. Below
     /// it, a cell's foreground is nudged lighter or darker (in 10% luminance steps, away from the bg)
     /// until it meets the ratio, against the colour it is actually drawn over (post-highlight). A DIM
     /// cell uses half the ratio, so it stays visibly dim rather than being corrected to full contrast.
     /// Consumer policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)): the mechanism (the WCAG adjustment on the resolved RGB) is the
     /// renderer's, the number is the consumer's. Default `1.0` = off (xterm's default). Clamped to
-    /// `[1, 21]`; marks the buffer dirty so the next `render` re-packs (#421) and a
+    /// `[1, 21]`; marks the buffer dirty so the next `render` re-packs and a
     /// live change shows.
     #[wasm_bindgen(js_name = setMinimumContrastRatio)]
     pub fn set_minimum_contrast_ratio(&mut self, grid: u32, ratio: f32) -> Result<(), JsValue> {
@@ -1973,7 +1973,7 @@ impl JustermRenderer {
         self.grid_at_mut(at).set_minimum_contrast_ratio(ratio)
     }
 
-    /// Set the minimum WCAG contrast a cursor must have with the cell it sits on (#368). Below it,
+    /// Set the minimum WCAG contrast a cursor must have with the cell it sits on. Below it,
     /// the cursor inverts to the terminal's default fg/bg so it never vanishes into a same-coloured
     /// cell. The mechanism is the renderer's — only it has the *resolved* per-cell RGB ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)) —
     /// but the number is the consumer's policy. Default `1.5` (alacritty's `MIN_CURSOR_CONTRAST`);
@@ -1986,10 +1986,10 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// Set the cursor stroke thickness as a fraction of the cell width (#369) — the width of a
+    /// Set the cursor stroke thickness as a fraction of the cell width — the width of a
     /// bar, an underline, or a hollow block's outline. `cursor_thickness` turns it into device
     /// pixels as `(frac * cell_w).round().max(1)`, so it tracks both dpr and font size — alacritty's
-    /// rule (`display/cursor.rs:25`), which #270 chose over xterm's `dpr * cursorWidth` (that gives a
+    /// rule (`display/cursor.rs:25`), chosen over xterm's `dpr * cursorWidth` (that gives a
     /// 32px font the same hairline as a 12px one). This adds only the configurability the mechanism
     /// already had. A **block** ignores it — a block recolours its cell and draws no stroke.
     ///
@@ -2010,7 +2010,7 @@ impl JustermRenderer {
 
     /// Bind a renderer to the canvas matched by `canvas_selector`.
     ///
-    /// It arrives holding **no terminal and no font configuration** (#773): the palette and the six
+    /// It arrives holding **no terminal and no font configuration**: the palette and the six
     /// font selectors belong to a grid, and `addGrid` is what creates one. So the
     /// first two calls a consumer makes are `new` then `addGrid`, and nothing is baked in between —
     /// there is nothing yet to key an atlas by.
@@ -2445,18 +2445,18 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// Notify the renderer that `window.devicePixelRatio` changed to `dpr` (#322). The consumer
+    /// Notify the renderer that `window.devicePixelRatio` changed to `dpr`. The consumer
     /// drives this from a resolution `matchMedia` listener — a DPR change at the *same* CSS size
     /// (dragging to another-density monitor) does not fire a resize, so it must be signalled
     /// explicitly. **Every** configuration is re-baked at the new device size, each keeping its own
     /// glyph slots (so nothing has to re-pack). **The drawing buffer is deliberately left alone** —
     /// see the paragraph below the next one, which is where that decision is stated; this sentence
-    /// said the opposite until 2026-08-19 (#773 sweep miss), describing the pre-0.15.0 behaviour
+    /// said the opposite until 2026-08-19, describing the pre-0.15.0 behaviour
     /// fifteen lines above the paragraph that retired it. A no-op if the ratio is unchanged; on
     /// error every old atlas is left intact and `dpr` unadvanced, so the next notification retries
     /// (self-healing).
     ///
-    /// **This is the "rebuild all of them" path, not the "re-key one" path** (#772, [ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)). One
+    /// **This is the "rebuild all of them" path, not the "re-key one" path** ([ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)). One
     /// canvas means one drawing buffer and one DPR, so a density change is true of every entry at
     /// once — which is exactly the case where mutating a shared entry in place is right rather than
     /// wrong: nobody is being moved into a configuration they did not ask for.
@@ -2581,8 +2581,8 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// Set **one grid's** font size in **CSS px** (#406) — it joins the configuration keyed by the
-    /// new size, baking one only if no grid already stands on it (#772). Consumer policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)):
+    /// Set **one grid's** font size in **CSS px** — it joins the configuration keyed by the
+    /// new size, baking one only if no grid already stands on it. Consumer policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)):
     /// the size is the consumer's, the atlas mechanism the renderer's. A non-finite size is ignored;
     /// a smaller-than-`1.0` one is clamped (a zero/negative size would rasterise a degenerate
     /// atlas). A no-op if unchanged.
@@ -2595,7 +2595,7 @@ impl JustermRenderer {
     /// The cell size changes, so `cssCellWidth`/`css_cell_height` move and
     /// **the consumer must re-fit**: re-divide its box, `resizeGrid`, and
     /// re-place the grid — nothing here resizes the surface for it, because a surface drawing N
-    /// grids belongs to none of them (#773). Takes effect on the next `render`.
+    /// grids belongs to none of them. Takes effect on the next `render`.
     #[wasm_bindgen(js_name = setFontSize)]
     pub fn set_font_size(&mut self, grid: u32, css_px: f32) -> Result<(), JsValue> {
         let at = self.slot(grid)?;
@@ -2609,15 +2609,15 @@ impl JustermRenderer {
         self.adopt_selectors(at, |g| g.font_size = css_px)
     }
 
-    /// Set **one grid's** font family (#413) — a CSS `font-family` string (`"monospace"`,
+    /// Set **one grid's** font family — a CSS `font-family` string (`"monospace"`,
     /// `"'Fira Code', monospace"`, …) the browser's text engine resolves, with its own fallback. It
-    /// joins the configuration keyed by the new family, exactly as a size change does (#772). Consumer policy
+    /// joins the configuration keyed by the new family, exactly as a size change does. Consumer policy
     /// ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)) — the renderer stays font-agnostic; loading a webfont (`@font-face` / `FontFace`)
     /// before calling is the consumer's job (an unloaded family silently falls back). A no-op if
     /// unchanged, and like a size change it moves **this grid only**.
     ///
     /// The cell size may change, so `cssCellWidth`/`css_cell_height` can move
-    /// and **the consumer must re-fit**, exactly as after a size change (#773). Takes effect on the
+    /// and **the consumer must re-fit**, exactly as after a size change. Takes effect on the
     /// next `render`.
     #[wasm_bindgen(js_name = setFontFamily)]
     pub fn set_font_family(&mut self, grid: u32, family: String) -> Result<(), JsValue> {
@@ -2628,10 +2628,10 @@ impl JustermRenderer {
         self.adopt_selectors(at, |g| g.font_family = family)
     }
 
-    /// Set the weight **one grid's** regular text is drawn at (#928): CSS `"normal"` / `"bold"`, a
+    /// Set the weight **one grid's** regular text is drawn at: CSS `"normal"` / `"bold"`, a
     /// `"100"`..`"900"` keyword, or a number in `[1, 1000]` — the values xterm.js's `fontWeight`
     /// takes. Anything else is ignored. It joins the configuration keyed by the new weight, exactly
-    /// as a family change does (#772), and moves this grid only.
+    /// as a family change does, and moves this grid only.
     ///
     /// The cell is measured at the `normal` weight whatever this is, so it does not move and no re-fit
     /// is needed. Takes effect on the next `render`.
@@ -2647,7 +2647,7 @@ impl JustermRenderer {
         self.adopt_selectors(at, |g| g.font_weight = weight)
     }
 
-    /// Set the weight **one grid's** bold (SGR 1) text is drawn at (#928). Takes the same values as
+    /// Set the weight **one grid's** bold (SGR 1) text is drawn at. Takes the same values as
     /// `setFontWeight`, and ignores anything else. Like it, this re-bakes
     /// the atlas without moving the cell.
     #[wasm_bindgen(js_name = setFontWeightBold)]
@@ -2680,7 +2680,7 @@ impl JustermRenderer {
     }
 
     /// Extra space between columns, in **CSS pixels** — the consumer's policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), applied
-    /// as `round(letter_spacing * dpr)` device px on the cell (#338). May be negative, which
+    /// as `round(letter_spacing * dpr)` device px on the cell. May be negative, which
     /// narrows the cell and crops the glyph rather than stretching it; the cell never reaches zero.
     ///
     /// Both references take this in device px (xterm `WebglRenderer.ts:671`, alacritty
@@ -2694,11 +2694,11 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// A multiplier on the glyph height, `>= 1` — the consumer's policy (#338). Clamped rather than
+    /// A multiplier on the glyph height, `>= 1` — the consumer's policy. Clamped rather than
     /// rejected: xterm throws from its option setter (`OptionsService.ts:182`), and a renderer that
     /// panics across the wasm boundary is a worse contract than one that reports what it adopted.
     /// Read the result back with `cell_height` — it may be smaller than asked,
-    /// because a cell the atlas texture cannot hold is shrunk to one it can (#359).
+    /// because a cell the atlas texture cannot hold is shrunk to one it can.
     #[wasm_bindgen(js_name = setLineHeight)]
     pub fn set_line_height(&mut self, grid: u32, multiplier: f32) -> Result<(), JsValue> {
         let at = self.slot(grid)?;
@@ -2711,7 +2711,7 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// Whether the WebGL context is currently lost (#269). While lost the renderer draws nothing;
+    /// Whether the WebGL context is currently lost. While lost the renderer draws nothing;
     /// it recovers by itself when the browser fires `webglcontextrestored`. Exposed so the consumer
     /// can surface the state (e.g. dim the terminal); no consumer action is required.
     ///
@@ -2719,7 +2719,7 @@ impl JustermRenderer {
     /// to report to a consumer, and deliberately *not* what the crate's own internals guard on
     /// (`gpu_work_must_wait`, private): a context dies synchronously while its event is merely
     /// queued, so this answers `false` for a window in which every GL call is already dead. Read it
-    /// as *"has a loss been reported"*, not *"is the GPU usable right now"* (#639).
+    /// as *"has a loss been reported"*, not *"is the GPU usable right now"*.
     #[wasm_bindgen(js_name = isContextLost)]
     pub fn is_context_lost(&self) -> bool {
         self.global.ctx_loss.state.borrow().is_lost()
@@ -2760,7 +2760,7 @@ impl JustermRenderer {
     }
 
     /// Register a callback invoked when a lost context has not been restored within the deadline
-    /// (#327) — xterm.js's `onContextLoss`. It fires **at most once per loss**, and only if the
+    /// — xterm.js's `onContextLoss`. It fires **at most once per loss**, and only if the
     /// context is still lost when the deadline lands.
     ///
     /// This is a *warning*, not a verdict: Chromium keeps re-attempting a real context restore once
@@ -2782,7 +2782,7 @@ impl JustermRenderer {
         self.global.ctx_loss.timeout_ms.set(ms.max(0));
     }
 
-    /// Whether a lost context has missed its restore deadline (#327). The poll counterpart of
+    /// Whether a lost context has missed its restore deadline. The poll counterpart of
     /// `setOnContextLoss`, for a consumer that attaches late. Cleared
     /// by a late `webglcontextrestored`, which also heals the renderer.
     #[wasm_bindgen(js_name = isRestoreOverdue)]
@@ -3020,10 +3020,10 @@ impl JustermRenderer {
 
     /// The cell width in **device pixels** — exactly the `u_cell_size.x` the shader lays the grid
     /// out with: the rasteriser's ink-scan of `█` at `font_size * dpr`, **plus the consumer's
-    /// `letterSpacing`** (#338). It is the *grid* cell, as xterm's `device.cell.width` is; the glyph
+    /// `letterSpacing`**. It is the *grid* cell, as xterm's `device.cell.width` is; the glyph
     /// box inside it is smaller whenever the spacing policy is not the identity.
     ///
-    /// This is *the* cell (#331/#335). The bare name carries it because it is the exact, measured
+    /// This is *the* cell. The bare name carries it because it is the exact, measured
     /// one, as in xterm.js's `dimensions.device.cell` and beamterm's `cell_size()`. Anything that
     /// addresses the drawing buffer — `readPixels`, GL interop, a picking rect — belongs here;
     /// `cssCellWidth` is the derived view for CSS layout.
@@ -3044,7 +3044,7 @@ impl JustermRenderer {
     /// `css_cell_size` doc says the same).
     ///
     /// It is a **float on purpose**. Rounding it to a whole CSS pixel loses the device cell for
-    /// good — 33 device px at dpr 2 is 16.5, and 17 does not scale back to 33 (#331).
+    /// good — 33 device px at dpr 2 is 16.5, and 17 does not scale back to 33.
     #[wasm_bindgen(js_name = cssCellWidth)]
     pub fn css_cell_width(&self, grid: u32) -> Result<f32, JsValue> {
         let at = self.slot(grid)?;
@@ -3058,7 +3058,7 @@ impl JustermRenderer {
         Ok(css_px(self.config_at(at).cell_size.1, self.global.dpr))
     }
 
-    /// Size **one grid** to `cols`×`rows` cells (#773).
+    /// Size **one grid** to `cols`×`rows` cells.
     ///
     /// Until S5 this was `resize(cols, rows)` and it wrote two tiers at once: the implicit grid's
     /// dimensions *and* the drawing buffer, which it snapped to `cols * cell` device px. [ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)
@@ -3070,14 +3070,14 @@ impl JustermRenderer {
     /// This is what `cols` / `rows` report back, and what the frames
     /// fed to this grid are expected to carry. At least one cell each way.
     ///
-    /// **Nothing clamps it to the grid's rect, and that is a decision.** #331's guarantee — a
+    /// **Nothing clamps it to the grid's rect, and that is a decision.** The cell-geometry guarantee — a
     /// column cannot fall outside the buffer holding it — was the renderer's to keep while the
     /// buffer was derived from the grid. The rect is now the consumer's own measured box, so
     /// keeping it is the consumer's: place a rect a whole number of cells wide, which it can,
     /// having divided that box by `cssCellWidth` to get `cols` in the
     /// first place. What this renderer still guarantees is that an overhang cannot reach a
     /// **neighbour** — every grid draws under its own `gl.scissor`, so a cell past the rect is
-    /// clipped rather than painted over the terminal next door (#771).
+    /// clipped rather than painted over the terminal next door.
     #[wasm_bindgen(js_name = resizeGrid)]
     pub fn resize_grid(&mut self, grid: u32, cols: u32, rows: u32) -> Result<(), JsValue> {
         let at = self.slot(grid)?;
@@ -3088,10 +3088,10 @@ impl JustermRenderer {
     }
 
     /// Size the **surface** — the one canvas every grid draws into — to a drawing buffer of
-    /// `width`×`height` **device pixels** (#773).
+    /// `width`×`height` **device pixels**.
     ///
     /// The consumer sets the canvas's CSS display box itself from `cssWidth` /
-    /// `cssHeight`, exactly as it did when the buffer came from a grid (#337
+    /// `cssHeight`, exactly as it did when the buffer came from a grid (the ink-scan geometry
     /// couples the two; beamterm's `auto_resize_canvas_css = false` is the same split). Forget it
     /// and the device-px buffer is displayed at device px — twice its intended size on a Retina
     /// display.
@@ -3100,7 +3100,7 @@ impl JustermRenderer {
     /// this replaced is gone because the surface no longer belongs to a grid (see
     /// `resizeGrid`), and the obvious substitute — a CSS box, as three.js's
     /// `setSize` takes — would make this the one canvas-addressing export in CSS px while every
-    /// rect placed on that canvas is in device px. One canvas, one space. It also keeps #331
+    /// rect placed on that canvas is in device px. One canvas, one space. It also keeps that guarantee
     /// *reachable*: a single-grid consumer wanting the exact guarantee that made the old
     /// `resize(cols, rows)` safe asks for `cols * cellWidth(grid)`, and both numbers are integers
     /// this crate handed it. A CSS box would put a rounding step between them.
@@ -3122,18 +3122,18 @@ impl JustermRenderer {
     /// count and every rect moved with it — so this costs it nothing and removes the one thing that
     /// could go wrong silently.
     ///
-    /// **WebGL is not obliged to grant the buffer** (#339), so this asks and then adopts what it
+    /// **WebGL is not obliged to grant the buffer**, so this asks and then adopts what it
     /// got; `cssWidth` reports the *granted* box, which is what the consumer
     /// should size its display box to.
     ///
-    /// **When the drawing buffer cannot be read, the box is adopted but not verified** (#639). A
+    /// **When the drawing buffer cannot be read, the box is adopted but not verified**. A
     /// resize can land at any moment in a context-loss window and a consumer has no obligation to
     /// notice, so this commits the box and defers only the read-back;
     /// the restore path re-derives the buffer from it on a live context, which is where
     /// the clamp settles instead. During that window `cssWidth` describes a buffer that does not
     /// exist yet, so a consumer sizing its canvas from it overshoots — and the overshoot outlives
     /// the restore, because the display box is the consumer's and nothing here can rewrite it
-    /// (measured through `justerm-web`, #717/#579). Its remedy is to repeat its fit once the
+    /// (measured through `justerm-web`). Its remedy is to repeat its fit once the
     /// context is back.
     #[wasm_bindgen(js_name = resizeSurface)]
     pub fn resize_surface(&mut self, width: i32, height: i32) -> Result<(), JsValue> {
@@ -3198,7 +3198,7 @@ impl JustermRenderer {
     /// The drawing buffer's width in **CSS pixels** — what the consumer should set the canvas's CSS
     /// display box to, so the device-px buffer is shown at as close to the right size as a CSS
     /// length can get. Unrounded, for the same reason as `cssCellWidth`,
-    /// and for one more (#337): a rounded box misses the buffer by up to `dpr/2` device px — an
+    /// and for one more: a rounded box misses the buffer by up to `dpr/2` device px — an
     /// absolute error, so it is ruinous on a small canvas — where this one misses by at most the
     /// browser's layout grain (`dpr/128`; measured 0.0016..0.0156 at dpr 1.1). It can also round
     /// *up*, stretching the image over a box wider than the buffer feeding it.
@@ -3215,15 +3215,15 @@ impl JustermRenderer {
         css_px(self.global.size.1 as u32, self.global.dpr)
     }
 
-    /// Apply a `cols`×`rows` frame (dense row-major, length `cols*rows` — see #277 for the
+    /// Apply a `cols`×`rows` frame (dense row-major, length `cols*rows` — see `applyDamage` for the
     /// Partial-frame adapter): `bg`/`fg` are tagged-u32 colour refs, `codepoints` the glyph
     /// per cell, `flags` the `CellFlags`. A `WIDE_CHAR` lead cell rasterises a double-width
     /// glyph and splits it into two atlas slots; its `WIDE_CHAR_SPACER` cell reuses the
     /// right-half slot. New glyphs are rasterised + uploaded on demand.
     ///
-    /// Tracked limits (surfaced by adversarial passes, not silent): colour emoji (#284) and
-    /// ZWJ/grapheme clusters (#285) are separate slices; a frame with more distinct glyphs
-    /// than a region's capacity, or a rasterise failure, can strand a slot (#280).
+    /// Tracked limits (surfaced by adversarial passes, not silent): colour emoji and
+    /// ZWJ/grapheme clusters are separate slices; a frame with more distinct glyphs
+    /// than a region's capacity, or a rasterise failure, can strand a slot.
     // Seven typed-array / scalar columns at the wasm-bindgen boundary; each is a distinct JS view
     // that cannot be grouped without an AoS rewrite breaking the zero-copy SoA (as on `apply_damage`).
     #[allow(clippy::too_many_arguments)]
@@ -3515,13 +3515,13 @@ impl JustermRenderer {
     /// Clear to the palette's default background, then draw every cell of the current frame
     /// (glyph composited over background) with one instanced draw call.
     ///
-    /// Context loss (#269) is handled here, before any GL work: while the context is lost this is a
+    /// Context loss is handled here, before any GL work: while the context is lost this is a
     /// silent no-op (a draw call on a dead context accomplishes nothing), and on the frame after
     /// `webglcontextrestored` it first rebuilds the destroyed resources. Recovery therefore needs
     /// no consumer cooperation beyond continuing to call `render`. A failed rebuild propagates and
     /// is retried on the next frame.
     ///
-    /// **"While the context is lost" means either sense of lost, and it did not always** (#695).
+    /// **"While the context is lost" means either sense of lost, and it did not always**.
     /// The decision consults the context itself *and* the state machine's flag, because a browser
     /// destroys a context synchronously and only queues the event: asking the flag alone, this
     /// promise was false for that slice — a pending rebuild ran on a dead context and threw.
@@ -3624,9 +3624,9 @@ impl JustermRenderer {
         }
     }
 
-    /// Number of instance-buffer packs run so far (#421 diagnostic). The consumer/proofs read the
+    /// Number of instance-buffer packs run so far (a diagnostic). The consumer/proofs read the
     /// **delta** across an operation to assert `render` packs once per *dirty drawn grid* per frame
-    /// — not once per setter, and not at all for a grid with no viewport (#771).
+    /// — not once per setter, and not at all for a grid with no viewport.
     /// Not a stable API surface — a counter for verification, not a rendering control.
     #[wasm_bindgen(js_name = packs)]
     pub fn packs(&self) -> u32 {
