@@ -998,7 +998,7 @@ touch justerm-renderer/src/webgl.rs justerm-wasm-decode/src/lib.rs
 wasm-pack build --target bundler --out-dir pkg-bundler justerm-wasm-decode
 node justerm-wasm-decode/scripts/finish-pkg.mjs justerm-wasm-decode/pkg-bundler   # brings colors.d.ts in
 wasm-pack build --target bundler --out-dir pkg justerm-renderer
-node .github/scripts/check-published-dts.mjs justerm-wasm-decode/pkg-bundler justerm-renderer/pkg
+node .github/scripts/check-published-package.mjs justerm-wasm-decode/pkg-bundler justerm-renderer/pkg
 ```
 **This list has now gone stale the same way twice, which is the fact to carry rather than the
 entries.** The first time, the last two of the original block were missing until 2026-08-03 (#545)
