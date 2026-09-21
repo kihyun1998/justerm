@@ -336,7 +336,7 @@ impl DecodedFrame {
 
     /// Lines the viewport is scrolled up from the bottom (`0` = following the
     /// live screen). With `scrollbackLen`, sizes the
-    /// consumer's scrollbar thumb (#112 / ADR-0013).
+    /// consumer's scrollbar thumb (#112 / [ADR-0013](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0013-expose-scroll-position-in-frame.md)).
     #[wasm_bindgen(getter, js_name = displayOffset)]
     pub fn display_offset(&self) -> u32 {
         self.flat.display_offset
@@ -554,7 +554,7 @@ impl DecodedFrame {
 }
 
 /// The wire-format version this decoder understands (the `VERSION` byte gating
-/// ADR-0005). A consumer can read it at load time to assert the WASM decoder and
+/// [ADR-0005](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0005-binary-reference-based-serialization.md)). A consumer can read it at load time to assert the WASM decoder and
 /// the backend encoder agree before any frame flows; `decodeFrame` also returns a
 /// `BadVersion` error on mismatch, so a stale artifact fails loudly.
 #[wasm_bindgen(js_name = wireVersion)]
@@ -656,7 +656,7 @@ pub enum UnderlineStyle {
 /// The family's own renderer is the exception and is not a counter-example: `justerm-renderer`
 /// does not depend on `justerm-core`, so it re-declares the field position (`attrs.rs`,
 /// `USTYLE_SHIFT`) and forwards the raw bits to a shader without naming a single value. That
-/// duplication is the recorded one in `docs/map/territory/colour-policy.md`; it is what this
+/// duplication is the recorded one in [`docs/map/territory/colour-policy.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/colour-policy.md); it is what this
 /// export exists so that nobody *else* has to repeat.
 ///
 /// **Total.** The 3 bits have eight representable values and six meanings, so anything outside the
@@ -784,7 +784,7 @@ pub fn modified_key_bits() -> ModifiedKeyBits {
 /// and always did. This names the *kind*, which is the part that was a bare number with a roster
 /// in prose.
 ///
-/// The discriminants are the wire's, and adding one moves `WIRE_VERSION` (ADR-0008) — a louder
+/// The discriminants are the wire's, and adding one moves `WIRE_VERSION` ([ADR-0008](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0008-wasm-decode-binding-separate-crate.md)) — a louder
 /// gate than semver, which is why `justerm_core::MarkerKind` stays exhaustive (#843).
 #[wasm_bindgen]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -881,10 +881,10 @@ pub fn build_palette(ansi: &[u32]) -> Vec<u32> {
     colors
 }
 
-/// Decode a justerm wire buffer (ADR-0005) into a `DecodedFrame`.
+/// Decode a justerm wire buffer ([ADR-0005](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0005-binary-reference-based-serialization.md)) into a `DecodedFrame`.
 ///
 /// On a malformed buffer this throws a JS `Error` whose `message` is the
-/// `DecodeError` variant name (ADR-0008) — the validation a hand-written TS
+/// `DecodeError` variant name ([ADR-0008](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0008-wasm-decode-binding-separate-crate.md)) — the validation a hand-written TS
 /// decoder would otherwise have to re-implement (and fuzz). A real `Error`, not
 /// a string primitive: a consumer's `catch (e) { e.message }` reads the variant
 /// rather than `undefined`, and the throw carries a stack (#662). Identical

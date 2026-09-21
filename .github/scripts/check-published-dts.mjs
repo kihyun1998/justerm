@@ -37,6 +37,13 @@
 // wrong" must not look alike.
 //
 // Usage: node .github/scripts/check-published-dts.mjs <pkg-dir> [<pkg-dir>...]
+//
+// **Running it locally after editing a doc-comment: `touch` the source first.** A doc-comment
+// changes no code, so cargo can decide the crate is fresh and `wasm-pack build` then re-emits the
+// previous `.d.ts`. That cost a whole false result here — a mutation that should have reddened this
+// gate came back green twice, and the cause was a stale artifact rather than a blind check. CI is
+// unaffected (a fresh checkout has nothing to reuse), which is exactly why the trap only bites the
+// person trying to verify the gate.
 
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -73,6 +80,21 @@ function docProse(src) {
     .join("\n");
 }
 
+/**
+ * A real markdown link — one whose target is a URL — blanked at equal length.
+ *
+ * The bare-vs-linked rule of `check-published-pointers.mjs` applies here for the same reason it
+ * applies to a README: this prose CAN carry a URL and have it work. A `.d.ts` comment is JSDoc,
+ * tsserver hands it to the editor as markdown, and the hover renders it as a clickable link. So
+ * `[ADR-0017](https://…)` is resolvable from where it is printed and is not this gate's business,
+ * while a bare `ADR-0017` is. Blanking at equal length keeps the label from being re-read as a bare
+ * reference, and keeps the URL's own `docs/adr/…` path from counting as a repo-only path.
+ *
+ * Only `http` targets are blanked. `](Self::x)` is not a URL, and that is exactly what the link
+ * check below exists to report.
+ */
+const blankUrlLinks = (s) => s.replace(/\[[^\]]*\]\(https?:\/\/[^)]*\)/g, (l) => l.replace(/[^\n]/g, " "));
+
 const findings = [];
 let filesScanned = 0;
 const perDir = [];
@@ -91,7 +113,7 @@ for (const dir of dirs) {
   for (const file of dts) {
     filesScanned++;
     const src = readFileSync(join(dir, file), "utf8");
-    const prose = docProse(src);
+    const prose = blankUrlLinks(docProse(src));
     const declared = declaredNames(src);
     let n = 0;
 

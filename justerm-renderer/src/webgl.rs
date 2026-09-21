@@ -1335,7 +1335,7 @@ impl JustermRenderer {
     /// until it is laid out.
     ///
     /// It costs **one** of the per-grid tier and nothing of the other two: one GPU instance buffer
-    /// **and the VAO that points at it** (ADR-0021 D2 — no selector, not shareable, cheap to create;
+    /// **and the VAO that points at it** ([ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md) D2 — no selector, not shareable, cheap to create;
     /// a VAO's whole content is *which* buffer feeds the draw, so it cannot be shared byte-for-byte
     /// and follows the buffer, #771). No atlas, rasteriser, glyph cache, program or shared quad
     /// buffer — those stay one per context / per configuration.
@@ -1551,7 +1551,7 @@ impl JustermRenderer {
     /// How many grids are registered, drawn or not (#770). Zero on a fresh renderer (#773).
     ///
     /// Registry *state*, not a diagnostic counter: it answers what this renderer holds, which the
-    /// consumer put there. (ADR-0021 D5 leaves where diagnostics like `packs` live to whoever adds
+    /// consumer put there. ([ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md) D5 leaves where diagnostics like `packs` live to whoever adds
     /// the second one; this is not that question.)
     #[wasm_bindgen(js_name = gridCount)]
     pub fn grid_count(&self) -> usize {
@@ -1645,7 +1645,7 @@ impl JustermRenderer {
     /// (`compositionupdate.data`); an empty array clears it.
     ///
     /// **This is the one piece of renderer state with no representation anywhere in the engine**
-    /// (ADR-0028): a composition is browser-owned, reaches no frame and no wire, so the consumer is
+    /// ([ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md)): a composition is browser-owned, reaches no frame and no wire, so the consumer is
     /// the only possible source and must re-push on every `compositionupdate`. Skipping an update
     /// whose data is unchanged is worth doing — a real IME emits one settling update per syllable
     /// where nothing moved (measured, #249).
@@ -1657,7 +1657,7 @@ impl JustermRenderer {
     /// Returns the column the **caret and the IME anchor** belong at: one past the run's last cell,
     /// clamped to the grid. The consumer cannot compute this — it has no `wcwidth` — and it is not
     /// simply `col + len`, because the run shifts left at the right edge. Feeding it back to
-    /// `setCursor` is ADR-0028 D5's position rule (the caret rides the composition's end, while
+    /// `setCursor` is [ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md) D5's position rule (the caret rides the composition's end, while
     /// DECTCEM still decides whether it is drawn at all), and feeding it to the hidden textarea is
     /// D4's voluntary writer.
     #[wasm_bindgen(js_name = setPreedit)]
@@ -1676,7 +1676,7 @@ impl JustermRenderer {
     /// theme picker or a runtime scheme swap, so a consumer need not tear down and rebuild the
     /// renderer to recolour. `palette_colors` is the 256 pre-built indexed colours (as the
     /// constructor takes); `default_fg`/`default_bg` the theme's defaults. Consumer policy
-    /// (ADR-0017): the palette *values* are the consumer's (theme-agnostic core), the *mechanism*
+    /// ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)): the palette *values* are the consumer's (theme-agnostic core), the *mechanism*
     /// (re-resolve every retained cell against the new palette) is the renderer's.
     ///
     /// Marks the buffer dirty so the next `render` re-packs (#421) and the change
@@ -1774,7 +1774,7 @@ impl JustermRenderer {
     /// resolved its theme before pushing — unlike a *cell* colour, which arrives as a theme-agnostic
     /// ref for the renderer to resolve), or the wire's `NO_REF` sentinel for "no override". Pass an
     /// empty array to clear. Consumer-projected (the model is the consumer's; the renderer only
-    /// composites, ADR-0017). Marks the buffer dirty; the next `render`
+    /// composites, [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)). Marks the buffer dirty; the next `render`
     /// re-packs (#421).
     #[wasm_bindgen(js_name = setDecorations)]
     pub fn set_decorations(&mut self, grid: u32, spans: Vec<u32>) -> Result<(), JsValue> {
@@ -1794,8 +1794,8 @@ impl JustermRenderer {
     /// `blink_on` is (#282) — call `clearCursor` for the off phase.
     ///
     /// A block *could* have been an instance: it is a colour override on the cell, not geometry,
-    /// and both references draw it that way. It is not one because ADR-0018
-    /// (`docs/adr/0018-justerm-renderer.md`) makes that **the contract, not an
+    /// and both references draw it that way. It is not one because [ADR-0018](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0018-justerm-renderer.md)
+    /// ([`docs/adr/0018-justerm-renderer.md`](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0018-justerm-renderer.md)) makes that **the contract, not an
     /// optimisation** — a blink tick produces no terminal output, so a block packed into the
     /// instances could not blink off without the consumer re-feeding the frame (an early #270 draft
     /// did exactly that). Two consequences follow rather than cause it: un-painting would need a
@@ -1844,7 +1844,7 @@ impl JustermRenderer {
     /// A consumer that keeps sending frames of a grid larger than its rect does not corrupt
     /// anything — every per-cell read is bounds-checked and the surplus cells are clipped by the
     /// grid's own scissor — but its mouse mapping and reflow will be wrong. The grid is the
-    /// consumer's to compute from its own box (ADR-0017), as xterm's `FitAddon` computes it.
+    /// consumer's to compute from its own box ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), as xterm's `FitAddon` computes it.
     #[wasm_bindgen(js_name = cols)]
     pub fn cols(&self, grid: u32) -> Result<u32, JsValue> {
         let at = self.slot(grid)?;
@@ -1895,7 +1895,7 @@ impl JustermRenderer {
     }
 
     /// Set the background cell opacity: `0` = fully transparent, `1` = opaque (default). The
-    /// consumer injects this policy (ADR-0017) to make the terminal background see-through to the
+    /// consumer injects this policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)) to make the terminal background see-through to the
     /// page/desktop behind the canvas, while glyph pixels stay opaque. Clamped to `[0, 1]`; takes
     /// effect on the next `render` (#298).
     ///
@@ -1931,7 +1931,7 @@ impl JustermRenderer {
     /// Draw bold text in the bright (8–15) ANSI colour (#223/#272) — xterm's
     /// `drawBoldTextInBrightColors`. A bold `Indexed(0..=7)` foreground resolves to its `8..=15`
     /// bright variant; `Rgb`/`Indexed(8..=255)` foregrounds and non-bold cells are unaffected. On by
-    /// default (xterm's default). Consumer policy (ADR-0017): the mechanism (index remap at resolve)
+    /// default (xterm's default). Consumer policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)): the mechanism (index remap at resolve)
     /// is the renderer's, the on/off is the consumer's. Marks the buffer dirty; the next
     /// `render` re-packs (#421), so a live toggle shows without a new frame.
     #[wasm_bindgen(js_name = setBoldToBright)]
@@ -1963,7 +1963,7 @@ impl JustermRenderer {
     /// it, a cell's foreground is nudged lighter or darker (in 10% luminance steps, away from the bg)
     /// until it meets the ratio, against the colour it is actually drawn over (post-highlight). A DIM
     /// cell uses half the ratio, so it stays visibly dim rather than being corrected to full contrast.
-    /// Consumer policy (ADR-0017): the mechanism (the WCAG adjustment on the resolved RGB) is the
+    /// Consumer policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)): the mechanism (the WCAG adjustment on the resolved RGB) is the
     /// renderer's, the number is the consumer's. Default `1.0` = off (xterm's default). Clamped to
     /// `[1, 21]`; marks the buffer dirty so the next `render` re-packs (#421) and a
     /// live change shows.
@@ -1975,7 +1975,7 @@ impl JustermRenderer {
 
     /// Set the minimum WCAG contrast a cursor must have with the cell it sits on (#368). Below it,
     /// the cursor inverts to the terminal's default fg/bg so it never vanishes into a same-coloured
-    /// cell. The mechanism is the renderer's — only it has the *resolved* per-cell RGB (ADR-0017) —
+    /// cell. The mechanism is the renderer's — only it has the *resolved* per-cell RGB ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)) —
     /// but the number is the consumer's policy. Default `1.5` (alacritty's `MIN_CURSOR_CONTRAST`);
     /// pass `1.0`, the floor of the contrast range, to disable the guard (xterm's behaviour). Clamped
     /// to `[1, 21]`; takes effect on the next `render`.
@@ -2456,7 +2456,7 @@ impl JustermRenderer {
     /// error every old atlas is left intact and `dpr` unadvanced, so the next notification retries
     /// (self-healing).
     ///
-    /// **This is the "rebuild all of them" path, not the "re-key one" path** (#772, ADR-0021). One
+    /// **This is the "rebuild all of them" path, not the "re-key one" path** (#772, [ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)). One
     /// canvas means one drawing buffer and one DPR, so a density change is true of every entry at
     /// once — which is exactly the case where mutating a shared entry in place is right rather than
     /// wrong: nobody is being moved into a configuration they did not ask for.
@@ -2582,12 +2582,12 @@ impl JustermRenderer {
     }
 
     /// Set **one grid's** font size in **CSS px** (#406) — it joins the configuration keyed by the
-    /// new size, baking one only if no grid already stands on it (#772). Consumer policy (ADR-0017):
+    /// new size, baking one only if no grid already stands on it (#772). Consumer policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)):
     /// the size is the consumer's, the atlas mechanism the renderer's. A non-finite size is ignored;
     /// a smaller-than-`1.0` one is clamped (a zero/negative size would rasterise a degenerate
     /// atlas). A no-op if unchanged.
     ///
-    /// **It moves that grid only**, which is what ADR-0021's D1 means by a selector being per-grid,
+    /// **It moves that grid only**, which is what [ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)'s D1 means by a selector being per-grid,
     /// and what makes two terminals in two fonts drawable side by side. A sibling on the
     /// configuration this grid is leaving keeps it, untouched — the entry is never edited to follow
     /// a grid out of it (ghostty `src/font/SharedGrid.zig:13-18`).
@@ -2612,7 +2612,7 @@ impl JustermRenderer {
     /// Set **one grid's** font family (#413) — a CSS `font-family` string (`"monospace"`,
     /// `"'Fira Code', monospace"`, …) the browser's text engine resolves, with its own fallback. It
     /// joins the configuration keyed by the new family, exactly as a size change does (#772). Consumer policy
-    /// (ADR-0017) — the renderer stays font-agnostic; loading a webfont (`@font-face` / `FontFace`)
+    /// ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)) — the renderer stays font-agnostic; loading a webfont (`@font-face` / `FontFace`)
     /// before calling is the consumer's job (an unloaded family silently falls back). A no-op if
     /// unchanged, and like a size change it moves **this grid only**.
     ///
@@ -2679,7 +2679,7 @@ impl JustermRenderer {
         });
     }
 
-    /// Extra space between columns, in **CSS pixels** — the consumer's policy (ADR-0017), applied
+    /// Extra space between columns, in **CSS pixels** — the consumer's policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), applied
     /// as `round(letter_spacing * dpr)` device px on the cell (#338). May be negative, which
     /// narrows the cell and crops the glyph rather than stretching it; the cell never reaches zero.
     ///
@@ -2766,7 +2766,7 @@ impl JustermRenderer {
     /// This is a *warning*, not a verdict: Chromium keeps re-attempting a real context restore once
     /// a second indefinitely, so a `webglcontextrestored` may still arrive afterwards, and the
     /// renderer will rebuild and repaint as usual. What to do in the meantime is consumer policy
-    /// (ADR-0017) — VSCode tears its WebGL renderer down and falls back to a DOM one. The callback
+    /// ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)) — VSCode tears its WebGL renderer down and falls back to a DOM one. The callback
     /// may safely destroy this renderer.
     #[wasm_bindgen(js_name = setOnContextLoss)]
     pub fn set_on_context_loss(&mut self, callback: js_sys::Function) {
@@ -3061,7 +3061,7 @@ impl JustermRenderer {
     /// Size **one grid** to `cols`×`rows` cells (#773).
     ///
     /// Until S5 this was `resize(cols, rows)` and it wrote two tiers at once: the implicit grid's
-    /// dimensions *and* the drawing buffer, which it snapped to `cols * cell` device px. ADR-0021
+    /// dimensions *and* the drawing buffer, which it snapped to `cols * cell` device px. [ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)
     /// D3 is the rule that separates them — tier the **fields**, and describe a setter by which
     /// fields it writes — and multi-viewport is what makes the separation load-bearing: with two
     /// grids in two cells on one canvas there is no cell the *buffer* can be a multiple of. The
