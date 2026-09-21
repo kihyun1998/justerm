@@ -1,4 +1,4 @@
-// Types for the justerm-wasm-decode colour helpers (#36). See colors.js.
+// Types for the justerm-wasm-decode colour helpers. See colors.js.
 
 /** Role for `Default` resolution: foreground. */
 export const FG: 0;

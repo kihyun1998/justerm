@@ -72,11 +72,23 @@ const REPO_ONLY = [
   [/\b(?:CLAUDE|CONTEXT)\.md\b|\bdocs\/(?:map|adr|agents|architecture)[A-Za-z0-9/._-]*/g, "a repo-only path"],
 ];
 
-/** Only the doc-comment lines: a ` * ` block. Declarations themselves are not prose. */
+/**
+ * Every comment line in the file; a declaration is not prose.
+ *
+ * Both comment forms count, and the `//` half is not hypothetical: `colors.d.ts` is hand-written
+ * rather than generated and opens with `// Types for the justerm-wasm-decode colour helpers (#36).`
+ * A first version of this read only ` * ` lines and reported that file **clean**, which is the
+ * shape of blind spot this whole issue is about — an instrument that cannot see a thing and a thing
+ * that is not there produce the same output.
+ *
+ * A `//` line is weaker than a JSDoc block: tsserver surfaces only `/** … *\/` attached to a
+ * declaration, so a hover never shows it. It is still in the published file, and these files are
+ * small enough to be opened.
+ */
 function docProse(src) {
   return src
     .split(/\r?\n/)
-    .filter((l) => /^\s*\*/.test(l))
+    .filter((l) => /^\s*(\*|\/\/)/.test(l))
     .join("\n");
 }
 
