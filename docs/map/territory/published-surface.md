@@ -22,7 +22,7 @@ How a version gets there is [release](release.md).
 - **Immutability is the whole constraint.** crates.io and npm never rewrite a published artifact;
   only a yank comes back. Every other area is fixable by a commit — here a mistake is a permanent row
   in someone else's dependency graph.
-- **Four mechanised checks, deliberately at different moments.**
+- **Five mechanised checks, deliberately at different moments.**
   `justerm-wasm-decode/tests/readme_pins.rs` ties a constant the README *quotes* to the constant that
   owns it and fails on **every PR**. `.github/scripts/check-published-readme.mjs` rejects expiring
   claims — *"under construction"*, *"lands in #N"*, *"coming soon"* — at **publish time only**,
@@ -35,7 +35,27 @@ How a version gets there is [release](release.md).
   Catching it at PR time costs a commit; catching it at publish costs a re-tag, and npm never lets a
   version be re-published at all.
   `.github/scripts/check-published-rustdoc.mjs` applies the same rule to the **rendered rustdoc**
-  of every crate that reaches crates.io, also on every PR.
+  of every crate that reaches crates.io, also on every PR, and
+  `.github/scripts/check-published-dts.mjs` applies it to the **generated `.d.ts`** of the two npm
+  packages — in the jobs that build them, since that file does not exist until `wasm-pack` runs.
+- **The `.d.ts` carries a defect the other surfaces cannot have: a name the reader can act on and
+  should not (#951).** wasm-bindgen copies a `///` verbatim and renames the method underneath it,
+  so `addGrid`'s own tooltip said *"draws only once [`set_viewport`] says where"* one line above a
+  declaration spelling it `setViewport`. 20 such labels shipped, plus `MARKER_STRIDE`, a Rust
+  `pub const` with no `#[wasm_bindgen]` that reaches JS under no spelling at all. The gate checks a
+  label against **the same file's own declarations**, so it needs no roster and a rename moves both
+  halves or it fires. Bare pointers were the larger count (164) and the smaller problem.
+  - **A hover renders markdown**, which is why the bare-vs-linked rule applies here as on a README:
+    a `.d.ts` comment is JSDoc, tsserver hands it to the editor as markdown, and
+    `[ADR-0021](https://…)` opens. It is also why a *dead* target is worse than none — every link
+    wasm-bindgen ships is `](Self::x)`, which draws a clickable thing that goes nowhere.
+  - **What the gate could not see, until the issue's own number caught it**: it read only ` * `
+    lines, and `colors.d.ts` is hand-written with a `//` header carrying `(#36)` — reported clean.
+    An instrument that cannot see a thing and a thing that is not there produce the same output.
+  - **Locally, `touch` the source before rebuilding.** A doc-comment changes no code, so cargo can
+    call the crate fresh and `wasm-pack` re-emits the previous `.d.ts`. That produced two false
+    green mutation results here. CI has nothing to reuse, so the trap only bites whoever is
+    verifying the gate.
 - **A doc-comment on a published crate is the front page, not an internal note (#953).** The
   hole two bullets down — *"doc-comments are a published surface with a narrower gate than
   READMEs"* — was measured rather than estimated: **384 bare pointers across 56 of `justerm-core`'s
@@ -305,6 +325,15 @@ same trace.
   what it cannot see: the source view, and any page inlined from a dependency
 - `justerm-facade/src/lib.rs` — the tombstone's `//!`, which is its whole docs.rs page and, before
   the gate above, was reached by no CI step in this repository
+- `.github/scripts/check-published-dts.mjs` — the same rule on the **generated type declarations**
+  of the two npm packages, run in `wasm` and `renderer-proofs` because it reads what `wasm-pack`
+  produced. It
+  takes the package directory, hard-fails on one holding no declaration file, and checks a link's label
+  against that file's own declarations rather than a roster. It names what it cannot see: a `//`
+  line is read but never shown in a hover, and the targets it reports are dead in every case
+- `justerm-renderer/src/webgl.rs` · `justerm-wasm-decode/src/lib.rs` — the `///` comments that
+  become those two declaration files verbatim. `justerm-wasm-decode/js/colors.d.ts` is hand-written and
+  ships beside them
 - `justerm-web/src/types.ts` — `DecodedFrame`, web's mirror of the published decoder's getters;
   width-agnostic by contract, so it gates a column's presence and never its width
 - `justerm-web/src/justerm-renderer.ts` — `RendererBackend`, web's mirror of the published
@@ -374,13 +403,12 @@ same trace.
   a bare issue reference. What is still open is an expiring claim carrying **no number**
   ("coming soon", "not yet implemented") in a doc-comment, which the README gate would reject and
   nothing reads here. Do not read the closed half as the whole.
-- **The rendered-rustdoc gate covers crates.io only, so the `.d.ts` surface is still open (#951).**
-  `justerm-renderer` and `justerm-wasm-decode` carry `publish = false`, so no docs.rs page exists
-  for them and this gate skips them by construction — but wasm-pack lifts their `///` comments
-  verbatim into the generated `.d.ts`, where an editor shows them on hover. Measured on the
-  published 0.21.0 tarballs: 141 issue numbers, and 14 intra-doc links naming Rust method names the
-  JS API does not have. That surface does not exist until `wasm-pack build` runs, so it needs its
-  own gate rather than a branch in this one.
+- **The rendered-rustdoc gate covers crates.io only; the `.d.ts` has its own (#951).** No docs.rs
+  page exists for `justerm-renderer` or `justerm-wasm-decode`, so that gate skips them by
+  construction — but wasm-pack lifts their `///` comments verbatim into the generated `.d.ts`,
+  which an editor shows on hover. `check-published-dts.mjs` covers it, in the two jobs that build
+  the packages rather than in the `test` job, because the surface does not exist until
+  `wasm-pack build` runs.
 - **Only one constant is pinned.** `readme_pins.rs` covers `wireVersion()`; any other number a README
   quotes is unchecked, and a README that starts quoting a new one gets no pin unless someone adds it.
 - **Both seams are gated now (#646), but the decoder-side gate fires at the pin bump, not at the
