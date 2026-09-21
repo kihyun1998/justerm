@@ -2,7 +2,7 @@ import type { DecodedFrame } from "./types";
 
 /** One highlighted run on a single viewport row: columns `left..=right`
  * (both inclusive), matching core's `SelectionSpan`. Positions only — the
- * blend colour (focused/inactive) is the renderer's policy (#115). */
+ * blend colour (focused/inactive) is the renderer's policy. */
 export interface HighlightSpan {
   row: number;
   left: number;
@@ -10,8 +10,8 @@ export interface HighlightSpan {
 }
 
 /** Which overlay a highlight belongs to — the renderer picks a blend colour per
- * kind (#115): the live selection, a search-match, or the ACTIVE (current)
- * search match (#429). */
+ * kind: the live selection, a search-match, or the ACTIVE (current)
+ * search match. */
 export type HighlightKind = "selection" | "match" | "active";
 
 /** A {@link HighlightSpan} tagged with its overlay kind, ready for the renderer
@@ -21,11 +21,11 @@ export interface HighlightRect extends HighlightSpan {
 }
 
 /** All overlay groups as one kind-tagged list for the renderer — selection
- * rects, then search-match rects, then the active match (#429). The blend
- * colour per kind is the renderer's policy (#115); this is positions + kind
+ * rects, then search-match rects, then the active match. The blend
+ * colour per kind is the renderer's policy; this is positions + kind
  * only. The active match is *also* present in the match group (the wire keeps
  * it there, #428) — {@link highlightAt}'s ranking, not exclusion, resolves the
- * overlap, mirroring the family renderer (#427). */
+ * overlap, mirroring the family renderer. */
 export function highlightRects(frame: DecodedFrame): HighlightRect[] {
   return [
     ...selectionHighlights(frame).map((s): HighlightRect => ({ ...s, kind: "selection" })),

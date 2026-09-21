@@ -15,14 +15,14 @@ const blank = (): MirrorCell => ({ symbol: " ", flags: 0 });
 const SPAN_STRIDE = 5;
 
 /**
- * A viewport-sized local copy of the rendered cells (ADR-0011). Frame mode keeps
+ * A viewport-sized local copy of the rendered cells ([ADR-0011](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0011-justerm-web-viewport-cell-mirror.md)). Frame mode keeps
  * it so scroll-op damage can be applied — a GPU renderer can neither shift retained
  * cells nor return their styling, so the shifted region is repainted from here.
  *
  * Its readers are the a11y text mirror (row text) and the widget's link state
  * (#934: each cell's OSC 8 URI, and the text a port answer is checked against).
  * It carries no colour since #504, when its last colour reader moved into the
- * renderer's wasm (#273).
+ * renderer's wasm.
  */
 export class CellMirror {
   private readonly cells: MirrorCell[];

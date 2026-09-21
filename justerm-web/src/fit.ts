@@ -1,5 +1,5 @@
 /**
- * Fit: container pixel size → terminal `cols`/`rows` (#114), the frame-mode analog
+ * Fit: container pixel size → terminal `cols`/`rows`, the frame-mode analog
  * of xterm.js `FitAddon.proposeDimensions`. Pure geometry — no DOM: the caller reads
  * the parent box, element padding, cell size, and scrollbar width, and this proposes
  * the grid that fills the available space. The resize *intent* (drive the backend's
@@ -49,7 +49,7 @@ export interface Dimensions {
 }
 
 /**
- * The smallest grid the engine can be in — the mirror of `justerm_core::MIN_COLUMNS` (#547) and
+ * The smallest grid the engine can be in — the mirror of `justerm_core::MIN_COLUMNS` and
  * of its row floor, which happen to be the same values xterm's `FitAddon` uses
  * (`MINIMUM_COLS`/`MINIMUM_ROWS`).
  *
@@ -59,7 +59,7 @@ export interface Dimensions {
  * yields 2. A consumer driving the engine at 1 while it holds 2 puts every span of the frame
  * outside the renderer's grid, and the surface stops updating.
  *
- * **That was one axis of the agreement; the other was found later (#632).** This path also *refuses*
+ * **That was one axis of the agreement; the other was found later.** This path also *refuses*
  * (`undefined`) for an unmeasured cell or a non-finite box, and `gridForBox` did not — so the path
  * that actually reaches the renderer turned an unlaid-out container into a 1×1 terminal while the
  * guarded path was the one nothing calls. Both now refuse. When adding a third box→grid path, check
@@ -135,7 +135,7 @@ export class StubResizePort implements ResizePort {
 const DEFAULT_DEBOUNCE_MS = 100;
 
 /**
- * Debounces container-resize events into a single backend resize intent (#114). The DOM
+ * Debounces container-resize events into a single backend resize intent. The DOM
  * adapter feeds each observed geometry to {@link fit}; the controller coalesces a burst,
  * proposes the grid, and drives the {@link ResizePort}. Pure logic — the debounce clock is
  * injected (defaults to `setTimeout`), so it's unit-tested without real time or a DOM.
@@ -148,7 +148,7 @@ export class FitController {
   private latest: FitInput | undefined;
   private timer: number | undefined;
   /**
-   * The last intent actually emitted — the grid **and the cell it was derived from** (#632).
+   * The last intent actually emitted — the grid **and the cell it was derived from**.
    *
    * `cols`/`rows` alone is half of what {@link proposeDimensions} consumes: the same pair can come
    * from different cells, so a `cols`/`rows`-only memory cannot express *"the cell moved but the
@@ -186,7 +186,7 @@ export class FitController {
    *    drawing-buffer clamp; `terminalSize()` is the documented truth). A clamped resize leaves this
    *    describing a grid nobody holds — the same defect one axis over.
    *
-   *    *Who* adopts it moved at renderer 0.15.0 (#773): the renderer clamps the shared drawing
+   *    *Who* adopts it moved at renderer 0.15.0: the renderer clamps the shared drawing
    *    buffer and leaves the grid saying what it was told, so `JustermRenderer.resize` reads the
    *    grant back and shrinks the grid itself. This hole is unchanged — the key still remembers the
    *    proposal — but the thing it can disagree with now lives one layer nearer.

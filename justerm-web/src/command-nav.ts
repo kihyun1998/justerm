@@ -1,14 +1,14 @@
 /**
- * Prompt-to-prompt command navigation (#166), the frame-mode analog of VSCode's
+ * Prompt-to-prompt command navigation, the frame-mode analog of VSCode's
  * `navigateToCommand` (`terminal.accessibility.contribution.ts:173`). A
- * screen-reader user in the accessible view (#150) walks the *whole command
+ * screen-reader user in the accessible view walks the *whole command
  * history* — Previous/Next jump the reading cursor to the adjacent command,
  * reveal it, announce the typed command line, and fire the exit-driven success/
  * fail signal (#160 reuse).
  *
  * Pure logic — the command list comes from core over a query seam
  * ({@link CommandNavPort}, sibling of `AccessiblePort`; core `Engine::command_lines`),
- * and the reveal/announce/signal are injected sinks (ADR-0017: the marks + text +
+ * and the reveal/announce/signal are injected sinks ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md): the marks + text +
  * document-line mapping are core's; the navigation *policy* is the consumer's).
  * In frame mode the web side has no scrollback cells, so the command text and its
  * document line *must* come from core — the boundary is physically enforced.
@@ -22,7 +22,7 @@ import type { SignalSink } from "./command-announce";
  * text (prompt/output excluded); `exit` is the code, if the command finished.
  *
  * `line` is an index into the accessible view's document and is only valid against
- * the document sampled with it (#743). It cannot be rebased by any scalar core
+ * the document sampled with it. It cannot be rebased by any scalar core
  * publishes: the document space moves on axes the absolute space does not — an
  * eviction that pops a soft-wrap continuation row moves the absolute lines and not
  * this one, and ordinary output that makes a row wrap moves this one while nothing
@@ -46,7 +46,7 @@ export interface CommandNavPort {
  * the counterpart to VSCode's `setPosition`. */
 export interface NavView {
   /** Move the reading cursor to document line `line`, and **report whether that
-   * line exists in the document currently held** (#743).
+   * line exists in the document currently held**.
    *
    * The boolean is the load-bearing part. A document line is only meaningful
    * against the document it indexes, and the view is the only thing that knows
@@ -88,13 +88,13 @@ export class CommandNavController {
    * (Re)query the command list and reset the reading cursor to the end. **Call this
    * when the accessible view is summoned, and sample the view's document in the same
    * breath** — this is the single point at which the list is taken, and nothing else
-   * re-takes it (#743).
+   * re-takes it.
    *
    * Both halves matter. The lines are *document* lines into the text the view is
    * showing, so a list sampled at a different instant from that text is off by
    * however many rows moved in between — and core cannot rebase it for us, because
    * the document space moves on axes no published scalar dates (`Engine::command_lines`,
-   * ADR-0029 D2/D3). A frame-mode backend should therefore answer `commands()` and
+   * [ADR-0029](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md) D2/D3). A frame-mode backend should therefore answer `commands()` and
    * the accessible text from **one engine borrow**; over IPC they are two messages,
    * and the pairing is only as tight as the backend makes it.
    */

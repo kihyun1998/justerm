@@ -1,5 +1,5 @@
 /**
- * The SGR 5 (blink) phase — a *text* blink, not the caret's (#576).
+ * The SGR 5 (blink) phase — a *text* blink, not the caret's.
  *
  * The mechanism was already paid for on both sides and died in the middle: core carries `BLINK` on
  * the wire (`cell.rs`, exported as `flags().blink`), the renderer conceals a blinking cell on the
@@ -69,7 +69,7 @@ export class TextBlink {
   }
 
   /**
-   * Honour `prefers-reduced-motion` (#119): when set, SGR 5 text never blinks.
+   * Honour `prefers-reduced-motion`: when set, SGR 5 text never blinks.
    *
    * It outranks the application's request and the consumer's interval alike — the precedence
    * settled on #575 and recorded on #583: reduced motion can only ever *subtract* motion, so

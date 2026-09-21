@@ -1,5 +1,5 @@
 /**
- * Screen-reader accessibility for the frame-mode widget (#119). Pure logic —
+ * Screen-reader accessibility for the frame-mode widget. Pure logic —
  * no DOM, no GPU, no IPC: the consumer injects DOM sinks ({@link A11yTreeSink},
  * {@link LiveRegionSink}) and the controller decides *what* the assistive
  * technology should see. the renderer's canvas is opaque to AT, so this drives a
@@ -108,7 +108,7 @@ export class AccessibilityController {
    * {@link ANNOUNCE_MAX_WAIT_MS} cap. Undefined ⇔ pending empty. */
   private firstPendingAt: number | undefined;
   /** `now()` of the last announce that actually emitted, for the {@link
-   * ANNOUNCE_MAX_WAIT_MS} leading-edge idle test (#215). Undefined ⇔ nothing has been
+   * ANNOUNCE_MAX_WAIT_MS} leading-edge idle test. Undefined ⇔ nothing has been
    * announced yet (idle since forever), so the first output leads. */
   private lastFlushAt: number | undefined;
   /** Current tree height, to resize only when the viewport changes. */
@@ -170,7 +170,7 @@ export class AccessibilityController {
   }
 
   /**
-   * Re-render the row tree from the cached last frame (#169). Call on
+   * Re-render the row tree from the cached last frame. Call on
    * reactivation (`setScreenReaderActive(true)`): the tree DOM and bookkeeping
    * were kept while inactive, so this refreshes immediately with no cold rebuild
    * and without waiting for the next frame (which may never come if idle). A
@@ -184,7 +184,7 @@ export class AccessibilityController {
   }
 
   /**
-   * Reactivate after the screen reader was inactive (#169). Two things at once:
+   * Reactivate after the screen reader was inactive. Two things at once:
    * drop any pending announce that accumulated across the inactive span so it is
    * NOT replayed (a screen reader starting reviews prior output via the freshly
    * synced tree, not a surprise burst — matches xterm disposing its manager), then

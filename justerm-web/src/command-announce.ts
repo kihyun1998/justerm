@@ -1,5 +1,5 @@
 /**
- * Command/exit announce + success/fail signal (#160), the frame-mode analog of
+ * Command/exit announce + success/fail signal, the frame-mode analog of
  * VSCode's terminal command a11y. VSCode fires this automatically on *every*
  * command finish (`decorationAddon.ts` `onCommandFinished` → `playSignal`, which
  * both speaks the outcome via `status()` and plays an earcon) — not only on
@@ -8,18 +8,18 @@
  * an exit-driven signal, once per command.
  *
  * Pure logic — the aria-live sink ({@link LiveRegionSink}) and the earcon/aria
- * {@link SignalSink} are injected (ADR-0017: the marks are core's, the announce/
+ * {@link SignalSink} are injected ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md): the marks are core's, the announce/
  * signal *policy* is the consumer's). Prompt-to-prompt navigation is a separate
- * slice (#166); a per-outcome enable/verbosity policy is #167.
+ * slice; a per-outcome enable/verbosity policy is #167.
  */
 
 import type { LiveRegionSink } from "./accessibility";
 import { MarkerKind, readMarkers } from "./markers";
 
 /**
- * Per-modality enablement (#167), the subset of VSCode's `EnabledState`
+ * Per-modality enablement, the subset of VSCode's `EnabledState`
  * (`accessibilitySignalService.ts:272`) justerm has a source for: `on` always
- * fires, `off` never, `auto` fires iff a screen reader is active (#161). VSCode
+ * fires, `off` never, `auto` fires iff a screen reader is active. VSCode
  * resolves `auto` *inside* `playSignal` (line 274 `checkEnabledState`) by reading
  * the SR-attached observable — so justerm resolves it in the controller too,
  * NOT by wrapping the sink. A blanket sink gate (#161's `gateSignal`) cannot
@@ -70,8 +70,8 @@ function enabled(state: Enablement, srActive: boolean): boolean {
 }
 
 /**
- * Formats the spoken text for a finished command (#179). The *text* is pure
- * presentation policy (ADR-0017), so the consumer injects it wholesale — the
+ * Formats the spoken text for a finished command. The *text* is pure
+ * presentation policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), so the consumer injects it wholesale — the
  * controller owns only *when* to speak (dedup + the #167 enable gate), never
  * *what*. `exit` is the non-zero code on `"failed"` and `undefined`/`0` on
  * `"succeeded"` (which never renders it). Parameterizing this instead of an enum
@@ -137,14 +137,14 @@ export class CommandAnnounceController {
   private seeded = false;
 
   /**
-   * @param opts.policy per-outcome × per-modality enable matrix (#167). Defaults
+   * @param opts.policy per-outcome × per-modality enable matrix. Defaults
    *   to {@link DEFAULT_ANNOUNCE_POLICY} (all `auto`).
-   * @param opts.screenReaderActive probes SR presence for the `auto` state (#161).
+   * @param opts.screenReaderActive probes SR presence for the `auto` state.
    *   Wire it to the shared {@link ScreenReaderState} (`() => srState.isActive()`)
    *   and do NOT also wrap these sinks with `gateLive`/`gateSignal` — this
    *   controller now owns the gating, and double-gating would break `on`.
    *   Defaults to `() => true` (SR active), matching #161's default.
-   * @param opts.announceText formats the spoken text per outcome (#179). Defaults
+   * @param opts.announceText formats the spoken text per outcome. Defaults
    *   to {@link VERBOSE_ANNOUNCE_TEXT} (failure carries its exit code); pass
    *   {@link TERSE_ANNOUNCE_TEXT} for VSCode-parity terse wording, or any custom
    *   `(outcome, exit) => string`. Orthogonal to `policy`: the enable gate decides

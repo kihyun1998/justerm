@@ -3,10 +3,10 @@ import { DprWatcher, type ResolutionQuery } from "./dpr-watcher";
 
 /**
  * The surface-scoped half of the renderer backend — **every published call that takes no grid**,
- * plus the two registry operations that mint and retire one (Epic #287 S7, ADR-0021).
+ * plus the two registry operations that mint and retire one (Epic #287 S7, [ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)).
  *
  * That criterion is not a judgement this package makes; it is already compiled into the renderer's
- * published signatures since 0.15.0 (#773). A call naming a grid acts on one terminal; a call naming
+ * published signatures since 0.15.0. A call naming a grid acts on one terminal; a call naming
  * none acts on the thing every terminal shares — the context, the drawing buffer, the display's
  * density, the loss of the context and the present that draws all of them. So the split between this
  * interface and {@link import("./justerm-renderer").RendererBackend}'s per-grid remainder is a fact
@@ -18,7 +18,7 @@ import { DprWatcher, type ResolutionQuery } from "./dpr-watcher";
  */
 export interface SurfaceBackend {
   /** Register a terminal grid and return its id — since renderer 0.15.0 the **only** way to get one:
-   * a renderer arrives holding none, and every per-terminal method names the grid it acts on (#773).
+   * a renderer arrives holding none, and every per-terminal method names the grid it acts on.
    *
    * The six font selectors are optional and trailing, and this package passes all six. They key
    * the atlas, so naming them here means **one** bake: a grid born at the renderer's defaults and
@@ -44,10 +44,10 @@ export interface SurfaceBackend {
    * **It re-derives no measurement**, and that is deliberate: the drawing buffer and every viewport
    * rect are device-px numbers the *consumer* measured, and the renderer will not convert them
    * through its own copy of the density — a copy that lags, since this very notification is dropped
-   * while the context is lost (#773). Re-asking is the consumer's, and here that is the surface. */
+   * while the context is lost. Re-asking is the consumer's, and here that is the surface. */
   setDevicePixelRatio(dpr: number): void;
   /** Size the shared drawing buffer, in **device px** — the same space `setViewport` takes, so one
-   * canvas is addressed in one space. The browser may grant less (#339), which `cssWidth`/`cssHeight`
+   * canvas is addressed in one space. The browser may grant less, which `cssWidth`/`cssHeight`
    * report. */
   resizeSurface(width: number, height: number): void;
   /** The drawing buffer's size in **CSS** pixels — what the canvas display box must be set to. */
@@ -56,7 +56,7 @@ export interface SurfaceBackend {
   /** Whether a WebGL context loss has been **reported** (#269). Deliberately the event-driven view
    * rather than `gl.isContextLost()`: a browser destroys a context synchronously and only *queues*
    * `webglcontextlost`, so this answers `false` for a window in which every GL call is already dead.
-   * Read it as *"was I told"*, never as *"is the GPU usable"* (ADR-0027 D4). */
+   * Read it as *"was I told"*, never as *"is the GPU usable"* ([ADR-0027](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0027-liveness-is-answered-by-the-source-that-owns-it.md) D4). */
   isContextLost(): boolean;
   /** Whether a lost context has missed its restore deadline (#327) — the poll counterpart of
    * `setOnContextLoss`. Cleared by a late `webglcontextrestored`, which also heals the renderer. */
@@ -69,17 +69,17 @@ export interface SurfaceBackend {
    * renderer times, the consumer decides how long a blank terminal is tolerable. */
   setContextRestoreTimeoutMs(ms: number): void;
   /** How many distinct font configurations the renderer holds resources for — i.e. how many glyph
-   * atlases exist (#772). Surface-scoped because an atlas is shared across grids: it takes no id,
+   * atlases exist. Surface-scoped because an atlas is shared across grids: it takes no id,
    * and no one terminal can answer it. */
   atlasCount(): number;
   /** Atlas bakes run so far (#772) — every configuration built from nothing, plus every in-place
    * rebuild of one (a density change, a context restore). Read as a **delta** across an operation,
    * never as an absolute: it is what separates *a grid was placed* from *a grid was rebuilt*, which
-   * is the claim ADR-0021's middle tier exists to make and the one no pixel can settle. */
+   * is the claim [ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)'s middle tier exists to make and the one no pixel can settle. */
   bakes(): number;
   /** Instance-buffer packs run so far (#421). Read as a delta, like {@link bakes}. Surface-scoped
    * because `render` presents every grid: one call packs each *dirty drawn* grid once, and — the
-   * property this makes checkable — packs a grid with no viewport not at all (#771). */
+   * property this makes checkable — packs a grid with no viewport not at all. */
   packs(): number;
   /** Present the whole canvas — **every registered grid**, which is why this takes no id and why the
    * loop that calls it belongs to the surface rather than to any one terminal. */
@@ -101,7 +101,7 @@ export interface SurfaceCanvas {
 /**
  * The collaborators a {@link TerminalSurface} is built from.
  *
- * **This is the instantiation seam `docs/map/territory/widget-lifecycle.md` asked the third slice to
+ * **This is the instantiation seam [`docs/map/territory/widget-lifecycle.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/widget-lifecycle.md) asked the third slice to
  * price**, and the price turned out to be this interface. `JustermRenderer` cannot be constructed
  * under vitest (its constructor reads `window.matchMedia`), so #696 and #579 each extracted the one
  * piece carrying a rule — `FrameLoop`, `ContextLossRelay` — and left the *composition* provable only
@@ -120,7 +120,7 @@ export interface SurfaceDeps<B extends SurfaceBackend = SurfaceBackend> {
 }
 
 /**
- * A CSS font weight (#928): `"normal"` (400), `"bold"` (700), a `"100"`..`"900"` keyword, or a number
+ * A CSS font weight: `"normal"` (400), `"bold"` (700), a `"100"`..`"900"` keyword, or a number
  * in `[1, 1000]`. The renderer ignores anything else.
  */
 export type FontWeight =
@@ -151,10 +151,10 @@ export interface AddGridOptions {
 }
 
 /**
- * A terminal's claim on a surface — what {@link TerminalSurface.addGrid} hands back (#805).
+ * A terminal's claim on a surface — what {@link TerminalSurface.addGrid} hands back.
  *
  * **The id is still here and still a number**, because a grid handle crosses the wasm boundary as
- * one and every per-grid renderer call names it (recorded in `docs/agents/reference-facts.md`,
+ * one and every per-grid renderer call names it (recorded in [`docs/agents/reference-facts.md`](https://github.com/kihyun1998/justerm/blob/master/docs/agents/reference-facts.md),
  * #770). What changed is that the id is no longer the *only* thing a caller holds, and therefore no
  * longer the thing a caller has to keep valid.
  *
@@ -186,7 +186,7 @@ export interface GridLease {
   /**
    * Hand the grid back, releasing its VAO, its instance buffer and — if it was the last grid on its
    * font configuration — that configuration's atlas. Then asks the surface for a present, so the
-   * pixels the grid last drew leave the canvas (#939) — unless the surface has ended, which presents
+   * pixels the grid last drew leave the canvas — unless the surface has ended, which presents
    * nothing.
    *
    * **Idempotent, and that is not the softening this replaced.** The `Renderer` port requires
@@ -252,7 +252,7 @@ const EMPTY_PALETTE = new Uint32Array(256);
 type PublishedRenderer = InstanceType<typeof import("justerm-renderer").JustermRenderer>;
 
 /**
- * One canvas, one WebGL2 context, N attached terminals (Epic #287 S7, ADR-0021).
+ * One canvas, one WebGL2 context, N attached terminals (Epic #287 S7, [ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)).
  *
  * **What it owns**, and each of these because the renderer scopes it to the surface rather than to a
  * grid: the canvas and the context behind it, the grid registry, the single animation loop that
@@ -268,7 +268,7 @@ type PublishedRenderer = InstanceType<typeof import("justerm-renderer").JustermR
  * from the GL viewport it is supposed to sit over.
  *
  * **The ownership rule.** It is written down once, as a cross-cutting invariant —
- * `docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md` — because it holds in three
+ * [`docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md) — because it holds in three
  * territories and is invisible from each of them. Restated here only in the form this class
  * implements, with the note as the authority:
  *
@@ -310,14 +310,14 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
   private readonly currentDpr: () => number;
   /**
    * The density this surface last **told the host about** — not the one the renderer holds, and not
-   * the live one (#808).
+   * the live one.
    *
    * It is the surface's own fact, because the surface is where an announcement is first true: the
    * renderer's copy answers *"what am I baking at"* and `currentDpr()` answers *"what is the display
    * at"*, and neither of those is *"what does the host believe"*. Every device-px quantity the host
    * gave — the drawing buffer's size and every viewport rect — was measured at this ratio, so the
    * moment it stops matching the live one those numbers are stale and only an announcement can say so
-   * (ADR-0021 D3).
+   * ([ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md) D3).
    *
    * Seeded from the live ratio rather than from `1`: a surface opened on a Retina display is already
    * in agreement with a host that sized its buffer there, and nothing is owed.
@@ -326,7 +326,7 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
    * — `if (this._devicePixelRatio !== this._coreBrowserService.dpr)`
    * (`addons/addon-webgl/src/WebglRenderer.ts:186` @ `699f553`). What it does *not* do is consult it
    * on a restore, and it does not have to: its restore rebuilds at the ratio it stored, while
-   * `justerm-renderer`'s re-reads the live one (#325). The mechanism is the reference's; the site is
+   * `justerm-renderer`'s re-reads the live one. The mechanism is the reference's; the site is
    * ours because the adoption is.
    */
   private announcedDpr: number;
@@ -491,13 +491,13 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
    * the browser actually granted.
    *
    * Device pixels because the buffer belongs to no grid: a surface drawing N grids in M font
-   * configurations has no cell to be a multiple of (ADR-0021 D3). The renderer deliberately will not
+   * configurations has no cell to be a multiple of ([ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md) D3). The renderer deliberately will not
    * convert a CSS measurement for you — the only density it holds is its own copy of yours, and that
    * copy lags by construction, since a density notification arriving during a context loss is dropped
    * outright.
    *
    * The display box is written from `cssWidth`/`cssHeight` rather than from what was asked for,
-   * because WebGL may grant less (#339) — forget this and a device-px buffer displays at twice its
+   * because WebGL may grant less — forget this and a device-px buffer displays at twice its
    * size on a Retina screen.
    */
   resizeSurface(deviceWidth: number, deviceHeight: number): void {
@@ -513,13 +513,13 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
   }
 
   /**
-   * How many glyph atlases this surface holds — one per distinct font configuration (#772).
+   * How many glyph atlases this surface holds — one per distinct font configuration.
    *
    * **Surface-scoped on the same rule the rest of this interface is split by**: it names no grid,
    * because an atlas belongs to none. Two terminals in one font answer `1`; a third in another font
    * answers `2`; the last terminal to leave a configuration releases it.
    *
-   * This is what makes sharing **observable rather than asserted** (#801). The published README has
+   * This is what makes sharing **observable rather than asserted**. The published README has
    * claimed since #772 that terminals on one font configuration share one atlas, and until this
    * method existed on the widget's side no consumer could check it — the number was reachable only
    * by casting past the adapter to the raw wasm object, which is what #776 had to do.
@@ -531,7 +531,7 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
   /**
    * Atlas bakes run so far — read as a **delta across an operation**, never as an absolute.
    *
-   * **It is the only thing that separates a placement from a rebuild** (#801). Hiding a terminal and
+   * **It is the only thing that separates a placement from a rebuild**. Hiding a terminal and
    * showing it again should cost nothing but a rect: every byte of its grid, its instances and its
    * configuration's atlas stays resident (`clearViewport`, #770). A pixel check cannot say whether
    * that held — the content comes back looking identical either way, which is exactly what a rebuild
@@ -546,7 +546,7 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
   /**
    * Instance-buffer packs run so far — a delta, like {@link bakes}.
    *
-   * **What it makes checkable is the cost half of hiding** (#801). The renderer's draw loop skips an
+   * **What it makes checkable is the cost half of hiding**. The renderer's draw loop skips an
    * unplaced grid *before* the re-pack, and until this reached the widget the saving was a number
    * quoted from the renderer's own measurement rather than something a consumer could observe:
    * feeding a hidden terminal moves this by zero, feeding a shown one does not, and the second half
@@ -564,7 +564,7 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
    * redraw the surface N times per frame — a cost that grows with the number of terminals while the
    * pixels do not.
    *
-   * The pending handle is cleared **before** presenting, which is `FrameLoop`'s rule (#696) and
+   * The pending handle is cleared **before** presenting, which is `FrameLoop`'s rule and
    * xterm.js's `RenderDebouncer._innerRefresh` shape: a request arriving from inside the present then
    * schedules the next frame instead of being swallowed by a handle that no longer cancels anything.
    */
@@ -616,7 +616,7 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
 
   /**
    * Be told when the display's density changes — **the one event after which the device-px numbers
-   * the host gave this surface are all wrong** (ADR-0021 D3: *"a density change invalidates every
+   * the host gave this surface are all wrong** ([ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md) D3: *"a density change invalidates every
    * device-pixel quantity the consumer gave — the surface's size as well as every viewport rect —
    * since only the consumer can re-measure them"*).
    *
@@ -695,7 +695,7 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
   }
 
   /** Whether a context loss has been **reported** — for surfacing the state, not for deciding whether
-   * drawing is safe (ADR-0027 D4). Keeps answering after {@link dispose}: only the push stops. */
+   * drawing is safe ([ADR-0027](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0027-liveness-is-answered-by-the-source-that-owns-it.md) D4). Keeps answering after {@link dispose}: only the push stops. */
   isContextLost(): boolean {
     return this.backend.isContextLost();
   }
@@ -754,7 +754,7 @@ export interface OverlayBoxes {
   /**
    * The terminal's DOM overlay, as `getBoundingClientRect()` reports it.
    *
-   * **The size is here because the origin alone cannot answer the question** (#801). A hidden
+   * **The size is here because the origin alone cannot answer the question**. A hidden
    * overlay — `display: none`, or a pane not yet in the layout — reports every field as `0`, which
    * is indistinguishable from an overlay legitimately sitting at the canvas's top-left corner once
    * the extent is dropped. It was dropped, and the two states then shared one answer: measured in a
@@ -769,7 +769,7 @@ export interface OverlayBoxes {
 
 /**
  * Compute a terminal's viewport origin on the shared drawing buffer, in **device px**, from where its
- * DOM overlay sits relative to the canvas (#775) — or `undefined` when the overlay has no box at all.
+ * DOM overlay sits relative to the canvas — or `undefined` when the overlay has no box at all.
  *
  * Pure and separately testable, which is the point: the arithmetic is where a sign or a unit goes
  * wrong, and the DOM plumbing around it is not worth a test.
@@ -781,13 +781,13 @@ export interface OverlayBoxes {
  * **Clamped at zero.** An overlay scrolled above the canvas has a negative offset, and a negative
  * viewport origin is not a smaller rect — it is a GL error or a silently dropped draw.
  *
- * **`undefined` is a state, not a failure, and it is why this returns a union** (#801). An overlay
+ * **`undefined` is a state, not a failure, and it is why this returns a union**. An overlay
  * with no area is not somewhere — it is nowhere, and the clamp above is exactly what used to turn
  * that into the plausible wrong answer `{ x: 0, y: 0 }`. Answering `undefined` makes the caller
  * decide, at the compiler's insistence, rather than placing a full-size grid at the canvas's corner:
  * the extent a viewport is given is derived from `cols * cell` and never from this box, so a zeroed
  * box shrinks nothing and the renderer's own no-area guard is never reached. Making the state
- * unrepresentable rather than guarded is the same move `GridLease` made one issue earlier (#805).
+ * unrepresentable rather than guarded is the same move `GridLease` made one issue earlier.
  */
 export function viewportOrigin(
   boxes: OverlayBoxes,
@@ -823,7 +823,7 @@ export function viewportOrigin(
  * the host recomputes with this function's own arithmetic rather than a second copy of it. (The
  * package README claimed the opposite until #776, which is the first code to depend on the answer.)
  *
- * **It DOES fire when the overlay is hidden, and that is why `place` takes a union** (#801).
+ * **It DOES fire when the overlay is hidden, and that is why `place` takes a union**.
  * `display: none` removes the box, which the `ResizeObserver` reports as a size change like any
  * other — measured in a real browser, not inferred. `visibility: hidden` does not fire it, because
  * the box survives; that case is the host's to handle with an explicit `JustermRenderer.hide()`,

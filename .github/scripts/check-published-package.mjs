@@ -54,7 +54,7 @@
 // unaffected (a fresh checkout has nothing to reuse), which is exactly why the trap only bites the
 // person trying to verify the gate.
 
-import { readFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const dirs = process.argv.slice(2);
@@ -129,7 +129,12 @@ const blankUrlLinks = (s) => s.replace(/\[[^\]]*\]\(https?:\/\/[^)]*\)/g, (l) =>
  * `.wasm` is the only thing dropped: it is a binary, and a byte sequence matching `#\d+` in it is
  * not prose. `*_bg.js` stays even though it carries the same doc-comments as the `.d.ts` beside it
  * — measured at 19 and 5 identical occurrences, so it cannot fail alone today, but it is published
- * text and nothing guarantees that stays true.
+ * text and nothing guarantees that stays true. A `.map` is dropped for the same reason as `.wasm`:
+ * it is generated JSON whose `sourcesContent` is a copy of files gated at their source.
+ *
+ * **An entry may be a directory**, and `justerm-web` is why this is not hypothetical: its `files` is
+ * `["dist", …]`, and the 531 pointers in `dist/index.d.ts` — a package larger than either wasm one
+ * — were outside this gate until it walked one.
  */
 function publishedFiles(dir) {
   const manifest = join(dir, "package.json");
@@ -142,7 +147,14 @@ function publishedFiles(dir) {
     console.error(`::error::${manifest} lists no \`files\` — npm's allowlist is what decides here, and an empty one is a broken package, not a clean one`);
     process.exit(2);
   }
-  return ["package.json", ...files].filter((f) => !f.endsWith(".wasm") && existsSync(join(dir, f)));
+  const skip = (f) => f.endsWith(".wasm") || f.endsWith(".map");
+  const walk = (rel) => {
+    const abs = join(dir, rel);
+    if (!existsSync(abs)) return [];
+    if (!statSync(abs).isDirectory()) return skip(rel) ? [] : [rel];
+    return readdirSync(abs).flatMap((e) => walk(join(rel, e)));
+  };
+  return ["package.json", ...files].flatMap(walk);
 }
 
 const findings = [];

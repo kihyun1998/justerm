@@ -5,7 +5,7 @@ import type { RulerMark } from "./decorations";
 export const SCROLLBAR_ATTRIBUTE = "data-justerm-scrollbar";
 
 /** The attribute a scrollbar's thumb carries, so a consumer can reach the thumb without relying on
- * DOM order (#926). */
+ * DOM order. */
 export const SCROLLBAR_THUMB_ATTRIBUTE = "data-justerm-scrollbar-thumb";
 
 /** The thumb's interaction state: `active` while a drag it started is held, `hover` while the
@@ -132,13 +132,13 @@ export function scrollbarMetrics(pos: ScrollPosition): ScrollbarMetrics {
  *
  * Given that, `<= 0` is preferred over the quotient form because it says what is true — the box
  * was never measured — rather than that the arithmetic went odd, and because it matches
- * `proposeDimensions` (#810) and the renderer's grant check (#639) instead of inventing a third
+ * `proposeDimensions` and the renderer's grant check instead of inventing a third
  * predicate. The invariant this belongs to is that **zero is finite**
- * (`docs/map/invariant/an-absent-box-measures-as-zero.md`), which is why a finiteness test is the
+ * ([`docs/map/invariant/an-absent-box-measures-as-zero.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/an-absent-box-measures-as-zero.md)), which is why a finiteness test is the
  * wrong shape to reach for even where one placement of it would work.
  *
  * Contrast `WheelScroller.consumeWheelEvent`, which discharges the same obligation — *a
- * producer owes its consumer a value the consumer’s type can mean* (#675) — by returning `0`.
+ * producer owes its consumer a value the consumer’s type can mean* — by returning `0`.
  * That works there because a line count of `0` **is** the no-op; for a ratio `0` means *scroll
  * to the top*, which is one of the two symptoms above. Hence a union, and a caller that skips
  * the request entirely.
@@ -206,7 +206,7 @@ export class Scrollbar {
    * trimmed to the current mark count. Re-creating them per call cost ~18 microseconds per mark
    * (measured, Chromium): 18 ms for 1000 marks, i.e. a whole 60 Hz frame for one call, and 101 ms
    * for 5000. Marks are per matching LINE, so a search over a deep scrollback reaches those counts
-   * routinely (#440). */
+   * routinely. */
   private readonly markEls: HTMLDivElement[] = [];
   private dragging = false;
   /** Whether the pointer is on the thumb (`mouseenter` / `mouseleave`). */
@@ -305,11 +305,11 @@ export class Scrollbar {
    *
    * **Geometry is class-dependent since #500 §2/§3**: the height comes from
    * {@link rulerMarkHeightPx} (a `full` mark is thin, a gutter mark fat — the precondition
-   * ADR-0024 R3's layering needs), and the box is centred rather than hung below its line. The
+   * [ADR-0024](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0024-decoration-projection-and-precedence.md) R3's layering needs), and the box is centred rather than hung below its line. The
    * track clips, because centring puts half of the first and last marks outside it and a DOM
    * element gets none of the containment upstream's canvas backing store provides.
    *
-   * **Elements are reused, not re-created (#440).** The pool is updated in place and trimmed, which
+   * **Elements are reused, not re-created.** The pool is updated in place and trimmed, which
    * changes nothing observable — array order is still DOM order — but makes the call cost a style
    * write per mark instead of a node allocation. Two traps it introduces, both handled below and
    * neither reachable before: a reused element carries the previous mark's horizontal properties

@@ -1,8 +1,8 @@
 /**
  * Reading engine markers off a decoded frame (#118/#159). The wire carries them
  * as a flat stride-5 `Uint32Array` (`justerm-wasm-decode`'s `markerPositions`);
- * this decodes that into typed {@link Marker}s. Shared by command announce (#160)
- * and — later — decorations (#120) and prompt navigation (#166).
+ * this decodes that into typed {@link Marker}s. Shared by command announce
+ * and — later — decorations and prompt navigation.
  */
 
 /** A marker's kind, matching the wire discriminant (#159 `MarkerKind`). */

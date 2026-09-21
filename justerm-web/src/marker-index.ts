@@ -3,7 +3,7 @@
  *
  * Core used to hand every live marker's absolute line to every frame. That group was
  * measured at **37–70 % of an 80×24 frame** at ordinary OSC-133 densities and is
- * ADR-0020's R3 violation, so it is leaving the wire; the consumer asks once instead
+ * [ADR-0020](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0020-what-qualifies-for-the-frame-snapshot.md)'s R3 violation, so it is leaving the wire; the consumer asks once instead
  * and keeps the answer current from three much smaller signals:
  *
  * | what moved | signal | cost |
@@ -17,7 +17,7 @@
  * read time against the newest frame. That is why a create event carries a line: it is
  * absolute at the moment of creation, which is a different basis from the pull's.
  *
- * **And the create event must carry that basis too (#737).** This class read the sentence
+ * **And the create event must carry that basis too.** This class read the sentence
  * above and then stamped a birth with the last *frame*'s basis, which is a third instant
  * again: one `feed` can create a marker and then evict, so the frame closing that batch
  * reports an origin the event's line predates. Measured in core — two batches with the
@@ -26,7 +26,7 @@
  * `markerCount`, and true lines three apart. Nothing the consumer could observe told them
  * apart, so the basis had to start travelling with the line it belongs to.
  *
- * **A basis dates only a uniform move, so the birth carries its generation too (#741).**
+ * **A basis dates only a uniform move, so the birth carries its generation too.**
  * Eviction is the move one scalar can express; a reflow moves markers individually, which
  * is what `markerEpoch` says and what no delta repairs. A birth queued before that bump
  * describes a buffer that no longer exists — and arrival order cannot reveal it, because
@@ -58,7 +58,7 @@ export interface MarkerIndexSnapshot {
 /**
  * The read-query seam to core's `Engine::marker_index()` — sibling of `CommandNavPort`
  * and `SearchPort`. Frame mode wires it to the backend over the consumer's own
- * transport (justerm has no IPC by identity, ADR-0017).
+ * transport (justerm has no IPC by identity, [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
  */
 export interface MarkerPort {
   index(): Promise<MarkerIndexSnapshot>;
@@ -106,7 +106,7 @@ export class MarkerIndexCache {
    * index usable, because only one of them is this class's to retry: a transport that
    * answered late or stale can be asked again with a guaranteed-progressing request, while
    * one that refused cannot be distinguished from a dead session by anything this object
-   * can see (#746). Cleared by a landing pull and by a genuine epoch change. */
+   * can see. Cleared by a landing pull and by a genuine epoch change. */
   private lastAttemptFailed = false;
   /** Events that landed while a pull was out, replayed onto the snapshot it returns. */
   private readonly pendingOps: Op[] = [];
@@ -132,7 +132,7 @@ export class MarkerIndexCache {
    * epoch on every output line (measured: 1 000 bumps over 1 000 region scrolls), so an
    * uncapped re-pull would cost `O(M)` per frame — exactly the cost this design removes.
    *
-   * The cap bounds the **requests, not the outage** (#738). While the epoch moves every
+   * The cap bounds the **requests, not the outage**. While the epoch moves every
    * frame, each pull is stale before it lands and {@link MarkerIndexCache.lineOf} reports
    * unknown for as long as the churn lasts — not for a round trip. The reach of that state
    * is narrow but the cost inside it is total (no ruler marks, no above-top anchors), and
@@ -220,7 +220,7 @@ export class MarkerIndexCache {
   /** Drop the contents and mark them unusable, leaving the flight and the frame-side
    * bookkeeping (`basis`, `seen`) alone.
    *
-   * **It does not touch `pendingOps`, and that deletion is the point (#746).** It used to
+   * **It does not touch `pendingOps`, and that deletion is the point.** It used to
    * empty them, because an op could not say which buffer it described and an invalidation
    * meant "everything I hold is about the wrong one". #741 dated every op, so the replay
    * now decides that per entry — precisely, where the wipe decided it bluntly.
@@ -230,7 +230,7 @@ export class MarkerIndexCache {
    * query channel legitimately runs ahead of the frame channel (see `pull`). So the
    * snapshot can arrive carrying the very generation this invalidation was for, adopt, and
    * start answering from content that predates the ops it just erased. Neither is
-   * recoverable: creation and disposal deliberately do not move the epoch (#490), so
+   * recoverable: creation and disposal deliberately do not move the epoch, so
    * nothing re-delivers them. A wiped death resurrects a disposed marker; a wiped birth
    * hides a live one; and `lines.size` is unchanged either way, so the drift check below
    * stays silent forever — **count equality is not set equality**, which is the standing
@@ -244,7 +244,7 @@ export class MarkerIndexCache {
    *    drift check needs `adopted !== undefined` and every pull is preceded by an
    *    `invalidate()`, so it cannot fire while the index is unusable — and an epoch change
    *    makes every queued add's generation differ from the snapshot's, so the replay drops
-   *    it (#741);
+   *    it;
    * 2. a replayed **disposal** carries no generation and is idempotent, because marker ids
    *    are never reused: `next_marker_id` deliberately rides across RIS *"so a reissued id
    *    lets a stale `MarkerDisposed(7)` drop the live post-RIS marker 7"* (`term.rs`).
@@ -338,13 +338,13 @@ export class MarkerIndexCache {
    *
    * @param evictedTotal the event's own `evicted_total` — **not** the newest frame's.
    *   Those are different instants whenever the batch that created the marker went on to
-   *   evict, and the difference is the number of lines the mark is misplaced by (#737).
+   *   evict, and the difference is the number of lines the mark is misplaced by.
    *   Required rather than defaulted so a host that has not wired it fails to compile
    *   instead of silently placing markers on the last frame's basis, which is what this
    *   method did before.
    *
-   * @param epoch the event's own `epoch` — the marker generation `line` belongs to
-   *   (#741). A basis dates a *uniform* move; anything that moves markers individually —
+   * @param epoch the event's own `epoch` — the marker generation `line` belongs to.
+   * A basis dates a *uniform* move; anything that moves markers individually —
    *   a reflow, a region rotate — moves the generation instead, and a line from another
    *   generation is not stale by a delta, it is an answer about a different buffer.
    *   Measured: a mark at absolute 3 reflowed to 5 with the basis unmoved at 0.

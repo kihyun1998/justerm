@@ -11,7 +11,7 @@
  * was *created* with, so the obvious implementation works exactly once and then goes quiet forever.
  * That is a rule, it fails silently, and `JustermRenderer` cannot be built in a unit test (its
  * constructor reads `window.matchMedia`), so it is extracted for the same reason `ContextLossRelay`
- * and `FrameLoop` are (#696) — and it leaves the same hole: the *composition* is proven in a browser,
+ * and `FrameLoop` are — and it leaves the same hole: the *composition* is proven in a browser,
  * not here.
  *
  * **Named prior art, and it is close enough to be a port.** xterm.js does exactly this in

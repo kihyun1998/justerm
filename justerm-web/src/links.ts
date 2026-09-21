@@ -30,7 +30,7 @@ const SPAN_STRIDE = 5;
  *
  * One frame's links only: a Partial frame ships only damaged spans, so a link's
  * undamaged cells are absent from it. `TerminalOptions.links` keeps links whole
- * across frames (#934) from the widget's cell mirror, which groups by contiguous
+ * across frames from the widget's cell mirror, which groups by contiguous
  * runs rather than by this frame-local index. */
 export function osc8Links(frame: DecodedFrame): Link[] {
   const { spans, link, linkTable } = frame;
@@ -102,7 +102,7 @@ export function computeLinks(line: LogicalLine, regex: RegExp = URL_REGEX): Link
 }
 
 /**
- * The consumer-wired seam plain-text URL detection reads through (#934). In frame mode the backend
+ * The consumer-wired seam plain-text URL detection reads through. In frame mode the backend
  * answers from core's `viewport_logical_lines`: the logical line whose `cells` include viewport row
  * `row`, or `undefined` when no line does. Asked on demand, for the row under the pointer — never
  * once per frame. Sibling to {@link import("./selection").SelectionPort} and

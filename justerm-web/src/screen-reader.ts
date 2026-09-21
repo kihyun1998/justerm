@@ -1,12 +1,12 @@
 /**
- * Screen-reader-active gate (#161). VSCode drives its terminal a11y off
+ * Screen-reader-active gate. VSCode drives its terminal a11y off
  * `IAccessibilityService.onDidChangeScreenReaderOptimized`, and xterm.js only
  * builds its `AccessibilityManager` (row tree + aria-live) while `screenReaderMode`
  * is on — both gate the a11y machinery on whether a screen reader is present.
  *
  * A browser CANNOT reliably detect a screen reader (a physical boundary), so
  * justerm does NOT auto-detect: the host injects the state via {@link setActive}
- * (ADR-0017 — detection is the host's, the gate is policy). It defaults to
+ * ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) — detection is the host's, the gate is policy). It defaults to
  * ACTIVE so a consumer that never wires the seam keeps announcing (defaulting off
  * would silently kill a11y); a host that knows no SR is attached opts INTO
  * suppression to avoid wasted aria-live churn and earcons nobody hears.
@@ -18,7 +18,7 @@
  * debounce tail — the user reviews prior output via the freshly synced row tree,
  * not a surprise burst.
  *
- * The command announce/signal (#160) is gated differently: its controller reads
+ * The command announce/signal is gated differently: its controller reads
  * {@link isActive} directly through #167's per-outcome `auto` policy state (a
  * blanket signal wrapper couldn't express an `on` override), so there is no
  * `gateSignal` here — only `gateLive`, for #119's output announce.

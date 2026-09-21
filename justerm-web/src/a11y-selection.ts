@@ -1,6 +1,6 @@
 /**
  * Bridging an AT text selection in the accessibility row tree back to the engine's
- * selection (#152), the frame-mode analog of xterm's
+ * selection, the frame-mode analog of xterm's
  * `AccessibilityManager._handleSelectionChange`. When a screen-reader user selects
  * text inside the hidden `role="list"` row tree, the browser fires `selectionchange`;
  * the DOM glue resolves that to tree coordinates (which listitem, which UTF-16 offset)
@@ -20,8 +20,8 @@ import type { Side, SelectionPort } from "./selection";
  *   row's SR text (the row tree's `textContent`, which is `rowCells(row).text`).
  * - `"before"` / `"after"` — *outside* the tree but the selection overlaps it, with the
  *   endpoint sitting above row 0 / below the last row (native Select-All, a text-drag
- *   overshooting an edge, or the sibling live region). Clamped to the tree boundary
- *   (#217), mirroring xterm's `_handleSelectionChange` begin/end clamp.
+ *   overshooting an edge, or the sibling live region). Clamped to the tree boundary,
+ * mirroring xterm's `_handleSelectionChange` begin/end clamp.
  * - `null` — no node at all (empty `getSelection`), so there's nothing to map. */
 export type TreeEndpoint = { row: number; offset: number } | "before" | "after" | null;
 
