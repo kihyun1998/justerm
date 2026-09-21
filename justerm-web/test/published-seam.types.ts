@@ -34,7 +34,7 @@
 import type { DecodedFrame as WasmFrame } from "justerm-wasm-decode";
 import type { JustermRenderer } from "justerm-renderer";
 import type { DecodedFrame as WebFrame } from "../src/types";
-import type { MouseEvents } from "../src/input";
+import type { ModifiedKeys, MouseEvents } from "../src/input";
 import type { MarkerKind as LocalMarkerKind } from "../src/markers";
 // #802: the containment assertion in section 3 needs both the widget and the surface it holds.
 import type { JustermRenderer as JustermRendererWidget } from "../src/justerm-renderer";
@@ -159,7 +159,13 @@ type ReviewedDecoderExports =
   | "MarkerKind"
   | "markerKind"
   | "MouseEventBits"
-  | "mouseEventBits";
+  | "mouseEventBits"
+  // Mirrored, same as those two, and it arrived exactly where this section says such a thing does:
+  // unreviewed, at a pin bump (`justerm-wasm-decode` 0.20 -> 0.22, for web-v0.17.0). `src/input.ts`
+  // hand-keeps `ModifiedKeys` and `src/index.ts` publishes it, so the decoder is the authority and
+  // the name agreement below is what keeps this copy honest.
+  | "ModifiedKeyBits"
+  | "modifiedKeyBits";
 
 type UnreviewedDecoderExports = Exclude<
   Extract<keyof typeof import("justerm-wasm-decode"), string>,
@@ -174,6 +180,12 @@ holds<
   Equal<
     Uncapitalize<keyof typeof MouseEvents>,
     Extract<NumberKeys<import("justerm-wasm-decode").MouseEventBits>, string>
+  >
+>(true);
+holds<
+  Equal<
+    Uncapitalize<keyof typeof ModifiedKeys>,
+    Extract<NumberKeys<import("justerm-wasm-decode").ModifiedKeyBits>, string>
   >
 >(true);
 

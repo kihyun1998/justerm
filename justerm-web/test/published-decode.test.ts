@@ -13,7 +13,7 @@
  *
  * ## The fixture
  *
- * `fixtures/frame-wire-v17.jt` is bytes, checked in rather than generated here, because neither CI
+ * `fixtures/frame-wire-v18.jt` is bytes, checked in rather than generated here, because neither CI
  * job that runs this package installs Rust (`.github/workflows/test.yml:156`, `:188` — the `web`
  * job's own comment says it "needs no Rust"). They come from a real `Engine`:
  *
@@ -41,10 +41,10 @@ import { osc8Links } from "../src/links";
 import { MarkerKind } from "../src/markers";
 import type { DecodedFrame } from "../src/types";
 
-/** The wire version `fixtures/frame-wire-v17.jt` was produced at. Regenerated with the
- * engine each time the wire moves — v14 -> v16 (#490), then v16 -> v17 (#927), where the
+/** The wire version `fixtures/frame-wire-v18.jt` was produced at. Regenerated with the
+ * engine each time the wire moves — v14 -> v16 (#490), then v16 -> v17 (#927) and v17 -> v18 (#941), where the
  * decoder started rejecting the old bytes outright, which is the version check doing its job. */
-const FIXTURE_WIRE_VERSION = 17;
+const FIXTURE_WIRE_VERSION = 18;
 
 const decoder = await import("justerm-wasm-decode");
 
