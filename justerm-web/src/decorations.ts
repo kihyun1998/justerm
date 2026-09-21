@@ -6,11 +6,11 @@
  * decorations with the frame's markers to project on-viewport {@link
  * DecorationRect}s: positions + **absolute** `0xRRGGBB` colours (the consumer resolves
  * its theme before pushing; the renderer uses them verbatim, #393/#408 — unlike a *cell*
- * colour, which ships as a ref). The paint is the renderer's (ADR-0017, #115) — this is
+ * colour, which ships as a ref). The paint is the renderer's ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md), #115) — this is
  * the model + lifecycle, no DOM.
  *
- * Rendering the rects (2-layer cell override, overview-ruler) is S2 (#198) / S3
- * (#199); this slice ships the registry, the per-frame projection, and marker
+ * Rendering the rects (2-layer cell override, overview-ruler) is S2 / S3;
+ * this slice ships the registry, the per-frame projection, and marker
  * auto-dispose.
  */
 
@@ -19,7 +19,7 @@ import { readMarkers } from "./markers";
 /** Which layer a decoration paints on, mirroring xterm's `IDecorationOptions.layer`:
  * `bottom` overrides the cell background *under* the glyph, `top` paints *over* it.
  *
- * One consequence to know when picking `top` (#494): on a cell whose glyph *tiles*
+ * One consequence to know when picking `top`: on a cell whose glyph *tiles*
  * with the background — Powerline separators, box-drawing, block elements — a `top`
  * decoration that sets ONLY `bg` paints the whole cell, glyph included, because such
  * a glyph is background-shaped ink rather than text. That is what makes a line
@@ -63,8 +63,8 @@ export interface RulerMark {
  * (the consumer resolves its theme; the renderer uses them verbatim, not re-resolved — #393/#408).
  *
  * Deferred (tracked, not silent — the 2-lens pass surfaced these): xterm's
- * `overviewRulerOptions` → S3 (#199); `height` (multi-row span) and `anchor`
- * ('left'/'right') → S2 (#198). Adding them is additive (optional fields), and
+ * `overviewRulerOptions` → S3; `height` (multi-row span) and `anchor`
+ * ('left'/'right') → S2. Adding them is additive (optional fields), and
  * multi-row will project as N single-row {@link DecorationRect}s (so the rect
  * shape stays single-row and a renderer's per-cell test stays `highlightAt`-like)
  * — no breaking change to this type, so modelling them before a renderer uses
@@ -83,7 +83,7 @@ export interface DecorationOptions {
   /** Which edge `x` is measured from (#202, default `left`). `right` counts `x`
    * cells in from the right edge, the span extending leftward by `width`.
    *
-   * **Deliberate divergence from xterm (#459).** xterm's *colour* hit test ignores `anchor`
+   * **Deliberate divergence from xterm.** xterm's *colour* hit test ignores `anchor`
    * entirely (`DecorationService.forEachDecorationAtCell` computes `xmin = x`, `xmax = xmin +
    * width`, with no anchor term), so there a right-anchored decoration's background still paints
    * from the LEFT edge; `anchor` moves only its DOM element (`BufferDecorationRenderer` sets
@@ -142,7 +142,7 @@ export interface DecorationRect {
  * behaviour — the pull, the epoch invalidation, the basis rebase — is tested where it lives.
  * Widening the parameter also lets a consumer that already maintains marker lines its own way
  * feed this projection without adopting the cache, which is the boundary rule for this layer:
- * the mechanism is ours, the source of the data is theirs (ADR-0017).
+ * the mechanism is ours, the source of the data is theirs ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
  *
  * `undefined` for an id means **do not project it** — a decoration missing for a frame beats one
  * painted on a line it no longer owns.
@@ -152,7 +152,7 @@ export interface MarkerLineSource {
 }
 
 /** The frame fields the registry reads. A `DecodedFrame` satisfies it structurally.
- * `cols` sizes right-anchored spans; `rows` clips a multi-row `height` (#202). */
+ * `cols` sizes right-anchored spans; `rows` clips a multi-row `height`. */
 interface DecorationFrame {
   readonly markerPositions?: ArrayLike<number>;
   readonly displayOffset?: number;
@@ -189,19 +189,19 @@ export function resetMarkerIndexWarning(): void {
 
 export class DecorationRegistry {
   /** Decorations grouped by anchor marker id, so `onMarkerDisposed` and the per-frame
-   * marker-id filter (#482) are both O(decorations-on-that-marker). This is the *index*;
+   * marker-id filter are both O(decorations-on-that-marker). This is the *index*;
    * it does not decide precedence. */
   private readonly byMarker = new Map<number, Set<StoredDecoration>>();
   /** Every live decoration in **registration order** (a `Set` preserves insertion order) —
-   * ADR-0024 R2, where the reasoning below is generalised: the model is "a decoration is colours plus a
+   * [ADR-0024](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0024-decoration-projection-and-precedence.md) R2, where the reasoning below is generalised: the model is "a decoration is colours plus a
    * mark, not an object", and the projection rules (precedence, ruler layering, `anchor`, above-viewport
    * anchors, guards) are its consequences. Read it before changing any of them. —
-   * the *cell* projection order, and therefore the cell precedence order (#458): the renderer resolves
-   * per-property last-in-wire-order (#452), so the last registered decoration wins a cell.
+   * the *cell* projection order, and therefore the cell precedence order: the renderer resolves
+   * per-property last-in-wire-order, so the last registered decoration wins a cell.
    * Kept alongside `byMarker` rather than derived from it, because a per-marker grouping can
    * only ever express order *within* a marker; across markers it would leak core's marker
    * emission order into consumer policy. The RULER projection partitions this order by position
-   * class (#498) and is stable within each class, so it is not simply this order. */
+   * class and is stable within each class, so it is not simply this order. */
   private readonly inRegistrationOrder = new Set<StoredDecoration>();
 
   /** The marker-line source (#490), when the consumer wired one. Optional on purpose — but
@@ -210,7 +210,7 @@ export class DecorationRegistry {
   private markerIndex: MarkerLineSource | undefined;
 
   /**
-   * Wire the pulled marker index (#490). Since wire v16 this is the **only** source of a
+   * Wire the pulled marker index. Since wire v16 this is the **only** source of a
    * marker's absolute buffer line: the frame carries `markerPositions` (viewport rows for
    * on-screen markers) and nothing else, so an anchor above the viewport top, and every
    * overview-ruler mark, comes from here or not at all.
@@ -236,11 +236,11 @@ export class DecorationRegistry {
    * by a full reset, so there is no permanent reject-set — disposal is purely
    * event-driven via {@link onMarkerDisposed}.)
    *
-   * Registration order is **precedence** order (#458): where two decorations set the same
+   * Registration order is **precedence** order: where two decorations set the same
    * property on the same cell, the one registered later wins, whichever markers they anchor to.
    * To raise an existing decoration above its peers **on a cell**, `dispose()` its handle and
    * register again — note this does not apply to ruler marks, where a gutter mark can never rise
-   * above a `full` one whatever the registration order (#498) —
+   * above a `full` one whatever the registration order —
    * calling `register` alone mints a *second* decoration, leaving the first live (still projecting,
    * still ruler-marking, and it takes over again if the new one is disposed).
    */
@@ -290,16 +290,16 @@ export class DecorationRegistry {
    * covered viewport row, joining each decoration's marker id against the frame.
    *
    * The join reads two sources **per marker**: the frame's viewport-relative `markerPositions`
-   * answers for a marker it carries, and the pulled index (#490) answers for the rest.
+   * answers for a marker it carries, and the pulled index answers for the rest.
    * That second source is not an extra: `markerPositions` omits a marker scrolled ABOVE the
    * viewport top (core drops it, `m.line.checked_sub(top)?`), so joining on it alone made a
    * multi-row decoration whose anchor had scrolled off vanish **entirely** instead of showing
-   * the rows of it that are still on screen (#461). xterm has no such gap — it keys colour
+   * the rows of it that are still on screen. xterm has no such gap — it keys colour
    * lookup to the absolute buffer line and buckets every line the height covers.
    *
-   * Emission order is **registration order** (#458), so where two decorations cover the same
-   * cell the LAST registered one wins — the renderer resolves per-property last-in-wire-order
-   * (#452). Precedence is consumer policy (ADR-0017) and therefore follows the consumer's own
+   * Emission order is **registration order**, so where two decorations cover the same
+   * cell the LAST registered one wins — the renderer resolves per-property last-in-wire-order.
+   * Precedence is consumer policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)) and therefore follows the consumer's own
    * input, never core's marker emission order, which is decided by where the anchors sit in the
    * buffer and cannot be influenced from here. It matches xterm's documented contract
    * (`typings/xterm.d.ts`: "the last registered decoration will be used") — and is in fact
@@ -418,7 +418,7 @@ export class DecorationRegistry {
 
   /**
    * Project the overview-ruler marks for one frame (#120 S3): for each decoration
-   * carrying `overviewRulerOptions`, look its marker id up in the pulled index (#490)
+   * carrying `overviewRulerOptions`, look its marker id up in the pulled index
    * for an absolute buffer line and place a mark at `line / (scrollbackLen + rows)`
    * down the track. Off-viewport anchors show here even though they're absent from
    * {@link decorationsForFrame} — that is the whole point of a ruler, and since v16
@@ -432,7 +432,7 @@ export class DecorationRegistry {
    * The ratio is clamped to the track `[0, 1]` — a marker line past `scrollbackLen + rows`
    * (a frame lag between the absolute lines and the scroll geometry) would otherwise fall off
    * the bottom — and a non-finite `scrollbackLen` or marker line yields no mark rather than the
-   * `top: NaN%` invalid CSS it used to (#463). xterm needs no clamp: its zones come from
+   * `top: NaN%` invalid CSS it used to. xterm needs no clamp: its zones come from
    * in-buffer lines that are always in range.
    */
   /** Whether any live decoration asks for a ruler mark — the only ones this warning is
@@ -615,12 +615,12 @@ export interface SearchRulerOptions {
   /** The line the active (current) match sits on — it outranks {@link matchColor} for that line. */
   readonly activeMatchColor: number;
   /** Default `center`, matching xterm, whose search marks are `position: 'center'` for the active
-   * and non-active alike. A gutter class, so ADR-0024 R3 paints any `full` mark above these. */
+   * and non-active alike. A gutter class, so [ADR-0024](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0024-decoration-projection-and-precedence.md) R3 paints any `full` mark above these. */
   readonly position?: RulerPosition;
 }
 
 /**
- * Project a search result set onto the overview ruler (#440) — the second mark source, beside
+ * Project a search result set onto the overview ruler — the second mark source, beside
  * {@link DecorationRegistry.rulerMarksForFrame}. Compose the two with {@link composeRulerMarks};
  * do not concatenate them (see that function for why).
  *
@@ -628,7 +628,7 @@ export interface SearchRulerOptions {
  * the set the last search counted, so `activeIndex` is the controller's own navigation index and
  * needs no separate lookup. Core produces matches in buffer order, so the hand-over order is line
  * order; nothing here re-sorts, because paint order within a class is the source's order
- * (ADR-0024 R3's second key) and re-sorting would silently redefine it.
+ * ([ADR-0024](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0024-decoration-projection-and-precedence.md) R3's second key) and re-sorting would silently redefine it.
  *
  * **A match spanning a soft wrap is ONE mark, at its start line** — a second declared divergence,
  * smaller than the one below. Upstream registers a marker + decoration per covered row
@@ -636,7 +636,7 @@ export interface SearchRulerOptions {
  * follows this repo's own model instead: `rulerMarksForFrame` emits one mark per decoration at its
  * anchor even for `height > 1`, so a multi-row thing is one mark here whatever produced it.
  *
- * **One mark per LINE, not per match (ADR-0024 R1).** A line carrying ten matches is one mark. That
+ * **One mark per LINE, not per match ([ADR-0024](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0024-decoration-projection-and-precedence.md) R1).** A line carrying ten matches is one mark. That
  * is also upstream's rule — it suppresses the mark when the line already carries one — and it is
  * what keeps a mark-every-match policy bounded by the buffer's height rather than by the query's
  * hit count.
@@ -646,15 +646,15 @@ export interface SearchRulerOptions {
  * per mark with no `z-index`). This is a **deliberate divergence**: upstream decorates every result
  * plain *first* and creates the active decoration *after*, so the active mark is suppressed by the
  * plain mark already on its line and the required `activeMatchColorOverviewRuler` never paints in
- * the normal flow. Shipping that verbatim would ship a dead option — the reasoning ADR-0024 R4
+ * the normal flow. Shipping that verbatim would ship a dead option — the reasoning [ADR-0024](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0024-decoration-projection-and-precedence.md) R4
  * already records for `anchor`.
  *
- * **Staleness, measured rather than assumed (#440).** These lines are held from search time while
+ * **Staleness, measured rather than assumed.** These lines are held from search time while
  * the geometry comes from the current frame, and core drops its held highlights on any
  * coordinate-shifting mutation *without* moving either dating scalar the frame carries
  * (`evictedTotal` / `markerEpoch`) — so a shift is not observable here. Measured: only matches **on
  * screen** move (scrollback matches keep their absolute index exactly), the error is bounded by the
- * screen height for one debounce window, and every mark stays on the track (#463). Keeping the
+ * screen height for one debounce window, and every mark stays on the track. Keeping the
  * marks through that window therefore shows strictly more truth than dropping them would — the
  * engine shows none at all. Do not add a heuristic that guesses at the invalidation: an empty
  * `matchSpans` cannot distinguish "the set was dropped" from "no match is on screen".
@@ -696,11 +696,11 @@ export function searchRulerMarks(
 
 /**
  * Merge the two ruler mark sources into the single paint order `scrollbar.setMarks` consumes
- * (#440) — decorations from {@link DecorationRegistry.rulerMarksForFrame}, search matches from
+ * — decorations from {@link DecorationRegistry.rulerMarksForFrame}, search matches from
  * {@link searchRulerMarks}.
  *
  * **This lives in the library on purpose, and concatenating the two arrays in a host is the thing
- * it exists to prevent.** ADR-0024 R3's total order was expressed entirely by
+ * it exists to prevent.** [ADR-0024](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0024-decoration-projection-and-precedence.md) R3's total order was expressed entirely by
  * `rulerMarksForFrame`'s emission order while there was one source; with two, an order composed in
  * a host is re-derived per host and can disagree between them. No unit test can observe a violation
  * — vitest runs in a `node` environment, so nothing here has a layout — and the one gate that can

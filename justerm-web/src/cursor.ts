@@ -2,7 +2,7 @@
 export const BLINK_INTERVAL = 600;
 
 /**
- * How long the cursor keeps blinking with no user input before it parks solid, in ms (#593).
+ * How long the cursor keeps blinking with no user input before it parks solid, in ms.
  *
  * **Five minutes, xterm.js's value** (`browser/renderer/shared/Constants.ts:12`,
  * `CURSOR_BLINK_IDLE_TIMEOUT = 5 * 60 * 1000` @ `699f553`) — *not* alacritty's five seconds
@@ -11,13 +11,13 @@ export const BLINK_INTERVAL = 600;
  * reset set is already exactly xterm.js's (a key/text intent plus pointer-down), so matching the
  * reference we are structurally identical to is the least arbitrary default available. Five seconds
  * also stops the caret while a user is merely *reading* long output, which reads as a freeze rather
- * than as a feature. Overridable per consumer — this is policy (ADR-0017), not a constant of nature.
+ * than as a feature. Overridable per consumer — this is policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), not a constant of nature.
  */
 export const BLINK_IDLE_TIMEOUT = 5 * 60 * 1000;
 
 /**
  * Cursor blink state — the *phase* is a web-side policy (the engine reports only the mode), but
- * **whether** the cursor blinks at all is resolved here from two inputs (#575):
+ * **whether** the cursor blinks at all is resolved here from two inputs:
  *
  * 1. the **application's** intent, from the frame's `cursorBlink` (wire v4, #81) — core writes it
  *    from both DECSCUSR (`CSI Ps SP q`) and att610 (`CSI ?12 h/l`);
@@ -29,7 +29,7 @@ export const BLINK_IDLE_TIMEOUT = 5 * 60 * 1000;
  * (`alacritty/src/event.rs:1631` @ `852e971`, with `Always`/`Never => Some` and `On`/`Off => None`
  * at `config/cursor.rs:125-131`). xterm.js resolves the same two values with the three-state on the
  * *application* side instead (`decPrivateModes.cursorBlink ?? rawOptions.cursorBlink`,
- * `browser/renderer/dom/DomRenderer.ts:531` @ `699f553`). alacritty's shape is the one ADR-0017
+ * `browser/renderer/dom/DomRenderer.ts:531` @ `699f553`). alacritty's shape is the one [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)
  * already implies — core reports the mechanism, the consumer holds the policy — and, unlike
  * xterm.js's, it needs no wire change: core's `cursor_blink` bool is the application's half.
  *
@@ -112,7 +112,7 @@ export class CursorBlink {
   }
 
   /**
-   * An IME composition is in progress (#592) — the caret stays put until it ends.
+   * An IME composition is in progress — the caret stays put until it ends.
    *
    * Two of the three references do this and for the same stated reason: alacritty suppresses the
    * blink in the same expression that resolves it (`alacritty/src/event.rs:1633`), and ghostty
@@ -155,7 +155,7 @@ export class CursorBlink {
   }
 
   /**
-   * Honour `prefers-reduced-motion` (#119): when set, the cursor never blinks. The integration
+   * Honour `prefers-reduced-motion`: when set, the cursor never blinks. The integration
    * reads the media query and forwards changes here.
    *
    * It outranks **both** other inputs — an application that asked to blink and a consumer that

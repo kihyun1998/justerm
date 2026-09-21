@@ -23,7 +23,7 @@ import type { Flags as WasmFlags } from "justerm-wasm-decode";
  * and it makes no difference; on the wasm `DecodedFrame` they are *getters*, and every read builds
  * a fresh typed-array view — or, for `sideTable` / `linkTable`, rebuilds the whole array. The
  * declaration below cannot express the difference, and no fixture in this package exhibits it, so
- * the cost only appears in production (#657). Taking a column as a function parameter, the way
+ * the cost only appears in production. Taking a column as a function parameter, the way
  * `readMarkers` and `readOverlay` do, sidesteps the question entirely.
  */
 export interface DecodedFrame {
@@ -67,10 +67,10 @@ export interface DecodedFrame {
    */
   readonly selectionSpans?: ArrayLike<number>;
   /**
-   * Search-match overlay (#108): same viewport `(row, left, right)` stride-3
+   * Search-match overlay: same viewport `(row, left, right)` stride-3
    * layout as {@link selectionSpans}, a separate wire group —
    * `justerm-wasm-decode`'s `matchSpans` getter. Set on the backend via
-   * `Engine::set_search_highlights`; consumed by search (#110). Optional.
+   * `Engine::set_search_highlights`; consumed by search. Optional.
    */
   readonly matchSpans?: ArrayLike<number>;
   /**
@@ -80,7 +80,7 @@ export interface DecodedFrame {
    * backend via `Engine::set_active_search_highlight` (which match is active is
    * consumer policy — next/prev navigation); the member is *also* present in
    * {@link matchSpans}, and the renderer's highlight ranking resolves the
-   * overlap (#424). Optional — omitted when nothing is designated.
+   * overlap. Optional — omitted when nothing is designated.
    */
   readonly activeMatchSpans?: ArrayLike<number>;
   /**
@@ -91,7 +91,7 @@ export interface DecodedFrame {
    * command, `exitPresent` is 1 and `exitBits` is the exit code as a raw u32 —
    * reinterpret as signed with `exitBits | 0`. Off-screen markers are absent (still
    * alive; disposal comes via a `MarkerDisposed` event). Optional — a frame with no
-   * markers omits it. Consumed by decorations (#120) + prompt-nav a11y (#160).
+   * markers omits it. Consumed by decorations + prompt-nav a11y.
    */
   readonly markerPositions?: ArrayLike<number>;
   /** Grapheme clusters referenced by cells' `extra` index (frame-local). */
@@ -108,7 +108,7 @@ export interface DecodedFrame {
   /**
    * Cursor state (screen coords, 0-based). `cursorShape`: 0 = Block, 1 =
    * Underline, 2 = Bar — the application's DECSCUSR shape, `undefined` while it
-   * has set none, when the renderer draws its `cursorStyle` (#927). `cursorBlink`
+   * has set none, when the renderer draws its `cursorStyle`. `cursorBlink`
    * is the *mode* — the blink timing is a web-side policy. Optional — a frame may
    * omit them (treated as no cursor).
    */
@@ -156,7 +156,7 @@ export interface DecodedFrame {
   readonly markerCount?: number;
   /**
    * Whether the alternate screen (`?1049`/`?47`) is active (#149, wire v9) —
-   * `justerm-wasm-decode`'s `altScreen` getter. The a11y announce policy (#119)
+   * `justerm-wasm-decode`'s `altScreen` getter. The a11y announce policy
    * suppresses output reads when set (a TUI repaint isn't new output). Optional —
    * a frame may omit it (treated as the primary screen).
    */
@@ -167,13 +167,13 @@ export interface DecodedFrame {
    * reports (bit 0 DOWN, 1 UP, 2 WHEEL, 3 DRAG, 4 MOVE; `0` = no reporting), the
    * {@link import("./input").MouseEvents} bitflags. The widget routes a mouse/wheel
    * event to the app when its bit is set, else keeps it local (selection /
-   * scrollback) — S16 (#133) reads the WHEEL bit for wheel routing. Encoding the
+   * scrollback) — S16 reads the WHEEL bit for wheel routing. Encoding the
    * report bytes stays the backend's (`encode_mouse`); only this routing mask
    * crosses. Optional — a frame may omit it (treated as `0`, no reporting).
    */
   readonly mouseWantedEvents?: number;
   /**
-   * Modified-keys mask (#941) — `justerm-wasm-decode`'s `modifiedKeys` getter. Which modified
+   * Modified-keys mask — `justerm-wasm-decode`'s `modifiedKeys` getter. Which modified
    * presses of Enter, Tab, Backspace and Escape reach the application distinct from the bare
    * key under the keyboard modes it has asked for (the kitty flags, `modifyOtherKeys` level 2),
    * as the {@link import("./input").ModifiedKeys} bitflags. Derived by core from the encoder
@@ -210,9 +210,9 @@ export interface FrameSource {
    * Receive every frame the backend produces.
    *
    * **A frame is expected whenever the engine's state moves, including while the view is scrolled
-   * up (#921).** That is worth stating because the obvious optimisation is wrong here: core's
+   * up.** That is worth stating because the obvious optimisation is wrong here: core's
    * `damage`/`frame_damage` return an *empty* `Partial` while `display_offset > 0` — nothing the
-   * user can see has changed — and `docs/architecture.md` says so in as many words. But the frame's
+   * user can see has changed — and [`docs/architecture.md`](https://github.com/kihyun1998/justerm/blob/master/docs/architecture.md) says so in as many words. But the frame's
    * **header** does not go quiet: `cursor_row`/`cursor_col` keep describing where the cursor is,
    * and they are exactly the cell it will occupy once the view returns to the bottom (pinned in
    * `justerm-core/tests/cursor_coordinate_while_hidden.rs`). The widget retains that cell on every
@@ -227,13 +227,13 @@ export interface FrameSource {
    */
   subscribe(listener: (frame: DecodedFrame) => void): Unsubscribe;
   /**
-   * Subscribe to consumer events (#117) from core's `drain_events`, delivered
+   * Subscribe to consumer events from core's `drain_events`, delivered
    * OUT-OF-BAND (not on the frame wire). Frame mode wires this to the backend's
    * event side channel; the in-wasm mode drains the engine. Optional — a source
    * with no event channel omits it, and the widget then wires neither surface
    * below.
    *
-   * **One channel, two surfaces (#841).** Everything core queues travels here,
+   * **One channel, two surfaces.** Everything core queues travels here,
    * because a backend has one stream to push. Most of it is fire-and-forget
    * notification (title/bell/cwd) routed to
    * {@link import("./events").EventHandlers}; the `OSC 52` clipboard pair is not —
@@ -253,7 +253,7 @@ export interface FrameSource {
  * old per-cell decode is this bit map, which the a11y mirror and the renderer
  * adapter both read.
  *
- * **Derived from the published `Flags`, not written out (#831).** It was a hand-kept list of
+ * **Derived from the published `Flags`, not written out.** It was a hand-kept list of
  * names until it was measured against its source and found to be nine of eleven: `wide_char` and
  * `wrapline` had never been added, and nothing could say so — the seam gate one directory over
  * derives over `keyof DecodedFrame`, and these are module-scope exports, structurally outside it.
@@ -293,11 +293,11 @@ export type FlagBits = {
 };
 
 /**
- * How a cell's underline is drawn — the value of `SGR 4 : Ps` (#862).
+ * How a cell's underline is drawn — the value of `SGR 4 : Ps`.
  *
  * **A field, not a flag, which is why it is not in {@link FlagBits}.** That map answers eleven
  * yes-or-no questions with one bit each; this one is "which of six", and no mask can answer it. The
- * decoder made the same split for the same reason (#831), and forcing it into the bit map here
+ * decoder made the same split for the same reason, and forcing it into the bit map here
  * would leave a consumer shifting by hand — the thing both surfaces exist to prevent.
  *
  * `None` is a **member** of the style, not the absence of one: a cell that is not underlined reads
@@ -312,7 +312,7 @@ export type FlagBits = {
 export type UnderlineStyle = import("justerm-wasm-decode").UnderlineStyle;
 
 /**
- * The named underline-style values, exactly as the decoder freezes them (#862) — `styles.Curly`
+ * The named underline-style values, exactly as the decoder freezes them — `styles.Curly`
  * rather than `3`.
  *
  * Written as a **type-level** module reference on purpose. `import type` cannot carry an enum's

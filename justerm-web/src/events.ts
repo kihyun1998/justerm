@@ -1,11 +1,11 @@
 /**
- * The web side of core's consumer event channel (#117) —
+ * The web side of core's consumer event channel —
  * `drain_events()` (`TermEvent`). These are NOT frame state (they never ride the
  * frame wire); the consumer drains them from the engine and delivers them through
  * a side channel ({@link import("./types").FrameSource.subscribeEvents}). The
  * widget only maps them to consumer callbacks — transport-agnostic.
  *
- * **Two surfaces, and the split is the point (#841).** {@link TermEvent} is the
+ * **Two surfaces, and the split is the point.** {@link TermEvent} is the
  * *channel* — everything core's `drain_events()` produces travels it, because a
  * backend has exactly one stream to push. {@link EventHandlers} is the
  * *notification* surface, and it stays title/bell/cwd: those are things a consumer
@@ -57,8 +57,8 @@ export type ClipboardTarget = "clipboard" | "primary" | "selection";
  * core adds a target, and nothing here gates that day.
  */
 
-/** The byte an OSC reply must end with — **the one carried back, not a default**
- * (#836). `drain_events` hands over a *batch*, so two queries can be outstanding
+/** The byte an OSC reply must end with — **the one carried back, not a default**.
+ * `drain_events` hands over a *batch*, so two queries can be outstanding
  * at once and answered in either order; a remembered terminator cannot say which
  * exchange it belongs to. Opaque to the widget: it arrives on the query and goes
  * back out on the answer unread. */
@@ -126,7 +126,7 @@ export function dispatchTermEvent(event: TermEvent, handlers: EventHandlers): vo
       handlers.onCwd?.(event.cwd);
       return;
     // The clipboard pair rides this channel but is not a notification — it goes to
-    // `ClipboardController`, wired separately on the same subscription (#841).
+    // `ClipboardController`, wired separately on the same subscription.
     // Listed rather than left to the switch's fallthrough so that adding a third
     // clipboard event has to come past this comment.
     case "clipboardStore":

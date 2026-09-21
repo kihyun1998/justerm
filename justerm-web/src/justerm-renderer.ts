@@ -43,7 +43,7 @@ export function cellStyleContext<S>(decoder: {
 
 /** Theme colours (packed `0xRRGGBB`). The engine stays ignorant of these — the
  * consumer owns them and the renderer resolves cell refs against them. Carried over
- * verbatim from the beamterm adapter (#273): the theme contract is renderer-neutral.
+ * verbatim from the beamterm adapter: the theme contract is renderer-neutral.
  *
  * **A theme is a complete description, not a patch**, and a field added here inherits that:
  * {@link JustermRenderer.setTheme} pushes **every** member, so an unset one *resets* to its default
@@ -66,7 +66,7 @@ export interface Theme {
   /** Search-match highlight background (`0xRRGGBB`). Defaults to a muted amber. */
   matchBg?: number;
   /** The *active* (current) search match's background (`0xRRGGBB`) — xterm's
-   * `activeMatchBackground`, painted above selection and the other matches (#429).
+   * `activeMatchBackground`, painted above selection and the other matches.
    * Defaults to a dark orange, distinct from both {@link selectionBg} and
    * {@link matchBg} (the Chrome find-in-page yellow-others/orange-active model;
    * alacritty's `focused_match` gold agrees on "brighter, warmer than the rest").
@@ -79,8 +79,8 @@ export interface Theme {
    * selectionInactiveBackgroundOpaque; a dimmer tint. Defaults to a muted slate. */
   selectionInactiveBg?: number;
   /** Optional fg for SELECTED cells (`0xRRGGBB`), xterm's `selectionForeground`. Unset
-   * keeps each cell's own fg. Selection-only (never a search match), focus-independent (#227).
-   * Selection is a property of the cell, not of the bg winner (#430): where the ACTIVE search
+   * keeps each cell's own fg. Selection-only (never a search match), focus-independent.
+   * Selection is a property of the cell, not of the bg winner: where the ACTIVE search
    * match covers a selected cell, this fg paints over {@link activeMatchBg} — pick the two to
    * read on each other, or set {@link minimumContrastRatio}. */
   selectionForeground?: number;
@@ -117,7 +117,7 @@ export interface Theme {
    * runtime path is {@link JustermRenderer.setTheme}, like every other policy on this interface. */
   cursorContrast?: number;
   /** Draw bold text in the bright (8-15) ANSI colour — xterm's
-   * drawBoldTextInBrightColors (#223). Defaults to true (xterm's default). */
+   * drawBoldTextInBrightColors. Defaults to true (xterm's default). */
   boldToBright?: boolean;
 }
 
@@ -167,7 +167,7 @@ export interface JustermRendererOptions {
   fontFamily: string;
   fontSize: number;
   /**
-   * The weight regular text is drawn at, and the weight bold (SGR 1) text is drawn at (#928). Omit
+   * The weight regular text is drawn at, and the weight bold (SGR 1) text is drawn at. Omit
    * for `"normal"` / `"bold"`. Change them at runtime with {@link JustermRenderer.setFontWeight} /
    * {@link JustermRenderer.setFontWeightBold}; a weight the renderer refuses leaves the default.
    *
@@ -178,7 +178,7 @@ export interface JustermRendererOptions {
   /**
    * Force the cursor to blink (`true`) or stay steady (`false`), overriding the application.
    * Omit (or `undefined`) to **follow the application's** DECSCUSR / `CSI ?12` mode, which is the
-   * default and what both references default to (#575).
+   * default and what both references default to.
    *
    * Deliberately here rather than on {@link Theme}: `Theme` is colours plus the two colour
    * policies that resolve against them, and a blink is motion, not a colour. xterm.js draws the
@@ -187,13 +187,13 @@ export interface JustermRendererOptions {
    */
   cursorBlink?: boolean;
   /**
-   * The caret shape drawn while the application has not chosen one (#927). DECSCUSR
+   * The caret shape drawn while the application has not chosen one. DECSCUSR
    * (`CSI Ps SP q`) overrides it, and `CSI 0 SP q`, DECSTR and RIS hand it back. Omit for `"block"`.
    * Change it at runtime with {@link JustermRenderer.setCursorStyle}.
    */
   cursorStyle?: CursorStyle;
   /**
-   * How long the cursor keeps blinking with no user input before parking solid, in ms (#593).
+   * How long the cursor keeps blinking with no user input before parking solid, in ms.
    * `0` disables the timeout. Omit for the default — 5 minutes, xterm.js's `CURSOR_BLINK_IDLE_TIMEOUT`.
    *
    * Exposed because the two references disagree by 60x (alacritty stops after **5 seconds**), so the
@@ -213,7 +213,7 @@ export interface JustermRendererOptions {
    * `(frac * cell_w).round().max(1)` device px — so it tracks dpr **and** font size. That is
    * alacritty's rule, which #270 chose over xterm.js's `cursorWidth` in CSS px
    * (`common/services/OptionsService.ts:19`) because a fixed length gives a 32px font the same
-   * hairline caret as a 12px one. ADR-0023 does not apply: a fraction carries no unit to get wrong.
+   * hairline caret as a 12px one. [ADR-0023](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0023-spacing-settings-are-css-pixels.md) does not apply: a fraction carries no unit to get wrong.
    * The `.max(1)` floor means even `0` leaves a one-pixel stroke rather than no cursor.
    *
    * Out-of-range values are the renderer's to clamp (`[0, 1]`) and are not re-clamped here.
@@ -225,7 +225,7 @@ export interface JustermRendererOptions {
    */
   cursorThickness?: number;
   /**
-   * The half-period of the **SGR 5 (blink) text** phase, in ms (#576). Omit (or `0`) to leave
+   * The half-period of the **SGR 5 (blink) text** phase, in ms. Omit (or `0`) to leave
    * blinking text steadily shown, which is the default.
    *
    * Off by default because that is where the references sit: only xterm.js animates blinking text
@@ -233,7 +233,7 @@ export interface JustermRendererOptions {
    * has no text blink and ghostty stores the attribute without ever drawing it. There is therefore
    * no inheritable cadence to default to — the number is the consumer's product choice, so this is
    * an interval rather than a boolean. `prefers-reduced-motion` pins the text visible whatever is
-   * set here (#119). Change it at runtime with
+   * set here. Change it at runtime with
    * {@link JustermRenderer.setTextBlinkInterval}.
    */
   textBlinkInterval?: number;
@@ -266,9 +266,9 @@ export interface JustermRendererOptions {
    */
   bgAlpha?: number;
   /**
-   * Extra space between columns, in **CSS pixels** (#578). Defaults to `0`.
+   * Extra space between columns, in **CSS pixels**. Defaults to `0`.
    *
-   * CSS px, not device px, because {@link fontSize} is (ADR-0023) — one font description should not
+   * CSS px, not device px, because {@link fontSize} is ([ADR-0023](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0023-spacing-settings-are-css-pixels.md)) — one font description should not
    * speak two units. Both references disagree and take device px, which is why the same setting is a
    * different gap on a Retina display there and moving a window between monitors re-lays-out the
    * text. The renderer applies `round(letterSpacing * dpr)`.
@@ -280,13 +280,13 @@ export interface JustermRendererOptions {
    */
   letterSpacing?: number;
   /**
-   * A multiplier on the glyph height, `>= 1` (#578). Defaults to `1`.
+   * A multiplier on the glyph height, `>= 1`. Defaults to `1`.
    *
-   * Unitless by construction, which is why ADR-0023's CSS-px rule does not apply to it — there is no
+   * Unitless by construction, which is why [ADR-0023](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0023-spacing-settings-are-css-pixels.md)'s CSS-px rule does not apply to it — there is no
    * unit to get wrong.
    *
    * **The renderer clamps rather than rejects**, and the value it adopts may be *smaller* than the
-   * one asked for: a cell the glyph atlas cannot hold is shrunk to one it can (#359). It also rolls
+   * one asked for: a cell the glyph atlas cannot hold is shrunk to one it can. It also rolls
    * the change back entirely if the atlas re-bake fails. So this is a request, not a setting — read
    * the result back from the cell size rather than assuming it took.
    */
@@ -301,7 +301,7 @@ export interface JustermRendererOptions {
    * What it exists for is the case that has no other signal: a context that never returns leaves a
    * blank canvas, and nothing else tells a consumer to dim the terminal, show a message, or fall back.
    * xterm.js's consumer, VSCode, tears its WebGL renderer down and swaps in a DOM one; what to do here
-   * is likewise consumer policy (ADR-0017), so the widget forwards the signal and applies none itself.
+   * is likewise consumer policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), so the widget forwards the signal and applies none itself.
    *
    * **Fires at most once per loss**, and never after {@link JustermRenderer.dispose} — matching
    * xterm.js, whose disposable clears the pending restore timeout
@@ -313,7 +313,7 @@ export interface JustermRendererOptions {
    */
   onContextLoss?: () => void;
   /**
-   * How long a lost context is given to come back before {@link onContextLoss} fires, in ms (#579).
+   * How long a lost context is given to come back before {@link onContextLoss} fires, in ms.
    * Omit for the renderer's default — **3000**, xterm.js's `_contextRestorationTimeout` value.
    * Negative values are clamped to `0` by the renderer. Applies to the *next* loss; a deadline
    * already armed keeps the duration it was armed with.
@@ -322,7 +322,7 @@ export interface JustermRendererOptions {
    * declares this one **consumer policy** in as many words — *"only the consumer knows how long a
    * blank terminal is tolerable against how long its GPU takes to recover"* (`context_loss.rs`,
    * `DEFAULT_RESTORE_TIMEOUT_MS`) — and epic #583 settled that every knob the renderer declares
-   * consumer policy under ADR-0017 is reachable through the widget, because the widget *is* that
+   * consumer policy under [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) is reachable through the widget, because the widget *is* that
    * consumer. (#579's own body proposed leaving it unwired "until someone needs a non-default
    * deadline"; that predates the answer and is superseded by it.)
    *
@@ -356,13 +356,13 @@ const EMPTY_U16 = new Uint16Array(0);
  * no `js_name`, camelCase where there is).
  *
  * That declaration gates this mirror against the published *renderer* only. The other published
- * package this widget consumes is gated separately, in `test/published-seam.types.ts` (#646),
+ * package this widget consumes is gated separately, in `test/published-seam.types.ts`,
  * which asserts that the decoder's columns can feed these parameters — the pairing #627 broke. */
 /**
  * The full renderer surface this adapter drives — **the per-grid half plus everything
  * {@link SurfaceBackend} carries**, which is why it extends it rather than restating those members.
  *
- * The two halves are split on a criterion the renderer already compiled in at 0.15.0 (#773): a call
+ * The two halves are split on a criterion the renderer already compiled in at 0.15.0: a call
  * naming a `grid` acts on one terminal, a call naming none acts on the thing every terminal shares.
  * Extending is what turns that from a comment into a gate — a member that drifts between the two
  * interfaces fails to compile where {@link TerminalSurface.open}'s `TerminalSurface<PublishedRenderer>`
@@ -372,7 +372,7 @@ const EMPTY_U16 = new Uint16Array(0);
  */
 export interface RendererBackend extends SurfaceBackend {
   /** Scatter a decoded frame's damage into the persistent grid, then re-pack. Header is
-   * `[cols, rows, kind, hasScroll, scrollTop, scrollBottom, scrollCount, blinkOn]` (#285). */
+   * `[cols, rows, kind, hasScroll, scrollTop, scrollBottom, scrollCount, blinkOn]`. */
   apply_damage(
     grid: number,
     header: Uint32Array,
@@ -436,7 +436,7 @@ export interface RendererBackend extends SurfaceBackend {
   /** Remove the cursor — hidden (DECTCEM) or the blink's off phase. */
   clearCursor(grid: number): void;
   /** The cursor's minimum WCAG contrast with the cell under it (#368) and its stroke thickness as a
-   * fraction of the cell width (#369). Both are read at *draw* time (a shader uniform and a
+   * fraction of the cell width. Both are read at *draw* time (a shader uniform and a
    * comparison against the resolved cell), so neither needs a re-pack — but the cursor has to be
    * re-issued for the change to present, which is what `redrawCursor` is for. The renderer clamps
    * each (`[1, 21]` / `[0, 1]`). */
@@ -473,7 +473,7 @@ export interface RendererBackend extends SurfaceBackend {
   ): void;
   /** Record a grid's dimensions in cells. **It sizes nothing** — since renderer 0.15.0 the drawing
    * buffer is the *surface's* (`resizeSurface`), because a canvas holding N grids in M font
-   * configurations has no cell it can be a multiple of (#773). */
+   * configurations has no cell it can be a multiple of. */
   resizeGrid(grid: number, cols: number, rows: number): void;
   /** Place a grid on the shared buffer, in **device px**, top-left origin. A grid draws only once
    * placed; for a one-terminal widget the rect is the whole buffer. */
@@ -734,7 +734,7 @@ const now = (): number => performance.now();
  * The real {@link Renderer}: wraps the first-party `justerm-renderer` (WASM + WebGL2) and pushes
  * each decoded frame's cells + overlay + cursor + decorations to it, letting the renderer do all
  * compositing **in wasm** (colour resolve, highlight blend, cursor, decorations). This is the
- * pivot's payoff (ADR-0018): the beamterm adapter did that compositing in TypeScript
+ * pivot's payoff ([ADR-0018](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0018-justerm-renderer.md)): the beamterm adapter did that compositing in TypeScript
  * (CellMirror + makeRenderPolicy + composeOverlayDraws) because beamterm has no such concepts;
  * this adapter is a thin translator because the renderer owns them.
  *
@@ -757,7 +757,7 @@ export class JustermRenderer implements Renderer {
   /** The SGR 5 text phase (#576) — a separate clock from the caret's, never restarted by input. */
   private readonly textBlink = new TextBlink();
   /** Last cursor reported by a frame (screen coords), or `undefined` if hidden. `shape` is the
-   * application's, `undefined` while it has set none (#927). */
+   * application's, `undefined` while it has set none. */
   private cursor: { col: number; row: number; shape: number | undefined } | undefined;
   /** The consumer's default caret shape (#927). */
   private cursorStyle: CursorStyle = "block";
@@ -776,7 +776,7 @@ export class JustermRenderer implements Renderer {
    * See {@link JustermRenderer.trackBlinkCells} for why it over-approximates and why that is sound. */
   private mayHaveBlinkCells = false;
   /** The blink loop. Owns its own scheduling handle so a throw from the body cannot latch it
-   * off — see `frame-loop.ts` (#696). Built lazily because `requestAnimationFrame` is read at
+   * off — see `frame-loop.ts`. Built lazily because `requestAnimationFrame` is read at
    * construction time and the loop's body closes over `this`. */
   private readonly blinkLoop = new FrameLoop(
     (cb) => requestAnimationFrame(cb),
@@ -790,7 +790,7 @@ export class JustermRenderer implements Renderer {
   /**
    * Where this grid sits on the shared drawing buffer, in **device px**, top-left origin — the
    * origin half of the rect {@link setViewportRect} sets; the extent half is always re-derived from
-   * the grid and the cell, so it is not stored beside it (#775).
+   * the grid and the cell, so it is not stored beside it.
    *
    * `(0, 0)` for a sole tenant, which is what makes the single-terminal arrangement the special case
    * of the general one rather than a second code path. For a shared surface it is the terminal's DOM
@@ -801,7 +801,7 @@ export class JustermRenderer implements Renderer {
   private rect = { x: 0, y: 0 };
   /**
    * Whether the host has taken this terminal off the surface — **state consulted at every placement,
-   * not a command issued once** (#801).
+   * not a command issued once**.
    *
    * The distinction is the whole of this field's justification, and it is measured rather than
    * chosen. Seven entry points re-derive this grid's placement — a density change or context
@@ -818,16 +818,16 @@ export class JustermRenderer implements Renderer {
    */
   private hidden = false;
   /** Focus gates the selection colour (focused → `selectionBg`, blurred → the dimmer
-   * `selectionInactiveBg`) and the blink (blurred → solid). xterm's two selection colours (#115).
+   * `selectionInactiveBg`) and the blink (blurred → solid). xterm's two selection colours.
    *
-   * **Starts unfocused** (#912). A renderer is told about focus *changes*, so a terminal that is
+   * **Starts unfocused**. A renderer is told about focus *changes*, so a terminal that is
    * never focused is never told anything — and the previous `true` therefore stood for the life of
    * every pane the user had not clicked.
    *
    * The default is only half of it: {@link Terminal} also reports once at mount, and the reference
    * tally says why both are needed rather than either — the corpus splits 2-1 and what the three
    * share is a *correction path*, not a value. See
-   * `docs/agents/reference-facts.md` § "The INITIAL focus state — who establishes it".
+   * [`docs/agents/reference-facts.md`](https://github.com/kihyun1998/justerm/blob/master/docs/agents/reference-facts.md) § "The INITIAL focus state — who establishes it".
    *
    * It also fails safe in the direction the old default did not: a focused terminal that reads as
    * blurred recovers on the first keystroke, while a blurred one that reads as focused never
@@ -846,7 +846,7 @@ export class JustermRenderer implements Renderer {
     private readonly backend: RendererBackend,
     /**
      * The surface this terminal draws on — the canvas, the context, the grid registry, the display
-     * density and context-loss recovery (#775). **Everything the renderer scopes to the surface
+     * density and context-loss recovery. **Everything the renderer scopes to the surface
      * rather than to a grid now lives there**, which is what lets N terminals share one context.
      *
      * Before #775 this object held all of it directly, and that was the defect rather than a
@@ -858,7 +858,7 @@ export class JustermRenderer implements Renderer {
     /**
      * **Whether this terminal composed the surface it draws on.** One fact, and everything this
      * class does differently between its two entry points is derived from it — which is why it is a
-     * single flag rather than three (#802).
+     * single flag rather than three.
      *
      * `JustermRenderer.create` composes the surface and keeps it in a private field with no
      * accessor, so **it is the surface's only possible tenant**: nobody else can obtain it to attach
@@ -873,7 +873,7 @@ export class JustermRenderer implements Renderer {
      * | ends the surface on dispose | yes | no — ending a shared surface takes down its siblings |
      *
      * The last row is the general rule, written down once in
-     * `docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md`: a layer ends what it
+     * [`docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md): a layer ends what it
      * exclusively holds. Composing is simply how this object comes to be the only holder.
      *
      * **"Sole tenant" throughout this file means exactly this flag being true** — a terminal that
@@ -888,7 +888,7 @@ export class JustermRenderer implements Renderer {
      */
     private readonly composedSurface: boolean,
     /**
-     * This widget's claim on the surface (#805). A `Terminal` is one terminal, so it is a constant
+     * This widget's claim on the surface. A `Terminal` is one terminal, so it is a constant
      * for the object's life — what changed at renderer 0.15.0 is that the grid has to be *named* on
      * every call that acts on a terminal rather than on the surface.
      *
@@ -985,7 +985,7 @@ export class JustermRenderer implements Renderer {
    * case of this one rather than a second path through the code.
    *
    * Everything else is identical, deliberately: the widget experience is unchanged and the only new
-   * noun is the surface (ADR-0021).
+   * noun is the surface ([ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)).
    *
    * The consumer still owns the DOM overlay — the hidden IME textarea, the a11y tree, the scrollbar
    * — and one canvas means every terminal shares one stacking plane, so arbitrary DOM cannot be
@@ -1190,11 +1190,11 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * The underline style a `flags[i]` word carries (#862) — `Curly`, `Dotted`, and the four others.
+   * The underline style a `flags[i]` word carries — `Curly`, `Dotted`, and the four others.
    *
    * **A method, not a member of {@link cellFlags}.** The style is a 3-bit *field*; that map is one
    * bit per question and cannot answer "which of six", which is why the decoder split it the same
-   * way (#831). Keeping `cellFlags` a plain object of numbers is also what lets a test pass
+   * way. Keeping `cellFlags` a plain object of numbers is also what lets a test pass
    * `{ bold: 1, … }` as a literal.
    *
    * Pass the whole word; the shift and the width appear in no consumer's source. Total — a value
@@ -1205,7 +1205,7 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * The named style values (#862), so a consumer writes `styles.Curly` rather than `3` and never
+   * The named style values, so a consumer writes `styles.Curly` rather than `3` and never
    * imports `justerm-wasm-decode` to do it — #827's story 15, which asks for the style on the
    * surface already being read rather than through a second mechanism.
    *
@@ -1245,7 +1245,7 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Change the weight regular text is drawn at (#928) — the live counterpart of
+   * Change the weight regular text is drawn at — the live counterpart of
    * {@link JustermRendererOptions.fontWeight}. Re-bakes the atlas and presents.
    *
    * **No re-fit**, unlike {@link setFontFamily}: the cell is measured at `"normal"` whatever the
@@ -1263,7 +1263,7 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Change the letter spacing (CSS px) / line height (multiplier `>= 1`) at runtime (#578). The live
+   * Change the letter spacing (CSS px) / line height (multiplier `>= 1`) at runtime. The live
    * counterparts of {@link JustermRendererOptions.letterSpacing} / {@link
    * JustermRendererOptions.lineHeight}, whose docs carry the units and the clamping.
    *
@@ -1295,7 +1295,7 @@ export class JustermRenderer implements Renderer {
    *
    * **Read the cell back rather than deriving it from what you passed.** `adopt_spacing` can hand you
    * something other than what you asked for in three separate ways, and none of them reports an error:
-   * a `lineHeight` whose cell the atlas cannot hold is *shrunk* (#359); a failed atlas re-bake rolls
+   * a `lineHeight` whose cell the atlas cannot hold is *shrunk*; a failed atlas re-bake rolls
    * the whole change back to the previous spacing; and **what happens while the GL context is lost
    * depends on which renderer you are on**, so read the cell back rather than assuming either:
    *
@@ -1316,7 +1316,7 @@ export class JustermRenderer implements Renderer {
    *
    * {@link cellSize} and
    * {@link terminalSize} are the truth afterwards — and `terminalSize` matters as much as the cell,
-   * because the renderer's internal re-size adopts what the drawing buffer will actually grant (#339),
+   * because the renderer's internal re-size adopts what the drawing buffer will actually grant,
    * so a large enough cell shrinks the *grid* as well.
    */
   setLetterSpacing(cssPx: number): void {
@@ -1331,7 +1331,7 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Change the background opacity at runtime (#577) — `0` transparent, `1` opaque. The live
+   * Change the background opacity at runtime — `0` transparent, `1` opaque. The live
    * counterpart of {@link JustermRendererOptions.bgAlpha}, whose doc carries the full contract
    * (which cells it reaches, and the consumer CSS it depends on to be visible at all).
    *
@@ -1354,7 +1354,7 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Change the cursor's stroke thickness at runtime (#580) — a fraction of the cell width. The live
+   * Change the cursor's stroke thickness at runtime — a fraction of the cell width. The live
    * counterpart of {@link JustermRendererOptions.cursorThickness}, whose doc carries the full
    * contract (why a fraction, which shapes it reaches, and the renderer's clamp).
    *
@@ -1430,11 +1430,11 @@ export class JustermRenderer implements Renderer {
 
   /**
    * Install (or clear, with `undefined`) the handler called when a lost WebGL context has not come
-   * back within {@link setContextRestoreTimeout} (#579). The live counterpart of
+   * back within {@link setContextRestoreTimeout}. The live counterpart of
    * {@link JustermRendererOptions.onContextLoss}, whose doc carries the full contract — what the
    * signal means, what it does *not* mean, and why the widget applies no policy of its own.
    *
-   * **This reaches the whole SURFACE, not just this terminal** (#775), and on a shared one that
+   * **This reaches the whole SURFACE, not just this terminal**, and on a shared one that
    * matters: there is one context, so there is one loss and one notification. A second terminal
    * calling this — or attached with `onContextLoss` in its options — **replaces** the first
    * terminal's handler for the entire canvas, last call wins, with no diagnostic. A host driving
@@ -1453,7 +1453,7 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Change the restore grace period at runtime, in ms (#579) — the live counterpart of
+   * Change the restore grace period at runtime, in ms — the live counterpart of
    * {@link JustermRendererOptions.contextRestoreTimeout}, whose doc carries the default and why the
    * knob exists.
    *
@@ -1467,10 +1467,10 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Whether a context loss has been **reported** (#579). For surfacing the state — dimming the
+   * Whether a context loss has been **reported**. For surfacing the state — dimming the
    * terminal, showing a badge — not for deciding whether drawing is safe.
    *
-   * **It answers *"was I told"*, and that is deliberate rather than an approximation** (ADR-0027
+   * **It answers *"was I told"*, and that is deliberate rather than an approximation** ([ADR-0027](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0027-liveness-is-answered-by-the-source-that-owns-it.md)
    * D4). A browser destroys a context synchronously and merely *queues* `webglcontextlost`, so for
    * a window this reads `false` while every GL call is already dead. The renderer guards its own
    * work on a different, stricter predicate that consults the context itself; that one is private,
@@ -1483,7 +1483,7 @@ export class JustermRenderer implements Renderer {
    * Only the notification is closed.
    *
    * **Watch it for the falling edge if you re-fit**, which is the one thing a consumer has to *do*
-   * with this rather than display (#717): a {@link resize} that landed during the loss is
+   * with this rather than display: a {@link resize} that landed during the loss is
    * provisional, and repeating it once this reads `false` again is what re-syncs the canvas display
    * box to the buffer the browser actually granted. `resize`'s doc carries the measurement and why
    * re-reading {@link terminalSize} does not cover it.
@@ -1493,7 +1493,7 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Whether a lost context has missed its restore deadline (#579) — the same fact
+   * Whether a lost context has missed its restore deadline — the same fact
    * {@link setOnContextLoss} pushes, available to pull. For a consumer that attached late, or that
    * prefers to poll a status line rather than hold a callback.
    *
@@ -1511,7 +1511,7 @@ export class JustermRenderer implements Renderer {
    * render below. The a11y cell mirror reads only text, so it needs no re-notification.
    *
    * **Leaves {@link setBgAlpha} alone**, which is the point of keeping the alpha off {@link Theme}
-   * (#577): swapping the colour scheme does not silently make a translucent terminal opaque again.
+   *: swapping the colour scheme does not silently make a translucent terminal opaque again.
    * Stated because it is a property of where the field lives rather than of any code here — nothing
    * in this method would have to change for it to be false. */
   setTheme(theme: Theme): void {
@@ -1543,10 +1543,10 @@ export class JustermRenderer implements Renderer {
    * from what the renderer reports it must be (`cssWidth`/`cssHeight`) — forget that and the
    * device-px buffer displays at twice its size on a Retina screen.
    *
-   * **A call that lands while the GL context is lost is provisional** (#717). The renderer commits
+   * **A call that lands while the GL context is lost is provisional**. The renderer commits
    * the buffer you asked for but defers reading it back, because a dead context answers `0` and
-   * adopting that would floor the surface to one pixel (#639). That read — and therefore any browser
-   * clamp (#339) — settles inside `restore()`, which runs on the next {@link render}, not when
+   * adopting that would floor the surface to one pixel. That read — and therefore any browser
+   * clamp — settles inside `restore()`, which runs on the next {@link render}, not when
    * `webglcontextrestored` fires.
    *
    * **It no longer has to be repeated, and that changed in this package rather than in the
@@ -1587,13 +1587,13 @@ export class JustermRenderer implements Renderer {
    * **This is what `backend.resize(cols, rows)` was until renderer 0.15.0**, assembled here because
    * the renderer stopped being able to do it. A drawing buffer shared by N grids in M font
    * configurations has no cell it can be a multiple of, so it is sized in device px by whoever knows
-   * which grid it is holding (#773). This widget holds exactly one, so it can — and every obligation
+   * which grid it is holding. This widget holds exactly one, so it can — and every obligation
    * the renderer handed back is discharged in this one method rather than at each of its callers.
    *
    * **It asks for `cols * cell_width(grid)` rather than scaling a CSS box by the ratio**, and that
    * is #331's exactness kept rather than re-derived: both are integers the renderer hands back, so
    * nothing rounds between the grid the shader lays out and the buffer that has to hold it. The
-   * browser may still grant less (#339), which is why the display box is written from `cssWidth()`
+   * browser may still grant less, which is why the display box is written from `cssWidth()`
    * afterwards rather than from the numbers asked for.
    */
   private applyGrid(cols: number, rows: number): void {
@@ -1676,7 +1676,7 @@ export class JustermRenderer implements Renderer {
 
   /**
    * Present, because a placement change is **a change to what is on screen** and nothing else on
-   * this path will draw it (#801).
+   * this path will draw it.
    *
    * Found by looking at the compositor rather than at the drawing buffer, which is the only
    * instrument that can see it: every reading in this package's own probes is taken after a forced
@@ -1721,8 +1721,8 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Place this terminal on the shared canvas: the top-left of its viewport, in **device px**
-   * (#775). For a terminal sharing a surface with siblings — a sole tenant sits at the origin and
+   * Place this terminal on the shared canvas: the top-left of its viewport, in **device px**.
+   * For a terminal sharing a surface with siblings — a sole tenant sits at the origin and
    * never calls this.
    *
    * **The extent is not a parameter, and that is the point.** A viewport's size is `cols * cell` and
@@ -1735,16 +1735,16 @@ export class JustermRenderer implements Renderer {
    * drag — and nothing detects a missed one: the GL viewport simply stays where it was while the DOM
    * overlay (the hidden textarea, the a11y tree, the scrollbar) moves off it. That asymmetry is the
    * forced consequence of one context being bound to one canvas, and it is accepted knowingly
-   * (ADR-0021).
+   * ([ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)).
    *
    * **And it is owed after a density change, where the box has not moved at all.** A rect is device
-   * px, so ADR-0021 D3 invalidates it along with every other device-px quantity the host gave — *"the
+   * px, so [ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md) D3 invalidates it along with every other device-px quantity the host gave — *"the
    * surface's size as well as every viewport rect, since only the consumer can re-measure them"*.
    * Nothing here can pay that: this object re-issues the rect it was last given, and scaling it by a
    * density it holds a copy of is exactly the conversion the renderer refuses one layer down, for the
    * same reason. Register {@link TerminalSurface.onDensityChange} and re-supply — which also covers
    * the density a **context restore** adopts on its own, since a notification arriving during a loss
-   * is dropped rather than queued and the restore re-reads the live ratio (#808). A sole tenant
+   * is dropped rather than queued and the restore re-reads the live ratio. A sole tenant
    * re-derives its own buffer there and needs none of this; a shared one has no other notice.
    */
   setViewportRect(x: number, y: number): void {
@@ -1757,12 +1757,12 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Take this terminal off the surface **without ending it** (#801) — the hidden-tab state.
+   * Take this terminal off the surface **without ending it** — the hidden-tab state.
    *
    * Every byte survives: the grid stays registered, its packed instances and upload baseline stay
    * resident, and its font configuration's atlas is not released. Coming back is
    * {@link setViewportRect} — a placement, which re-packs once from the state the grid already had.
-   * That is the payoff ADR-0021 states in as many words, and until this method existed a host with a
+   * That is the payoff [ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md) states in as many words, and until this method existed a host with a
    * hidden tab had exactly one option: {@link dispose} the terminal and rebuild it on the way back,
    * which is the rebuild Epic #287 exists to remove.
    *
@@ -1782,7 +1782,7 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * The one writer of {@link hidden}, so the *transition* has a single site (#801).
+   * The one writer of {@link hidden}, so the *transition* has a single site.
    *
    * Setting the field is the easy half; what needs a home is what happens on the way **back**.
    * {@link blinkTick} does no work while hidden, so the phase the renderer holds can drift away from
@@ -1829,7 +1829,7 @@ export class JustermRenderer implements Renderer {
 
   /**
    * Whether this terminal is currently drawn — the renderer's own answer, not a mirror of
-   * {@link hide} (#801).
+   * {@link hide}.
    *
    * Asked of the registry rather than reported from the field above, because the two can differ in
    * the one direction that matters: a grid is registered **not drawn** until its first
@@ -1843,17 +1843,17 @@ export class JustermRenderer implements Renderer {
 
 
   /** The terminal grid ACTUALLY adopted after the last {@link resize} — not the requested
-   * `cols`/`rows`, so a browser drawing-buffer clamp (#339) cannot desync the grid the consumer
+   * `cols`/`rows`, so a browser drawing-buffer clamp cannot desync the grid the consumer
    * drives its engine and frames at from the grid the buffer can hold.
    *
-   * **That guarantee belongs to a terminal that composed its surface** (#775) — held by
+   * **That guarantee belongs to a terminal that composed its surface** — held by
    * construction rather than enforced, see `composedSurface`. A terminal sharing a surface occupies part of a
    * buffer it did not ask for, so the read-back in {@link applyGrid} compares its columns against the
    * whole canvas and never shrinks it; the grant is the host's to read from
    * {@link TerminalSurface.cssSize} after it sizes the surface. This still answers what `resizeGrid`
    * was last given either way — what varies is whether anything clamped it first.
    *
-   * **Who adopts it moved at renderer 0.15.0, and this contract did not** (#773). The renderer used
+   * **Who adopts it moved at renderer 0.15.0, and this contract did not**. The renderer used
    * to shrink the grid to what the buffer granted; it clamps only the shared *surface* now, because
    * a buffer holding N grids belongs to none of them. So {@link resize} reads the grant back and
    * shrinks the grid here instead — which is why this still answers what it always did. */
@@ -1921,7 +1921,7 @@ export class JustermRenderer implements Renderer {
 
   /**
    * Track whether the renderer's grid may hold a `BLINK` cell — xterm.js's `needsBlinkInViewport`
-   * (`TextBlinkStateManager.ts:67`), adapted to frame mode (#576).
+   * (`TextBlinkStateManager.ts:67`), adapted to frame mode.
    *
    * xterm.js answers this exactly, by scanning the viewport it owns. A frame-mode consumer holds
    * damage, not the grid, so the exact question is not answerable here — but the gate only needs to
@@ -1983,7 +1983,7 @@ export class JustermRenderer implements Renderer {
 
   /** Re-issue the retained overlay spans with the focus-gated tint — the single site for the
    * "retained spans + active selection tint" contract, shared by the per-frame push and a focus
-   * flip (which has no new frame) so the two can never drift. The active-match channel (#429)
+   * flip (which has no new frame) so the two can never drift. The active-match channel
    * rides along: additive renderer state (`setActiveMatch`), pushed with the same cadence so a
    * theme swap re-colours it too. Its tint is NOT focus-gated — xterm has no inactive variant
    * for match colours (only the selection dims on blur). */
@@ -2067,10 +2067,10 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * How long the cursor keeps blinking with no user input before parking solid, in ms (#593).
+   * How long the cursor keeps blinking with no user input before parking solid, in ms.
    * `0` disables it. Defaults to {@link BLINK_IDLE_TIMEOUT} (5 minutes, xterm.js's value).
    *
-   * Consumer policy (ADR-0017), so it is injected rather than assumed — the two references disagree
+   * Consumer policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), so it is injected rather than assumed — the two references disagree
    * on the number by 60x. The live counterpart of
    * {@link JustermRendererOptions.cursorBlinkTimeout}.
    */
@@ -2086,10 +2086,10 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Draw the composition into the grid and report where the caret belongs (#249, ADR-0028).
+   * Draw the composition into the grid and report where the caret belongs (#249, [ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md)).
    *
    * `row` is a **viewport** row — see the binding's own doc. The caller maps the composition's grid
-   * origin through the display offset and withholds the call when the result is off screen (#921).
+   * origin through the display offset and withholds the call when the result is off screen.
    *
    * Presents immediately rather than waiting for the next frame: a composition produces no frames
    * at all — the engine never sees it — so there is nothing else to ride on. The cursor is re-pushed
@@ -2121,7 +2121,7 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * An IME composition started / ended (#592) — the caret stays put for the duration.
+   * An IME composition started / ended — the caret stays put for the duration.
    *
    * Redraws immediately: no frame carries this (composition never reaches the engine), so waiting
    * for one would leave the caret mid-phase until the next output — the same reason
@@ -2134,7 +2134,7 @@ export class JustermRenderer implements Renderer {
 
   /**
    * Force the cursor to blink (`true`) / stay steady (`false`), or `undefined` to follow the
-   * application's DECSCUSR / `CSI ?12` mode (#575). The live counterpart of
+   * application's DECSCUSR / `CSI ?12` mode. The live counterpart of
    * {@link JustermRendererOptions.cursorBlink}.
    *
    * Redraws immediately: a change of blink authority is not carried by any frame, so waiting for
@@ -2149,7 +2149,7 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * The caret shape drawn while the application has not chosen one (#927). The live counterpart of
+   * The caret shape drawn while the application has not chosen one. The live counterpart of
    * {@link JustermRendererOptions.cursorStyle}. Redraws immediately when a cursor is on screen, as
    * {@link setCursorBlink} does.
    */
@@ -2160,7 +2160,7 @@ export class JustermRenderer implements Renderer {
 
   /**
    * The half-period of the SGR 5 text blink in ms; `0` disables it (the default). The live
-   * counterpart of {@link JustermRendererOptions.textBlinkInterval} (#576).
+   * counterpart of {@link JustermRendererOptions.textBlinkInterval}.
    *
    * Re-syncs immediately: no frame carries this, so disabling while the phase is off would leave
    * that text invisible until the next output — the failure xterm.js avoids by forcing `blinkOn`
@@ -2180,7 +2180,7 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Re-pack the retained grid at a new text-blink phase, without a frame (#576). Returns whether
+   * Re-pack the retained grid at a new text-blink phase, without a frame. Returns whether
    * the renderer was actually re-issued — the caller presents.
    *
    * Refuses while no frame has been applied, or while the last frame's grid disagrees with the one
@@ -2213,7 +2213,7 @@ export class JustermRenderer implements Renderer {
    * tint (the renderer re-packs the retained grid) and redraw the cursor.
    *
    * **This setter is the one that changes something other than the cursor, and the present is
-   * therefore not the cursor's to own** (#912). `issueOverlay` only *retains* spans and re-packs —
+   * therefore not the cursor's to own**. `issueOverlay` only *retains* spans and re-packs —
    * `redrawCursor` is what calls `backend.render()`, which is why {@link setTheme} pairs the two and
    * says so. Guarding the redraw on there being a cursor, the way {@link setCursorBlink} and
    * {@link setComposing} legitimately do, therefore drops the tint flip on the floor whenever the
@@ -2250,10 +2250,10 @@ export class JustermRenderer implements Renderer {
 
   /**
    * A rAF loop that re-issues the cursor cell whenever its blink phase flips, and re-packs the
-   * grid whenever the SGR 5 text phase flips (#576).
+   * grid whenever the SGR 5 text phase flips.
    *
    * The two phases are separate clocks but share one loop and, when they flip together, **one
-   * present** — the same "pack once, present once" rule `applyFrame` follows (#421).
+   * present** — the same "pack once, present once" rule `applyFrame` follows.
    *
    * rAF stops firing for a hidden *document*, so a backgrounded tab costs nothing. That is **not**
    * the same guarantee as xterm.js's `setViewportVisible`, which is fed by an `IntersectionObserver`
@@ -2305,7 +2305,7 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Stop the blink loop and detach the reduced-motion listener. Both are draw paths (#576): the
+   * Stop the blink loop and detach the reduced-motion listener. Both are draw paths: the
    * listener re-packs and presents, so a widget that kept it would still repaint its canvas after
    * being disposed.
    *
@@ -2335,7 +2335,7 @@ export class JustermRenderer implements Renderer {
    * terminal that has ended. The surface-level readers below keep answering, because the surface is
    * still there.
    *
-   * **That is exactly why the context-loss channel is closed here by hand** (#579). It is the one
+   * **That is exactly why the context-loss channel is closed here by hand**. It is the one
    * piece of ambient work whose teardown the renderer *does* own but at the wrong end of the
    * object's life: `ContextLossHandler`'s `Drop` clears the callback slot, and `Drop` runs at
    * `free()`, which the sentence above says never happens. So a restore deadline armed moments

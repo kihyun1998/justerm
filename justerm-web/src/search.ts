@@ -39,23 +39,23 @@ export interface SearchOptions {
 export interface SearchPort {
   /** Run the query (with optional {@link SearchOptions}); highlight up to the
    * backend's cap and return the *full* match count (the cap limits highlights,
-   * not the count). Every hand-over RESETS the engine's active designation
-   * (#428), so the controller re-designates after an incremental re-search. */
+   * not the count). Every hand-over RESETS the engine's active designation,
+   * so the controller re-designates after an incremental re-search. */
   search(query: string, options?: SearchOptions): Promise<number>;
   /** Make match `index` the active one — designate it on the engine's *active*
    * channel (`set_active_search_highlight`, its own overlay colour above
    * selection and matches, #429) and scroll it into view (off-screen →
    * centered; on-screen → left alone), backend-side. It does NOT select the
-   * match: the selection channel stays the user's (#424), so a manual text
+   * match: the selection channel stays the user's, so a manual text
    * selection coexists with search navigation. Past the backend's highlight
    * cap, an INDEX designation paints nothing — a capping backend designates by
    * absolute span instead (core `set_active_search_match`, #436), which paints
    * the active emphasis alone (honestly no plain highlight underneath).
    *
-   * **Designating a match does not make it copyable, and that is a decision (#438).**
+   * **Designating a match does not make it copyable, and that is a decision.**
    * Ctrl+C copies the *selection*, which stays the user's, so nothing copies the
    * current match unless a consumer adds the action — copy-the-match is consumer
-   * policy (ADR-0017), and no reference offers it off the selection channel on the
+   * policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), and no reference offers it off the selection channel on the
    * search surface. The mechanism needs no new engine API: core's
    * `viewport_logical_lines` returns each logical line's wrap-joined text with a
    * per-char viewport `(row, col)` map, and `match_spans` projects a `Match` into
@@ -68,7 +68,7 @@ export interface SearchPort {
    * policy and not two. */
   showMatch(index: number): Promise<void>;
   /** Designate match `index` as active WITHOUT scrolling — the incremental
-   * re-search path (#429): a new hand-over reset the engine's designation, and
+   * re-search path: a new hand-over reset the engine's designation, and
    * re-navigating on every burst of output would yank the viewport (xterm's
    * `noScroll` re-find). Optional (additive): a backend without it merely loses
    * the active emphasis across output. */
@@ -86,7 +86,7 @@ export interface SearchPort {
    * stored origin `Point`, ghostty holds a tracked pin beside the index and
    * shifts the index whenever the result list mutates. Only the backend can
    * answer this: the `Vec<Match>` and its buffer coordinates are its, and a
-   * frame-mode consumer holds no positions at all (ADR-0017 — mechanism
+   * frame-mode consumer holds no positions at all ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) — mechanism
    * backend, policy here).
    *
    * **The anchor is written when the emphasis is placed, not sampled when a
@@ -111,7 +111,7 @@ export interface SearchPort {
    * absence.** A `Match` is in absolute buffer coordinates, and the engine moves
    * that space at four separate sites: evicting the oldest line past the
    * scrollback cap shifts every index **down** by one, a top-anchored sub-region
-   * scroll shifts the lines below the margin **up** by one (#449), an in-screen
+   * scroll shifts the lines below the margin **up** by one, an in-screen
    * region scroll moves only what is inside the region, and a reflow rewrites all
    * of them. A reflow and an alt-screen switch additionally end the anchor's
    * *meaning*, since a remembered position then names different text.
@@ -119,7 +119,7 @@ export interface SearchPort {
    * Only the first of those was measured, and its effect is the reason this
    * paragraph is not merely advisory: at the cap the emphasis walks forward one
    * occurrence per evicted line, with the count label unchanged and no user input
-   * at all (#691).
+   * at all.
    *
    * **A backend that runs `justerm-core` should not hold the coordinate itself.**
    * `Engine::track_point` returns a stable id whose position the engine maintains
@@ -150,7 +150,7 @@ export interface SearchPort {
    * search. The distinction is not academic — in regex mode every group, class
    * or escape passes through an invalid intermediate state (`(`, `[`, `\`), so
    * ending the session there means the character that *completes* the pattern
-   * re-lands the emphasis on match 0 and scrolls to it (#687).
+   * re-lands the emphasis on match 0 and scrolls to it.
    *
    * **alacritty is the only reference that has this situation, and it keeps the
    * anchor through it.** A non-empty pattern that fails to compile leaves
@@ -167,14 +167,14 @@ export interface SearchPort {
    * One deliberate difference: alacritty's marker survives an invalid pattern,
    * while this drops the designation with the highlights. #316 D2 requires the
    * screen to stop showing a rejected query, and core voids the designation on
-   * every hand-over anyway (#428) — core, the backend and this port agree.
+   * every hand-over anyway — core, the backend and this port agree.
    *
    * Optional (additive): a backend without it falls back to {@link clear}, which
    * is exactly the pre-#687 behaviour — the paint still goes, at the cost of the
    * anchor. */
   clearHighlights?(): void;
   /** One **absolute buffer line per match**, in the same order (and therefore at the same
-   * indices) as the set the last {@link search} counted — the overview ruler's input (#440).
+   * indices) as the set the last {@link search} counted — the overview ruler's input.
    *
    * The ruler is a whole-buffer distribution view, so it needs every match's line and not just the
    * viewport's: the frame's `matchSpans` are viewport-only by construction. This rides the port
@@ -199,7 +199,7 @@ export interface SearchPort {
    * this hand-over produced and are installed together), so it delays the initial scroll-to-match
    * only when it is slower than the anchor round trip. `next` / `prev` never wait on it.
    *
-   * **What it may NOT promise, measured (#440).** These lines go stale silently: core drops its
+   * **What it may NOT promise, measured.** These lines go stale silently: core drops its
    * held highlights on any coordinate-shifting mutation and moves neither dating scalar the frame
    * carries, so no signal reaches the consumer. Only matches *on screen* move; the repair is the
    * next hand-over. Do not add dating scalars here to compensate — that is core's to decide.
@@ -274,13 +274,13 @@ const DEBOUNCE_MS = 200;
 /** The current/total the search box shows: `current` is 1-based, `0` when there
  * are no matches.
  *
- * This is also the consumer's ANNOUNCE seam (#439) — the parity twin of xterm's
+ * This is also the consumer's ANNOUNCE seam — the parity twin of xterm's
  * `onDidChangeResults`, which exists precisely so hosts (VS Code) speak find
- * results. Announce policy is the consumer's (ADR-0017): mirror VS Code's
+ * results. Announce policy is the consumer's ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)): mirror VS Code's
  * SimpleFindWidget — a dedicated `aria-live=polite` region speaking
  * `"{current} of {total} found for '{query}'"` / `"No results found for
  * '{query}'"` on user-driven updates (typing, next/prev), gated by an SR-active
- * check (#161) and silent when the search UI is closed. The demo wires the
+ * check and silent when the search UI is closed. The demo wires the
  * reference implementation. */
 export interface SearchResult {
   current: number;
@@ -328,9 +328,9 @@ export class SearchController {
    * `onDidChangeResults`, fired on this exact path (`SearchResultTracker`).
    *
    * It exists because the re-search now moves the *current index*, not only the
-   * total (#437): the emphasis follows its occurrence, so a UI that only
+   * total: the emphasis follows its occurrence, so a UI that only
    * refreshes its label on user input starts showing a number the paint
-   * disagrees with. Announce policy stays the consumer's (ADR-0017) and #439's
+   * disagrees with. Announce policy stays the consumer's ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)) and #439's
    * cadence is deliberately user-driven — the reference implementation refreshes
    * the visible label here and does **not** speak. */
   private readonly onResults?: (r: SearchResult) => void;
@@ -355,10 +355,10 @@ export class SearchController {
    * is injected.
    *
    * Like {@link SearchResult}, this is a seam whose PRESENTATION is the consumer's
-   * (ADR-0017), and the duty has two halves that were settled separately. The
-   * ANNOUNCE half is deliberately absent (#439): VS Code's SimpleFindWidget has no
+   * ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), and the duty has two halves that were settled separately. The
+   * ANNOUNCE half is deliberately absent: VS Code's SimpleFindWidget has no
    * wording for a rejected pattern, so there is nothing to mirror. The ATTRIBUTE
-   * half is standard and owes nothing to a reference (#448) — a search box driven
+   * half is standard and owes nothing to a reference — a search box driven
    * by this should set `aria-invalid` on its input while this is true and clear it
    * when it is not, and associate the input with whatever element shows the reason
    * via `aria-describedby`. Without it the state reaches sighted users only, and a
@@ -377,7 +377,7 @@ export class SearchController {
 
   /** Run a new query (with optional {@link SearchOptions}) and track its match
    * count, landing on the first match. The options stick to the query so an
-   * incremental re-search on output reuses them (#316). */
+   * incremental re-search on output reuses them. */
   async search(query: string, options?: SearchOptions): Promise<void> {
     const epoch = ++this.epoch;
     this.query = query;
@@ -530,7 +530,7 @@ export class SearchController {
    *
    * **A rejection costs the marks and nothing else**, which is the port's stated contract: the
    * hand-over is additive, so a backend that implements it and fails may not take the scroll-to-
-   * match, the re-designation (#428/#429) or the count refresh (#437) down with it. The caller
+   * match, the re-designation (#428/#429) or the count refresh down with it. The caller
    * awaits this beside the anchor, so an unguarded rejection would escape `search` — and on the
    * re-search path escape as an *unhandled* rejection, since nothing awaits `void this.reSearch()`.
    *
@@ -549,7 +549,7 @@ export class SearchController {
   /** The overview ruler's view of the current result set (#440): every match's absolute buffer
    * line, plus which of them the emphasis is on. Feed it to `searchRulerMarks`, and compose the
    * result with the decoration marks via `composeRulerMarks` — never by concatenating, which puts
-   * ADR-0024 R3's ordering in the host.
+   * [ADR-0024](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0024-decoration-projection-and-precedence.md) R3's ordering in the host.
    *
    * `activeIndex` is `undefined` exactly when nothing matched, so a caller cannot mistake "no
    * results" for "the emphasis is on the first one". */

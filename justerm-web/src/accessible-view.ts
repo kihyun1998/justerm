@@ -1,8 +1,8 @@
 /**
- * On-demand accessible view (#150): the VSCode "Accessible Buffer" analog. A
+ * On-demand accessible view: the VSCode "Accessible Buffer" analog. A
  * screen-reader user summons it to read the *whole buffer* (scrollback + screen)
  * as one navigable, copyable document — the escape hatch from the aria-live
- * firehose / 20-line cap of the row-tree mirror (#119).
+ * firehose / 20-line cap of the row-tree mirror.
  *
  * Pure logic — no DOM: the full-buffer text comes from core over a query seam
  * ({@link AccessiblePort}, sibling of `SelectionPort.text`), and the rendered
@@ -145,7 +145,7 @@ export class DomAccessibleView implements AccessibleView, NavView {
    * the announced command; this moves the visual + focus cursor there so the user
    * can read on from that command.
    *
-   * **Returns whether the line exists in the document currently held** (#743).
+   * **Returns whether the line exists in the document currently held**.
    * `lineEls` is rebuilt on every `show` and emptied on `hide`, so this one check
    * answers all three ways a document line can fail to name anything: the view is
    * closed, the line came from a list sampled against a different instant of the

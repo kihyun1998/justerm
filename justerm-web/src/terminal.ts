@@ -140,7 +140,7 @@ function isBareModifier(key: Key): boolean {
 }
 
 /**
- * Whether user input should bring the viewport back to the bottom (#913).
+ * Whether user input should bring the viewport back to the bottom.
  *
  * Counts: a key, committed IME text, a paste, and a keydown the IME gate swallowed — a bare
  * modifier on either of the two key paths excepted. Does not: focus and mouse intents. A key
@@ -157,7 +157,7 @@ export function scrollsToBottomOnInput(signal: InputScrollSignal, displayOffset:
 }
 
 /**
- * Whether this signal is the user providing input at all (#913) — the question the snap and the
+ * Whether this signal is the user providing input at all — the question the snap and the
  * selection drop share, and **all** they share. Only the snap asks where the view is; a selection
  * is dropped wherever it was, which is what both references do (xterm.js fires `onUserInput`
  * outside its `scrollOnUserInput` guard; alacritty's `on_terminal_input_start` clears before it
@@ -340,7 +340,7 @@ export function rendererNotifyingSink(sink: InputSink, renderer: Renderer): Inpu
  * pump. Omit it and the widget is the pure source→renderer pump (headless-
  * testable, no DOM); supply it and `mount` also captures input, restarts the
  * cursor blink on typing, tracks focus, and routes the wheel (S16 #133) and
- * pointer presses (#902).
+ * pointer presses.
  */
 export interface TerminalOptions {
   /** The element input listeners attach to (the canvas or a wrapper). Provide it WITH `input` +
@@ -355,7 +355,7 @@ export interface TerminalOptions {
    * **If you do make it (or a child) focusable, its pointer-down's default must be cancelled.** The
    * browser's focusing steps run after our `mousedown` handler, so an un-cancelled default moves
    * focus to your element and blurs the textarea — typing and IME both stop. The widget cancels a
-   * press it reports to the application or hands to {@link selection} (#902). Any other press keeps
+   * press it reports to the application or hands to {@link selection}. Any other press keeps
    * its default and cancelling it is yours: with no `selection` and an application that tracks
    * nothing, a report it could not make (no measured box, the back/forward buttons), or a press on a
    * `Scrollbar` mounted inside the element. xterm.js does the same pairing
@@ -371,10 +371,10 @@ export interface TerminalOptions {
    * Answer `undefined` when the box cannot be measured (`display: none`, detached, not yet laid
    * out): an absent box measures as all zeros and `0` is in range for everything derived from it,
    * so only the code that took the measurement can tell it from a real one. See
-   * {@link CaptureOptions.getGeometry}, which states the contract (#819). */
+   * {@link CaptureOptions.getGeometry}, which states the contract. */
   getGeometry?(): CellGeometry | undefined;
   /**
-   * The consumer's say over a keydown before the widget encodes it (#901) — xterm.js's
+   * The consumer's say over a keydown before the widget encodes it — xterm.js's
    * `attachCustomKeyEventHandler`. Return `false` to claim the key: no intent is sent and the widget
    * does not call `preventDefault`. Return `true` to let it through.
    *
@@ -393,7 +393,7 @@ export interface TerminalOptions {
   beforeKey?(ev: KeyboardEvent): boolean;
   /**
    * What a pointer press does when it stays local — normally the consumer's
-   * {@link import("./selection").SelectionController}, which already has this shape (#902).
+   * {@link import("./selection").SelectionController}, which already has this shape.
    *
    * The widget owns the pointer: it listens on {@link element}, decides per press whether the
    * application gets it (the frame's `mouseWantedEvents` mask, Shift forcing it local), follows the
@@ -406,7 +406,7 @@ export interface TerminalOptions {
    */
   selection?: LocalPointer;
   /**
-   * Clickable links (#934): OSC 8 links from the frame stream, and plain-text URLs through
+   * Clickable links: OSC 8 links from the frame stream, and plain-text URLs through
    * {@link import("./links").LinkOptions.port}. The widget decides hover and click from the pointer
    * it already owns, so bind no pointer listeners for links either.
    *
@@ -432,7 +432,7 @@ export interface TerminalOptions {
    * subscribes the source's {@link import("./types").FrameSource.subscribeEvents}
    * channel and routes each event to these callbacks. Independent of the DOM group
    * above (works on an output-only widget). Link activation is {@link links}, not
-   * this stream: a link is per-cell state, not an event (ADR-0020). */
+   * this stream: a link is per-cell state, not an event ([ADR-0020](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0020-what-qualifies-for-the-frame-snapshot.md)). */
   events?: EventHandlers;
   /** `OSC 52` clipboard requests (#841) — an application asking to write, or read,
    * the user's clipboard. Rides the same {@link events} subscription, but is not a
@@ -486,18 +486,18 @@ export class Terminal {
    * (not every frame — that would force a layout read+write per output flush). */
   private textareaCell = "";
   /** The cursor cell the latest frame reported, retained so the anchor can be re-synced at a
-   * point of use without waiting for a frame (#631). Not cleared when the cursor hides: an
+   * point of use without waiting for a frame. Not cleared when the cursor hides: an
    * application can hide the caret and the user can still open an IME, and re-anchoring at the
    * last known cell beats leaving the anchor wherever the geometry used to put it.
    *
    * **Written by {@link Terminal.track}, with the rest of the retained frame state, and never from
-   * inside a writer that can decline (#921).** The same sentence above is why: if the caret hiding
+   * inside a writer that can decline.** The same sentence above is why: if the caret hiding
    * must not take the anchor away, it must not take its freshness away either, and a guard placed
    * in front of the assignment does exactly that one step further in. */
   private cursorAnchor: TextareaAnchor | undefined;
   /** The `displayOffset` of the frame the renderer has actually been given — **not**
    * {@link Terminal.displayOffset}, which `onUserInput` advances to 0 optimistically ahead of the
-   * echo (#913). Anything mapping a grid coordinate onto what the user is looking at has to use
+   * echo. Anything mapping a grid coordinate onto what the user is looking at has to use
    * this one: the screen shows the last frame applied, not the scroll the widget has requested. */
   private frameOffset = 0;
   /** The viewport row the open composition's run is currently drawn at, or `undefined` when it is
@@ -517,7 +517,7 @@ export class Terminal {
    * that just ended hands its end over.
    *
    * **It is one past the run only while there IS a cell past it.** At the right edge `caret_col`
-   * steps back onto the last glyph's lead (ADR-0028 D5) and `range` shifts the run left, so there
+   * steps back onto the last glyph's lead ([ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md) D5) and `range` shifts the run left, so there
    * the handoff names a column inside the run and the next syllable lands on the previous one —
    * #911's own symptom, unfixed at the margin. The row is the run's, so a commit that WRAPS leaves
    * it on the line above. Neither is a regression (the frame stream is equally wrong there), and
@@ -551,7 +551,7 @@ export class Terminal {
    * that move focus away — an accessible-view overlay, a control button — call this
    * to return it, since the real input target is the textarea, not the canvas.
    *
-   * Re-anchors first (#631): focusing is a read moment for the element's position — the browser's
+   * Re-anchors first: focusing is a read moment for the element's position — the browser's
    * focus steps scroll the nearest scrollable ancestor to it — and the cell may have moved since
    * the cursor last did. */
   focus(): void {
@@ -562,7 +562,7 @@ export class Terminal {
   /**
    * Begin consuming frames from the source; wire the DOM if options were given.
    *
-   * **Not callable after {@link Terminal.dispose}** (#606). The alternative — a widget that can be
+   * **Not callable after {@link Terminal.dispose}**. The alternative — a widget that can be
    * unmounted and mounted again — is a larger contract than this one currently keeps, and pretending
    * to keep it is worse than refusing: `textareaCell` and `cursorAnchor` survive disposal, so a
    * remounted widget would park the IME candidate window at the *previous* mount's anchor — since
@@ -675,9 +675,9 @@ export class Terminal {
    * on a buffer switch (alt-screen), so a fresh screen doesn't inherit a stale
    * trackpad fraction.
    *
-   * **Every write here is unconditional on purpose (#921).** What a frame says about *drawing* —
+   * **Every write here is unconditional on purpose.** What a frame says about *drawing* —
    * `cursorVisible` is `cursor.visible && display_offset == 0`, a decision about a caret that would
-   * otherwise ink over scrollback (#48) — never decides whether the widget keeps what that frame
+   * otherwise ink over scrollback — never decides whether the widget keeps what that frame
    * *said*. The coordinates stay true while the caret is hidden and are exactly the cell the cursor
    * holds once the view returns, which is pinned on the producing side in
    * `justerm-core/tests/cursor_coordinate_while_hidden.rs`. Ours, not xterm.js's: its `MouseService.reset()` runs only on a
@@ -732,7 +732,7 @@ export class Terminal {
     // action; a consumer that encodes focus reports would otherwise write bytes to the PTY at mount.
     //
     // The references and the 2-1 split behind taking BOTH this call and an unfocused default are in
-    // `docs/agents/reference-facts.md` § "The INITIAL focus state — who establishes it".
+    // [`docs/agents/reference-facts.md`](https://github.com/kihyun1998/justerm/blob/master/docs/agents/reference-facts.md) § "The INITIAL focus state — who establishes it".
     this.renderer.setFocused?.(false);
     const composition = new CompositionController(ta, sink);
     this.composition = composition;
@@ -875,7 +875,7 @@ export class Terminal {
    * appears there (xterm's updateCompositionElements). Geometry from the same
    * source the input uses; **the DOM write** is skipped when the cursor is absent/hidden — the
    * retained cell it would have been written from is {@link Terminal.track}'s and is kept either
-   * way (#921). xterm.js bails on the same question (`_syncTextArea`, `!isCursorInViewport`) and
+   * way. xterm.js bails on the same question (`_syncTextArea`, `!isCursorInViewport`) and
    * can afford to bail on both at once because it holds no retained cell at all: it positions from
    * the live `buffer.x`/`.y` every time, so a skipped write is one skipped write.
    *
@@ -894,7 +894,7 @@ export class Terminal {
   }
 
   /**
-   * Re-anchor the textarea at the retained cursor cell, re-reading the geometry (#631).
+   * Re-anchor the textarea at the retained cursor cell, re-reading the geometry.
    *
    * The cache above holds a *coordinate* while the anchor is derived from the *geometry*, and a
    * `setFontSize` / `setLetterSpacing` / `setLineHeight` with a stationary cursor moves the second
@@ -903,13 +903,13 @@ export class Terminal {
    * candidate window) and focus (the browser's focus steps scroll the nearest scrollable ancestor
    * to the focused element). One geometry read per IME session and per focus, not per frame.
    *
-   * **That focus read is measured, not assumed (#649).** In real Chrome, focusing the textarea from
+   * **That focus read is measured, not assumed.** In real Chrome, focusing the textarea from
    * `scrollY: 2000` scrolled the page back to it, and the destination tracked the anchor exactly —
    * a 1020px anchor difference moved the landing point by 1020px. So a stale anchor here does not
    * merely sit wrong, it scrolls the page to the wrong place, by an amount proportional to the
    * cursor's row (a `lineHeight` 1 → 1.6 change moved row 5 by 47px, i.e. ~9px per row).
    *
-   * **`composing` outranks `force` (#649).** A composition freezes the anchor for *every* caller,
+   * **`composing` outranks `force`.** A composition freezes the anchor for *every* caller,
    * including this one: `Terminal.focus()` is public, so a pointer-down — or a consumer restoring
    * focus after a dialog — used to re-anchor to the superseded cursor cell mid-composition, which is
    * #637's harm through another entrance. #631's `compositionstart` re-sync is unaffected because it
@@ -1027,7 +1027,7 @@ export class Terminal {
   /**
    * Re-assert the open composition's run against the frame just applied.
    *
-   * **This is ADR-0028 D5's rule, which the run needed as much as the caret and was not given.** The
+   * **This is [ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md) D5's rule, which the run needed as much as the caret and was not given.** The
    * record already says position is re-asserted on *every* frame rather than only when the
    * composition changes, and gives the reason: frames keep arriving and not one of them knows a
    * preedit exists. A run written once therefore keeps whatever row it was given while the view
@@ -1048,7 +1048,7 @@ export class Terminal {
   /** Put the textarea on a cell. The write itself, with no cache and no decision — see
    * {@link textareaMove} for the decision the *involuntary* writers go through.
    *
-   * The preedit writer (#249) calls this directly, which is ADR-0028 D4: a writer that knows where
+   * The preedit writer calls this directly, which is [ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md) D4: a writer that knows where
    * the composition is does not pass through the guard that exists for writers that do not, and it
    * deliberately does not touch {@link Terminal.textareaCell} — that cache describes where the
    * frame stream last put the anchor, and a composition's own re-aim is not an answer to that
@@ -1071,7 +1071,7 @@ export class Terminal {
   /** Route a wheel notch through the shared accumulator, then dispatch: a
    * wheel-button report to the app, cursor keys on the alt screen, or a local
    * scroll request. `none` (sub-line/zero) leaves the event for native scroll, except a
-   * LINE/PAGE notch carried below a whole line, which is consumed (#908). */
+   * LINE/PAGE notch carried below a whole line, which is consumed. */
   private onWheel(e: WheelEvent, o: TerminalOptions): void {
     // Attached only with the DOM group, so these are present; narrow for the types.
     const getGeometry = o.getGeometry;
@@ -1124,7 +1124,7 @@ export class Terminal {
 
   /**
    * **End of life** for this widget: stop consuming frames, detach DOM listeners, and dispose the
-   * renderer it was handed (#606). Safe to call more than once; the renderer is disposed exactly
+   * renderer it was handed. Safe to call more than once; the renderer is disposed exactly
    * once. After this the widget cannot be mounted again — see {@link Terminal.mount}.
    *
    * The renderer is disposed **last**, after the widget has stopped feeding it, so nothing arrives
@@ -1164,7 +1164,7 @@ export class Terminal {
 
 /**
  * The attribute on a mounted {@link Terminal}'s input element — the hidden `<textarea>` that
- * receives keys, IME and paste (#903). Its value is always empty; its presence is the identity.
+ * receives keys, IME and paste. Its value is always empty; its presence is the identity.
  *
  * **A contract, so a host can depend on it.** A host asking *"is the keyboard in a text field?"*
  * reads a focused `<textarea>` as a form field; `el.hasAttribute(INPUT_ATTRIBUTE)` tells it this one

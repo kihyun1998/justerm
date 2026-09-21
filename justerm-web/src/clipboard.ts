@@ -1,12 +1,12 @@
 /**
- * The `OSC 52` consumer half (#841) — an application inside the terminal asking to
+ * The `OSC 52` consumer half — an application inside the terminal asking to
  * write, or read, the user's clipboard.
  *
- * **The engine's half ends at the boundary (#828).** Core recognises the sequence,
+ * **The engine's half ends at the boundary.** Core recognises the sequence,
  * decodes the base64, relays a store as an event and a query as its own, and
  * encodes a reply when — and only when — the consumer calls `report_clipboard`.
  * It holds no clipboard, carries no allow/deny knob, and never touches a platform
- * API. Everything on this side of that line is policy, which ADR-0017 assigns
+ * API. Everything on this side of that line is policy, which [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) assigns
  * here.
  *
  * **And this widget declines the policy too, one layer further out.** It holds no

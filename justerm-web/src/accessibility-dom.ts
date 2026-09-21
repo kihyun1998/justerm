@@ -97,7 +97,7 @@ class DomA11yTree implements A11yTreeSink {
    * the whole tree, or an empty tree). Mirrors xterm's `_handleSelectionChange` clamp
    * checks (`compareDocumentPosition` vs the first/last row element with
    * `CONTAINED_BY | FOLLOWING` for the start and `CONTAINED_BY | PRECEDING` for the end).
-   * DOM glue — proven live, not in the DOM-less test env (#217). */
+   * DOM glue — proven live, not in the DOM-less test env. */
   endpointSide(node: Node | null): "before" | "after" | null {
     const first = this.rows[0];
     const last = this.rows[this.rows.length - 1];
@@ -188,11 +188,11 @@ export class Accessibility {
     opts: {
       onScroll?: (lines: number) => void;
       /** Shared SR-active gate (#161). Pass the same instance used to gate the
-       * command announce (#160) so one host toggle governs both. Defaults to a
+       * command announce so one host toggle governs both. Defaults to a
        * fresh, active gate (announce on). */
       screenReaderState?: ScreenReaderState;
       /** The selection write seam (S8/#109). When provided, an AT text selection in
-       * the row tree bridges to the engine selection (#152) — the same port the
+       * the row tree bridges to the engine selection — the same port the
        * mouse selection drives. Absent → no a11y selection bridge. */
       selectionPort?: SelectionPort;
     } = {},
@@ -204,9 +204,9 @@ export class Accessibility {
     this.live = new DomLiveRegion(doc);
     this.controller = new AccessibilityController({
       tree: this.tree,
-      // Gate the live announce on SR-active (#161).
+      // Gate the live announce on SR-active.
       live: this.srState.gateLive(this.live),
-      // Skip the per-frame row-tree churn while inactive (#169) — bookkeeping is
+      // Skip the per-frame row-tree churn while inactive — bookkeeping is
       // kept, so reactivation re-syncs instantly (see setScreenReaderActive).
       isActive: () => this.srState.isActive(),
       onScroll: opts.onScroll,
@@ -227,7 +227,7 @@ export class Accessibility {
   }
 
   /** Resolve the document's current selection to {@link TreeSelection} and drive the
-   * port (#152). Runs on every `selectionchange`; a selection outside the row tree is
+   * port. Runs on every `selectionchange`; a selection outside the row tree is
    * a no-op (the bridge's `anchor === null` guard). DOM glue — proven live, not in the
    * DOM-less test env; the resolution + mapping logic is unit-tested in `a11ySelectionToPort`. */
   private bridgeSelection(): void {
@@ -288,9 +288,9 @@ export class Accessibility {
 
   /** Set whether a screen reader is active (#161) — the host injects its own SR
    * detection (a browser can't detect one). While inactive, output announces are
-   * suppressed (#161) and the row-tree DOM churn is skipped (#169); reactivating
+   * suppressed and the row-tree DOM churn is skipped; reactivating
    * re-syncs the tree from the cached frame at once (no cold rebuild). Share the
-   * gate with the command announce (#160) via the `screenReaderState` option. */
+   * gate with the command announce via the `screenReaderState` option. */
   setScreenReaderActive(active: boolean): void {
     const was = this.srState.isActive();
     this.srState.setActive(active);

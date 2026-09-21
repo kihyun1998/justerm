@@ -253,7 +253,7 @@ export class SelectionController {
   }
 
   /**
-   * Drop the selection because the user typed (#913). Guarded on there being one, as xterm.js's
+   * Drop the selection because the user typed. Guarded on there being one, as xterm.js's
    * own `onUserInput` listener is — this runs on every keystroke, and an unguarded version would
    * send a clear to the backend per key for the whole life of the pane.
    *
@@ -270,7 +270,7 @@ export class SelectionController {
   }
 
   /**
-   * Select the whole buffer (#935), and report it on the change signal as xterm.js's `selectAll()`
+   * Select the whole buffer, and report it on the change signal as xterm.js's `selectAll()`
    * does. It is then a live selection: the typing drop clears it and a Shift+click extends it. A
    * port without `selectAll` makes this a no-op.
    */
@@ -286,7 +286,7 @@ export class SelectionController {
    * A mouse press. `detail` is the DOM click count (1 = single).
    *
    * `forced` says the press is local only because Shift overrode an application that tracks the
-   * mouse (#902). Such a press anchors a new selection rather than extending the remembered one.
+   * mouse. Such a press anchors a new selection rather than extending the remembered one.
    */
   mouseDown(ev: MouseEventLike, detail: number, forced = false): void {
     // Middle-click pastes the X11 primary buffer — a separate gesture, not a

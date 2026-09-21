@@ -6,7 +6,7 @@ import type { DecodedFrame, FlagBits } from "./types";
  * The renderer (WASM + WebGL2) sits behind this so the widget's wiring is testable
  * with a fake (no GL context). The real adapter ({@link import("./justerm-renderer").JustermRenderer})
  * wraps the first-party `justerm-renderer` and pushes each frame's cells + overlay + cursor +
- * decorations, letting the renderer composite them in wasm (ADR-0018, #273).
+ * decorations, letting the renderer composite them in wasm ([ADR-0018](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0018-justerm-renderer.md), #273).
  */
 export interface Renderer {
   /** Apply a decoded frame's content to the renderer's back buffer. */
@@ -14,7 +14,7 @@ export interface Renderer {
   /** Present the back buffer to the screen. */
   render(): void;
   /**
-   * Show the cursor now and reset its blink phase (#107). The widget calls it on
+   * Show the cursor now and reset its blink phase. The widget calls it on
    * a key intent so the caret stays solid while typing instead of blinking off
    * right after a keystroke — the frame-driven cursor MOVE already restarts the
    * blink inside the renderer, but a keystroke arrives before its echo frame.
@@ -22,13 +22,13 @@ export interface Renderer {
    */
   restartCursorBlink?(): void;
   /**
-   * Set the terminal's focus state (#115). A blurred terminal stops blinking and
+   * Set the terminal's focus state. A blurred terminal stops blinking and
    * shows the inactive selection tint (xterm's two selection colours). The widget
    * drives it from focus/blur intents so the caret + selection reflect focus —
    * without this the blink and active tint persist after the page loses focus.
    * Optional: a renderer with no cursor/selection may omit it.
    *
-   * **`mount()` calls this once with `false` before any focus event** (#912), so an implementation
+   * **`mount()` calls this once with `false` before any focus event**, so an implementation
    * need not choose an initial value — and one that starts focused is corrected rather than left
    * blinking in a pane the user never clicked. It arrives **before the first frame and before the
    * first fit**: an implementation that presents from here must tolerate having no cursor and an
@@ -38,7 +38,7 @@ export interface Renderer {
    */
   setFocused?(focused: boolean): void;
   /**
-   * An IME composition started (`true`) or ended (`false`) (#592). The caret stays put for the
+   * An IME composition started (`true`) or ended (`false`). The caret stays put for the
    * duration — two of the three references do this, and for the same reason: the caret is the
    * anchor a composing user is reading against.
    *
@@ -48,7 +48,7 @@ export interface Renderer {
   setComposing?(composing: boolean): void;
   /**
    * Draw the in-progress composition at `(col, row)`, or clear it with an empty run (#249,
-   * ADR-0028). `codepoints` is the preedit **as the OS reports it** — `compositionupdate.data`,
+   * [ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md)). `codepoints` is the preedit **as the OS reports it** — `compositionupdate.data`,
    * never the textarea's value, which lags it by one event (measured).
    *
    * Returns the column the caret and the IME anchor belong at: one past the run's last cell. The
@@ -61,20 +61,20 @@ export interface Renderer {
    */
   setPreedit?(col: number, row: number, codepoints: Uint32Array): number;
   /**
-   * Underline the hovered link's cells, or clear it with empty spans (#934). `spans` is stride-3
+   * Underline the hovered link's cells, or clear it with empty spans. `spans` is stride-3
    * `(row, left, right)` viewport triples, `left..=right` inclusive. Kept until the next call.
    *
    * Optional: a renderer without it shows a hovered link by the pointer cursor alone.
    */
   setLinkHover?(spans: Uint32Array): void;
   /**
-   * The decoder's cell flag bits. Read by the widget's link state (#934) to skip the trailing half
+   * The decoder's cell flag bits. Read by the widget's link state to skip the trailing half
    * of a wide pair; a renderer without it leaves that state unable to tell a spacer from a blank.
    */
   readonly cellFlags?: FlagBits;
   /**
    * Release what the renderer runs on its own behalf — its animation loop and any listener it
-   * registered (#606). Called by {@link import("./terminal").Terminal.dispose}, **once**.
+   * registered. Called by {@link import("./terminal").Terminal.dispose}, **once**.
    *
    * **Why the widget calls this on an object it did not construct.** The consumer builds the
    * renderer and hands it over; the widget then drives it, and the renderer starts clocks *because*

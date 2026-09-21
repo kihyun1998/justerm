@@ -210,18 +210,18 @@ export interface MouseEventLike {
 /**
  * The geometry a pointer event is resolved against. `cols`/`rows` bound the result, so a pointer
  * outside the grid clamps to the edge cell instead of a negative / past-the-end coordinate — which
- * would wrap to a huge value in core's `MouseEvent.col: usize` (#266).
+ * would wrap to a huge value in core's `MouseEvent.col: usize`.
  *
  * **Every length here is in CSS pixels**, because that is the space `clientX`/`clientY` arrive in
  * and this struct is subtracted from and divided into them directly (see {@link cellEvent} below).
  *
  * The unit is stated because it went undocumented and the published README's example then drifted:
  * it built `cellWidth`/`cellHeight` from `renderer.cellSize()`, which is **device** px, so on any
- * display with `devicePixelRatio !== 1` every click resolved to the wrong cell (#578). The renderer
+ * display with `devicePixelRatio !== 1` every click resolved to the wrong cell. The renderer
  * offers `cssCellWidth()`/`cssCellHeight()`, or divide `cellSize()` by `devicePixelRatio` as the demo
  * does. Nothing type-checks a unit, so it has to be written down.
  *
- * **Nothing type-checks a range either, and that is the other half (#672).** `number` admits `0` and
+ * **Nothing type-checks a range either, and that is the other half.** `number` admits `0` and
  * `NaN`; `NaN` in *any* one of these six fields propagates through {@link clampTo} and poisons every
  * pointer event for as long as it is there — silently, since the result downstream is an empty
  * selection or a `null` over JSON rather than an error. The preconditions are therefore stated here
@@ -241,7 +241,7 @@ export interface CellGeometry {
   cellWidth: number;
   cellHeight: number;
   /** Grid dimensions — **non-negative integers**. `0` is deliberately legal: a zero-sized grid
-   * resolves to cell (0, 0) rather than a negative one (#667), which is the state a consumer is in
+   * resolves to cell (0, 0) rather than a negative one, which is the state a consumer is in
    * before it has fitted anything. */
   cols: number;
   rows: number;
@@ -264,13 +264,13 @@ export interface GeometryViolation {
  * a *repair loop* — xterm owns the measurement, so the same predicate that drops the gesture also
  * triggers a re-measure (`CoreBrowserTerminal.ts:1058`, `RenderService.ts:145`, both calling
  * `measure()`). This widget deliberately does not measure: `CellGeometry` arrives per event from the
- * consumer's `getGeometry()` callback (#578, and ADR-0017's routing — pixel→cell is the consumer's by
+ * consumer's `getGeometry()` callback (#578, and [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)'s routing — pixel→cell is the consumer's by
  * definition). All three outcomes (drop / clamp / propagate) are equally invisible, which is what
  * makes *diagnosis*, not correction, the thing worth adding. The other two references are total for
  * reasons that do not transfer: alacritty's float→int casts saturate, and ghostty's cell is an
  * integer type, so a zero cell is unrepresentable there rather than handled (`size.zig:139`).
  *
- * **One clause of that reasoning is retired, and only that one (#819).** This paragraph used to add
+ * **One clause of that reasoning is retired, and only that one.** This paragraph used to add
  * that copying xterm's guard would *"buy the drop without the recovery"*. Measured false in a real
  * browser: `getGeometry` is pulled per event, so a refused gesture resumes on the correct cell as
  * soon as the box comes back — the recovery half is free here, it simply is not the converter's to
@@ -394,8 +394,8 @@ export interface CaptureOptions {
   /**
    * Current canvas origin + cell size (read per event — it changes on resize).
    *
-   * **`undefined` means "I could not measure it"**, and it is a real answer rather than a failure
-   * (#819). A DOM element with no box — `display: none`, detached, not yet laid out — reports every
+   * **`undefined` means "I could not measure it"**, and it is a real answer rather than a failure.
+   * A DOM element with no box — `display: none`, detached, not yet laid out — reports every
    * `getBoundingClientRect()` field as `0`, and `0` is a legal value for everything derived from
    * it: {@link CellGeometry.originX} and `originY` are the only two fields with no precondition,
    * because a position may legitimately be `0` or negative. So *"there is no box"* and *"the box is
@@ -410,12 +410,12 @@ export interface CaptureOptions {
   /**
    * Whether mouse/wheel events on `target` should be *reported to the app*. When false they stay
    * local; default `false`. {@link import("./terminal").Terminal} does not use this: it routes the
-   * pointer itself from the frame's `mouseWantedEvents` mask (#902). It is for a consumer building
+   * pointer itself from the frame's `mouseWantedEvents` mask. It is for a consumer building
    * its own widget from these parts.
    */
   mouseReporting?(): boolean;
   /**
-   * A gate consulted on each keydown before it becomes a key intent (#116). When
+   * A gate consulted on each keydown before it becomes a key intent. When
    * it returns `false` the key is left alone — no intent, no `preventDefault` — so
    * an IME can own it (a `keyCode` 229 composition key, or a key that finalizes a
    * composition). Return `true` (the default when absent) to send it as a key.

@@ -37,7 +37,7 @@ export class ContextLossRelay {
 
   /**
    * What the renderer holds. Registered **once**, at `create`, whether or not the consumer opted
-   * in — the same reason `setBgAlpha` is pushed unconditionally (#577): the value the renderer
+   * in — the same reason `setBgAlpha` is pushed unconditionally: the value the renderer
    * holds is then the one this package states, rather than one nobody wrote down.
    *
    * An arrow property, so its identity survives every {@link set}. A method would have to be
