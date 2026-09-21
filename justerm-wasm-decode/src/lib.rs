@@ -335,7 +335,7 @@ impl DecodedFrame {
     }
 
     /// Lines the viewport is scrolled up from the bottom (`0` = following the
-    /// live screen). With [`scrollback_len`](Self::scrollback_len), sizes the
+    /// live screen). With `scrollbackLen`, sizes the
     /// consumer's scrollbar thumb (#112 / ADR-0013).
     #[wasm_bindgen(getter, js_name = displayOffset)]
     pub fn display_offset(&self) -> u32 {
@@ -407,7 +407,7 @@ impl DecodedFrame {
     /// The modified-keys mask (#941): which modified presses of Enter, Tab, Backspace and
     /// Escape reach the application distinct from the bare key, under the keyboard modes the
     /// application has asked for (the kitty flags, `modifyOtherKeys` level 2). Bit positions
-    /// are named by [`modified_key_bits`]. A clear bit means the application receives exactly
+    /// are named by `modifiedKeyBits`. A clear bit means the application receives exactly
     /// what the bare key sends.
     #[wasm_bindgen(getter, js_name = modifiedKeys)]
     pub fn modified_keys(&self) -> u16 {
@@ -523,7 +523,7 @@ impl DecodedFrame {
     }
 
     /// The search highlights projected onto the viewport (#108), same
-    /// `(row, left, right)` triple layout as [`DecodedFrame::selection_spans`].
+    /// `(row, left, right)` triple layout as `selectionSpans`.
     /// Set on the backend via `Engine::set_search_highlights`.
     #[wasm_bindgen(getter, js_name = matchSpans)]
     pub fn match_spans(&self) -> js_sys::Uint32Array {
@@ -531,10 +531,10 @@ impl DecodedFrame {
     }
 
     /// The *active* (current) search match's spans (#428, v12), same
-    /// `(row, left, right)` triple layout as [`DecodedFrame::match_spans`].
+    /// `(row, left, right)` triple layout as `matchSpans`.
     /// Designated on the backend via `Engine::set_active_search_highlight`
     /// (which match is active is the consumer's next/prev policy); also present
-    /// in [`DecodedFrame::match_spans`] — the renderer's highlight ranking
+    /// in `matchSpans` — the renderer's highlight ranking
     /// resolves the overlap (#424), not exclusion here. Empty when nothing is
     /// designated.
     #[wasm_bindgen(getter, js_name = activeMatchSpans)]
@@ -542,9 +542,8 @@ impl DecodedFrame {
         unsafe { js_sys::Uint32Array::view(&self.flat.active_match_spans) }
     }
 
-    /// Decoration markers visible in this viewport (#118/#159), `MARKER_STRIDE`
-    /// u32s per marker (`id`, `row`, `kind`, `exitPresent`, `exitBits` — see
-    /// [`MARKER_STRIDE`]). Name the `kind` lane with `markerKind()` rather than
+    /// Decoration markers visible in this viewport, **five u32s per marker**:
+    /// `id`, `row`, `kind`, `exitPresent`, `exitBits`. Name the `kind` lane with `markerKind()` rather than
     /// copying a roster (#860). An off-screen marker is absent (still alive); disposal
     /// arrives out-of-band via the backend's `MarkerDisposed` event, so absence
     /// here is "scrolled away", not "gone".
@@ -580,7 +579,7 @@ pub fn is_valid_regex(pattern: &str) -> bool {
 ///
 /// **This covers the flags and nothing else.** A `flags[i]` word also carries the underline
 /// *style* — a 3-bit field, not a flag — and no mask here can answer "which of six", so that half
-/// is [`underline_style`] (#831). The two together are the whole word a consumer needs to name.
+/// is `underlineStyle` (#831). The two together are the whole word a consumer needs to name.
 #[wasm_bindgen]
 pub struct Flags {
     pub bold: u16,
@@ -628,7 +627,7 @@ pub fn flags() -> Flags {
 /// the engine derives the flag from this field and normalises a styleless underline to
 /// [`Single`](Self::Single), so the two cannot disagree on a word this decoder produced.
 ///
-/// Mirrors `justerm_core::UnderlineStyle`, and [`underline_style`] is the only producer. The
+/// Mirrors `justerm_core::UnderlineStyle`, and `underlineStyle` is the only producer. The
 /// conversion there is an **exhaustive `match`** on the core enum, so a style added upstream is a
 /// compile error here rather than a value arriving unnamed.
 #[wasm_bindgen]
@@ -774,11 +773,11 @@ pub fn modified_key_bits() -> ModifiedKeyBits {
 /// What a marker means, as the value published beside the lane that carries it (#860, #159).
 ///
 /// **A frame member crosses as a primitive; a value space's names live at module scope.** The kind
-/// rides *inside* [`DecodedFrame::marker_positions`], a `Uint32Array`, so it cannot be a named
+/// rides *inside* `markerPositions`, a `Uint32Array`, so it cannot be a named
 /// member of the frame — the frame is a flat snapshot a consumer may mirror or synthesise, and
 /// `justerm-web`'s `types.ts` says so in as many words. What can be named is the value *space*,
 /// here, next to the accessor that reads it out of the column. [`UnderlineStyle`] and
-/// [`underline_style`] are the same shape one value over, reading a style out of `flags`.
+/// `underlineStyle` are the same shape one value over, reading a style out of `flags`.
 ///
 /// Mirrors `justerm_core::MarkerKind`, whose `CommandFinished` carries an `Option<i32>` this enum
 /// does not: the exit code has its own two lanes of the 5-lane record (`exitPresent`, `exitBits`)
@@ -808,7 +807,7 @@ pub enum MarkerKind {
 /// Pass the third `u32` of each 5-lane record in `markerPositions`, so a consumer reads a name
 /// where it used to copy a roster out of a doc-comment.
 ///
-/// **Partial, where [`underline_style`] is total, and the difference is the input rather than a
+/// **Partial, where `underlineStyle` is total, and the difference is the input rather than a
 /// second opinion.** Three bits hold eight representable values and the engine already defines
 /// what the two spare ones mean, so naming them restates a normalisation that exists. This lane is
 /// a whole `u32` and nothing defines what an id outside the roster means — a total answer would
@@ -825,7 +824,7 @@ pub enum MarkerKind {
 ///
 /// Exhaustive over `justerm_core::MarkerKind` with no `_` arm, which is the whole point: a kind
 /// added upstream is a compile error *here*, so it cannot reach the wire, or npm, without being
-/// given a published name. [`underline_style`] gets that guarantee for free because it takes the
+/// given a published name. `underlineStyle` gets that guarantee for free because it takes the
 /// core enum as its argument; [`marker_kind`] structurally cannot, because its argument is a lane
 /// out of a typed array and a `u32` match can never be exhaustive over an enum. This is where the
 /// guarantee lives instead, and `flatten` routes the kind lane through it so the **shipped** path,
