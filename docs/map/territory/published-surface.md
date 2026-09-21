@@ -414,6 +414,16 @@ same trace.
   which an editor shows on hover. `check-published-package.mjs` covers it, in the two jobs that build
   the packages rather than in the `test` job, because the surface does not exist until
   `wasm-pack build` runs.
+- **`justerm-web` is the same surface with a different tool, and it is not gated in CI yet.** tsup
+  bakes `src/**` JSDoc into `dist/index.d.ts` exactly as wasm-bindgen bakes `///` — a different
+  mechanism producing the same defect, which is why it went uncounted while three other surfaces
+  were being fixed. Measured on the published `justerm-web@0.17.0`: **627 pointers in
+  `dist/index.d.ts`**, more than either wasm package. The gate can read it — it walks a `files`
+  entry that is a directory — and **345 of them are gone**; the remaining **210 are woven into
+  sentences** (`#161's gateSignal`, `consumer half of #322`, `#120 S1`) where the correct rewrite
+  needs to know what the ticket was, so no pattern reaches them. Until those land, the gate is
+  **deliberately not wired into the `web` job**: adding the step now would merge a red gate, and a
+  gate that is allowed to be red stops being one.
 - **Only one constant is pinned.** `readme_pins.rs` covers `wireVersion()`; any other number a README
   quotes is unchecked, and a README that starts quoting a new one gets no pin unless someone adds it.
 - **Both seams are gated now (#646), but the decoder-side gate fires at the pin bump, not at the
