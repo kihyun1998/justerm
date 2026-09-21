@@ -30,8 +30,10 @@ Nothing governs the gate matrix itself — which checks exist, and what each is 
   because a scaffold may honestly call itself one in the repo and not on a registry.
 - **rustdoc is its own lint layer.** `cargo test` runs doctests, not link resolution, and clippy does
   not carry rustdoc's lints — so public doc links had no mechanical check until one was added.
-- **The doc-link gates are the newest members and the most narrowly scoped**: one resolves every
-  relative link and `#anchor` across the docs, the other checks a single map note as it is written.
+- **The narrowest gates are the prose ones**, and each is narrow in a different direction: one
+  resolves every relative link and `#anchor` across the docs, one checks a single map note as it is
+  written, and the published-prose pair asks only whether a pointer is *resolvable from where it is
+  printed* — never whether the prose is accurate, which no machine judges.
 - **The supply-chain scan is first-party** (`just-shield`, a sibling repo, itself SHA-pinned), which
   makes the scanner a dependency of the same kind it exists to police.
 
@@ -42,8 +44,12 @@ Nothing governs the gate matrix itself — which checks exist, and what each is 
 - `.github/workflows/fuzz.yml` · `supply-chain.yml`
 - `.github/workflows/publish-crate.yml` · `publish-wasm.yml` · `publish-renderer.yml` ·
   `publish-web.yml`
-- `.github/scripts/check-published-readme.mjs` · `check-map-links.mjs` · `check-map-note.mjs` ·
-  `check-tool-pins.mjs`
+- `.github/scripts/check-map-links.mjs` · `check-map-note.mjs` · `check-tool-pins.mjs`
+- The **published-prose** gates — `check-published-readme.mjs` (publish time),
+  `check-published-pointers.mjs` and `check-published-rustdoc.mjs` (both per PR) — are enumerated
+  and argued in [published surface](published-surface.md), which owns that surface. This note holds
+  only that they run in CI. A hand-copied second list is what left `check-published-pointers.mjs`
+  unnamed here for the whole of its life before #953
 - `justerm-wasm-decode/tests/readme_pins.rs`
 - `.github/dependabot.yml` — what keeps the SHA pins current (ADR-0006 leans on it), and since #616
   the renderer's own dependency graph too. Note what it cannot reach: a version literal inside a

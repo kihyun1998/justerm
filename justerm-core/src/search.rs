@@ -9,7 +9,7 @@
 
 /// Whether `pattern` is a regex [`Term::search_with`](crate::Term::search_with) can run
 /// (`opts.regex = true`) — a `true` guarantees `search_with` will *build* the pattern, and a
-/// `false` is exactly the case it silently swallows into an empty result (#316 D2).
+/// `false` is exactly the case it silently swallows into an empty result.
 ///
 /// Validated under **case-insensitive** compilation, the most expansive: Unicode case-folding
 /// grows the compiled program, so a `true` here holds whichever case mode smart-case / the
@@ -32,7 +32,7 @@ pub fn is_valid_regex(pattern: &str) -> bool {
 
 /// One literal match, inclusive on both ends, in absolute buffer coordinates.
 ///
-/// **No `#[non_exhaustive]` (#844).** 12 out-of-crate literal sites, and a consumer receives one
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** 12 out-of-crate literal sites, and a consumer receives one
 /// from `search` and hands it back to `match_spans` rather than building it — round-trip, not
 /// construction, so the attribute would restrict a use that does not exist.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -44,10 +44,10 @@ pub struct Match {
 }
 
 /// Search modes beyond the default literal + smart-case (see [`Term::search_with`](crate::Term::search_with)).
-/// Mirrors xterm.js's `ISearchOptions` (#314). The default (all off / smart-case) is exactly
+/// Mirrors xterm.js's `ISearchOptions`. The default (all off / smart-case) is exactly
 /// [`Term::search`](crate::Term::search).
 ///
-/// **No `#[non_exhaustive]` (#844).** 13 out-of-crate literal sites over a derived `Default`, so a
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** 13 out-of-crate literal sites over a derived `Default`, so a
 /// new option lands through `..Default::default()`. The mode set is also this crate's own to
 /// define, so there is no outside growth cause to defend against.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -57,7 +57,7 @@ pub struct SearchOptions {
     /// Caveats vs a JS `RegExp` (xterm.js): the `regex` crate has **no lookaround/backreferences**
     /// and its `\w \d \b` are **Unicode-aware** by default. An **invalid or unsupported pattern
     /// yields no matches** (an empty result) rather than an error — the current API has no error
-    /// channel, so a consumer cannot distinguish a bad pattern from a genuine no-match (#314).
+    /// channel, so a consumer cannot distinguish a bad pattern from a genuine no-match.
     /// Smart-case (see [`case_sensitive`](Self::case_sensitive)) infers case from the *raw* pattern,
     /// so an uppercase metacharacter (`\B`, `\D`, `\x1B`…) can flip case-sensitivity — set
     /// `case_sensitive` explicitly, or use an inline `(?i)`/`(?-i)`, to be sure.

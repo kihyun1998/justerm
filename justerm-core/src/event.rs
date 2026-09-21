@@ -17,17 +17,17 @@ use crate::serialize::{MarkerId, MarkerKind};
 ///
 /// The engine relays this rather than choosing: a query event carries the
 /// terminator the request arrived with, and the consumer hands it back to the
-/// matching `report_*`. Under ADR-0017 the parse-time fact is a *mechanism* only
+/// matching `report_*`. Under [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) the parse-time fact is a *mechanism* only
 /// the engine can observe, while *which* terminator to send is policy — and a
-/// consumer cannot exercise a policy on a fact it was never given, which is what
-/// #836 measured: `bell_terminated` was discarded at the parser boundary before
-/// any event was queued.
+/// consumer cannot exercise a policy on a fact it was never given. That was
+/// measured, not assumed: `bell_terminated` was discarded at the parser boundary
+/// before any event was queued.
 ///
 /// **The spec settles the direction, not just the reference tally.**
 /// `ctlseqs.txt:2020` — *"XTerm accepts either BEL or ST for terminating OSC
 /// sequences, and when returning information, uses the same terminator used in a
 /// query. While the latter is preferred, the former is supported for legacy
-/// applications."* Under ADR-0004 that outranks every implementation, this one
+/// applications."* Under [ADR-0004](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0004-spec-faithful-when-alacritty-omits.md) that outranks every implementation, this one
 /// included. **On the colour path** all three implementations that echo carry the
 /// terminator *outward with the request* rather than remembering it: alacritty
 /// binds it into the reply formatter it sends its consumer
@@ -55,14 +55,14 @@ use crate::serialize::{MarkerId, MarkerKind};
 /// [`crate::Engine::drain_events`] hands over a batch, so a consumer can hold two
 /// colour queries at once and answer them in either order; one remembered scalar
 /// could not say which exchange it belonged to. An occurrence's payload is
-/// detached from its instant by the queue — ADR-0029 D4 records the same shape
+/// detached from its instant by the queue — [ADR-0029](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md) D4 records the same shape
 /// for coordinates — so there is no re-ask and the fact must ride the event.
 ///
-/// **Exhaustive on purpose (#843's rule).** The space is closed at exactly two,
+/// **Exhaustive on purpose ([#843](https://github.com/kihyun1998/justerm/issues/843)'s rule).** The space is closed at exactly two,
 /// with a date for each (`ctlseqs.txt:2024-2028`), so there is no member a later
 /// slice may name and nothing for `#[non_exhaustive]` to preserve.
 ///
-/// ⚠ **The closure rests on the input space, not on the spec alone (#847).** ECMA-48
+/// ⚠ **The closure rests on the input space, not on the spec alone.** ECMA-48
 /// gives `ST` a third encoding — the 8-bit C1 `0x9C` — and it is absent here because
 /// [`crate::Engine::feed`] does not treat a lone `0x80..=0x9F` byte as a control at
 /// all, not because the spec stops at two. A reader who finds `0x9C` in `ctlseqs.txt`
@@ -85,7 +85,7 @@ pub enum Terminator {
     /// answered ST.
     ///
     /// **Read "any other byte that ends one" strictly: the 8-bit C1 `ST` (`0x9C`) is
-    /// not a fourth class (#847).** It does not end the string, so there is no event
+    /// not a fourth class.** It does not end the string, so there is no event
     /// to carry a terminator and nothing resolves to this variant — the OSC stays
     /// open instead. See [`crate::Engine::feed`] for why that is a contract.
     ///
@@ -113,7 +113,7 @@ impl Terminator {
     }
 }
 
-/// Which selection an `OSC 52` clipboard request names (#828).
+/// Which selection an `OSC 52` clipboard request names.
 ///
 /// A *value*, never the protocol byte, so a consumer never parses the sequence —
 /// the same reason [`TermEvent::SetPaletteColor`] carries a `u8` index rather
@@ -146,12 +146,12 @@ impl Terminator {
 /// member is what lets the value round-trip without the engine remembering
 /// anything.
 ///
-/// **`#[non_exhaustive]` (#843).** The set is open by the paragraph above: `q` and
+/// **`#[non_exhaustive]` ([#843](https://github.com/kihyun1998/justerm/issues/843)).** The set is open by the paragraph above: `q` and
 /// the eight cut buffers are in the sequence and unmodelled here, so a later slice
 /// may name one. A consumer meeting a member it does not know can decline the
 /// request, which is already how it refuses any of them.
 ///
-/// **ghostty reaches the same shape independently**, which #843 had recorded as
+/// **ghostty reaches the same shape independently**, which [#843](https://github.com/kihyun1998/justerm/issues/843) had recorded as
 /// impossible — its issue says Zig "has no such construct", and Zig does: a
 /// trailing `_` marks a non-exhaustive enum, used at 23 sites in that tree. The
 /// one that matters here is `src/terminal/clipboard.zig:2`, whose `Location` is
@@ -166,7 +166,7 @@ pub enum ClipboardTarget {
     ///
     /// The empty field is the common form in the wild rather than an edge case:
     /// it is what `tmux` 3.2a was measured emitting for both an ordinary
-    /// copy-mode copy and `set-buffer -w` (#828). Reading it as "unrecognised"
+    /// copy-mode copy and `set-buffer -w`. Reading it as "unrecognised"
     /// would drop the only emission this project has observed.
     Clipboard,
     /// The primary selection — the `p` field. On a platform with no primary
@@ -180,7 +180,7 @@ pub enum ClipboardTarget {
     /// **Relayed rather than resolved, and that is the boundary working.** The
     /// thing that decides what `s` means is a setting: xterm resolves `SELECT`
     /// through `DefaultSelection`, which is the `selectToClipboard` resource
-    /// (`button.c:2081`), and under ADR-0017 a setting is the consumer's. So the
+    /// (`button.c:2081`), and under [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) a setting is the consumer's. So the
     /// application's choice is carried through unchanged and the consumer
     /// resolves it against the configuration it owns.
     ///
@@ -195,18 +195,18 @@ pub enum ClipboardTarget {
     /// tracked that mode could resolve `s` itself. justerm does not model 1041,
     /// which is a *declined* capability rather than an impossible one — the
     /// honest form of the claim, and the mode is unimplemented here like the
-    /// rest of the tail (#47).
+    /// rest of the tail.
     Selection,
 }
 
 /// A consumer-facing event emitted while parsing the VT stream.
 ///
 /// **`#[non_exhaustive]`, so a consumer must carry a `_` arm and a new variant
-/// never breaks one.** Decided 2026-09-02, by the maintainer, while #828 was
-/// adding two — and what decided it was neither this slice nor any consumer we
-/// can see.
+/// never breaks one.** Decided 2026-09-02, by the maintainer, while a slice was
+/// adding two variants — and what decided it was neither that slice nor any
+/// consumer we can see.
 ///
-/// **What decided it is `CLAUDE.md`'s own identity statement**: *"`justerm-core`
+/// **What decided it is [`CLAUDE.md`](https://github.com/kihyun1998/justerm/blob/master/CLAUDE.md)'s own identity statement**: *"`justerm-core`
 /// is not penterm-only — it is a reusable, independent crate."* That sentence
 /// says there are consumers we cannot edit, which is precisely what this
 /// attribute defends; a crate whose identity were "internal, used by penterm"
@@ -225,7 +225,7 @@ pub enum ClipboardTarget {
 ///   exhaustive, `justerm-wasm-decode` and `justerm-renderer` never name
 ///   `TermEvent`, and `justerm-web`'s `events.ts` mirrors this union by hand
 ///   rather than deriving it. **That mirror was narrower than this enum when the
-///   measurement was taken and no longer is in the same way (#841):** it now
+///   measurement was taken and no longer is in the same way:** it now
 ///   carries the `OSC 52` pair as well, and what stayed at title/bell/cwd is its
 ///   `EventHandlers` — the *notification* surface, not the channel. The cost
 ///   measured here is unaffected, since a hand-written mirror never had a
@@ -233,7 +233,7 @@ pub enum ClipboardTarget {
 /// - **The window closes at `1.0.0`.** Adding this is free while the crate is
 ///   `0.x` and is *itself* a breaking change afterwards, while an enum without
 ///   it turns every future variant into a major bump. Conformance here is
-///   cumulative by design (#47 is a perpetual tail) and the two slices before
+///   cumulative by design — the VT tail is perpetual — and the two slices before
 ///   this one added three variants and two, so that rate is measured rather than
 ///   assumed.
 ///
@@ -256,7 +256,7 @@ pub enum ClipboardTarget {
 pub enum TermEvent {
     /// The window title is now this string.
     ///
-    /// Read the tense carefully: since #823 this is **not** only "the
+    /// Read the tense carefully: this is **not** only "the
     /// application set a title". Two paths emit it — `OSC 0`/`OSC 2`, and an
     /// XTWINOPS title *pop* (`CSI 23 t`) restoring what an earlier `CSI 22 t`
     /// saved. A consumer that treats it as "the title is now this" is correct
@@ -281,78 +281,78 @@ pub enum TermEvent {
     Cwd(String),
     /// The app requested 80/132-column mode (DECCOLM `?3`). justerm is
     /// dimension-free, so this is a *request* — the consumer may honor it by
-    /// calling `resize(cols, rows)`, or ignore it. `cols` is 80 or 132 (#82).
+    /// calling `resize(cols, rows)`, or ignore it. `cols` is 80 or 132.
     ColumnMode { cols: usize },
     /// The app queried the light/dark color scheme (DSR `CSI ? 996 n`). justerm
     /// is theme-agnostic, so the consumer (which knows the scheme) answers by
-    /// calling `Engine::report_color_scheme` (#85).
+    /// calling `Engine::report_color_scheme`.
     ColorSchemeQuery,
     /// The app set ANSI palette entry `index` to `spec` (OSC 4). One event per
     /// `index ; spec` pair the engine accepts — a pair whose index does not parse
-    /// as a `u8`, or whose spec is `?` (a query) or **empty** (#834), produces
+    /// as a `u8`, or whose spec is `?` (a query) or **empty**, produces
     /// none, and the pairs around it are unaffected either way. The cell still
     /// references `Indexed(index)` — only the consumer's `palette[index]` changes,
-    /// so the engine stays theme-agnostic (#122).
+    /// so the engine stays theme-agnostic.
     ///
     /// **`spec` is never empty**, so a consumer's colour parser is never handed a
     /// blank string. It is otherwise verbatim and unvalidated: the engine holds no
     /// palette and parses no colour, so `spec` may still be whitespace or
-    /// nonsense, and interpreting it is the consumer's (ADR-0017).
+    /// nonsense, and interpreting it is the consumer's ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
     SetPaletteColor { index: u8, spec: String },
     /// The app set the default foreground colour (OSC 10). Raw spec, forwarded
-    /// for the consumer to apply — theme-agnostic, like [`SetBackground`](Self::SetBackground) (#122).
+    /// for the consumer to apply — theme-agnostic, like [`SetBackground`](Self::SetBackground).
     SetForeground(String),
     /// The app set the default background colour (OSC 11). The engine is
     /// theme-agnostic, so it forwards the raw spec string (`rgb:…`/`#…`) for the
-    /// consumer to parse and apply to its palette — it never holds hex (#122).
+    /// consumer to parse and apply to its palette — it never holds hex.
     SetBackground(String),
     /// The app reset palette entries to the theme default (OSC 104). `None` =
     /// the whole table (no argument); `Some(index)` = one entry, one event per
-    /// index given. The consumer restores its palette (#122).
+    /// index given. The consumer restores its palette.
     ResetPaletteColor(Option<u8>),
     /// The app queried ANSI palette entry `index` (OSC 4 with `?` for that pair);
-    /// the consumer answers with `report_palette_color` (#122).
+    /// the consumer answers with `report_palette_color`.
     QueryPaletteColor {
         index: u8,
-        /// The terminator `report_palette_color` must answer with (#836).
+        /// The terminator `report_palette_color` must answer with.
         terminator: Terminator,
     },
-    /// The app set the cursor colour (OSC 12, #832). The third slot of the same
+    /// The app set the cursor colour (OSC 12). The third slot of the same
     /// dynamic-colour sequence `SetForeground` and `SetBackground` ride, and
     /// theme-agnostic for the same reason: the raw spec is forwarded and the
     /// consumer — which owns the palette *and* the cursor's contrast guard —
     /// applies it.
     SetCursorColor(String),
     /// The app queried the cursor colour (OSC 12 with `?`); the consumer answers
-    /// with `report_cursor_color` (#832).
+    /// with `report_cursor_color`.
     QueryCursorColor {
-        /// The terminator `report_cursor_color` must answer with (#836).
+        /// The terminator `report_cursor_color` must answer with.
         terminator: Terminator,
     },
-    /// The app reset the cursor colour to the theme default (OSC 112, #832). The
+    /// The app reset the cursor colour to the theme default (OSC 112). The
     /// third member of the 110/111/112 reset family, and the one real
     /// applications emit most: `nvim` sends it on startup, on every alt-screen
     /// transition and on exit.
     ResetCursorColor,
-    /// The app reset the default foreground to the theme default (OSC 110, #122).
+    /// The app reset the default foreground to the theme default (OSC 110).
     ResetForeground,
-    /// The app reset the default background to the theme default (OSC 111, #122).
+    /// The app reset the default background to the theme default (OSC 111).
     ResetBackground,
     /// The app queried the default foreground colour (OSC 10 with `?`); the
-    /// consumer answers with `report_foreground` (#122).
+    /// consumer answers with `report_foreground`.
     QueryForeground {
-        /// The terminator `report_foreground` must answer with (#836).
+        /// The terminator `report_foreground` must answer with.
         terminator: Terminator,
     },
     /// The app queried the default background colour (OSC 11 with `?`). The
     /// theme-agnostic engine relays it; the consumer answers with
-    /// `report_background` (#122), mirroring `ColorSchemeQuery`.
+    /// `report_background`, mirroring `ColorSchemeQuery`.
     QueryBackground {
-        /// The terminator `report_background` must answer with (#836).
+        /// The terminator `report_background` must answer with.
         terminator: Terminator,
     },
-    /// The app asked for `text` to be put on `target` (`OSC 52` with a payload,
-    /// #828). The engine has already base64-decoded it, and holds no clipboard
+    /// The app asked for `text` to be put on `target` (`OSC 52` with a payload).
+    /// The engine has already base64-decoded it, and holds no clipboard
     /// of its own.
     ///
     /// **This is a request, not a fact.** Whether the copy happens is the
@@ -360,16 +360,16 @@ pub enum TermEvent {
     /// prompt, and a consumer that drops this event has refused the copy. The
     /// engine carries no allow/deny knob, which is where it parts company with
     /// alacritty — alacritty gates the same sequence behind a four-state config
-    /// (`alacritty_terminal/src/term/mod.rs:1706`, `:1727`). Under ADR-0017 that
+    /// (`alacritty_terminal/src/term/mod.rs:1706`, `:1727`). Under [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) that
     /// gate lives one layer out.
     ///
     /// **The reason once given for that was measurably wrong, and is corrected
-    /// here rather than quietly dropped (#841, re-read 2026-09-10).** This said
+    /// here rather than quietly dropped (re-read 2026-09-10).** This said
     /// *"because alacritty **is** the consumer"*. It is not the distinction:
     /// alacritty's gate sits inside `alacritty_terminal`, the **engine** crate,
     /// with the policy *injected across the crate boundary* — `Osc52` is a field
     /// on that crate's `Config` (`:353`), written by the application at
-    /// `alacritty/src/config/ui_config.rs:125`. That is ADR-0017's own shape, so
+    /// `alacritty/src/config/ui_config.rs:125`. That is [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)'s own shape, so
     /// it was never a reason this crate *could not* hold an injected gate. The
     /// conclusion stands on the ADR alone, and on the fact that an engine which
     /// touches no clipboard buys nothing by putting a gate in front of a relay.
@@ -393,7 +393,7 @@ pub enum TermEvent {
         target: ClipboardTarget,
         text: String,
     },
-    /// The app asked what is on `target` (`OSC 52` with a `?` payload, #828).
+    /// The app asked what is on `target` (`OSC 52` with a `?` payload).
     /// The consumer answers by calling `report_clipboard`, which encodes the
     /// reply — or declines, which is how a clipboard *read* is refused
     /// independently of a write.
@@ -404,21 +404,21 @@ pub enum TermEvent {
     /// back. Same `Query…` + `report_…` shape as `OSC 4`/`10`/`11`/`12`.
     QueryClipboard {
         target: ClipboardTarget,
-        /// The terminator `report_clipboard` must answer with (#836).
+        /// The terminator `report_clipboard` must answer with.
         terminator: Terminator,
     },
     /// A decoration marker's line left the buffer — evicted past the scrollback
-    /// cap, or scrolled out of an in-screen region (#118). The handle is now
+    /// cap, or scrolled out of an in-screen region. The handle is now
     /// dead; the consumer drops the decoration bound to it. This is the
     /// frame-mode equivalent of xterm's `IMarker.onDispose` — disposal is a
     /// point-in-time fact (a marker absent from a frame may merely be scrolled
     /// off-screen), so it rides the event queue, not the frame overlay.
     MarkerDisposed(MarkerId),
-    /// A marker was created (#490) — by `add_marker`, or by the *stream* through an
+    /// A marker was created — by `add_marker`, or by the *stream* through an
     /// OSC 133 command mark, which the consumer never called for.
     ///
     /// The mirror of [`TermEvent::MarkerDisposed`], and it exists for the same reason
-    /// ADR-0020 R1 gives: an appearance is an occurrence, not state, so it rides this
+    /// [ADR-0020](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0020-what-qualifies-for-the-frame-snapshot.md) R1 gives: an appearance is an occurrence, not state, so it rides this
     /// queue rather than a frame field. Without it a consumer that pulled a marker
     /// index (`Engine::marker_index`) has no way to learn of a marker born after its
     /// pull — the population would only ever shrink.
@@ -428,7 +428,7 @@ pub enum TermEvent {
     /// this event is that pull's incremental mirror. The consumer appends the entry with
     /// the basis it arrived on and rebases it exactly like a pulled one.
     ///
-    /// **The two are one fact and neither is usable alone (#737).** A single `feed` can
+    /// **The two are one fact and neither is usable alone.** A single `feed` can
     /// create a marker and then evict, so by the end of the batch the buffer's origin has
     /// moved out from under the line this event already carries. `Frame::evicted_total` is
     /// the basis at the *end* of that batch, so reading `line` against it misplaces the
@@ -436,7 +436,7 @@ pub enum TermEvent {
     /// with the event line, both frame bases, the epoch and `Frame::marker_count` all
     /// identical to the batch that evicted *first* and needs no adjustment at all.
     ///
-    /// **And a basis dates only a uniform move (#741).** Eviction shifts every marker by
+    /// **And a basis dates only a uniform move.** Eviction shifts every marker by
     /// the same amount, which is what one scalar can say; a reflow or a region rotate
     /// moves them *individually*, which is what `epoch` is for. A birth still queued when
     /// the epoch moves describes a buffer that no longer exists, and carrying only the
@@ -461,7 +461,7 @@ pub enum TermEvent {
         /// a `TypeError`, not a rounding question.
         evicted_total: u64,
         /// The marker generation this line belongs to — [`crate::MarkerIndex::epoch`] at
-        /// the moment of creation (#741). Two lines dated with different epochs are
+        /// the moment of creation. Two lines dated with different epochs are
         /// answers about different buffers and nothing rebases one onto the other, so a
         /// consumer adopts this entry only into the generation it names and lets the
         /// re-pull that the bump already forces supply it otherwise.

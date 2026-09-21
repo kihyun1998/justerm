@@ -7,12 +7,11 @@
 //! shift, so existing content keeps its absolute index); the only places it
 //! moves are cap eviction, in-screen region/RI scrolls, and reflow — each
 //! handled explicitly by `Term`. The cell-aware logic (text extraction, range
-//! clipping) lives in `term/selection.rs` — the `Term` half of this model, moved out
-//! of `term.rs` in #587.
+//! clipping) lives in `term/selection.rs` — the `Term` half of this model.
 
 /// What a selection covers.
 ///
-/// **Deliberately exhaustive (#843), on convergence rather than on traffic.**
+/// **Deliberately exhaustive ([#843](https://github.com/kihyun1998/justerm/issues/843)), on convergence rather than on traffic.**
 ///
 /// An earlier draft of that sweep argued *"a consumer cannot fall back on a
 /// neighbour for one it does not know"* — which describes matching traffic this
@@ -45,7 +44,7 @@ pub enum SelectionType {
 /// Which half of a cell an anchor sits on — the left or right edge. Lets a drag
 /// include or exclude the cell under the pointer (mouse precision).
 ///
-/// **Deliberately exhaustive (#843).** Closed by geometry — there is no third side.
+/// **Deliberately exhaustive ([#843](https://github.com/kihyun1998/justerm/issues/843)).** Closed by geometry — there is no third side.
 /// Left exhaustive on purpose, not by omission.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Side {
@@ -57,7 +56,7 @@ pub enum Side {
 /// (both inclusive). `selection_range` returns one per visible row the selection
 /// touches — the renderer paints these. Off-screen rows are not emitted.
 ///
-/// **No `#[non_exhaustive]` (#844).** 57 out-of-crate literal sites, the most of any type here —
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** 57 out-of-crate literal sites, the most of any type here —
 /// and `{row, left, right}` is closed geometry, so there is no growth cause to defend against.
 /// Declining costs nothing that can be measured.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

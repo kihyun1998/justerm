@@ -5,10 +5,10 @@
 
 /// A cell's foreground or background colour, stored as a reference.
 ///
-/// **Deliberately exhaustive (#843).** `Default` / `Indexed` / `Rgb` is the whole
+/// **Deliberately exhaustive ([#843](https://github.com/kihyun1998/justerm/issues/843)).** `Default` / `Indexed` / `Rgb` is the whole
 /// VT colour-reference space, and a consumer that silently ignored a fourth form
 /// would draw the wrong colour. Here the compiler forcing the match is the
-/// protection rather than the cost, which is the half of #843's rule that decides
+/// protection rather than the cost, which is the half of [#843](https://github.com/kihyun1998/justerm/issues/843)'s rule that decides
 /// against the attribute. Left exhaustive on purpose, not by omission.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Color {

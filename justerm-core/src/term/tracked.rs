@@ -48,7 +48,7 @@ impl Term {
         }
     }
 
-    /// Track absolute buffer `(line, col)`, returning a stable id (#691). The
+    /// Track absolute buffer `(line, col)`, returning a stable id. The
     /// engine keeps the position on the content that is there now, through
     /// eviction, region scrolls and reflow, for as long as that **line** is in the
     /// buffer; [`Self::tracked_point`] reads it back and answers `None` once the line
@@ -56,7 +56,7 @@ impl Term {
     ///
     /// **A line, not the characters on it, and the distinction is load-bearing.**
     /// Erasing or overwriting the cells under a tracked point leaves it `Some` —
-    /// measured. That is deliberate rather than the marker defect one file over (#750):
+    /// measured. That is deliberate rather than the marker defect one file over:
     /// a tracked point is a *positional* reference whose only consumer asks "which
     /// occurrence was I on" and resolves by nearest position, so a point over rewritten
     /// content is still a serviceable answer, where a command mark asserts that a
@@ -70,7 +70,7 @@ impl Term {
     ///
     /// Out of range is bounded, not rejected, and bounded at the **read** rather
     /// than here: the engine owns no producer for this coordinate — it is the
-    /// consumer's, like a `Match` — which is the second branch of ADR-0026 D2, the
+    /// consumer's, like a `Match` — which is the second branch of [ADR-0026](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0026-outside-coordinates-are-bounded-once.md) D2, the
     /// same one `match_spans` takes.
     pub fn track_point(&mut self, line: usize, col: usize) -> TrackedId {
         let id = TrackedId(self.next_tracked_id);
@@ -82,7 +82,7 @@ impl Term {
     /// Where the point registered as `id` sits now, or `None` if it has left the
     /// buffer (or the id was never issued / already released).
     ///
-    /// Bounded here, both ends, per ADR-0026 D2/D3: the line into the range of the
+    /// Bounded here, both ends, per [ADR-0026](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0026-outside-coordinates-are-bounded-once.md) D2/D3: the line into the range of the
     /// buffer the point **belongs to**, and the column to the grid width rather
     /// than the line's text (D4). The column's domain is `[0, cols]` like a
     /// marker's: one past the last cell is a legal *bound*, which is what a caller

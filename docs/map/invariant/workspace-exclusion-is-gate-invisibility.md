@@ -66,8 +66,16 @@ loudly, instead of dragging a wasm32-only crate into the host test run.
 Non-derivable half — **which gates compensate, and which do not.** `test.yml` names
 `justerm-renderer` explicitly in its own job (fmt, test, clippy, build, rustdoc — each by
 `--manifest-path`). `fuzz` is reached only by `cargo check --manifest-path fuzz/Cargo.toml`.
-`justerm-facade` is reached by **nothing**, deliberately: it is frozen, so there is no version of it
-for a gate to protect. No tool can tell you which of those three states a given exclusion is in.
+`justerm-facade` was reached by **nothing** for most of its life, deliberately: it is frozen, so
+there is no version of it for a gate to protect. That is no longer the whole truth, and the way it
+stopped being true is the point — **two gates grew onto it without anyone deciding to gate the
+tombstone**, because both derive their work set from the tree instead of naming crates.
+`check-published-pointers.mjs` (#949) walks for manifests carrying a `description`, so it took the
+facade's `description` and README on the day it was written; `check-published-rustdoc.mjs` (#953)
+walks for manifests without `publish = false`, so it took the facade's `//!` — and needed a
+`cargo doc --manifest-path justerm-facade/Cargo.toml` step added beside it, since `--workspace` still
+cannot see the crate. **A derived work set is what reaches an excluded crate; a named one never
+will.** No tool can tell you which of those three states a given exclusion is in.
 
 ## What a violation looks like
 

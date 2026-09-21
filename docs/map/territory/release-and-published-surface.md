@@ -25,9 +25,11 @@ comes back is a yank, and a mistake is a permanent row in somebody else's depend
 Two consequences worth carrying into any change that touches either:
 
 - **The tombstone.** `justerm-facade` publishes as the old crate name, frozen at `0.5.1`, outside the
-  workspace so the lockstep cannot drag it, gated by nothing. It has zero commits since creation and
-  is invisible to every activity metric — and it is the clearest case of why this area is a territory
-  rather than a chore.
+  workspace so the lockstep cannot drag it. It was gated by nothing until the two published-prose
+  gates grew onto it — neither of which names it, both deriving their work set from the tree
+  ([workspace exclusion](../invariant/workspace-exclusion-is-gate-invisibility.md) owns that
+  detail). It still has near-zero commits and is invisible to every activity metric — and it is the
+  clearest case of why this area is a territory rather than a chore.
 - **The blast radius is the whole map.** The published surface is a *mirror* of every other
   territory's behaviour, and mirrors drift silently: a README announced an unimplemented GPU pipeline
   across six published versions, and a doc-comment promised reflow "lands in #7" for six weeks after

@@ -3,7 +3,7 @@
 
 /// The damaged column span of a single line.
 ///
-/// **No `#[non_exhaustive]` (#844): nothing outside this crate has a reason to build one.** No
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
 /// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
 /// sites, so the attribute would bind nothing it does not already bind.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -16,17 +16,17 @@ pub struct LineDamage {
 /// A first-class scroll: rows `[top..=bottom]` shifted by `count` lines
 /// (positive = up, negative = down). The renderer moves the rows instead of
 /// redrawing them. Recorded by the engine — which executes the scroll — rather
-/// than diff-detected (ADR-0003).
+/// than diff-detected ([ADR-0003](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0003-damage-model-incremental-bounds.md)).
 ///
 /// **A reported `count` never exceeds `bottom - top + 1`** — see
 /// [`crate::Engine::scroll_delta`], which caps it. `count` is `isize` here and
 /// `i16` on the wire, so an uncapped accumulation overflowed the field and
-/// reversed the shift's direction (#661); the bound is also the point past which
+/// reversed the shift's direction; the bound is also the point past which
 /// the value stops meaning anything, since every source row is then outside the
 /// region. The cap is applied when the op is *read*, not while it accumulates, so
 /// a region that scrolls far and returns still reports its true small net.
 ///
-/// **No `#[non_exhaustive]` (#844).** 7 out-of-crate literal sites. `{top, bottom, count}` is the
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** 7 out-of-crate literal sites. `{top, bottom, count}` is the
 /// whole of a region shift, so nothing outside this crate can add to it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ScrollOp {
@@ -37,7 +37,7 @@ pub struct ScrollOp {
 
 /// What changed since the last `reset_damage()`.
 ///
-/// **Deliberately exhaustive (#843).** A consumer that ignored a new damage kind
+/// **Deliberately exhaustive ([#843](https://github.com/kihyun1998/justerm/issues/843)).** A consumer that ignored a new damage kind
 /// would render stale content with no error anywhere, so a new member is one the
 /// compiler must make it look at. Left exhaustive on purpose, not by omission.
 #[derive(Clone, PartialEq, Eq, Debug)]
