@@ -14,7 +14,7 @@
 //!
 //! ## Structure
 //! `flatten` is the pure core (`Frame` -> renderer-friendly flat buffers),
-//! testable with plain `cargo test` — no wasm runtime. [`DecodedFrame`] is the
+//! testable with plain `cargo test` — no wasm runtime. `DecodedFrame` is the
 //! thin `#[wasm_bindgen]` layer that exposes `Flat`'s buffers to JS as
 //! zero-copy typed-array views.
 
@@ -451,14 +451,14 @@ impl DecodedFrame {
         unsafe { js_sys::Uint32Array::view(&self.flat.fg) }
     }
 
-    /// Per-cell background colour references (tagged `u32`s, as [`DecodedFrame::fg`]).
+    /// Per-cell background colour references (tagged `u32`s, as `DecodedFrame.fg`).
     #[wasm_bindgen(getter)]
     pub fn bg(&self) -> js_sys::Uint32Array {
         unsafe { js_sys::Uint32Array::view(&self.flat.bg) }
     }
 
     /// Per-cell underline colour references (SGR 58, #520) as tagged `u32`s (as
-    /// [`DecodedFrame::fg`]). `0` = `Default` — the underline follows the fg. Only
+    /// `DecodedFrame.fg`). `0` = `Default` — the underline follows the fg. Only
     /// cells drawing a coloured underline carry a non-zero value; resolve with
     /// `resolveRgb`, the same as `fg`/`bg`.
     #[wasm_bindgen(getter, js_name = underlineColor)]
@@ -595,7 +595,7 @@ pub struct Flags {
     pub wrapline: u16,
 }
 
-/// The `CellFlags` bit constants (see [`Flags`]).
+/// The `CellFlags` bit constants (see `Flags`).
 #[wasm_bindgen(js_name = flags)]
 pub fn flags() -> Flags {
     use justerm_core::CellFlags as F;
@@ -616,16 +616,16 @@ pub fn flags() -> Flags {
 
 /// How a cell's underline is drawn — the value of `SGR 4 : Ps` (#831).
 ///
-/// **A field, not a flag, and that is why it needs its own export.** [`Flags`] hands out one bit
+/// **A field, not a flag, and that is why it needs its own export.** `Flags` hands out one bit
 /// per attribute because each of those questions is yes-or-no; this one is "which of six", so a
 /// twelfth mask could not have answered it and a consumer given one would still be shifting by
-/// hand — the exact thing [`Flags`] exists to prevent.
+/// hand — the exact thing `Flags` exists to prevent.
 ///
-/// [`None`](Self::None) is a **member** of the style, not the absence of one: a cell that is not
+/// `None` is a **member** of the style, not the absence of one: a cell that is not
 /// underlined reads as `None`, so a consumer never infers "no style" from a zero it was not
 /// promised. `flags[i] & F.underline` and a non-`None` style are the same question asked twice —
 /// the engine derives the flag from this field and normalises a styleless underline to
-/// [`Single`](Self::Single), so the two cannot disagree on a word this decoder produced.
+/// `Single`, so the two cannot disagree on a word this decoder produced.
 ///
 /// Mirrors `justerm_core::UnderlineStyle`, and `underlineStyle` is the only producer. The
 /// conversion there is an **exhaustive `match`** on the core enum, so a style added upstream is a
@@ -649,7 +649,7 @@ pub enum UnderlineStyle {
 
 /// The underline style carried by one `flags[i]` word (#831).
 ///
-/// Pass the word straight from [`DecodedFrame::flags`]; the style lives in bits this API does not
+/// Pass the word straight from `DecodedFrame.flags`; the style lives in bits this API does not
 /// make you know, which is the point — it delegates to `justerm_core`'s
 /// `CellFlags::underline_style`, so no consumer of *this* package writes the shift or the width.
 ///
@@ -660,7 +660,7 @@ pub enum UnderlineStyle {
 /// export exists so that nobody *else* has to repeat.
 ///
 /// **Total.** The 3 bits have eight representable values and six meanings, so anything outside the
-/// enum reads as [`Single`](UnderlineStyle::Single) — the same normalisation the engine applies,
+/// enum reads as `UnderlineStyle.Single` — the same normalisation the engine applies,
 /// not a second one invented here. Bits outside the field are ignored, so a whole `flags[i]` word
 /// is the intended argument rather than something the caller pre-masks.
 #[wasm_bindgen(js_name = underlineStyle)]
@@ -687,7 +687,7 @@ pub fn underline_style(flags: u16) -> UnderlineStyle {
 /// to be told about — and the other is the vocabulary for reading it; a shared name would leave a
 /// consumer unable to tell `mouseEvents()` from `mouseWantedEvents` at a glance.
 ///
-/// This is a mask, so it takes [`Flags`]'s shape rather than [`MarkerKind`]'s: new members are
+/// This is a mask, so it takes `Flags`'s shape rather than `MarkerKind`'s: new members are
 /// bits *inside* the value and no enum can answer "which of five" about a set. #860's rule places
 /// it — a value space's names live at module scope — and the shape follows from the value being a
 /// set rather than a choice.
@@ -705,7 +705,7 @@ pub struct MouseEventBits {
     pub r#move: u8,
 }
 
-/// The `MouseEvents` bit constants (see [`MouseEventBits`]).
+/// The `MouseEvents` bit constants (see `MouseEventBits`).
 #[wasm_bindgen(js_name = mouseEventBits)]
 pub fn mouse_event_bits() -> MouseEventBits {
     use justerm_core::MouseEvents as M;
@@ -720,7 +720,7 @@ pub fn mouse_event_bits() -> MouseEventBits {
 
 /// The `ModifiedKeys` bit positions, exported so a consumer tests
 /// `frame.modifiedKeys & B.shiftEnter` without hard-coding bit values (#941). The values come
-/// straight from Rust `ModifiedKeys`, the same shape as [`MouseEventBits`] beside
+/// straight from Rust `ModifiedKeys`, the same shape as `MouseEventBits` beside
 /// `mouseWantedEvents`. Read once and cache: the bits never change within a build.
 #[wasm_bindgen]
 pub struct ModifiedKeyBits {
@@ -750,7 +750,7 @@ pub struct ModifiedKeyBits {
     pub ctrl_escape: u16,
 }
 
-/// The `ModifiedKeys` bit constants (see [`ModifiedKeyBits`]).
+/// The `ModifiedKeys` bit constants (see `ModifiedKeyBits`).
 #[wasm_bindgen(js_name = modifiedKeyBits)]
 pub fn modified_key_bits() -> ModifiedKeyBits {
     use justerm_core::ModifiedKeys as K;
@@ -776,7 +776,7 @@ pub fn modified_key_bits() -> ModifiedKeyBits {
 /// rides *inside* `markerPositions`, a `Uint32Array`, so it cannot be a named
 /// member of the frame — the frame is a flat snapshot a consumer may mirror or synthesise, and
 /// `justerm-web`'s `types.ts` says so in as many words. What can be named is the value *space*,
-/// here, next to the accessor that reads it out of the column. [`UnderlineStyle`] and
+/// here, next to the accessor that reads it out of the column. `UnderlineStyle` and
 /// `underlineStyle` are the same shape one value over, reading a style out of `flags`.
 ///
 /// Mirrors `justerm_core::MarkerKind`, whose `CommandFinished` carries an `Option<i32>` this enum
@@ -881,7 +881,7 @@ pub fn build_palette(ansi: &[u32]) -> Vec<u32> {
     colors
 }
 
-/// Decode a justerm wire buffer (ADR-0005) into a [`DecodedFrame`].
+/// Decode a justerm wire buffer (ADR-0005) into a `DecodedFrame`.
 ///
 /// On a malformed buffer this throws a JS `Error` whose `message` is the
 /// `DecodeError` variant name (ADR-0008) — the validation a hand-written TS

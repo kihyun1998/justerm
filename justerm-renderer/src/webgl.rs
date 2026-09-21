@@ -1161,7 +1161,7 @@ struct GridTier {
     ///
     /// Sharing a glyph cache means another grid's pack can **repoint** a slot this grid's instances
     /// still address, and the upload diff — the defence against a slot changing under an undamaged
-    /// cell — cannot see it, because the instance floats did not change. [`render`](Self::render)
+    /// cell — cannot see it, because the instance floats did not change. `render`
     /// compares this against the configuration's live count and re-packs the difference away.
     ///
     /// **It converges wherever the drawn grids' *live* glyph sets fit a region together**, which is
@@ -1172,7 +1172,7 @@ struct GridTier {
     /// outright rather than drawn (`ResolveError::FrameExceedsCapacity`).
     packed_at_evictions: u32,
     /// Set by every state mutation that changes the packed instance buffer (overlay, decorations,
-    /// colour policy, palette, `apply_damage`); cleared by the re-pack in [`render`](Self::render).
+    /// colour policy, palette, `apply_damage`); cleared by the re-pack in `render`.
     /// Lets a frame that sets overlay + decorations + damage re-pack **once** at render instead of
     /// three times, one per setter (#421). The direct `apply_frame` path packs immediately (no grid
     /// to defer to) and clears it.
@@ -1574,7 +1574,7 @@ impl JustermRenderer {
     /// plus every in-place rebuild of one (a DPR change, a context restore).
     ///
     /// The consumer/proofs read the **delta** across an operation, as they do with
-    /// [`packs`](Self::packs): a grid *joining* an existing configuration must move this by zero,
+    /// `packs`: a grid *joining* an existing configuration must move this by zero,
     /// which is the claim the middle tier exists to make and the one a memory figure cannot settle.
     ///
     /// It counts **committed** bakes. A rebuild that fails part-way discards every replacement it
@@ -1679,7 +1679,7 @@ impl JustermRenderer {
     /// (ADR-0017): the palette *values* are the consumer's (theme-agnostic core), the *mechanism*
     /// (re-resolve every retained cell against the new palette) is the renderer's.
     ///
-    /// Marks the buffer dirty so the next [`render`](Self::render) re-packs (#421) and the change
+    /// Marks the buffer dirty so the next `render` re-packs (#421) and the change
     /// shows with no new frame — like `setOverlay` (a no-op until the first `apply_damage`; the
     /// direct `apply_frame` path reflects the new palette on its next call). The re-pack is all that
     /// is needed: it re-resolves every cell's colour against the new palette, and the render's clear
@@ -1707,7 +1707,7 @@ impl JustermRenderer {
     /// background so its own colour shows through, or paints it solid over the default background; a
     /// selection wins over a match on a cell both cover.
     ///
-    /// Marks the buffer dirty so the next [`render`](Self::render) re-packs (#421) — a selection
+    /// Marks the buffer dirty so the next `render` re-packs (#421) — a selection
     /// dragged with no new frame shows because the consumer renders after. Possible only on the
     /// damage path, which retains the dense grid; the direct `apply_frame` path reflects the new
     /// overlay on its next call. Pass empty span lists to clear the highlight.
@@ -1774,7 +1774,7 @@ impl JustermRenderer {
     /// resolved its theme before pushing — unlike a *cell* colour, which arrives as a theme-agnostic
     /// ref for the renderer to resolve), or the wire's `NO_REF` sentinel for "no override". Pass an
     /// empty array to clear. Consumer-projected (the model is the consumer's; the renderer only
-    /// composites, ADR-0017). Marks the buffer dirty; the next [`render`](Self::render)
+    /// composites, ADR-0017). Marks the buffer dirty; the next `render`
     /// re-packs (#421).
     #[wasm_bindgen(js_name = setDecorations)]
     pub fn set_decorations(&mut self, grid: u32, spans: Vec<u32>) -> Result<(), JsValue> {
@@ -1789,7 +1789,7 @@ impl JustermRenderer {
     ///
     /// **Every shape, the block included, lives in the cursor uniform** (`u_cursor` + its colours,
     /// declared with `FRAG_SRC` in this file) and is resolved per fragment. So any cursor change —
-    /// move, blink, shape — takes effect on the next [`render`](Self::render) alone: one uniform,
+    /// move, blink, shape — takes effect on the next `render` alone: one uniform,
     /// no re-pack and no instance upload. Blink phase is the consumer's policy, exactly as
     /// `blink_on` is (#282) — call `clearCursor` for the off phase.
     ///
@@ -1852,7 +1852,7 @@ impl JustermRenderer {
     }
 
     /// The number of rows this grid was last sized to by `resizeGrid` — see
-    /// [`cols`](Self::cols).
+    /// `cols`.
     #[wasm_bindgen(js_name = rows)]
     pub fn rows(&self, grid: u32) -> Result<u32, JsValue> {
         let at = self.slot(grid)?;
@@ -1897,7 +1897,7 @@ impl JustermRenderer {
     /// Set the background cell opacity: `0` = fully transparent, `1` = opaque (default). The
     /// consumer injects this policy (ADR-0017) to make the terminal background see-through to the
     /// page/desktop behind the canvas, while glyph pixels stay opaque. Clamped to `[0, 1]`; takes
-    /// effect on the next [`render`](Self::render) (#298).
+    /// effect on the next `render` (#298).
     ///
     /// **A translucent background contributes to a cell's colour in proportion to how translucent
     /// it is** (#317 §2, fixed 2026-08-18). It used to contribute in full: an antialiased glyph
@@ -1933,7 +1933,7 @@ impl JustermRenderer {
     /// bright variant; `Rgb`/`Indexed(8..=255)` foregrounds and non-bold cells are unaffected. On by
     /// default (xterm's default). Consumer policy (ADR-0017): the mechanism (index remap at resolve)
     /// is the renderer's, the on/off is the consumer's. Marks the buffer dirty; the next
-    /// [`render`](Self::render) re-packs (#421), so a live toggle shows without a new frame.
+    /// `render` re-packs (#421), so a live toggle shows without a new frame.
     #[wasm_bindgen(js_name = setBoldToBright)]
     pub fn set_bold_to_bright(&mut self, grid: u32, enabled: bool) -> Result<(), JsValue> {
         let at = self.slot(grid)?;
@@ -1947,7 +1947,7 @@ impl JustermRenderer {
     /// property of the cell, not of the bg winner (#430): on a selected cell inside the ACTIVE search
     /// match this fg paints over the *active-match* background — pick the two colours to read on each
     /// other, or set `setMinimumContrastRatio` (it corrects
-    /// against the final composited bg). Marks the buffer dirty; the next [`render`](Self::render)
+    /// against the final composited bg). Marks the buffer dirty; the next `render`
     /// re-packs (#421).
     #[wasm_bindgen(js_name = setSelectionForeground)]
     pub fn set_selection_foreground(
@@ -1965,7 +1965,7 @@ impl JustermRenderer {
     /// cell uses half the ratio, so it stays visibly dim rather than being corrected to full contrast.
     /// Consumer policy (ADR-0017): the mechanism (the WCAG adjustment on the resolved RGB) is the
     /// renderer's, the number is the consumer's. Default `1.0` = off (xterm's default). Clamped to
-    /// `[1, 21]`; marks the buffer dirty so the next [`render`](Self::render) re-packs (#421) and a
+    /// `[1, 21]`; marks the buffer dirty so the next `render` re-packs (#421) and a
     /// live change shows.
     #[wasm_bindgen(js_name = setMinimumContrastRatio)]
     pub fn set_minimum_contrast_ratio(&mut self, grid: u32, ratio: f32) -> Result<(), JsValue> {
@@ -1978,7 +1978,7 @@ impl JustermRenderer {
     /// cell. The mechanism is the renderer's — only it has the *resolved* per-cell RGB (ADR-0017) —
     /// but the number is the consumer's policy. Default `1.5` (alacritty's `MIN_CURSOR_CONTRAST`);
     /// pass `1.0`, the floor of the contrast range, to disable the guard (xterm's behaviour). Clamped
-    /// to `[1, 21]`; takes effect on the next [`render`](Self::render).
+    /// to `[1, 21]`; takes effect on the next `render`.
     #[wasm_bindgen(js_name = setCursorContrast)]
     pub fn set_cursor_contrast(&mut self, grid: u32, threshold: f32) -> Result<(), JsValue> {
         let at = self.slot(grid)?;
@@ -1999,7 +1999,7 @@ impl JustermRenderer {
     /// `u32::MAX` device pixels. `NaN` is caught a layer deeper — `frac.max(0.0)` returns `0.0` for
     /// it (`f32::max` yields the non-NaN operand) — so the floor below still gives it a 1px stroke.
     /// The mechanism's `.max(1)` floor also means even `0` leaves a one-pixel stroke rather than an
-    /// invisible cursor. Takes effect on the next [`render`](Self::render) — like a stroke's shape,
+    /// invisible cursor. Takes effect on the next `render` — like a stroke's shape,
     /// it is a shader uniform, so changing it costs no upload.
     #[wasm_bindgen(js_name = setCursorThickness)]
     pub fn set_cursor_thickness(&mut self, grid: u32, frac: f32) -> Result<(), JsValue> {
@@ -2595,7 +2595,7 @@ impl JustermRenderer {
     /// The cell size changes, so `cssCellWidth`/`css_cell_height` move and
     /// **the consumer must re-fit**: re-divide its box, `resizeGrid`, and
     /// re-place the grid — nothing here resizes the surface for it, because a surface drawing N
-    /// grids belongs to none of them (#773). Takes effect on the next [`render`](Self::render).
+    /// grids belongs to none of them (#773). Takes effect on the next `render`.
     #[wasm_bindgen(js_name = setFontSize)]
     pub fn set_font_size(&mut self, grid: u32, css_px: f32) -> Result<(), JsValue> {
         let at = self.slot(grid)?;
@@ -2618,7 +2618,7 @@ impl JustermRenderer {
     ///
     /// The cell size may change, so `cssCellWidth`/`css_cell_height` can move
     /// and **the consumer must re-fit**, exactly as after a size change (#773). Takes effect on the
-    /// next [`render`](Self::render).
+    /// next `render`.
     #[wasm_bindgen(js_name = setFontFamily)]
     pub fn set_font_family(&mut self, grid: u32, family: String) -> Result<(), JsValue> {
         let at = self.slot(grid)?;
@@ -2634,7 +2634,7 @@ impl JustermRenderer {
     /// as a family change does (#772), and moves this grid only.
     ///
     /// The cell is measured at the `normal` weight whatever this is, so it does not move and no re-fit
-    /// is needed. Takes effect on the next [`render`](Self::render).
+    /// is needed. Takes effect on the next `render`.
     #[wasm_bindgen(js_name = setFontWeight)]
     pub fn set_font_weight(&mut self, grid: u32, weight: JsValue) -> Result<(), JsValue> {
         let at = self.slot(grid)?;
@@ -2697,7 +2697,7 @@ impl JustermRenderer {
     /// A multiplier on the glyph height, `>= 1` — the consumer's policy (#338). Clamped rather than
     /// rejected: xterm throws from its option setter (`OptionsService.ts:182`), and a renderer that
     /// panics across the wasm boundary is a worse contract than one that reports what it adopted.
-    /// Read the result back with [`cell_height`](Self::cell_height) — it may be smaller than asked,
+    /// Read the result back with `cell_height` — it may be smaller than asked,
     /// because a cell the atlas texture cannot hold is shrunk to one it can (#359).
     #[wasm_bindgen(js_name = setLineHeight)]
     pub fn set_line_height(&mut self, grid: u32, multiplier: f32) -> Result<(), JsValue> {
@@ -2774,7 +2774,7 @@ impl JustermRenderer {
     }
 
     /// Override how long a lost context is given to come back before
-    /// [`setOnContextLoss`](Self::set_on_context_loss) fires. Defaults to
+    /// `setOnContextLoss` fires. Defaults to
     /// `DEFAULT_RESTORE_TIMEOUT_MS` (3000 ms, xterm.js parity). Applies to the *next* loss; a
     /// deadline already armed keeps the duration it was armed with. Negative values clamp to 0.
     #[wasm_bindgen(js_name = setContextRestoreTimeoutMs)]
@@ -2783,7 +2783,7 @@ impl JustermRenderer {
     }
 
     /// Whether a lost context has missed its restore deadline (#327). The poll counterpart of
-    /// [`setOnContextLoss`](Self::set_on_context_loss), for a consumer that attaches late. Cleared
+    /// `setOnContextLoss`, for a consumer that attaches late. Cleared
     /// by a late `webglcontextrestored`, which also heals the renderer.
     #[wasm_bindgen(js_name = isRestoreOverdue)]
     pub fn is_restore_overdue(&self) -> bool {
@@ -2791,7 +2791,7 @@ impl JustermRenderer {
     }
 
     /// Recreate every GPU resource the lost context destroyed (#269), then refill the instance
-    /// buffer so the very next `render` paints the pre-loss frame. Called by [`render`](Self::render)
+    /// buffer so the very next `render` paints the pre-loss frame. Called by `render`
     /// when the state machine reports [`FrameAction::Rebuild`] — never on a lost context, which is a
     /// property of the predicate that reports it rather than of this function: `Rebuild` requires
     /// the *context's own* answer as well as the flag, because the flag alone said "live" for the
@@ -3032,7 +3032,7 @@ impl JustermRenderer {
         Ok(self.config_at(at).cell_size.0)
     }
 
-    /// The cell height in **device pixels** (see [`cell_width`](Self::cell_width)).
+    /// The cell height in **device pixels** (see `cell_width`).
     pub fn cell_height(&self, grid: u32) -> Result<u32, JsValue> {
         let at = self.slot(grid)?;
         Ok(self.config_at(at).cell_size.1)
@@ -3067,7 +3067,7 @@ impl JustermRenderer {
     /// grids in two cells on one canvas there is no cell the *buffer* can be a multiple of. The
     /// buffer half became `resizeSurface`; this is the per-grid half.
     ///
-    /// This is what [`cols`](Self::cols) / [`rows`](Self::rows) report back, and what the frames
+    /// This is what `cols` / `rows` report back, and what the frames
     /// fed to this grid are expected to carry. At least one cell each way.
     ///
     /// **Nothing clamps it to the grid's rect, and that is a decision.** #331's guarantee — a
