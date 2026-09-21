@@ -292,7 +292,12 @@ same trace.
   description rather than holding one, so a newly published package is covered the day it is added;
   it names what it cannot see (prose accuracy, expiring claims, contributor-only content such as
   build commands, a multi-line TOML description)
-- Public doc-comments in `justerm-core/src/lib.rs` — they ship verbatim as the docs.rs page
+- Public doc-comments anywhere in `justerm-core/src/` — they ship verbatim as the docs.rs page.
+  **Not just `lib.rs`**, which this entry used to say: a page is generated per *public item*, and
+  the crate's 61 pages are produced by 18 source files, `term.rs` and `serialize.rs` among the
+  largest contributors. `mod` privacy is what decides, not the file — `term/walk.rs`'s `//!` reaches
+  no page at all. Derive it rather than trusting a list: the `src/justerm_core/*.rs.html` links in
+  `target/doc` name every file that actually produced one
 - `.github/scripts/check-published-rustdoc.mjs` — the repo-only-pointer gate for the **rendered
   rustdoc** of every crates.io crate (every PR, after `cargo doc`). Derives its crate list from the
   manifests that lack `publish = false`, reads `<div class="docblock">` on pages rustdoc generated

@@ -78,7 +78,7 @@ no gate list or count.
 - **Releases publish on a `vX.Y.Z` tag push**, to crates.io + npm automatically; a manual
   `cargo publish`/`npm publish` collides with it. Procedure: `docs/agents/release.md`.
 - **`docs/agents/theflow.md` stays.** Its discipline is retired, but it is a *cited* corpus — ADRs,
-  `docs/map/` notes and doc-comments shipped to docs.rs link into it (`rg -l theflow.md`).
+  `docs/map/` notes and doc-comments link into it (`rg -l theflow.md` is the roster).
 
 ## Agent skills
 
