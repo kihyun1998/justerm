@@ -24,7 +24,7 @@ pub use cell::{Cell, CellFlags, UnderlineStyle};
 pub use color::Color;
 pub use cursor::{Cursor, CursorShape, Pen};
 pub use damage::{LineDamage, ScrollOp, TermDamage};
-pub use event::{ClipboardTarget, TermEvent, Terminator};
+pub use event::{ClipboardTarget, NotificationSequence, TermEvent, Terminator};
 pub use grid::{Grid, Row};
 pub use input::{
     Key, KeyAction, KeyEvent, KeypadKey, ModifiedKeys, Modifiers, MouseAction, MouseButton,

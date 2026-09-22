@@ -95,6 +95,7 @@ fn answer_events(engine: &mut Engine, fg: &str, bg: &str) {
             TermEvent::Title(_)
             | TermEvent::Bell
             | TermEvent::Cwd(_)
+            | TermEvent::Notification { .. }
             | TermEvent::ColumnMode { .. }
             | TermEvent::SetPaletteColor { .. }
             | TermEvent::SetForeground(_)

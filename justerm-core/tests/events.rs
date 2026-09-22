@@ -4,7 +4,7 @@
 //! queue — so both `osc_dispatch`/`execute` and the pull-based queue are
 //! covered. Both OSC terminators are exercised: BEL (`0x07`) and ST (`ESC \`).
 
-use justerm_core::{Engine, TermEvent};
+use justerm_core::{Engine, NotificationSequence, TermEvent};
 
 #[test]
 fn osc2_sets_title_bel_terminated() {
@@ -375,4 +375,98 @@ fn a_popped_title_keeps_its_semicolons() {
         term.drain_events(),
         vec![TermEvent::Title("make -j8; ./run".into())]
     );
+}
+
+fn notification(sequence: NotificationSequence, payload: &str, maybe_truncated: bool) -> TermEvent {
+    TermEvent::Notification {
+        sequence,
+        payload: payload.into(),
+        maybe_truncated,
+    }
+}
+
+/// `OSC 9` is relayed with its payload as sent — free text, or ConEmu's `4 ; …` progress
+/// form, which the engine does not tell apart (#964).
+#[test]
+fn osc9_relays_its_payload_raw() {
+    let mut text = Engine::new(80, 24);
+    text.feed(b"\x1b]9;build done\x07");
+    assert_eq!(
+        text.drain_events(),
+        vec![notification(NotificationSequence::Osc9, "build done", false)]
+    );
+
+    let mut progress = Engine::new(80, 24);
+    progress.feed(b"\x1b]9;4;1;50\x1b\\");
+    assert_eq!(
+        progress.drain_events(),
+        vec![notification(NotificationSequence::Osc9, "4;1;50", false)],
+        "the progress form is relayed, not parsed"
+    );
+}
+
+/// `OSC 777` is relayed whole after the code, so a JSON body keeps every `;` (#964).
+#[test]
+fn osc777_relays_everything_after_the_code() {
+    let mut term = Engine::new(80, 24);
+    term.feed(b"\x1b]777;notify;penterm;{\"v\":1,\"message\":\"a; b; c\"}\x1b\\");
+    assert_eq!(
+        term.drain_events(),
+        vec![notification(
+            NotificationSequence::Osc777,
+            "notify;penterm;{\"v\":1,\"message\":\"a; b; c\"}",
+            false
+        )]
+    );
+}
+
+/// A fieldless `OSC 9` / `OSC 777` announces nothing; one empty field is relayed as an
+/// empty payload — the same guard as the title and cwd arms.
+#[test]
+fn a_notification_with_no_payload_field_is_ignored() {
+    for code in [&b"9"[..], b"777"] {
+        let mut none = Engine::new(80, 24);
+        none.feed(&[b"\x1b]", code, b"\x07"].concat());
+        assert_eq!(none.drain_events(), vec![], "OSC {code:?} with no field");
+    }
+
+    let mut empty = Engine::new(80, 24);
+    empty.feed(b"\x1b]9;\x07");
+    assert_eq!(
+        empty.drain_events(),
+        vec![notification(NotificationSequence::Osc9, "", false)]
+    );
+}
+
+/// `maybe_truncated` is set exactly when the parser handed over its full 16 fields (#964).
+///
+/// `OSC 9 ; p` with `n` semicolons in `p` spends `n + 2` fields. At 13 the payload is
+/// complete and unflagged; at 14 it is complete and flagged — the boundary case the
+/// engine cannot tell from a cut one; at 15 it is cut short and flagged.
+#[test]
+fn maybe_truncated_marks_a_payload_at_the_field_bound() {
+    let payload = |n: usize| {
+        (0..=n)
+            .map(|i| format!("f{i}"))
+            .collect::<Vec<_>>()
+            .join(";")
+    };
+    let feed = |n: usize| {
+        let mut term = Engine::new(80, 24);
+        term.feed(format!("\x1b]9;{}\x07", payload(n)).as_bytes());
+        match term.drain_events().as_slice() {
+            [TermEvent::Notification {
+                payload,
+                maybe_truncated,
+                ..
+            }] => (payload.clone(), *maybe_truncated),
+            other => panic!("expected one notification, got {other:?}"),
+        }
+    };
+
+    assert_eq!(feed(13), (payload(13), false), "15 fields: complete");
+    assert_eq!(feed(14), (payload(14), true), "16 fields: complete, flagged");
+    let (cut, flagged) = feed(15);
+    assert!(flagged, "past the bound: flagged");
+    assert_eq!(cut, payload(14), "past the bound: cut to the first 16 fields");
 }

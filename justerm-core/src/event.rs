@@ -199,6 +199,19 @@ pub enum ClipboardTarget {
     Selection,
 }
 
+/// Which notification sequence carried a [`TermEvent::Notification`].
+///
+/// `#[non_exhaustive]`: other notification protocols exist (kitty's `OSC 99`) and a
+/// later version may relay one.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NotificationSequence {
+    /// `OSC 9` — iTerm2's notification, and ConEmu's `OSC 9 ; 4` progress report.
+    Osc9,
+    /// `OSC 777` — rxvt-unicode's extension sequence, e.g. `notify ; title ; body`.
+    Osc777,
+}
+
 /// A consumer-facing event emitted while parsing the VT stream.
 ///
 /// **`#[non_exhaustive]`, so a consumer must carry a `_` arm and a new variant
@@ -279,6 +292,25 @@ pub enum TermEvent {
     /// arrives cut short (the same 16-field parser bound as [`TermEvent::Title`]).
     /// An emitter that percent-encodes `;` never reaches it.
     Cwd(String),
+    /// The application sent a notification sequence (`OSC 9` or `OSC 777`).
+    ///
+    /// `payload` is everything between the code's `;` and the terminator, as sent:
+    /// never split, parsed or unescaped. Reading it is the consumer's — `OSC 9` is
+    /// iTerm2's free-text notification, and ConEmu's `4 ; state ; percent` progress
+    /// report on the same code; `OSC 777` is rxvt-unicode's `notify ; title ; body`,
+    /// whose body may be JSON.
+    ///
+    /// **`maybe_truncated` means "cannot be confirmed whole", not "was cut".** The
+    /// parser this engine builds on passes at most 16 OSC fields and drops the rest,
+    /// and a sequence cut there is indistinguishable from one with exactly 16 fields.
+    /// So the flag is set whenever all 16 arrived, which is a payload holding 14 or
+    /// more `;`: at exactly 14 it is complete, and from 15 it is a prefix of what was
+    /// sent. When the flag is clear, the payload is whole.
+    Notification {
+        sequence: NotificationSequence,
+        payload: String,
+        maybe_truncated: bool,
+    },
     /// The app requested 80/132-column mode (DECCOLM `?3`). justerm is
     /// dimension-free, so this is a *request* — the consumer may honor it by
     /// calling `resize(cols, rows)`, or ignore it. `cols` is 80 or 132.

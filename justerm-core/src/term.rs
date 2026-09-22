@@ -11,7 +11,7 @@ use crate::cell::{Cell, CellFlags, UnderlineStyle};
 use crate::color::Color;
 use crate::cursor::{Cursor, CursorShape, Pen};
 use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
-use crate::event::{ClipboardTarget, TermEvent, Terminator};
+use crate::event::{ClipboardTarget, NotificationSequence, TermEvent, Terminator};
 use crate::grid::{ExtAttrs, Grid, Row};
 use crate::input::{
     KeyEvent, MouseEncoding, MouseEvent, MouseProtocol, encode_focus, encode_key, encode_mouse,
@@ -762,6 +762,10 @@ pub const MAX_COMMAND_TEXT: usize = 4096;
 /// is justerm's own and is chosen by what it must not break rather than by what
 /// it permits.
 pub const MAX_CLIPBOARD_BASE64: usize = 16 * 1024 * 1024;
+
+/// The most OSC fields `vte` hands to `osc_dispatch` (its private `MAX_OSC_PARAMS`,
+/// 0.15.0); fields past it are dropped before dispatch.
+const VTE_OSC_FIELD_CAP: usize = 16;
 
 /// The state DECSC (ESC 7) saves and DECRC (ESC 8) restores: position, pen/SGR,
 /// pending-wrap, and origin mode (per ADR-0004 — DECRC restores origin mode,
@@ -6144,6 +6148,23 @@ impl Perform for Term {
                 if let Some(fields) = params.get(1..).filter(|f| !f.is_empty()) {
                     let cwd = String::from_utf8_lossy(&fields.join(&b';')).into_owned();
                     self.events.push(TermEvent::Cwd(cwd));
+                }
+            }
+            // OSC 9 / OSC 777 = a notification. The payload is relayed rejoined and
+            // uninterpreted, with the same no-field guard as the arms above; reaching
+            // the field cap marks it as possibly cut rather than dropping it.
+            b"9" | b"777" => {
+                if let Some(fields) = params.get(1..).filter(|f| !f.is_empty()) {
+                    let sequence = if number == b"9" {
+                        NotificationSequence::Osc9
+                    } else {
+                        NotificationSequence::Osc777
+                    };
+                    self.events.push(TermEvent::Notification {
+                        sequence,
+                        payload: String::from_utf8_lossy(&fields.join(&b';')).into_owned(),
+                        maybe_truncated: params.len() >= VTE_OSC_FIELD_CAP,
+                    });
                 }
             }
             // OSC 133 = FinalTerm/iTerm2 shell-integration command marks (#158):
