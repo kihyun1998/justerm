@@ -8,8 +8,8 @@
  * **Two surfaces, and the split is the point.** {@link TermEvent} is the
  * *channel* — everything core's `drain_events()` produces travels it, because a
  * backend has exactly one stream to push. {@link EventHandlers} is the
- * *notification* surface, and it stays title/bell/cwd: those are things a consumer
- * is merely told about. An `OSC 52` clipboard event is not one — the consumer
+ * *notification* surface — title, bell, cwd and an application's `OSC 9` / `OSC 777`
+ * notification: things a consumer is merely told about. An `OSC 52` clipboard event is not one — the consumer
  * *acts on* it and, for a query, owes the application a reply — so it rides this
  * union and is handled by {@link import("./clipboard").ClipboardController}
  * instead of by a callback here.
@@ -25,6 +25,7 @@ export type TermEvent =
   | { type: "title"; title: string } // OSC 0/2, or an XTWINOPS pop — xterm's onTitleChange
   | { type: "bell" } // BEL — xterm's onBell
   | { type: "cwd"; cwd: string } // OSC 7 — a justerm extension (no xterm parity)
+  | NotificationEvent
   | ClipboardStoreEvent
   | ClipboardQueryEvent;
 
@@ -56,6 +57,28 @@ export type ClipboardTarget = "clipboard" | "primary" | "selection";
  * provider unexamined — there is no decline arm. No reachable consequence until
  * core adds a target, and nothing here gates that day.
  */
+
+/** Which sequence carried a {@link NotificationEvent}: `OSC 9` or `OSC 777`. */
+export type NotificationSequence = "osc9" | "osc777";
+
+/** An application sent a notification sequence — core's `TermEvent::Notification`.
+ *
+ * `payload` is everything after the code's `;`, as sent: never split or parsed. `OSC 9`
+ * is iTerm2's free-text notification and also ConEmu's `4;state;percent` progress
+ * report; `OSC 777` is rxvt-unicode's `notify;title;body`, whose body may be JSON.
+ * Telling these apart is the consumer's.
+ *
+ * `maybeTruncated` means the payload **cannot be confirmed whole**. The parser core
+ * builds on passes at most 16 OSC fields, and a sequence cut there looks exactly like
+ * one with 16 fields, so the flag is set for any payload with 14 or more `;` — complete
+ * at exactly 14, a prefix of what was sent from 15. When it is `false` the payload is
+ * whole. */
+export interface NotificationEvent {
+  type: "notification";
+  sequence: NotificationSequence;
+  payload: string;
+  maybeTruncated: boolean;
+}
 
 /** The byte an OSC reply must end with — **the one carried back, not a default**.
  * `drain_events` hands over a *batch*, so two queries can be outstanding
@@ -111,6 +134,9 @@ export interface EventHandlers {
   onBell?(): void;
   /** The working directory was reported (OSC 7), e.g. `file://host/path`. */
   onCwd?(cwd: string): void;
+  /** The application sent an `OSC 9` / `OSC 777` notification. See
+   * {@link NotificationEvent} for what `payload` and `maybeTruncated` hold. */
+  onNotification?(event: NotificationEvent): void;
 }
 
 /** Route a {@link TermEvent} to the matching {@link EventHandlers} callback. */
@@ -124,6 +150,9 @@ export function dispatchTermEvent(event: TermEvent, handlers: EventHandlers): vo
       return;
     case "cwd":
       handlers.onCwd?.(event.cwd);
+      return;
+    case "notification":
+      handlers.onNotification?.(event);
       return;
     // The clipboard pair rides this channel but is not a notification — it goes to
     // `ClipboardController`, wired separately on the same subscription.
