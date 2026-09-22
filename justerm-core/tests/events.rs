@@ -393,7 +393,11 @@ fn osc9_relays_its_payload_raw() {
     text.feed(b"\x1b]9;build done\x07");
     assert_eq!(
         text.drain_events(),
-        vec![notification(NotificationSequence::Osc9, "build done", false)]
+        vec![notification(
+            NotificationSequence::Osc9,
+            "build done",
+            false
+        )]
     );
 
     let mut progress = Engine::new(80, 24);
@@ -455,18 +459,28 @@ fn maybe_truncated_marks_a_payload_at_the_field_bound() {
         let mut term = Engine::new(80, 24);
         term.feed(format!("\x1b]9;{}\x07", payload(n)).as_bytes());
         match term.drain_events().as_slice() {
-            [TermEvent::Notification {
-                payload,
-                maybe_truncated,
-                ..
-            }] => (payload.clone(), *maybe_truncated),
+            [
+                TermEvent::Notification {
+                    payload,
+                    maybe_truncated,
+                    ..
+                },
+            ] => (payload.clone(), *maybe_truncated),
             other => panic!("expected one notification, got {other:?}"),
         }
     };
 
     assert_eq!(feed(13), (payload(13), false), "15 fields: complete");
-    assert_eq!(feed(14), (payload(14), true), "16 fields: complete, flagged");
+    assert_eq!(
+        feed(14),
+        (payload(14), true),
+        "16 fields: complete, flagged"
+    );
     let (cut, flagged) = feed(15);
     assert!(flagged, "past the bound: flagged");
-    assert_eq!(cut, payload(14), "past the bound: cut to the first 16 fields");
+    assert_eq!(
+        cut,
+        payload(14),
+        "past the bound: cut to the first 16 fields"
+    );
 }

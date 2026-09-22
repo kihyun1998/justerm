@@ -150,7 +150,7 @@ nothing about it appears in the frame.
   pair too, because a backend has one stream to push down. What stays narrower is
   `EventHandlers`, the *notification* surface — title, bell, cwd and, since #964, the
   `OSC 9`/`OSC 777` notification — so a new event here still does not automatically owe a
-  callback; it owes a decision about which of the two surfaces it belongs on. `Notification`
+  callback; it owes a decision about which of the two surfaces it belongs on. `NotificationEvent`
   took the callback because the consumer is only told: no reply is owed
 - `justerm-web/src/clipboard.ts` — the `OSC 52` consumer half (#841). `ClipboardController` takes
   the pair off that same subscription, routes it to an embedder-injected `ClipboardProvider`, and
