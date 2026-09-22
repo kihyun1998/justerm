@@ -10,7 +10,7 @@
 
   Whether it does is the platform's, and the face's at that size: Chromium on Windows draws LCD text
   into an opaque 2D canvas, but a face it draws without antialiasing at a small size (the default
-  `monospace` here, below about 28 device px — so the grid is 28 CSS px) gets none, and a platform
+  `monospace` here, at 24 device px and below — so the grid is 28 CSS px) gets none, and a platform
   without LCD text hands back three equal channels. So the page draws the same glyphs, font and size
   into a plain opaque canvas in the scene's real colours — the TRUTH the browser would put on screen —
   and the checks that need fringes run only where that draw shows them (`lcdAvailable`, printed under
@@ -26,10 +26,11 @@
   · no fringe appears on a platform whose canvas draws none (`lcdAvailable` false).
   Where the canvas draws LCD text:
   · light ink on an opaque background shows fringes on, none off;
-  · light, dark, pale and yellow ink lay down within 1 % of the truth draw's total ink, and mid-grey
-    within 8 % — the claim of the feature, and what the dark-ink exponent, the light-ink threshold
-    and the luminance weights answer to (the inks sit either side of the threshold, and yellow falls
-    on different sides of it under different weights); grayscale misses dark ink by more;
+  · light, dark, pale, yellow, green and bold ink lay down within 1 % of the truth draw's total ink,
+    and mid-grey within 8 % — the claim of the feature, and what the dark-ink exponent and the
+    per-channel threshold answer to (the neutral inks sit either side of the threshold, green is the
+    ink a luminance rule gets wrong, and bold is the mask drawn in the glyph's own style); grayscale
+    misses dark ink by more;
   · a glyph this face draws past its cell vertically keeps its coverage where the ink lands in the
     neighbouring row: fringes there for light ink, and the dark-ink curve lightening dark ink there
     as it does inside the cell (skipped, and printed, when no such glyph is found);
@@ -49,7 +50,7 @@
   const DEFAULT = 0;                           // default colour ref
   const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
   const WHITE = 0xffffff, BLACK = 0x000000;
-  // Either side of the light-ink threshold (0.75): GREY is luminance 0.56, PALE 0.88.
+  // Either side of the light-ink threshold (0.75), on every channel: GREY is 0.56, PALE 0.88.
   const GREY = 0x909090, PALE = 0xe0e0e0;
   // Saturated inks: the curve is chosen per channel, so GREEN (whose luminance, 0.72, is below the
   // threshold while its green channel is far above it) is the ink a luminance rule gets wrong.
