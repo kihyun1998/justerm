@@ -76,7 +76,10 @@ It changes what the atlas holds, so it is the seventh `ConfigKey` selector (ADR-
 ## Consequences
 
 - **Off is bit-identical to before.** With the setting off, `u_lcd_gamma` is 0 and the shader reads the
-  alpha on all three channels; `demo/subpixel.html` checks the bytes.
+  alpha on all three channels. Measured against `master`'s build when this landed: 14 scenes (light,
+  dark, grey and coloured ink, bold, the default background, a translucent one; 16 and 28 px, with
+  glyphs that spill past their cell) at 4 densities, 56 of 56 byte-identical. `demo/subpixel.html`
+  keeps the in-tree half — off, on, then off again draws the first bytes.
 - **The browser decides where fringes appear, and often declines.** Chromium drew the default
   `monospace` aliased below about 28 device px and drew no LCD text at 49 device px and above. There
   the three channels come back equal — but dark ink still takes the exponent, and was measured closer to
@@ -84,6 +87,12 @@ It changes what the atlas holds, so it is the seventh `ConfigKey` selector (ADR-
 - **A consumer whose default background is transparent gets nothing from it** until that background is
   opaque. That is D3, not a gap in the renderer.
 - **Cost**: two extra canvas draws and one readback per baked glyph, and one calibration per
-  configuration bake. No texture memory.
+  configuration bake — drawn at no more than 64 device px and fitted over light levels rather than
+  pixels, so it does not grow with the font. Measured (dev build, headless Chromium) for a new
+  configuration's whole bake: 16.5 ms against 9.1 ms at 16 CSS px, dpr 1.25; about 1.8–2.5× across
+  12–200 px. No texture memory.
+- **Ink that leaves its cell keeps the coverage it had inside it.** The bleed band (ADR-0019 R1.2) is
+  read by the receiving cell from the owner's slot, so that read takes the owner's mask and the owner's
+  ink colour too; a background-class owner stays scalar, since its RGB is not a mask.
 - **Falsifier**: a platform where the dark mask is not one curve of the light mask — a fitted exponent
   whose error exceeds grayscale's. That reopens D1 toward a second mask per slot.
