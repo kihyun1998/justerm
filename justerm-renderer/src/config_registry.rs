@@ -40,7 +40,7 @@
 
 use crate::css_font::FontWeight;
 
-/// A font configuration: the six per-grid selectors that decide which atlas serves a grid.
+/// A font configuration: the seven per-grid selectors that decide which atlas serves a grid.
 ///
 /// The `f32` selectors are stored as **bit patterns** so the key can be compared and hashed.
 /// A `-0.0` is normalised to `0.0` first: the two compare equal as floats and would otherwise key
@@ -57,6 +57,7 @@ pub struct ConfigKey {
     font_weight_bold: u32,
     letter_spacing: u32,
     line_height: u32,
+    subpixel: bool,
 }
 
 /// Normalise a selector to the bits that identify it. `-0.0` and `0.0` are the same configuration.
@@ -65,7 +66,7 @@ fn bits(v: f32) -> u32 {
 }
 
 impl ConfigKey {
-    /// The configuration a grid with these six selectors stands on.
+    /// The configuration a grid with these seven selectors stands on.
     pub fn new(
         font_family: &str,
         font_size: f32,
@@ -73,6 +74,7 @@ impl ConfigKey {
         font_weight_bold: FontWeight,
         letter_spacing: f32,
         line_height: f32,
+        subpixel: bool,
     ) -> Self {
         ConfigKey {
             font_family: font_family.to_string(),
@@ -81,6 +83,7 @@ impl ConfigKey {
             font_weight_bold: bits(font_weight_bold.value()),
             letter_spacing: bits(letter_spacing),
             line_height: bits(line_height),
+            subpixel,
         }
     }
 
@@ -112,6 +115,11 @@ impl ConfigKey {
     /// The multiplier on the glyph height (#338).
     pub fn line_height(&self) -> f32 {
         f32::from_bits(self.line_height)
+    }
+
+    /// Whether text glyphs carry per-channel (LCD) coverage (#961).
+    pub fn subpixel(&self) -> bool {
+        self.subpixel
     }
 }
 
@@ -298,7 +306,7 @@ mod tests {
     const B: FontWeight = FontWeight::BOLD;
 
     fn key(family: &str, size: f32) -> ConfigKey {
-        ConfigKey::new(family, size, W, B, 0.0, 1.0)
+        ConfigKey::new(family, size, W, B, 0.0, 1.0, false)
     }
 
     fn weight(v: f64) -> FontWeight {
@@ -336,12 +344,13 @@ mod tests {
     fn each_selector_separates_a_configuration() {
         let (reg, _) = start();
         for other in [
-            ConfigKey::new("Fira Code", 15.0, W, B, 0.0, 1.0),
-            ConfigKey::new("monospace", 16.0, W, B, 0.0, 1.0),
-            ConfigKey::new("monospace", 15.0, weight(300.0), B, 0.0, 1.0),
-            ConfigKey::new("monospace", 15.0, W, weight(900.0), 0.0, 1.0),
-            ConfigKey::new("monospace", 15.0, W, B, 1.0, 1.0),
-            ConfigKey::new("monospace", 15.0, W, B, 0.0, 1.5),
+            ConfigKey::new("Fira Code", 15.0, W, B, 0.0, 1.0, false),
+            ConfigKey::new("monospace", 16.0, W, B, 0.0, 1.0, false),
+            ConfigKey::new("monospace", 15.0, weight(300.0), B, 0.0, 1.0, false),
+            ConfigKey::new("monospace", 15.0, W, weight(900.0), 0.0, 1.0, false),
+            ConfigKey::new("monospace", 15.0, W, B, 1.0, 1.0, false),
+            ConfigKey::new("monospace", 15.0, W, B, 0.0, 1.5, false),
+            ConfigKey::new("monospace", 15.0, W, B, 0.0, 1.0, true),
         ] {
             assert_eq!(reg.find(&other), None, "{other:?} must not share");
         }
@@ -350,14 +359,22 @@ mod tests {
     #[test]
     fn negative_zero_spacing_is_the_same_configuration_as_zero() {
         let (reg, first) = start();
-        let neg = ConfigKey::new("monospace", 15.0, W, B, -0.0, 1.0);
+        let neg = ConfigKey::new("monospace", 15.0, W, B, -0.0, 1.0, false);
         assert_eq!(reg.find(&neg), Some(first));
     }
 
     #[test]
     fn a_weight_given_as_its_number_is_the_same_configuration_as_its_keyword() {
         let (reg, first) = start();
-        let numeric = ConfigKey::new("monospace", 15.0, weight(400.0), weight(700.0), 0.0, 1.0);
+        let numeric = ConfigKey::new(
+            "monospace",
+            15.0,
+            weight(400.0),
+            weight(700.0),
+            0.0,
+            1.0,
+            false,
+        );
         assert_eq!(reg.find(&numeric), Some(first));
     }
 
@@ -369,11 +386,21 @@ mod tests {
         assert_eq!(k.font_size(), 15.0);
         assert_eq!(k.font_weight(), W);
         assert_eq!(k.font_weight_bold(), B);
-        let other = ConfigKey::new("monospace", 15.0, weight(350.5), weight(1000.0), 0.0, 1.0);
+        let other = ConfigKey::new(
+            "monospace",
+            15.0,
+            weight(350.5),
+            weight(1000.0),
+            0.0,
+            1.0,
+            false,
+        );
         assert_eq!(other.font_weight().value(), 350.5);
         assert_eq!(other.font_weight_bold().value(), 1000.0);
         assert_eq!(k.letter_spacing(), 0.0);
         assert_eq!(k.line_height(), 1.0);
+        assert!(!k.subpixel());
+        assert!(ConfigKey::new("monospace", 15.0, W, B, 0.0, 1.0, true).subpixel());
     }
 
     #[test]
