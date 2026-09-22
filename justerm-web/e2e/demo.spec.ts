@@ -2107,6 +2107,44 @@ test.describe("a fractional scrollSensitivity (#908)", () => {
     expect(await notch(-5, 0), "a sub-line pixel delta chains to the page as before").toBe(false);
     expect(scrolls).toHaveLength(1);
   });
+
+  // #959: the booted 0.5 changes on the live widget, and the half line already carried survives
+  // it. 0.5 carried + 1.5 = 2 lines; a setter that did nothing gives 0.5 + 0.5 = 1, and one that
+  // dropped the carry gives 1.5 → 1.
+  test("setScrollOptions changes the sensitivity of a mounted widget and keeps the carry", async ({
+    page,
+  }) => {
+    const scrolls: string[] = [];
+    page.on("console", (m) => {
+      if (m.text().startsWith("[scroll]")) scrolls.push(m.text());
+    });
+    const seeded = await page.evaluate(() => window.__seedRows!(150));
+    expect(seeded.scrollbackLen, "a scroll needs history to move into").toBeGreaterThan(5);
+    const lineNotch = () =>
+      page.evaluate(() => {
+        const c = document.querySelector("#term") as HTMLElement;
+        const r = c.getBoundingClientRect();
+        c.dispatchEvent(
+          new WheelEvent("wheel", {
+            deltaY: -1,
+            deltaMode: 1, // LINE
+            bubbles: true,
+            cancelable: true,
+            clientX: r.left + 50,
+            clientY: r.top + 50,
+          }),
+        );
+      });
+
+    await lineNotch(); // half a line at the booted 0.5: carried, nothing scrolls
+    expect(scrolls).toEqual([]);
+
+    await page.evaluate(() => window.__setScrollOptions!({ scrollSensitivity: 1.5 }));
+    await lineNotch();
+
+    await expect.poll(() => scrolls.length).toBe(1);
+    expect(scrolls[0]).toBe("[scroll] → displayOffset 2");
+  });
 });
 
 // stays silent if it is dropped (the renderer's own default is opaque, so a missing `create` call

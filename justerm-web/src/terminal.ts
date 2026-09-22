@@ -468,7 +468,7 @@ export class Terminal {
   private detach: Array<() => void> = [];
   /** Wheel → line delta (stateful: carries trackpad sub-line remainders). Shared
    * by the app-report and local-scroll paths, like xterm's single accumulator. */
-  private scroller: WheelScroller | undefined;
+  private readonly scroller: WheelScroller;
   /** Latest frame state the wheel router reads (a frame may omit any of them). */
   private mask = 0;
   private displayOffset = 0;
@@ -545,7 +545,17 @@ export class Terminal {
     private readonly source: FrameSource,
     private readonly renderer: Renderer,
     private readonly options?: TerminalOptions,
-  ) {}
+  ) {
+    this.scroller = new WheelScroller(options?.scroll);
+  }
+
+  /** Change the wheel sensitivities ({@link TerminalOptions.scroll}) from the next wheel event
+   * on, without rebuilding the widget. A field `opts` leaves out keeps its current value, and a
+   * sub-line remainder already carried is kept. Callable before {@link Terminal.mount}; after
+   * {@link Terminal.dispose} it has nothing left to affect. */
+  setScrollOptions(opts: ScrollOptions): void {
+    this.scroller.setOptions(opts);
+  }
 
   /** Focus the keyboard/IME input target (the hidden textarea, #116). Consumers
    * that move focus away — an accessible-view overlay, a control button — call this
@@ -697,7 +707,7 @@ export class Terminal {
     const alt = frame.altScreen ?? false;
     if (alt !== this.altScreen) {
       this.altScreen = alt;
-      this.scroller?.reset();
+      this.scroller.reset();
     }
   }
 
@@ -856,7 +866,6 @@ export class Terminal {
       setTicking(false);
     });
 
-    this.scroller = new WheelScroller(o.scroll);
     const onWheel = (e: WheelEvent): void => this.onWheel(e, o);
     element.addEventListener("wheel", onWheel, { passive: false });
     this.detach.push(() => element.removeEventListener("wheel", onWheel));
@@ -1084,7 +1093,7 @@ export class Terminal {
     if (!geom) return;
     // getGeometry's cellHeight is CSS px, matching pixel-mode deltaY; dpr 1 keeps
     // the scroller's `cellHeight / dpr` at CSS-px-per-cell.
-    const lines = this.scroller!.consumeWheelEvent(e, {
+    const lines = this.scroller.consumeWheelEvent(e, {
       cellHeight: geom.cellHeight,
       dpr: 1,
       rows: this.rows,
@@ -1152,7 +1161,6 @@ export class Terminal {
     const element = this.options?.element;
     if (element && this.cursorBeforeLink !== undefined) element.style.cursor = this.cursorBeforeLink;
     this.cursorBeforeLink = undefined;
-    this.scroller = undefined;
     this.textarea?.remove();
     this.textarea = undefined;
     this.composition = undefined;

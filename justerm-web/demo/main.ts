@@ -1850,6 +1850,8 @@ declare global {
       declares: OriginDragArm;
     };
     __seedRows?: (n: number) => { rows: number; scrollbackLen: number };
+    /** #959: the widget's live wheel-sensitivity setter, as a settings page would call it. */
+    __setScrollOptions?: (opts: { scrollSensitivity?: number; fastScrollSensitivity?: number }) => void;
     __setDpr?: (dpr: number) => void;
     __setLineHeight?: (lh: number) => void;
     /** #901: a consumer key policy the e2e installs; the demo's `beforeKey` asks it last. */
@@ -4305,6 +4307,8 @@ window.__output = (on) => {
  * approximation of it. Raising the budget instead would have moved the cliff rather than removed
  * it, and this repo's gate rule refuses a threshold moved to make a run green.
  */
+window.__setScrollOptions = (opts) => term?.setScrollOptions(opts);
+
 window.__seedRows = (n: number): { rows: number; scrollbackLen: number } => {
   for (let i = 0; i < n; i++) appendTick();
   return { rows: log.length, scrollbackLen: maxOffset() };
