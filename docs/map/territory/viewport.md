@@ -142,5 +142,11 @@ ADR-0013 assumes — who holds the scroll position at all — is still uncompare
 - **The overscan band is described in `architecture.md` and implemented nowhere**, so it is a
   permitted consumer behaviour rather than a supported one — no test asserts the engine stays
   authoritative if a consumer builds it.
+- **Wheel sensitivities are not validated**, through the constructor or `setScrollOptions`. `0`
+  scrolls nothing while `onWheel` still consumes LINE/PAGE notches as carried; a negative value
+  inverts the direction; `NaN` is stopped by #675's finiteness guard, so the wheel goes dead rather
+  than latching. Pre-existing, but #959 widened the exposure: a settings field is a likely source of
+  `parseFloat("")`. xterm.js rejects `<= 0` on every assignment (a throw from its options service).
+  Whether to throw, clamp, or keep is a policy call nobody has made.
 - **`scrollback_len` is exposed but its cap is not.** A consumer cannot tell whether history is being
   evicted, only how much currently exists.
