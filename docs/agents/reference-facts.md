@@ -3604,8 +3604,10 @@ tells iTerm2 free text from ConEmu progress and splits `notify;title;body`.
 |---|---|---|
 | Neither `9` nor `777` is in xterm's OSC list, so the binding tree does not define them | xterm | `ctlseqs.txt:2005` (the section, scanned) |
 | `OSC 9;4;…` is parsed in the engine into a progress report | ghostty | `src/terminal/osc/parsers/osc9.zig:152` |
-| Any other `OSC 9` payload is a desktop notification with the payload as body | ghostty | `src/terminal/osc/parsers/osc9.zig:280` |
+| `OSC 9;9;path` is parsed in the engine into a working-directory report, one of ConEmu's numbered subcommands | ghostty | `src/terminal/osc/parsers/osc9.zig:252` |
+| Any `OSC 9` payload matching no ConEmu subcommand is a desktop notification with the payload as body | ghostty | `src/terminal/osc/parsers/osc9.zig:280` |
 | `OSC 777;notify;title;body` is parsed in the engine into a desktop notification | ghostty | `src/terminal/osc/parsers/rxvt_extension.zig:39` |
+| Any extension name other than `notify` on `OSC 777` is rejected | ghostty | `src/terminal/osc/parsers/rxvt_extension.zig:25` |
 | The core registers no handler for either code; progress is an addon registering `9` from outside and declining any payload not starting `4;` | xterm.js | `addons/addon-progress/src/ProgressAddon.ts:50` |
 | The parser path alacritty pins has no arm for either code, so both are dropped | vte 0.15.0 (alacritty's parser) | `src/ansi.rs:1329` (`osc_dispatch`) |
 

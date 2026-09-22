@@ -8,8 +8,9 @@
  * **Two surfaces, and the split is the point.** {@link TermEvent} is the
  * *channel* — everything core's `drain_events()` produces travels it, because a
  * backend has exactly one stream to push. {@link EventHandlers} is the
- * *notification* surface — title, bell, cwd and an application's `OSC 9` / `OSC 777`
- * notification: things a consumer is merely told about. An `OSC 52` clipboard event is not one — the consumer
+ * *notification* surface — title, bell, cwd and an application's `OSC 9` /
+ * `OSC 777`: things a consumer is merely told about. An `OSC 52` clipboard event is
+ * not one — the consumer
  * *acts on* it and, for a query, owes the application a reply — so it rides this
  * union and is handled by {@link import("./clipboard").ClipboardController}
  * instead of by a callback here.
@@ -63,10 +64,14 @@ export type NotificationSequence = "osc9" | "osc777";
 
 /** An application sent a notification sequence — core's `TermEvent::Notification`.
  *
- * `payload` is everything after the code's `;`, as sent: never split or parsed. `OSC 9`
- * is iTerm2's free-text notification and also ConEmu's `4;state;percent` progress
- * report; `OSC 777` is rxvt-unicode's `notify;title;body`, whose body may be JSON.
- * Telling these apart is the consumer's.
+ * `payload` is everything after the code's `;`: never split or parsed, though C0
+ * controls inside an OSC never reach it. **Not every payload is a notification**, and
+ * telling them apart is the consumer's. `OSC 9` is iTerm2's free-text notification and
+ * also ConEmu's numbered subcommands — `4;…` progress, `9;…` the working directory,
+ * which a shell may send on every prompt — so a payload starting with a known `n;` is
+ * that subcommand, not text to show. `OSC 777` is rxvt-unicode's extension dispatch;
+ * only a first field of `notify` (`notify;title;body`, body possibly JSON) is a
+ * notification.
  *
  * `maybeTruncated` means the payload **cannot be confirmed whole**. The parser core
  * builds on passes at most 16 OSC fields, and a sequence cut there looks exactly like
@@ -134,8 +139,8 @@ export interface EventHandlers {
   onBell?(): void;
   /** The working directory was reported (OSC 7), e.g. `file://host/path`. */
   onCwd?(cwd: string): void;
-  /** The application sent an `OSC 9` / `OSC 777` notification. See
-   * {@link NotificationEvent} for what `payload` and `maybeTruncated` hold. */
+  /** The application sent an `OSC 9` / `OSC 777`. Not every one is a notification to
+   * show — see {@link NotificationEvent} for what `payload` and `maybeTruncated` hold. */
   onNotification?(event: NotificationEvent): void;
 }
 

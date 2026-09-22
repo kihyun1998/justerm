@@ -85,8 +85,13 @@ nothing about it appears in the frame.
 - **A notification is relayed, not read (#964).** `OSC 9` and `OSC 777` become one
   `TermEvent::Notification { sequence, payload, maybe_truncated }` with the payload as sent after
   the code — `params[1..]` rejoined, under the same no-field guard as the title and cwd arms. The
-  engine does not tell iTerm2's free text from ConEmu's `9;4` progress form, nor split
+  engine does not tell iTerm2's free text from ConEmu's numbered subcommands, nor split
   rxvt-unicode's `notify;title;body`: that is reading, and reading is the consumer's (ADR-0017).
+  **The name overstates the content, and the docs say so.** Both codes are families: ConEmu's
+  `9;9;path` is a working-directory report a shell may send every prompt, and does *not* arrive as
+  `Cwd`; `777` is urxvt's extension dispatch, where only `notify` is a notification. A consumer that
+  shows every payload not starting `4;` toasts a path per prompt, which is why the doc-comments name
+  the families rather than two forms.
   The references split on exactly that line — ghostty reads both in its engine, xterm.js leaves
   them to an addon, alacritty drops them — in
   [notification sequences](../../agents/reference-facts.md#notification-sequences--osc-9-and-osc-777-964-verified-2026-09-23).

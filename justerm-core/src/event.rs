@@ -206,9 +206,11 @@ pub enum ClipboardTarget {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NotificationSequence {
-    /// `OSC 9` — iTerm2's notification, and ConEmu's `OSC 9 ; 4` progress report.
+    /// `OSC 9` — iTerm2's notification, and ConEmu's numbered subcommands (`4`
+    /// progress, `9` working directory, …).
     Osc9,
-    /// `OSC 777` — rxvt-unicode's extension sequence, e.g. `notify ; title ; body`.
+    /// `OSC 777` — rxvt-unicode's extension dispatch; `notify ; title ; body` is its
+    /// notification.
     Osc777,
 }
 
@@ -294,11 +296,19 @@ pub enum TermEvent {
     Cwd(String),
     /// The application sent a notification sequence (`OSC 9` or `OSC 777`).
     ///
-    /// `payload` is everything between the code's `;` and the terminator, as sent:
-    /// never split, parsed or unescaped. Reading it is the consumer's — `OSC 9` is
-    /// iTerm2's free-text notification, and ConEmu's `4 ; state ; percent` progress
-    /// report on the same code; `OSC 777` is rxvt-unicode's `notify ; title ; body`,
-    /// whose body may be JSON.
+    /// `payload` is everything between the code's `;` and the terminator: never split,
+    /// parsed or unescaped, though C0 controls inside it never reach it (the parser drops
+    /// them within an OSC string). Reading it is the consumer's, and **not every payload
+    /// on these codes is a notification**:
+    ///
+    /// - `OSC 9` is iTerm2's free-text notification, and also ConEmu's family of
+    ///   numbered subcommands — a leading `n ;` — among them `4` (progress) and `9`
+    ///   (the working directory, which a shell may send on every prompt and which does
+    ///   not arrive as [`TermEvent::Cwd`]). A payload starting with a known subcommand
+    ///   is that subcommand, not text to show.
+    /// - `OSC 777` is rxvt-unicode's extension dispatch. Only a first field of `notify`
+    ///   (`notify ; title ; body`, whose body may be JSON) is a notification; other
+    ///   extension names ride the same code.
     ///
     /// **`maybe_truncated` means "cannot be confirmed whole", not "was cut".** The
     /// parser this engine builds on passes at most 16 OSC fields and drops the rest,
