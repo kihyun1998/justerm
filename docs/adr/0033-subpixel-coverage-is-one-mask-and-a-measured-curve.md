@@ -87,9 +87,9 @@ It changes what the atlas holds, so it is the seventh `ConfigKey` selector (ADR-
   keeps the in-tree half — off, on, then off again draws the first bytes.
 - **The browser decides where fringes appear, and often declines.** Chromium drew the default
   `monospace` aliased at 24 device px and below (LCD text from 26) and drew no LCD text at 49 device
-  px and above. There
-  the three channels come back equal — but dark ink still takes the exponent, and was measured closer to
-  the browser's own draw than grayscale is (−0.2 % against +15 % total ink at dpr 2).
+  px and above. There the three channels come back equal — but dark ink still takes the exponent, and
+  on Windows was measured closer to the browser's own draw than grayscale is (−0.2 % against +15 %
+  total ink at dpr 2).
 - **A consumer whose default background is transparent gets nothing from it** until that background is
   opaque. That is D3, not a gap in the renderer.
 - **Cost**: two extra canvas draws and one readback per baked glyph, and one calibration per
@@ -100,5 +100,10 @@ It changes what the atlas holds, so it is the seventh `ConfigKey` selector (ADR-
 - **Ink that leaves its cell keeps the coverage it had inside it.** The bleed band (ADR-0019 R1.2) is
   read by the receiving cell from the owner's slot, so that read takes the owner's mask and the owner's
   ink colour too; a background-class owner stays scalar, since its RGB is not a mask.
+- **A second platform, measured.** The Linux CI runner's headless Chromium also draws LCD text into an
+  opaque canvas, with a dark-ink curve close to flat (dark ink's in-cell weight moves by 0.2–1.3 % under
+  it, against 12–22 % on Windows). Every ink the proof bounds lands within 1 % there too, while
+  grayscale is already within 1 % for dark ink — so how much the curve buys is the platform's, and why
+  it is measured rather than fixed.
 - **Falsifier**: a platform where the dark mask is not one curve of the light mask — a fitted exponent
   whose error exceeds grayscale's. That reopens D1 toward a second mask per slot.

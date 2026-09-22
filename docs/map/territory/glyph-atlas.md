@@ -122,8 +122,9 @@ target**, not one of the three reference terminals, and pinned by nothing.
   composites white under SwiftShader and reads as *sharpest* to a blur metric.
 - **beamterm is cited by file path with no pin.** It is the design's origin and the citation cannot
   be checked.
-- **Subpixel text is measured on one platform.** Every number behind ADR-0033 is Windows 11 +
-  Chromium. Where the canvas draws no LCD text the proof checks only that no fringe appears; whether a
-  FreeType or Core Text dark-ink curve is one power of the light mask is unmeasured, and is the
-  record's falsifier. The browser also declines LCD text for large glyphs (none at 49 device px) and for
+- **Subpixel text is measured on two platforms.** ADR-0033's numbers are Windows 11 + Chromium; the
+  Linux CI runner's headless Chromium draws LCD text too, with a near-flat dark-ink curve, and meets the
+  same 1 % bounds. macOS is unmeasured; wherever the canvas draws no LCD text the proof checks only
+  that no fringe appears. A platform whose dark mask is not one curve of the light
+  mask is the record's falsifier. The browser also declines LCD text for large glyphs (none at 49 device px) and for
   a face it draws aliased, so `demo/subpixel.html` mounts its grid at 28 CSS px to exercise it at all.
