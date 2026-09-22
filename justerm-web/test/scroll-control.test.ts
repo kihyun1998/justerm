@@ -168,6 +168,51 @@ describe("WheelScroller.consumeWheelEvent", () => {
   });
 });
 
+// #959 — a mounted widget changes its sensitivity without being rebuilt. xterm.js reads
+// `scrollSensitivity` from its options service on every event, so a change applies to the
+// next notch and leaves `_wheelPartialScroll` alone (only `reset()` clears it).
+describe("WheelScroller.setOptions (#959)", () => {
+  it("applies a new sensitivity from the next event on", () => {
+    const s = new WheelScroller();
+    const ev = wheel({ deltaY: 3, deltaMode: LINE });
+    expect(s.consumeWheelEvent(ev, ctx)).toBe(3);
+
+    s.setOptions({ scrollSensitivity: 2 });
+
+    expect(s.consumeWheelEvent(ev, ctx)).toBe(6);
+  });
+
+  // A field left out keeps its current value, the way assigning one xterm option leaves the
+  // others. Resetting it would give 1 × 2 × 5 = 10, the constructor's default.
+  it("keeps a field the call leaves out", () => {
+    const s = new WheelScroller({ fastScrollSensitivity: 10 });
+
+    s.setOptions({ scrollSensitivity: 2 });
+
+    expect(s.consumeWheelEvent(wheel({ deltaY: 1, deltaMode: LINE, altKey: true }), ctx)).toBe(20);
+  });
+
+  it("changes the fast sensitivity alone", () => {
+    const s = new WheelScroller({ scrollSensitivity: 2 });
+
+    s.setOptions({ fastScrollSensitivity: 3 });
+
+    expect(s.consumeWheelEvent(wheel({ deltaY: 1, deltaMode: LINE, altKey: true }), ctx)).toBe(6);
+  });
+
+  // The carried fraction is already in lines, so it stays valid across the change. Three
+  // outcomes separate: kept and re-scaled 0.5 + 3 × 0.25 = 1.25 → 1; cleared 0.75 → 0; the
+  // new sensitivity ignored 0.5 + 3 × 0.5 = 2.
+  it("keeps the carried remainder across the change", () => {
+    const s = new WheelScroller({ scrollSensitivity: 0.5 });
+    expect(s.consumeWheelEvent(wheel({ deltaY: 1, deltaMode: LINE }), ctx)).toBe(0); // .5 carried
+
+    s.setOptions({ scrollSensitivity: 0.25 });
+
+    expect(s.consumeWheelEvent(wheel({ deltaY: 3, deltaMode: LINE }), ctx)).toBe(1);
+  });
+});
+
 // #675 — a non-finite intermediate does not merely produce one wrong answer here,
 // it *latches*: `wheelPartialScroll` keeps it (`Infinity % 1` is `NaN`), so every
 // later notch is `NaN` too, including after the geometry recovers. Measured in a

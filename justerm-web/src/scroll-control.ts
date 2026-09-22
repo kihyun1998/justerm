@@ -34,8 +34,8 @@ const DOM_DELTA_PIXEL = 0;
 const DOM_DELTA_PAGE = 2;
 
 export class WheelScroller {
-  private readonly scrollSensitivity: number;
-  private readonly fastScrollSensitivity: number;
+  private scrollSensitivity: number;
+  private fastScrollSensitivity: number;
   /** Sub-line remainder carried between wheel events, whatever their `deltaMode`. */
   private wheelPartialScroll = 0;
   /** The `deltaMode` the remainder was accumulated in. */
@@ -44,6 +44,15 @@ export class WheelScroller {
   constructor(opts: ScrollOptions = {}) {
     this.scrollSensitivity = opts.scrollSensitivity ?? 1;
     this.fastScrollSensitivity = opts.fastScrollSensitivity ?? 5;
+  }
+
+  /** Change the sensitivities from the next event on. A field `opts` leaves out keeps its
+   * current value, and the carried sub-line remainder is kept. */
+  setOptions(opts: ScrollOptions): void {
+    if (opts.scrollSensitivity !== undefined) this.scrollSensitivity = opts.scrollSensitivity;
+    if (opts.fastScrollSensitivity !== undefined) {
+      this.fastScrollSensitivity = opts.fastScrollSensitivity;
+    }
   }
 
   /** Whole lines to scroll (sign = direction, positive = down/newer); `0` = none. */
