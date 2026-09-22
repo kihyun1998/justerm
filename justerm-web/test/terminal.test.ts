@@ -100,6 +100,17 @@ describe("Terminal wiring", () => {
     expect(renderer.disposeCount).toBe(1);
   });
 
+  it("takes a scroll-options change before mount and after dispose (#959)", () => {
+    // A settings page may push a value before the pane mounts or after it closes. The widget's
+    // scroller exists for its whole life, so neither end has a missing instance to fall on.
+    const term = new Terminal(new StubFrameSource(), new FakeRenderer());
+
+    expect(() => term.setScrollOptions({ scrollSensitivity: 3 })).not.toThrow();
+    term.mount();
+    term.dispose();
+    expect(() => term.setScrollOptions({ fastScrollSensitivity: 2 })).not.toThrow();
+  });
+
   it("does not dispose the renderer twice", () => {
     // The port requires `dispose()` to be idempotent, but the widget must not lean on that: the
     // consumer may hold the same renderer and call it too. xterm.js buys idempotence by wrapping

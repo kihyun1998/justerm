@@ -54,6 +54,23 @@ directly.
     without it every keystroke in a burst is another round-trip. This is invisible to a consumer that
     echoes synchronously, which is why the demo needs `__deferScrollEcho` to make it observable at
     all — a test written against the demo's default timing passes whether or not the line exists.
+- **Wheel sensitivity is the one option a mounted `Terminal` changes** (#959). In xterm.js a
+  Settings change applies at once — the mouse-report path reads `scrollSensitivity` per event, and
+  the local scroll path picks it up through an option-change subscription; before this a consumer
+  had to rebuild the widget (an atlas bake and a visible flash). Three calls. The first two are
+  derived; the third is the **maintainer's (2026-09-22)**, chosen with its alternative on the table
+  ("a field left out resets to the constructor's default"), and is theirs to reverse:
+  - **The scroller is built in the constructor, not in `mount()`.** A setter reaching an instance
+    that `mount()` has not built yet would need a before-mount branch that stores the value and a
+    rule for `mount()` to read it back. With one instance for the widget's life there is no such
+    state, and the field being `readonly` makes rebuilding it in `mount()` a compile error. A
+    Terminal without `element` holds an idle scroller, and `dispose()` leaves it in place: it is
+    memory, not work (see [widget lifecycle](widget-lifecycle.md)).
+  - **Named per option group (`setScrollOptions`), not a generic `setOptions`.** No other
+    `TerminalOptions` field can change at runtime, and a generic setter would claim they all can.
+  - **A field the call leaves out keeps its value**, the way assigning one xterm option leaves the
+    others. The carried sub-line remainder survives the change: it is already in lines, and xterm's
+    `_wheelPartialScroll` is only cleared by `reset()`.
 
 ## Code
 
@@ -61,7 +78,9 @@ directly.
   `Term::set_display_offset` (private), `Term::scrollback_len`, `Term::viewport_line`
 - `justerm-core/src/serialize.rs` — `Frame`'s `display_offset` / `scrollback_len`
 - `justerm-web/src/terminal.ts` — `scrollsToBottomOnInput` (the input→bottom predicate),
-  `InputScrollSignal`, and `Terminal`'s `scrollOnUserInput` / `requestBottom` wiring
+  `InputScrollSignal`, and `Terminal`'s `scrollOnUserInput` / `requestBottom` wiring;
+  `Terminal.setScrollOptions`
+- `justerm-web/src/scroll-control.ts` — `WheelScroller` (`consumeWheelEvent`, `setOptions`, `reset`)
 
 ## Reference behaviour
 
