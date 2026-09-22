@@ -23,18 +23,31 @@ const GAMMA_STEP: f32 = 0.05;
 /// `l / 255` against dark coverage `1 - d / 255`. Returns the exponent in `[1, 4]` minimising the
 /// squared error of `l^g` against it, the lowest on a tie. A fully covered or empty channel scores
 /// the same under every exponent, so a draw with no partial coverage fits `1.0`.
+///
+/// One pass over the pixels, then the search runs over the 254 partial light levels rather than
+/// the pixels: the error splits per level into `n·l^2g − 2·l^g·Σd` plus a term no exponent moves,
+/// so its cost does not grow with the draw.
 pub fn fit_dark_gamma(light: &[u8], dark: &[u8]) -> f32 {
-    let pairs: Vec<(f32, f32)> = light
-        .chunks_exact(4)
-        .zip(dark.chunks_exact(4))
-        .flat_map(|(l, d)| (0..3).map(move |k| (l[k], d[k])))
-        .map(|(l, d)| (l as f32 / 255.0, 1.0 - d as f32 / 255.0))
-        .collect();
+    // Per light level: how many channels, and the sum of their dark coverage.
+    let mut count = [0u64; 256];
+    let mut dark_sum = [0f64; 256];
+    for (l, d) in light.chunks_exact(4).zip(dark.chunks_exact(4)) {
+        for k in 0..3 {
+            count[l[k] as usize] += 1;
+            dark_sum[l[k] as usize] += 1.0 - d[k] as f64 / 255.0;
+        }
+    }
     let steps = ((GAMMA_MAX - GAMMA_MIN) / GAMMA_STEP).round() as u32;
-    let mut best = (f32::INFINITY, 1.0);
+    let mut best = (f64::INFINITY, 1.0);
     for i in 0..=steps {
         let g = GAMMA_MIN + i as f32 * GAMMA_STEP;
-        let err: f32 = pairs.iter().map(|&(l, d)| (l.powf(g) - d).powi(2)).sum();
+        let err: f64 = (1..255)
+            .filter(|&v| count[v] != 0)
+            .map(|v| {
+                let p = (v as f64 / 255.0).powf(g as f64);
+                count[v] as f64 * p * p - 2.0 * p * dark_sum[v]
+            })
+            .sum();
         if err < best.0 {
             best = (err, g);
         }
@@ -113,6 +126,51 @@ mod tests {
         let light = opaque(&[[128, 128, 128]]);
         let dark = opaque(&[[255, 255, 255]]);
         assert_eq!(fit_dark_gamma(&light, &dark), GAMMA_MAX);
+    }
+
+    /// The fit as a direct sum over every channel of every pixel — what the per-level form must equal.
+    fn fit_directly(light: &[u8], dark: &[u8]) -> f32 {
+        let steps = ((GAMMA_MAX - GAMMA_MIN) / GAMMA_STEP).round() as u32;
+        let mut best = (f64::INFINITY, 1.0);
+        for i in 0..=steps {
+            let g = GAMMA_MIN + i as f32 * GAMMA_STEP;
+            let err: f64 = light
+                .chunks_exact(4)
+                .zip(dark.chunks_exact(4))
+                .flat_map(|(l, d)| (0..3).map(move |k| (l[k], d[k])))
+                .map(|(l, d)| {
+                    let (l, d) = (l as f64 / 255.0, 1.0 - d as f64 / 255.0);
+                    (l.powf(g as f64) - d).powi(2)
+                })
+                .sum();
+            if err < best.0 - 1e-9 {
+                best = (err, g);
+            }
+        }
+        best.1
+    }
+
+    #[test]
+    fn the_per_level_fit_equals_the_direct_one() {
+        // Noisy draws, so the answer is not one of the exponents a fixture was built from: a
+        // linear-congruential stream of light levels, and dark levels scattered around a curve.
+        let mut seed = 0x2545_f491u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 24) as u8
+        };
+        for g in [1.3f32, 2.2, 2.65, 3.7] {
+            let (mut light, mut dark) = (Vec::new(), Vec::new());
+            for _ in 0..400 {
+                let l = next();
+                let noise = next() as f32 / 255.0 * 0.2 - 0.1;
+                let d = (1.0 - ((l as f32 / 255.0).powf(g) + noise).clamp(0.0, 1.0)) * 255.0;
+                light.extend([l, l, l, 255]);
+                dark.extend([d.round() as u8; 3]);
+                dark.push(255);
+            }
+            assert_eq!(fit_dark_gamma(&light, &dark), fit_directly(&light, &dark), "g = {g}");
+        }
     }
 
     #[test]
