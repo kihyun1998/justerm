@@ -17,6 +17,9 @@ it.
   policy itself — is still governed by nothing
 - [ADR-0018 — build justerm-renderer](../../adr/0018-justerm-renderer.md) — the crate exists and
   reimplements beamterm; the atlas design is inherited rather than decided here
+- [ADR-0033 — subpixel coverage is one light mask and a measured curve](../../adr/0033-subpixel-coverage-is-one-mask-and-a-measured-curve.md)
+  — what a slot's channels hold when a configuration opts into LCD text (#961), and why it is not
+  xterm.js's bake-over-background
 
 > **This section read "None." until #772.** That was true of the atlas as a *design* and stopped being
 > true of it as a *resource*: the moment two grids can share one cache, who owns it and when it dies
@@ -64,6 +67,12 @@ it.
   a pure function of the grapheme and of the configuration's geometry, and the geometry *is* the
   `ConfigKey`), and every rebuild path — ASCII prebake, `bake_all_glyphs`, a cache miss, a DPR or
   font change, a context-loss restore — reaches it through the one `rasterize` seam.
+- **A subpixel configuration's slot holds two coverages** (#961, ADR-0033): the grayscale one in A,
+  as always, and the light mask — the glyph drawn white over *opaque* black — in RGB. Every bake
+  path reaches it through `Rasterizer::finish`, called after classification because a mask in RGB
+  would read as colour to `is_color_bitmap`. A colour emoji and a builtin glyph skip it. The
+  dark-ink exponent is fitted once per configuration bake from a calibration draw, never fixed: it
+  is the platform's text gamma (2.65 on the Windows 11 box it was measured on).
 - **`builtin` is outside it by construction, not by a list.** The builtin check precedes `fill_text`,
   so no fit can fire on a glyph the font never drew — the same shape as #507's dependency inversion,
   where the classifier *asks* `builtin::owns` rather than restating its ranges.
@@ -74,6 +83,7 @@ it.
 - `justerm-renderer/src/glyph_cache.rs` — the slot map and LRU regions
 - `justerm-renderer/src/rasterizer.rs` — OffscreenCanvas rasterisation (**wasm32/browser only**)
 - `justerm-renderer/src/bitmap.rs` — `InkBounds` and the pure bitmap helpers
+- `justerm-renderer/src/lcd.rs` — the subpixel slot layout and the dark-ink curve fit (host-testable)
 - `justerm-renderer/src/emoji.rs` · `bitmap.rs` — the two halves of the classification the cache
   takes as input: `is_emoji_text` decides by unicode, `is_color_bitmap` by what the font actually
   rendered (#284). The type it arrives as is owned by
@@ -112,3 +122,9 @@ target**, not one of the three reference terminals, and pinned by nothing.
   composites white under SwiftShader and reads as *sharpest* to a blur metric.
 - **beamterm is cited by file path with no pin.** It is the design's origin and the citation cannot
   be checked.
+- **Subpixel text is measured on two platforms.** ADR-0033's numbers are Windows 11 + Chromium; the
+  Linux CI runner's headless Chromium draws LCD text too, with a near-flat dark-ink curve, and meets the
+  same 1 % bounds. macOS is unmeasured; wherever the canvas draws no LCD text the proof checks only
+  that no fringe appears. A platform whose dark mask is not one curve of the light
+  mask is the record's falsifier. The browser also declines LCD text for large glyphs (none at 49 device px) and for
+  a face it draws aliased, so `demo/subpixel.html` mounts its grid at 28 CSS px to exercise it at all.

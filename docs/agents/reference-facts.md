@@ -3577,3 +3577,20 @@ three references agree except that xterm.js swaps on a repeated set too, where a
 guard it; justerm guards. Alt as an ESC prefix on Enter / Tab / Backspace / Escape follows xterm's
 escape mode, alacritty and ghostty, and this encoder's own character rule; xterm.js is the outlier
 on Tab. `Ctrl+Backspace` (BS in xterm.js and ghostty, DEL here) was not changed.
+
+## Subpixel (LCD) text coverage in the glyph atlas (#961, verified 2026-09-22)
+
+Read for #961, which asked for an opt-in subpixel path and named both models. The issue's alacritty
+line was written from memory; the rows below are it read from the tree. ghostty was **not** read for
+this — a gap, not an absence. What justerm took from them, and what it measured instead, is ADR-0033.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The glyph canvas is opaque exactly when transparency is off: `getContext('2d', { alpha: this._config.allowTransparency, … })` | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:101` |
+| With transparency on, a glyph's background is `NULL_COLOR`, so the atlas draws on a transparent canvas and holds grayscale coverage only | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:312` |
+| With it off, the cell's real background is painted before the glyph (`fillStyle = backgroundColor.css`), so each entry is baked for one foreground **and** one background | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:525` |
+| …and the background is cleared back out of the drawn pixels afterwards (`clearColor`) | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:780` |
+| A text glyph is uploaded as an **RGB** bitmap (`BitmapBuffer::Rgb` ⇒ `multicolor = false`); RGBA is the colour-glyph case | alacritty | `alacritty/src/renderer/text/atlas.rs:159-160` |
+| The fragment shader emits the per-channel coverage as a second output (`ALPHA_MASK = vec4(textColor, textColor.r)`, `index = 1`) | alacritty | `alacritty/res/glsl3/text.f.glsl:69-70`, `:28` |
+| …which dual-source blending applies per channel (`BlendFunc(SRC1_COLOR, ONE_MINUS_SRC1_COLOR)`) | alacritty | `alacritty/src/renderer/text/glsl3.rs:52` |
+| Without dual-source blending (GLES2) the same result takes three subpixel passes | alacritty | `alacritty/src/renderer/text/gles2.rs:400`, `:410`, `:415` |

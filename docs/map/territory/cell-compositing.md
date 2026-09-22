@@ -56,6 +56,13 @@ becomes an actual colour — the engine never does that by identity.
   background while the alpha declared that background mostly absent, so the two channels described
   different cells. That is ADR-0019's Coherence clause, one axis over from where it is usually read.
   Invisible at `A = 1`, where the two expressions agree exactly.
+- **Text coverage may be three numbers, not one** (#961, ADR-0033). In a subpixel configuration a
+  text-class glyph's coverage is the slot's RGB mask, chosen per channel of the ink — as-is where that
+  channel is at or above 0.75, raised to `u_lcd_gamma` where it is below — so the background's
+  surviving weight `w_bg` is a `vec3`. `I_neighbour` reads its owner's mask the same way, with the
+  owner's ink. `a` reads one channel of `w_bg`, which is exact: over a translucent default background
+  the coverage stays the scalar alpha (the three are equal), and over an opaque one `A = 1` makes
+  `a = 1` whatever they are. Background-class ink and colour emoji stay scalar.
 - **Per-channel, not per-layer.** A layer may claim the background and leave the foreground alone.
   This is what makes "which wins" answerable for an active match over a selection without either
   layer having to win outright.

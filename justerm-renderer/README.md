@@ -103,13 +103,27 @@ and its glyph atlas stays alive, so showing it again is a `setViewport` and cost
 `removeGrid(grid)` is the end of its life.
 
 **Terminals in the same font share one glyph atlas.** Resources are keyed by the whole font
-configuration — family, size, the regular and bold weights, letter-spacing and line-height together
-— and refcounted, so six terminals in one font hold one atlas, rasteriser and glyph cache between
+configuration — family, size, the regular and bold weights, letter-spacing, line-height and subpixel text
+together — and refcounted, so six terminals in one font hold one atlas, rasteriser and glyph cache between
 them, and the last one to leave a configuration releases it. Changing one terminal's font moves it
 to a different entry rather than editing the one its neighbours draw through, which is what lets two
 terminals in two different fonts — and so two different cell geometries — sit side by side on one
 canvas. `atlasCount()` reports how many configurations are live and `bakes()` counts atlas builds,
 so the sharing is something you can measure rather than assume.
+
+## Subpixel text
+
+`setSubpixelAntialiasing(grid, true)` draws a grid's text with per-channel (LCD / ClearType)
+coverage where the browser produces it, which reads sharper on a subpixel display. It is off by
+default, it is part of the font configuration (so it bakes or joins an atlas like a font change), and
+it does not move the cell. `addGrid`'s trailing argument sets it at birth.
+
+It applies only over an **opaque** background: a default-background cell under a translucent
+`setBgAlpha` keeps grayscale, because one alpha cannot carry three coverages. Colour emoji and the
+built-in block glyphs are unchanged. The browser decides where it draws LCD text at all — Chromium on
+Windows does for antialiased text of ordinary sizes (measured: at 28–42 device px, and not at 49 or
+above), and a face it draws aliased gets none. Where it draws none, no colour fringe appears, though
+dark ink is still drawn at the lighter weight the browser gives it rather than grayscale's.
 
 ## Device pixels belong to you
 

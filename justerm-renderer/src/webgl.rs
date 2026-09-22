@@ -41,7 +41,7 @@ use crate::frame::{
 };
 use crate::frame_grid::{DamageFrame, FrameGrid, cell_count};
 use crate::glyph_cache::{
-    FontStyle, GLYPHS_PER_LAYER, GlyphCache, WIDE_BASE, WIDE_CAPACITY, slot_texcoord,
+    FontStyle, GLYPHS_PER_LAYER, GlyphCache, GlyphSlot, WIDE_BASE, WIDE_CAPACITY, slot_texcoord,
 };
 use crate::glyph_resolve::{Cells, FramePins, ResolveError, resolve_frame};
 use crate::mat4::Mat4;
@@ -206,6 +206,9 @@ flat in vec3 v_dn_fg;
 // headroom — so 0 does not reach here in practice, and the `armed` guard below defends a value
 // the pipeline does not currently produce rather than a mode anything selects.
 uniform float u_bleed_px;
+// Per-channel (LCD) text coverage (#961): 0 for a grayscale configuration, else the exponent dark ink
+// raises the slot's light mask to (`lcd::fit_dark_gamma`).
+uniform float u_lcd_gamma;
 out vec4 FragColor;
 // A horizontal line centred at `c` (cell-local y, 0..1) with soft edges (beamterm cell.frag).
 // A horizontal line at glyph-box-normalised centre `c`, half-thickness `half` (also normalised),
@@ -228,6 +231,12 @@ out vec4 FragColor;
 // the next row (the invariant alacritty holds with `max_y` and we did not). `fwidth` is one device
 // pixel in normalised units, for a single-pixel antialiased edge — crisp, not stair-stepped at
 // fractional DPR.
+// Per-channel coverage from a subpixel slot's light mask for ink of colour `ink` (#961), chosen per
+// channel: the mask as-is where that channel of the ink is light (>= 0.75), raised to the
+// configuration's measured exponent where it is darker.
+vec3 lcd_cov(vec3 mask, vec3 ink) {
+    return mix(pow(mask, vec3(u_lcd_gamma)), mask, step(vec3(0.75), ink));
+}
 float hline(float gy, float c, float thick_px, float char_h) {
     float th = max(thick_px, 1.0) / max(char_h, 1.0); // device-px thickness, in gy units
     float top = clamp(c - th * 0.5, 0.0, 1.0 - th);   // centre-clamp: stay in the cell
@@ -640,11 +649,29 @@ void main() {
     // `mediump`: every term here stays positive and numerator and denominator shrink together, so a
     // small `a` does not amplify anything. The subtraction form cancels two near-equal quantities
     // exactly where `a` is smallest.
+    // The background's opacity here; the rule is stated where `a` is computed, below.
+    float bg_alpha = (!block && v_bg_default > 0.5) ? u_bg_alpha : 1.0;
     float bg_class = float((v_glyph >> 16u) & 1u);
+    // #961: text-class coverage per channel. A subpixel configuration's slot carries the light mask
+    // in RGB (`lcd.rs`), read through `lcd_cov`. Only over an opaque background — one alpha cannot
+    // carry three coverages — and never for a colour emoji, whose RGB is its own colour. A grayscale
+    // configuration and every excluded fragment read the alpha coverage on all three channels.
+    bool lcd = u_lcd_gamma > 0.0 && bg_alpha >= 1.0;
+    vec3 text_cov = (lcd && emoji < 0.5) ? lcd_cov(texel.rgb, fg) : vec3(coverage);
+    // The same for ink a neighbour spilled into this cell (I_neighbour): its owner's slot, its
+    // owner's ink colour, and only for a text-class owner that is not an emoji — a background-class
+    // slot's RGB is not a mask (a builtin glyph keeps white there).
+    bool from_up = cov_up >= cov_dn;
+    uint owner = from_up ? v_glyph_up : v_glyph_dn;
+    vec3 foreign_cov = vec3(foreign);
+    if (lcd && ((owner >> 15u) & 1u) == 0u && ((owner >> 16u) & 1u) == 0u) {
+        foreign_cov = lcd_cov(from_up ? tex_up.rgb : tex_dn.rgb, foreign_ink)
+                    * (from_up ? from_above : from_below);
+    }
     vec3 ink = mix(vec3(0.0), fg, coverage * bg_class);        // background-class ink joins the bg
-    ink = mix(ink, foreign_ink, foreign);                      // I_neighbour, over this cell's tile
+    ink = mix(ink, foreign_ink, foreign_cov);                  // I_neighbour, over this cell's tile
     ink = mix(ink, base_ul, ul_band);                          // the band, over that background
-    ink = mix(ink, fg, coverage * (1.0 - bg_class));           // text-class ink, over the band
+    ink = mix(ink, fg, text_cov * (1.0 - bg_class));           // text-class ink, over the band
     ink = mix(ink, base_st, st_band);
     ink = mix(ink, u_cursor_color, cur);
 
@@ -653,8 +680,8 @@ void main() {
     // total weight and disagreed with the colour chain wherever two sources overlapped (a descender
     // crossing its underline is the reachable case, #712's own geometry). The two agreed only where
     // at most one source was partial, which is why it never showed while alpha was the only consumer.
-    float w_bg = (1.0 - coverage * bg_class) * (1.0 - foreign) * (1.0 - ul_band)
-               * (1.0 - coverage * (1.0 - bg_class)) * (1.0 - st_band) * (1.0 - cur);
+    vec3 w_bg = (1.0 - coverage * bg_class) * (1.0 - foreign_cov) * (1.0 - ul_band)
+              * (1.0 - text_cov * (1.0 - bg_class)) * (1.0 - st_band) * (1.0 - cur);
 
     // Only the DEFAULT terminal background is translucent (the see-through backdrop). An explicit
     // SGR background or an inverse/selection/cursor background is *content* and stays opaque — else
@@ -672,8 +699,10 @@ void main() {
     // (`display/content.rs:175`, "we must adjust alpha to make it visible"). The cursor's STROKES no
     // longer need `max(bg_a, cur)` to stay opaque: `cur` is in `w_bg` above, so a stroked pixel has
     // no background left to be translucent and `a` reaches 1 by construction.
-    float bg_alpha = (!block && v_bg_default > 0.5) ? u_bg_alpha : 1.0;
-    float a = 1.0 - w_bg * (1.0 - bg_alpha);
+    //
+    // `w_bg` is per channel since #961, and one channel serves `a`: the three are equal wherever
+    // `bg_alpha < 1` (`text_cov` is scalar there), and `bg_alpha == 1` makes `a` 1 whatever they are.
+    float a = 1.0 - w_bg.g * (1.0 - bg_alpha);
     FragColor = vec4((ink + base_bg * (bg_alpha * w_bg)) / max(a, 1e-4), a);
 }
 "#;
@@ -851,6 +880,7 @@ struct Pipeline {
     u_cell_uv: glow::UniformLocation,
     u_bg_alpha: glow::UniformLocation,
     u_bleed_px: glow::UniformLocation,
+    u_lcd_gamma: glow::UniformLocation,
     u_cursor: glow::UniformLocation,
     u_cursor_color: glow::UniformLocation,
     u_cursor_text_color: glow::UniformLocation,
@@ -925,6 +955,7 @@ struct GlobalTier {
     u_cell_uv: glow::UniformLocation,
     u_bg_alpha: glow::UniformLocation,
     u_bleed_px: glow::UniformLocation,
+    u_lcd_gamma: glow::UniformLocation,
     u_cursor: glow::UniformLocation,
     u_cursor_color: glow::UniformLocation,
     u_cursor_text_color: glow::UniformLocation,
@@ -1032,7 +1063,7 @@ impl ConfigTier {
 /// The **per-grid** tier — one terminal's own state (ADR-0021 D1/D2).
 ///
 /// Everything a consumer can set differently per terminal is a **selector** and lands here, including
-/// the six font/metric fields: they are per-grid *as settings*, while the machinery they key
+/// the seven font/metric fields: they are per-grid *as settings*, while the machinery they key
 /// (`ConfigTier`) is not. `instance_vbo` is here rather than global because `uploaded` mirrors it —
 /// one shared buffer with N per-grid baselines would let one grid's upload silently invalidate
 /// another's — and `vao` followed it in #771, because a VAO records which buffer feeds the draw.
@@ -1042,7 +1073,7 @@ impl ConfigTier {
 /// load-bearing half: moving a field out of this struct breaks those methods at compile time.
 struct GridTier {
     /// The configuration this grid draws through — the atlas, rasteriser, glyph cache and cell it
-    /// selects into (#772). A **handle, not a copy**: the six selector fields below say what this
+    /// selects into (#772). A **handle, not a copy**: the seven selector fields below say what this
     /// grid asked for, and this says which shared entry serves it. The two are kept in step by
     /// `select_config`, the only writer of either.
     config: ConfigId,
@@ -1093,6 +1124,9 @@ struct GridTier {
     /// change does.
     font_weight: FontWeight,
     font_weight_bold: FontWeight,
+    /// Whether this grid's text carries per-channel (LCD) coverage (#961); default off. Changed by
+    /// `set_subpixel_antialiasing`, which joins a configuration as a family change does.
+    subpixel: bool,
     palette: Palette,
     /// The `cols`×`rows` grid last passed to `resizeGrid` — what this grid
     /// reports and what the frames fed to it are expected to carry.
@@ -1249,7 +1283,7 @@ impl JustermRenderer {
         self.grids.grid_at_mut(at)
     }
 
-    /// The configuration a grid's six selectors ask for (#772).
+    /// The configuration a grid's seven selectors ask for (#772).
     fn key_of(&self, at: usize) -> ConfigKey {
         let grid = self.grid_at(at);
         ConfigKey::new(
@@ -1259,6 +1293,7 @@ impl JustermRenderer {
             grid.font_weight_bold,
             grid.letter_spacing,
             grid.line_height,
+            grid.subpixel,
         )
     }
 
@@ -1340,10 +1375,11 @@ impl JustermRenderer {
     /// and follows the buffer). No atlas, rasteriser, glyph cache, program or shared quad
     /// buffer — those stay one per context / per configuration.
     ///
-    /// **The six selectors are this grid's font, and they are optional and trailing**:
+    /// **The seven selectors are this grid's font, and they are optional and trailing**:
     /// `addGrid(palette, fg, bg)` takes the defaults (`"monospace"`, 16 CSS px, no letter spacing,
-    /// line height 1, weights `"normal"` / `"bold"`), and any of the six may be given instead. A
-    /// weight takes what `setFontWeight` takes. They are what the
+    /// line height 1, weights `"normal"` / `"bold"`, grayscale text), and any of the seven may be
+    /// given instead. A weight takes what `setFontWeight` takes, and the last argument is what
+    /// `setSubpixelAntialiasing` takes. They are what the
     /// grid's atlas is keyed by, so a grid whose selectors match a sibling's **joins that
     /// sibling's atlas and bakes nothing** — the whole economy of the middle tier, and the reason
     /// they belong here rather than in a setter called a line later: a grid born at the defaults and
@@ -1356,7 +1392,7 @@ impl JustermRenderer {
     /// It is **not drawn** until `setViewport` places it, and until then it is
     /// not packed either: `render` skips a grid with no viewport before the pack, so feeding a hidden
     /// grid costs the scatter and nothing after it.
-    // Three palette columns plus the six font/metric selectors; the selectors are optional and
+    // Three palette columns plus the seven font/metric selectors; the selectors are optional and
     // TRAILING, the `apply_frame` precedent, so `addGrid(palette, fg, bg)` still reads as a call.
     #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = addGrid)]
@@ -1371,6 +1407,7 @@ impl JustermRenderer {
         line_height: Option<f32>,
         font_weight: Option<JsValue>,
         font_weight_bold: Option<JsValue>,
+        subpixel: Option<bool>,
     ) -> Result<u32, JsValue> {
         let palette =
             Palette::from_colors(&palette_colors, default_fg, default_bg).map_err(|e| {
@@ -1439,6 +1476,7 @@ impl JustermRenderer {
             line_height
                 .filter(|v| v.is_finite())
                 .map_or(1.0, |v| v.max(1.0)),
+            subpixel.unwrap_or(false),
         );
         let config = self.acquire_config(key.clone())?;
         let buffers = match Self::build_grid_buffers(&self.global.gl, self.global.quad_vbo) {
@@ -2010,7 +2048,7 @@ impl JustermRenderer {
 
     /// Bind a renderer to the canvas matched by `canvas_selector`.
     ///
-    /// It arrives holding **no terminal and no font configuration**: the palette and the six
+    /// It arrives holding **no terminal and no font configuration**: the palette and the seven
     /// font selectors belong to a grid, and `addGrid` is what creates one. So the
     /// first two calls a consumer makes are `new` then `addGrid`, and nothing is baked in between —
     /// there is nothing yet to key an atlas by.
@@ -2103,6 +2141,7 @@ impl JustermRenderer {
             u_cell_uv,
             u_bg_alpha,
             u_bleed_px,
+            u_lcd_gamma,
             u_cursor,
             u_cursor_color,
             u_cursor_text_color,
@@ -2125,6 +2164,7 @@ impl JustermRenderer {
                 u_cell_uv,
                 u_bg_alpha,
                 u_bleed_px,
+                u_lcd_gamma,
                 u_cursor,
                 u_cursor_color,
                 u_cursor_text_color,
@@ -2176,6 +2216,7 @@ impl JustermRenderer {
             let u_cell_uv = uniform(gl, program, "u_cell_uv")?;
             let u_bg_alpha = uniform(gl, program, "u_bg_alpha")?;
             let u_bleed_px = uniform(gl, program, "u_bleed_px")?;
+            let u_lcd_gamma = uniform(gl, program, "u_lcd_gamma")?;
             let u_cursor = uniform(gl, program, "u_cursor")?;
             let u_cursor_color = uniform(gl, program, "u_cursor_color")?;
             let u_cursor_text_color = uniform(gl, program, "u_cursor_text_color")?;
@@ -2197,6 +2238,7 @@ impl JustermRenderer {
                 u_cell_uv,
                 u_bg_alpha,
                 u_bleed_px,
+                u_lcd_gamma,
                 u_cursor,
                 u_cursor_color,
                 u_cursor_text_color,
@@ -2358,6 +2400,7 @@ impl JustermRenderer {
             key.font_size() * dpr,
             key.font_weight(),
             key.font_weight_bold(),
+            key.subpixel(),
         )?;
         // The rasteriser measures the GLYPH box; the grid cell is that box plus the consumer's
         // spacing policy (#338). The atlas slot is the padded CELL (#359), so the rasteriser must
@@ -2406,7 +2449,9 @@ impl JustermRenderer {
     ) -> Result<(), JsValue> {
         for cp in 0x20u32..=0x7E {
             let ch = char::from_u32(cp).unwrap();
-            let rgba = rasterizer.rasterize(&ch.to_string(), FontStyle::Normal, false)?;
+            let text = ch.to_string();
+            let rgba = rasterizer.rasterize(&text, FontStyle::Normal, false)?;
+            let rgba = rasterizer.finish(rgba, &text, FontStyle::Normal, false, false)?;
             upload_glyph(gl, atlas, atlas_cell, (cp - 0x20) as u16, &rgba);
         }
         Ok(())
@@ -2433,6 +2478,8 @@ impl JustermRenderer {
             // `matches!(Wide)`) is what catches the wide-emoji case.
             let wide = slot.slot_id() >= WIDE_BASE;
             let rgba = rasterizer.rasterize(&k.text, k.style, wide)?;
+            let colour = matches!(slot, GlyphSlot::Emoji(_));
+            let rgba = rasterizer.finish(rgba, &k.text, k.style, wide, colour)?;
             let base = slot.slot_id();
             if wide {
                 let (left, right) = split_wide_bitmap(&rgba, 2 * pad_w - 2 * PADDING, pad_w, pad_h);
@@ -2529,9 +2576,10 @@ impl JustermRenderer {
     ///
     /// It does **not** touch the drawing buffer, which it did until #773: the buffer is the
     /// surface's, and a surface drawing N grids belongs to none of them. The consumer re-fits after
-    /// any selector that moves the cell — every one but the two weights, which do not.
+    /// any selector that moves the cell — every one but the two weights and the subpixel setting,
+    /// which do not.
     ///
-    /// The single site every one of the six setters goes through, so none of them can decide any of
+    /// The single site every one of the seven setters goes through, so none of them can decide any of
     /// this differently. Three properties it owes, and each one is a bug that has been paid for
     /// here before:
     ///
@@ -2559,6 +2607,7 @@ impl JustermRenderer {
                 g.font_weight_bold,
                 g.letter_spacing,
                 g.line_height,
+                g.subpixel,
             )
         };
         edit(self.grid_at_mut(at));
@@ -2575,6 +2624,7 @@ impl JustermRenderer {
                 g.font_weight_bold,
                 g.letter_spacing,
                 g.line_height,
+                g.subpixel,
             ) = prev;
             return Err(e);
         }
@@ -2660,6 +2710,25 @@ impl JustermRenderer {
             return Ok(());
         }
         self.adopt_selectors(at, |g| g.font_weight_bold = weight)
+    }
+
+    /// Draw **one grid's** text with per-channel (LCD / subpixel) coverage, or back to grayscale.
+    /// Off by default. It joins the configuration keyed by the new setting, exactly as a family
+    /// change does, and moves this grid only; the cell does not move, so no re-fit is needed. Takes
+    /// effect on the next `render`.
+    ///
+    /// Per-channel coverage applies only where the cell's background is opaque: a default-background
+    /// cell under a translucent `setBgAlpha` keeps grayscale, since one alpha cannot carry three
+    /// coverages. Colour emoji and builtin block glyphs are unchanged. Where the browser draws no LCD
+    /// text the three channels come back equal and no colour fringe appears, though dark ink is still
+    /// drawn at the lighter weight the browser gives it.
+    #[wasm_bindgen(js_name = setSubpixelAntialiasing)]
+    pub fn set_subpixel_antialiasing(&mut self, grid: u32, on: bool) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        if on == self.grid_at(at).subpixel {
+            return Ok(());
+        }
+        self.adopt_selectors(at, |g| g.subpixel = on)
     }
 
     /// Adopt a spacing policy on one grid (#338/#359), or leave every field as it was.
@@ -2951,6 +3020,7 @@ impl JustermRenderer {
             u_cell_uv,
             u_bg_alpha,
             u_bleed_px,
+            u_lcd_gamma,
             u_cursor,
             u_cursor_color,
             u_cursor_text_color,
@@ -2967,6 +3037,7 @@ impl JustermRenderer {
         self.global.u_cell_uv = u_cell_uv;
         self.global.u_bg_alpha = u_bg_alpha;
         self.global.u_bleed_px = u_bleed_px;
+        self.global.u_lcd_gamma = u_lcd_gamma;
         self.global.u_cursor = u_cursor;
         self.global.u_cursor_color = u_cursor_color;
         self.global.u_cursor_text_color = u_cursor_text_color;
@@ -3333,6 +3404,7 @@ impl JustermRenderer {
                 // routes the glyph to a colour-sampled slot; a text glyph satisfies neither.
                 let rgba = rasterizer.rasterize(text, style, wide)?;
                 let is_emoji = is_emoji_text(text, wide) || is_color_bitmap(&rgba);
+                let rgba = rasterizer.finish(rgba, text, style, wide, is_emoji)?;
                 Ok((rgba, is_emoji))
             },
             |base, wide, rgba: Vec<u8>| {
@@ -3776,6 +3848,12 @@ impl JustermRenderer {
                 Some(&self.global.u_bleed_px),
                 config.rasterizer.bleed_y() as f32,
             );
+            // Per configuration too: whether its atlas carries per-channel coverage, and the
+            // dark-ink curve it was measured with (#961).
+            self.global.gl.uniform_1_f32(
+                Some(&self.global.u_lcd_gamma),
+                config.rasterizer.lcd_gamma(),
+            );
             // `u_cursor.w == 0` means NO cursor; a shape is `shape_id + 1`. Every shape — block
             // included — reaches the shader this way, so a move or a blink is a uniform, not an
             // upload (#270).
@@ -3880,10 +3958,10 @@ impl GridTier {
     /// One terminal's state at rest: no cells, no cursor, no overlays, every consumer policy at
     /// its default. The caller supplies what a grid cannot default — its own GPU buffers
     /// (ADR-0021 D2), the configuration it selects into and the key that names it — which carries
-    /// the six font/metric **selectors** (D1: per-grid settings, even though the machinery they
+    /// the seven font/metric **selectors** (D1: per-grid settings, even though the machinery they
     /// key is per-config) — its palette, and the grid it is sized to.
     ///
-    /// The six selectors are **unpacked from the key itself** rather than passed beside it, so the
+    /// The seven selectors are **unpacked from the key itself** rather than passed beside it, so the
     /// grid's fields and the entry its handle names cannot be born disagreeing. `select_config` is
     /// the only thing that moves either afterwards, and it moves both.
     ///
@@ -3916,6 +3994,7 @@ impl GridTier {
             font_family: key.font_family().to_string(),
             font_weight: key.font_weight(),
             font_weight_bold: key.font_weight_bold(),
+            subpixel: key.subpixel(),
             grid_size,
             instances: Vec::new(),
             instance_count: 0,

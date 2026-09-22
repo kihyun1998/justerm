@@ -1,0 +1,250 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — setSubpixelAntialiasing: per-channel (LCD) text coverage (#961)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  A grid that opts in draws text with per-channel coverage where the browser produces it (#961).
+
+  Whether it does is the platform's, and the face's at that size: Chromium on Windows draws LCD text
+  into an opaque 2D canvas, but a face it draws without antialiasing at a small size (the default
+  `monospace` here, at 24 device px and below — so the grid is 28 CSS px) gets none, and a platform
+  without LCD text hands back three equal channels. So the page draws the same glyphs, font and size
+  into a plain opaque canvas in the scene's real colours — the TRUTH the browser would put on screen —
+  and the checks that need fringes run only where that draw shows them (`lcdAvailable`, printed under
+  `measured`).
+
+  Everywhere:
+  · off is the default, and turning it on and off again draws the same bytes as never turning it on;
+  · it keys the atlas — one bake on, none moving back to a sibling's setting — and moves no cell;
+  · a colour emoji and a builtin half block draw the same bytes on as off (their RGB is not a mask);
+  · a default-background cell under a translucent `setBgAlpha` draws the same bytes on as off — one
+    alpha cannot carry three coverages, so it keeps grayscale (grey ink, which the dark-ink exponent
+    changes even with no LCD text wherever the measured curve is not flat);
+  · no fringe appears on a platform whose canvas draws none (`lcdAvailable` false).
+  Where the canvas draws LCD text:
+  · light ink on an opaque background shows fringes on, none off;
+  · light, dark, pale, yellow, green and bold ink lay down within 1 % of the truth draw's total ink,
+    and mid-grey within 8 % — the claim of the feature, and what the dark-ink exponent and the
+    per-channel threshold answer to (the neutral inks sit either side of the threshold, green is the
+    ink a luminance rule gets wrong, and bold is the mask drawn in the glyph's own style). How far
+    grayscale misses is the platform's: on Windows dark ink by 15–26 %, on the Linux CI runner by
+    under 1 %, where the measured curve is close to flat;
+  · a glyph this face draws past its cell vertically keeps its coverage where the ink lands in the
+    neighbouring row: fringes there for light ink, and — where the curve visibly lightens dark ink
+    inside the cell — lightening it there too (skipped, and printed, when no such glyph is found);
+  dpr 1/1.1/1.5/2.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect, readCells, fitGrid } from "./proof.js";
+  await init();
+
+  const TEXT = [..."Hamburgefonstiv"].map((c) => c.codePointAt(0));
+  const COLS = TEXT.length, ROWS = 1, N = COLS * ROWS;
+  const RGB = (c) => ((2 << 24) | c) >>> 0;    // absolute Rgb colour ref (tag 2)
+  const DEFAULT = 0;                           // default colour ref
+  const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
+  const WHITE = 0xffffff, BLACK = 0x000000;
+  // Either side of the light-ink threshold (0.75), on every channel: GREY is 0.56, PALE 0.88.
+  const GREY = 0x909090, PALE = 0xe0e0e0;
+  // Saturated inks: the curve is chosen per channel, so GREEN (whose luminance, 0.72, is below the
+  // threshold while its green channel is far above it) is the ink a luminance rule gets wrong.
+  const YELLOW = 0xffff00, GREEN = 0x00ff00;
+  const BOLD = 1;                              // attrs flag bit 0
+  const palette = new Uint32Array(256);
+  // Large enough that the default face is antialiased at every swept density.
+  const SIZE = 28;
+
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, WHITE, BLACK, null, SIZE);
+  const gl = document.querySelector("#c").getContext("webgl2");
+
+  /** Draw one row and read it back. `bg`/`fg` are colour refs; `cps`/`flags` default to TEXT. */
+  const draw = ({ bg, fg, cps = TEXT, flags = new Uint16Array(N) }) => {
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(N).fill(bg), new Uint32Array(N).fill(fg),
+      Uint32Array.from(cps), flags, true);
+    r.render();
+    return readRect(gl, { x: 0, y: 0, w: gl.drawingBufferWidth, h: gl.drawingBufferHeight }).buf;
+  };
+  /** Pixels whose channels spread by more than 8 — the colour fringe of per-channel coverage. */
+  const fringe = (buf) => {
+    let n = 0;
+    for (let i = 0; i < buf.length; i += 4) if (Math.max(buf[i], buf[i + 1], buf[i + 2]) - Math.min(buf[i], buf[i + 1], buf[i + 2]) > 8) n++;
+    return n;
+  };
+  /** Total distance from the background colour, over all channels — how much ink was laid down. */
+  const weight = (buf, bgRgb) => {
+    const b = [(bgRgb >> 16) & 255, (bgRgb >> 8) & 255, bgRgb & 255];
+    let s = 0;
+    for (let i = 0; i < buf.length; i += 4) for (let k = 0; k < 3; k++) s += Math.abs(buf[i + k] - b[k]);
+    return s;
+  };
+  const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+  const cell = () => [r.cell_width(g), r.cell_height(g)];
+
+  /** The same glyphs drawn by the browser into an opaque canvas, one per cell, in real colours. */
+  const truth = (bgRgb, fgRgb, weight = 400) => {
+    const [cw, ch] = cell();
+    const c = new OffscreenCanvas(COLS * cw, ch * 2);
+    const x = c.getContext("2d", { alpha: false, willReadFrequently: true });
+    const css = (v) => "#" + v.toString(16).padStart(6, "0");
+    x.fillStyle = css(bgRgb); x.fillRect(0, 0, c.width, c.height);
+    x.font = `${weight} ${SIZE * devicePixelRatio}px monospace, monospace`;
+    x.fillStyle = css(fgRgb); x.textBaseline = "middle";
+    TEXT.forEach((cp, i) => x.fillText(String.fromCodePoint(cp), i * cw, ch));
+    return x.getImageData(0, 0, c.width, c.height).data;
+  };
+  const truthLight = truth(BLACK, WHITE), truthDark = truth(WHITE, BLACK), truthGrey = truth(BLACK, GREY),
+    truthPale = truth(BLACK, PALE), truthYellow = truth(BLACK, YELLOW), truthGreen = truth(BLACK, GREEN),
+    truthBold = truth(BLACK, WHITE, 700);
+  const lcdAvailable = fringe(truthLight) > 0;
+
+  const scenes = {
+    light: { bg: RGB(BLACK), fg: RGB(WHITE) },
+    dark: { bg: RGB(WHITE), fg: RGB(BLACK) },
+    grey: { bg: RGB(BLACK), fg: RGB(GREY) },
+    pale: { bg: RGB(BLACK), fg: RGB(PALE) },
+    yellow: { bg: RGB(BLACK), fg: RGB(YELLOW) },
+    green: { bg: RGB(BLACK), fg: RGB(GREEN) },
+    bold: { bg: RGB(BLACK), fg: RGB(WHITE), flags: new Uint16Array(N).fill(BOLD) },
+    defaultBg: { bg: DEFAULT, fg: RGB(WHITE) },
+    emoji: { bg: RGB(BLACK), fg: RGB(WHITE), cps: [0x1f680, 0x20, ...new Array(N - 2).fill(0x20)], flags: Uint16Array.from([WIDE_CHAR, WIDE_SPACER, ...new Array(N - 2).fill(0)]) },
+    halfBlock: { bg: RGB(BLACK), fg: RGB(WHITE), cps: new Array(N).fill(0x258c) }, // '▌' — builtin
+  };
+  const shoot = () => Object.fromEntries(Object.entries(scenes).map(([k, s]) => [k, draw(s)]));
+
+  const checks = {};
+  const off = shoot();
+  const baseCell = cell();
+
+  let b0 = r.bakes();
+  r.setSubpixelAntialiasing(g, true);
+  checks.turningItOnBakesOnce = r.bakes() - b0 === 1;
+  checks.itMovesNoCell = cell()[0] === baseCell[0] && cell()[1] === baseCell[1];
+  const on = shoot();
+
+  // Grey ink: below the light-ink threshold, so the exponent changes it even where the canvas draws
+  // no LCD text — the gate stays visible off a subpixel platform, wherever the curve is not flat.
+  const translucent = { bg: DEFAULT, fg: RGB(GREY) };
+  r.setBgAlpha(g, 0.5);
+  const translucentOn = draw(translucent);
+  r.setSubpixelAntialiasing(g, false);
+  const translucentOff = draw(translucent);
+  r.setBgAlpha(g, 1);
+  const offAgain = shoot();
+
+  checks.offAgainDrawsTheSameBytesAsNeverOn = Object.keys(off).every((k) => same(off[k], offAgain[k]));
+  checks.aColourEmojiIsUnchanged = same(off.emoji, on.emoji);
+  checks.aBuiltinHalfBlockIsUnchanged = same(off.halfBlock, on.halfBlock);
+  checks.aTranslucentDefaultBackgroundDrawsAsOff = same(translucentOn, translucentOff);
+  checks.offDrawsNoFringe = fringe(off.light) === 0 && fringe(off.dark) === 0;
+
+  // Moving back to a setting a sibling holds joins its atlas.
+  const sib = r.addGrid(palette, WHITE, BLACK, null, SIZE, null, null, null, null, true);
+  b0 = r.bakes();
+  r.setSubpixelAntialiasing(g, true);
+  checks.joiningASiblingsSettingBakesNothing = r.bakes() - b0 === 0;
+  r.setSubpixelAntialiasing(g, false);
+  r.removeGrid(sib);
+
+  // ── ink that leaves its cell (I_neighbour) keeps the coverage it had inside it ──
+  // A probe this face draws past the block's box vertically (and inside it horizontally) is FOUND,
+  // not listed: which glyphs overflow is a property of the face behind `monospace` here (#578). It
+  // sits in the middle of three rows; the rows above and below read only its spilled ink.
+  const probe = (() => {
+    const x = new OffscreenCanvas(8, 8).getContext("2d");
+    x.font = `400 ${SIZE * devicePixelRatio}px monospace, monospace`;
+    const box = x.measureText("█");
+    let best = null;
+    for (const [lo, hi] of [[0xc0, 0x24f], [0x1e00, 0x1fff]]) {
+      for (let cp = lo; cp <= hi; cp++) {
+        const m = x.measureText(String.fromCodePoint(cp));
+        const over = Math.max(m.actualBoundingBoxAscent - box.actualBoundingBoxAscent,
+          m.actualBoundingBoxDescent - box.actualBoundingBoxDescent);
+        const inside = m.actualBoundingBoxLeft <= box.actualBoundingBoxLeft
+          && m.actualBoundingBoxRight <= box.actualBoundingBoxRight;
+        if (inside && over >= 2 && (!best || over > best.over)) best = { cp, over };
+      }
+    }
+    return best;
+  })();
+  /** Row 1 filled with the probe, rows 0 and 2 blank; returns [in-cell row, neighbour rows]. */
+  const bleed = (bgRgb, fgRgb) => {
+    const n = COLS * 3;
+    fitGrid(r, g, COLS, 3);
+    const cps = new Uint32Array(n).fill(0x20);
+    cps.fill(probe.cp, COLS, 2 * COLS);
+    r.apply_frame(g, COLS, 3, new Uint32Array(n).fill(RGB(bgRgb)), new Uint32Array(n).fill(RGB(fgRgb)),
+      cps, new Uint16Array(n), true);
+    r.render();
+    const row = (i) => readCells(gl, r, g, 0, i, COLS).buf;
+    return [row(1), [row(0), row(2)]];
+  };
+  let spill = null;
+  if (probe) {
+    const shots = {};
+    for (const on of [false, true]) {
+      r.setSubpixelAntialiasing(g, on);
+      const [lightCell, lightNear] = bleed(BLACK, WHITE);
+      const [darkCell, darkNear] = bleed(WHITE, BLACK);
+      shots[on ? "on" : "off"] = {
+        lightNearFringe: lightNear.reduce((s, b) => s + fringe(b), 0),
+        darkCell: weight(darkCell, WHITE),
+        darkNear: darkNear.reduce((s, b) => s + weight(b, WHITE), 0),
+      };
+    }
+    r.setSubpixelAntialiasing(g, false);
+    spill = { cp: probe.cp.toString(16), over: probe.over, ...shots };
+    // Dark ink changes weight under the fitted curve, and what spilled must take the curve too, or
+    // the stroke steps at the row edge. Not by the same factor as what stayed: a spilled tail is
+    // almost all partial coverage, which the curve lowers more than the solid ink inside the cell.
+    spill.cellRatio = shots.on.darkCell / shots.off.darkCell;
+    spill.nearRatio = shots.on.darkNear / shots.off.darkNear;
+  }
+
+  const measured = {
+    dpr: devicePixelRatio, lcdAvailable, spill,
+    fringe: { lightOff: fringe(off.light), lightOn: fringe(on.light), darkOn: fringe(on.dark), defaultBgOn: fringe(on.defaultBg), translucentOn: fringe(translucentOn) },
+    weight: {
+      darkTruth: weight(truthDark, WHITE), darkOff: weight(off.dark, WHITE), darkOn: weight(on.dark, WHITE),
+      lightTruth: weight(truthLight, BLACK), lightOff: weight(off.light, BLACK), lightOn: weight(on.light, BLACK),
+      greyTruth: weight(truthGrey, BLACK), greyOff: weight(off.grey, BLACK), greyOn: weight(on.grey, BLACK),
+      paleTruth: weight(truthPale, BLACK), paleOff: weight(off.pale, BLACK), paleOn: weight(on.pale, BLACK),
+      yellowTruth: weight(truthYellow, BLACK), yellowOff: weight(off.yellow, BLACK), yellowOn: weight(on.yellow, BLACK),
+      greenTruth: weight(truthGreen, BLACK), greenOff: weight(off.green, BLACK), greenOn: weight(on.green, BLACK),
+      boldTruth: weight(truthBold, BLACK), boldOff: weight(off.bold, BLACK), boldOn: weight(on.bold, BLACK),
+    },
+  };
+  const w = measured.weight;
+  const err = (v, t) => Math.abs(v - t) / t;
+  if (lcdAvailable) {
+    checks.lightInkShowsFringesOn = measured.fringe.lightOn > 0;
+    checks.darkInkShowsFringesOn = measured.fringe.darkOn > 0;
+    checks.anOpaqueDefaultBackgroundShowsFringesOn = measured.fringe.defaultBgOn > 0;
+    // Bounds on total ink against the truth draw. Mid-grey, the ink the fitted curve serves least
+    // well, gets the wide one; the rest must land within 1 %.
+    checks.lightInkIsWithin1PctOfTheTruth = err(w.lightOn, w.lightTruth) <= 0.01;
+    checks.darkInkIsWithin1PctOfTheTruth = err(w.darkOn, w.darkTruth) <= 0.01;
+    checks.paleInkIsWithin1PctOfTheTruth = err(w.paleOn, w.paleTruth) <= 0.01;
+    checks.yellowInkIsWithin1PctOfTheTruth = err(w.yellowOn, w.yellowTruth) <= 0.01;
+    checks.greenInkIsWithin1PctOfTheTruth = err(w.greenOn, w.greenTruth) <= 0.01;
+    checks.boldInkIsWithin1PctOfTheTruth = err(w.boldOn, w.boldTruth) <= 0.01;
+    checks.midGreyInkIsWithin8PctOfTheTruth = err(w.greyOn, w.greyTruth) <= 0.08;
+    if (spill && spill.off.darkNear > 0) {
+      checks.spilledLightInkShowsFringesOn = spill.on.lightNearFringe > 0 && spill.off.lightNearFringe === 0;
+      if (spill.cellRatio <= 0.95) checks.spilledDarkInkTakesTheDarkInkCurve = spill.nearRatio <= 0.95;
+    }
+  } else {
+    checks.noFringeWhereTheCanvasDrawsNone = measured.fringe.lightOn === 0 && measured.fringe.darkOn === 0;
+  }
+
+  window.__proof = { ok: Object.values(checks).every(Boolean), checks, measured };
+  window.__done = true;
+</script>

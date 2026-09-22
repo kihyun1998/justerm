@@ -38,6 +38,15 @@ use crate::bitmap::{PADDING, cell_metrics, ink_bounds};
 use crate::builtin::block_glyph;
 use crate::css_font::{FontWeight, font_string};
 use crate::glyph_cache::FontStyle;
+use crate::lcd::{fit_dark_gamma, with_lcd};
+
+/// The string drawn at both polarities to measure a configuration's dark-ink coverage curve (#961):
+/// round and diagonal strokes, so every channel sees partial coverage at many levels.
+const CALIBRATION_TEXT: &str = "Hamburgefonstiv 0123 {}[] @#%&";
+
+/// The largest size, in device px, the calibration string is drawn at. Larger configurations are
+/// calibrated here, which keeps the calibration canvas bounded however large the font.
+const CALIBRATION_MAX_PX: f32 = 64.0;
 
 /// A browser-backed glyph rasteriser bound to one font family, size and pair of weights.
 pub struct Rasterizer {
@@ -68,17 +77,25 @@ pub struct Rasterizer {
     off_y: u32,
     /// Band reserved above and below the cell for ink that leaves it (ADR-0019 R1.2, #791).
     bleed_y: u32,
+    /// The opaque canvas per-channel (LCD) coverage is drawn on (#961), or `None` for a grayscale
+    /// configuration. Sized like `canvas`.
+    lcd: Option<(OffscreenCanvas, OffscreenCanvasRenderingContext2d)>,
+    /// The dark-ink coverage exponent measured for this configuration (`lcd::fit_dark_gamma`), or
+    /// `0.0` for a grayscale one — the value the shader's `u_lcd_gamma` carries.
+    lcd_gamma: f32,
 }
 
 impl Rasterizer {
     /// Build a rasteriser for `font_family` at `font_size` (CSS px), drawing regular text at
     /// `font_weight` and bold text at `font_weight_bold`. Measures the cell from the `█` ink bounds
-    /// at the `normal` weight and sizes an internal double-width padded canvas.
+    /// at the `normal` weight and sizes an internal double-width padded canvas. With `subpixel` it
+    /// also holds an opaque canvas for per-channel coverage and measures the dark-ink curve (#961).
     pub fn new(
         font_family: &str,
         font_size: f32,
         font_weight: FontWeight,
         font_weight_bold: FontWeight,
+        subpixel: bool,
     ) -> Result<Rasterizer, JsValue> {
         // A generous square measuring buffer so `█` (drawn at an offset to catch any negative
         // positioning) fits with headroom above and below the baseline.
@@ -130,6 +147,24 @@ impl Rasterizer {
         canvas.set_height(padded_h);
         Self::apply_state(&ctx, &measuring);
 
+        let (lcd, lcd_gamma) = if subpixel {
+            let size = font_size.min(CALIBRATION_MAX_PX);
+            let regular = font_string(
+                font_family,
+                size,
+                FontStyle::Normal,
+                font_weight,
+                font_weight_bold,
+            );
+            let gamma = Self::calibrate(&regular, size)?;
+            (
+                Some(Self::opaque_canvas(padded_w * 2, padded_h, &measuring)?),
+                gamma,
+            )
+        } else {
+            (None, 0.0)
+        };
+
         Ok(Rasterizer {
             canvas,
             ctx,
@@ -147,7 +182,58 @@ impl Rasterizer {
             off_x: 0,
             off_y: 0,
             bleed_y: 0,
+            lcd,
+            lcd_gamma,
         })
+    }
+
+    /// A `w`×`h` canvas whose 2D context is opaque (`alpha: false`) — the only kind the browser
+    /// draws per-channel (LCD) text into — with the drawing state applied.
+    fn opaque_canvas(
+        w: u32,
+        h: u32,
+        font: &str,
+    ) -> Result<(OffscreenCanvas, OffscreenCanvasRenderingContext2d), JsValue> {
+        let canvas = OffscreenCanvas::new(w, h)?;
+        let opts = js_sys::Object::new();
+        js_sys::Reflect::set(&opts, &"alpha".into(), &JsValue::FALSE)?;
+        let ctx = canvas
+            .get_context_with_context_options("2d", &opts)?
+            .ok_or_else(|| JsValue::from_str("justerm-renderer: no 2d context"))?
+            .dyn_into::<OffscreenCanvasRenderingContext2d>()?;
+        Self::apply_state(&ctx, font);
+        Ok((canvas, ctx))
+    }
+
+    /// The dark-ink coverage exponent for text drawn in `font` (#961): [`CALIBRATION_TEXT`] white
+    /// over black and black over white, fitted by [`fit_dark_gamma`].
+    fn calibrate(font: &str, font_size: f32) -> Result<f32, JsValue> {
+        let w = (font_size * 24.0).ceil() as u32;
+        let h = (font_size * 3.0).ceil() as u32;
+        let (_canvas, ctx) = Self::opaque_canvas(w, h, font)?;
+        let draw = |ink: &str, ground: &str| -> Result<Vec<u8>, JsValue> {
+            ctx.set_fill_style_str(ground);
+            ctx.fill_rect(0.0, 0.0, w as f64, h as f64);
+            ctx.set_fill_style_str(ink);
+            ctx.fill_text(
+                CALIBRATION_TEXT,
+                font_size as f64 * 0.5,
+                font_size as f64 * 2.0,
+            )?;
+            Ok(ctx
+                .get_image_data(0.0, 0.0, w as f64, h as f64)?
+                .data()
+                .to_vec())
+        };
+        let light = draw("white", "black")?;
+        let dark = draw("black", "white")?;
+        Ok(fit_dark_gamma(&light, &dark))
+    }
+
+    /// The dark-ink coverage exponent the shader raises the light mask to, or `0.0` when this
+    /// configuration is grayscale (#961).
+    pub fn lcd_gamma(&self) -> f32 {
+        self.lcd_gamma
     }
 
     /// This rasteriser's CSS `font` string for `style`.
@@ -215,6 +301,13 @@ impl Rasterizer {
             // back to their defaults, and every glyph would then be drawn from the wrong origin.
             Self::apply_state(&self.ctx, &self.font(FontStyle::Normal));
         }
+        if let Some((canvas, ctx)) = &self.lcd
+            && (canvas.width() < need_w || canvas.height() < need_h)
+        {
+            canvas.set_width(need_w.max(canvas.width()));
+            canvas.set_height(need_h.max(canvas.height()));
+            Self::apply_state(ctx, &self.font(FontStyle::Normal));
+        }
         Ok(())
     }
 
@@ -249,22 +342,70 @@ impl Rasterizer {
     /// (#359, #361).
     pub fn rasterize(&self, text: &str, style: FontStyle, wide: bool) -> Result<Vec<u8>, JsValue> {
         let (padded_w, padded_h) = self.padded_size();
-        // A wide source keeps one PADDING band on each outer edge and 2*cell_w of content between
-        // (== 2*padded_w - 2*PADDING). A normal source is one padded cell.
-        let src_w = if wide {
-            2 * padded_w - 2 * PADDING
-        } else {
-            padded_w
-        };
 
         if !wide && let Some(bitmap) = self.builtin(text) {
             return Ok(self.pad(&bitmap, padded_w, padded_h));
         }
 
-        self.ctx.set_font(&self.font(style));
         // Clear the full (double padded) canvas so a previous wide glyph can't linger.
         self.ctx
             .clear_rect(0.0, 0.0, (padded_w * 2) as f64, padded_h as f64);
+        self.draw(&self.ctx, text, style, wide)?;
+        let img = self
+            .ctx
+            .get_image_data(0.0, 0.0, self.src_w(wide) as f64, padded_h as f64)?;
+        Ok(img.data().to_vec())
+    }
+
+    /// A [`rasterize`](Self::rasterize)d bitmap in this configuration's slot layout (#961).
+    /// Unchanged for a grayscale configuration, a `colour` glyph, or a builtin glyph — which the font
+    /// never draws, and whose coverage the shader reads from alpha alone, since every glyph `builtin`
+    /// owns is background-class ink (`glyph_class::treat_glyph_as_background_color`). Otherwise its
+    /// RGB becomes the light mask, the same glyph drawn white over opaque black, per [`with_lcd`].
+    pub fn finish(
+        &self,
+        rgba: Vec<u8>,
+        text: &str,
+        style: FontStyle,
+        wide: bool,
+        colour: bool,
+    ) -> Result<Vec<u8>, JsValue> {
+        let Some((_, ctx)) = &self.lcd else {
+            return Ok(rgba);
+        };
+        if colour || (!wide && self.builtin(text).is_some()) {
+            return Ok(rgba);
+        }
+        let (padded_w, padded_h) = self.padded_size();
+        ctx.set_fill_style_str("black");
+        ctx.fill_rect(0.0, 0.0, (padded_w * 2) as f64, padded_h as f64);
+        ctx.set_fill_style_str("white");
+        self.draw(ctx, text, style, wide)?;
+        let mask = ctx.get_image_data(0.0, 0.0, self.src_w(wide) as f64, padded_h as f64)?;
+        Ok(with_lcd(&rgba, &mask.data()))
+    }
+
+    /// The width of a rasterised source: one padded cell, or for a `wide` glyph one PADDING band on
+    /// each outer edge and `2 * cell_w` of content between (`== 2*padded_w - 2*PADDING`).
+    fn src_w(&self, wide: bool) -> u32 {
+        let padded_w = self.padded_size().0;
+        if wide {
+            2 * padded_w - 2 * PADDING
+        } else {
+            padded_w
+        }
+    }
+
+    /// Draw `text` into `ctx` at this configuration's glyph origin, condensed to its box when the
+    /// ink is wider. The caller prepares the canvas and reads it back.
+    fn draw(
+        &self,
+        ctx: &OffscreenCanvasRenderingContext2d,
+        text: &str,
+        style: FontStyle,
+        wide: bool,
+    ) -> Result<(), JsValue> {
+        ctx.set_font(&self.font(style));
         // Inset by PADDING, then by the glyph's place inside the cell (#338). A wide glyph's ink is
         // `2 * phys_w` across a `2 * cell_w` advance, so its left margin is the whole slack, not half
         // of it — otherwise the letter sits off-centre in its own advance.
@@ -291,28 +432,25 @@ impl Rasterizer {
         // negative `letter_spacing` narrow the cell past the glyph and crop it, and a predicate
         // keyed on the cell would read that consumer policy as a font fact.
         let box_w = if wide { 2 * self.phys_w } else { self.phys_w };
-        let metrics = self.ctx.measure_text(text)?;
+        let metrics = ctx.measure_text(text)?;
         let fit = crate::metrics::horizontal_fit(
             metrics.actual_bounding_box_left() as f32,
             metrics.actual_bounding_box_right() as f32,
             box_w,
         );
         if fit.scale_x == 1.0 && fit.pen_offset == 0.0 {
-            self.ctx.fill_text(text, x, y as f64)?;
+            ctx.fill_text(text, x, y as f64)?;
         } else {
             // `pen_offset` is pre-scale, so both the bearing and the ink scale together and the
             // condensed left edge lands on the box origin. `scale(_, 1.0)` leaves the baseline and
             // every vertical extent untouched, which is what keeps #791's band uninvolved.
-            self.ctx.save();
-            self.ctx.translate(x, 0.0)?;
-            self.ctx.scale(fit.scale_x as f64, 1.0)?;
-            self.ctx.fill_text(text, fit.pen_offset as f64, y as f64)?;
-            self.ctx.restore();
+            ctx.save();
+            ctx.translate(x, 0.0)?;
+            ctx.scale(fit.scale_x as f64, 1.0)?;
+            ctx.fill_text(text, fit.pen_offset as f64, y as f64)?;
+            ctx.restore();
         }
-        let img = self
-            .ctx
-            .get_image_data(0.0, 0.0, src_w as f64, padded_h as f64)?;
-        Ok(img.data().to_vec())
+        Ok(())
     }
 
     /// The built-in cell-sized bitmap for a lone block/sextant glyph, or `None` for what the font owns.
