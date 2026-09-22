@@ -198,7 +198,8 @@ The membership test, so the list can be derived rather than remembered: **does t
 the ink scan or `device_cell` inside `bake_config`?** — i.e. is it the family, the size, the letter
 spacing or the line height of a configuration, or the density every configuration is baked at.
 Reaching `bake_config` alone is not enough since #928: the two weights key a configuration and
-re-bake it, but `Rasterizer::new` measures at `normal`, so they never reach the cell. `setCursorContrast`/`setCursorThickness` (#580) do not — they are
+re-bake it, but `Rasterizer::new` measures at `normal`, so they never reach the cell — nor, since #961, does
+the subpixel setting, which bakes a second coverage on its own canvas and leaves the ink scan alone. `setCursorContrast`/`setCursorThickness` (#580) do not — they are
 draw-time scalars and are not instances, which is worth stating because they look like near
 neighbours. (The test named `recompute_cell` until #772 deleted it; same question, live name.)
 

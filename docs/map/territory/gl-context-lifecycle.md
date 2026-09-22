@@ -69,9 +69,9 @@ machine that decides what the renderer does in between.
   itself is harmless — `get_parameter_i32` answers `0` for a `null`. A panic is also the one failure
   here that leaves the family's error shape: it arrives as a `RuntimeError`, not as the bare string
   every other fallible path throws.
-- **Every entry point that changes the geometry takes the request and defers the GPU work.** Six of
+- **Every entry point that changes the geometry takes the request and defers the GPU work.** Seven of
   them can arrive mid-loss — the DPR, the font size, the font family, the font weights (#928), the
-  spacing policy and the resize — and none may reject the call, because a consumer has no obligation to hold it back. It can
+  subpixel setting (#961), the spacing policy and the resize — and none may reject the call, because a consumer has no obligation to hold it back. It can
   now *see* the loss (#579 wired the surface), but seeing is not the same as being expected to act on
   it: nothing in the contract says a consumer must check, and a setter that rejected would break every
   one that does not. So each stores what it was given and lets `restore` re-derive

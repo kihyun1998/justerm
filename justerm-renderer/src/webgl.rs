@@ -1051,7 +1051,7 @@ impl ConfigTier {
 /// The **per-grid** tier — one terminal's own state (ADR-0021 D1/D2).
 ///
 /// Everything a consumer can set differently per terminal is a **selector** and lands here, including
-/// the six font/metric fields: they are per-grid *as settings*, while the machinery they key
+/// the seven font/metric fields: they are per-grid *as settings*, while the machinery they key
 /// (`ConfigTier`) is not. `instance_vbo` is here rather than global because `uploaded` mirrors it —
 /// one shared buffer with N per-grid baselines would let one grid's upload silently invalidate
 /// another's — and `vao` followed it in #771, because a VAO records which buffer feeds the draw.
@@ -1061,7 +1061,7 @@ impl ConfigTier {
 /// load-bearing half: moving a field out of this struct breaks those methods at compile time.
 struct GridTier {
     /// The configuration this grid draws through — the atlas, rasteriser, glyph cache and cell it
-    /// selects into (#772). A **handle, not a copy**: the six selector fields below say what this
+    /// selects into (#772). A **handle, not a copy**: the seven selector fields below say what this
     /// grid asked for, and this says which shared entry serves it. The two are kept in step by
     /// `select_config`, the only writer of either.
     config: ConfigId,
@@ -1363,10 +1363,11 @@ impl JustermRenderer {
     /// and follows the buffer). No atlas, rasteriser, glyph cache, program or shared quad
     /// buffer — those stay one per context / per configuration.
     ///
-    /// **The six selectors are this grid's font, and they are optional and trailing**:
+    /// **The seven selectors are this grid's font, and they are optional and trailing**:
     /// `addGrid(palette, fg, bg)` takes the defaults (`"monospace"`, 16 CSS px, no letter spacing,
-    /// line height 1, weights `"normal"` / `"bold"`), and any of the six may be given instead. A
-    /// weight takes what `setFontWeight` takes. They are what the
+    /// line height 1, weights `"normal"` / `"bold"`, grayscale text), and any of the seven may be
+    /// given instead. A weight takes what `setFontWeight` takes, and the last argument is what
+    /// `setSubpixelAntialiasing` takes. They are what the
     /// grid's atlas is keyed by, so a grid whose selectors match a sibling's **joins that
     /// sibling's atlas and bakes nothing** — the whole economy of the middle tier, and the reason
     /// they belong here rather than in a setter called a line later: a grid born at the defaults and
@@ -1379,7 +1380,7 @@ impl JustermRenderer {
     /// It is **not drawn** until `setViewport` places it, and until then it is
     /// not packed either: `render` skips a grid with no viewport before the pack, so feeding a hidden
     /// grid costs the scatter and nothing after it.
-    // Three palette columns plus the six font/metric selectors; the selectors are optional and
+    // Three palette columns plus the seven font/metric selectors; the selectors are optional and
     // TRAILING, the `apply_frame` precedent, so `addGrid(palette, fg, bg)` still reads as a call.
     #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = addGrid)]
@@ -2035,7 +2036,7 @@ impl JustermRenderer {
 
     /// Bind a renderer to the canvas matched by `canvas_selector`.
     ///
-    /// It arrives holding **no terminal and no font configuration**: the palette and the six
+    /// It arrives holding **no terminal and no font configuration**: the palette and the seven
     /// font selectors belong to a grid, and `addGrid` is what creates one. So the
     /// first two calls a consumer makes are `new` then `addGrid`, and nothing is baked in between —
     /// there is nothing yet to key an atlas by.
@@ -2563,9 +2564,10 @@ impl JustermRenderer {
     ///
     /// It does **not** touch the drawing buffer, which it did until #773: the buffer is the
     /// surface's, and a surface drawing N grids belongs to none of them. The consumer re-fits after
-    /// any selector that moves the cell — every one but the two weights, which do not.
+    /// any selector that moves the cell — every one but the two weights and the subpixel setting,
+    /// which do not.
     ///
-    /// The single site every one of the six setters goes through, so none of them can decide any of
+    /// The single site every one of the seven setters goes through, so none of them can decide any of
     /// this differently. Three properties it owes, and each one is a bug that has been paid for
     /// here before:
     ///
@@ -2698,15 +2700,16 @@ impl JustermRenderer {
         self.adopt_selectors(at, |g| g.font_weight_bold = weight)
     }
 
-    /// Draw **one grid's** text with per-channel (LCD / subpixel) coverage, or back to grayscale
-    /// (#961). Off by default. It joins the configuration keyed by the new setting, exactly as a
-    /// family change does (#772), and moves this grid only; the cell does not move, so no re-fit is
-    /// needed. Takes effect on the next [`render`](Self::render).
+    /// Draw **one grid's** text with per-channel (LCD / subpixel) coverage, or back to grayscale.
+    /// Off by default. It joins the configuration keyed by the new setting, exactly as a family
+    /// change does, and moves this grid only; the cell does not move, so no re-fit is needed. Takes
+    /// effect on the next `render`.
     ///
     /// Per-channel coverage applies only where the cell's background is opaque: a default-background
-    /// cell under a translucent [`setBgAlpha`](Self::set_bg_alpha) keeps grayscale, since one alpha
-    /// cannot carry three coverages. Colour emoji and builtin block glyphs are unchanged. Where the
-    /// browser draws no LCD text the three channels come back equal, and the result is grayscale.
+    /// cell under a translucent `setBgAlpha` keeps grayscale, since one alpha cannot carry three
+    /// coverages. Colour emoji and builtin block glyphs are unchanged. Where the browser draws no LCD
+    /// text the three channels come back equal and no colour fringe appears, though dark ink is still
+    /// drawn at the lighter weight the browser gives it.
     #[wasm_bindgen(js_name = setSubpixelAntialiasing)]
     pub fn set_subpixel_antialiasing(&mut self, grid: u32, on: bool) -> Result<(), JsValue> {
         let at = self.slot(grid)?;
@@ -3943,10 +3946,10 @@ impl GridTier {
     /// One terminal's state at rest: no cells, no cursor, no overlays, every consumer policy at
     /// its default. The caller supplies what a grid cannot default — its own GPU buffers
     /// (ADR-0021 D2), the configuration it selects into and the key that names it — which carries
-    /// the six font/metric **selectors** (D1: per-grid settings, even though the machinery they
+    /// the seven font/metric **selectors** (D1: per-grid settings, even though the machinery they
     /// key is per-config) — its palette, and the grid it is sized to.
     ///
-    /// The six selectors are **unpacked from the key itself** rather than passed beside it, so the
+    /// The seven selectors are **unpacked from the key itself** rather than passed beside it, so the
     /// grid's fields and the entry its handle names cannot be born disagreeing. `select_config` is
     /// the only thing that moves either afterwards, and it moves both.
     ///

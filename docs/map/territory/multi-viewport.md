@@ -49,7 +49,7 @@ warns about, so prefer `## Code` over it if the two ever disagree again.)
   *selector* (whose state decides this — per-grid whenever a consumer can set it per terminal) and the
   *resource* (where the selected thing lives — per-config only when one instance can serve two grids
   *and* rebuilding it is expensive enough to repay keying). Read ADR-0021's D1–D5, not this summary.
-- **The middle tier is keyed by the consumer selectors — four at #772, six since the weights (#928) — and *not* by the DPR** (#772), although
+- **The middle tier is keyed by the consumer selectors — four at #772, six since the weights (#928), seven since the subpixel setting (#961) — and *not* by the DPR** (#772), although
   ADR-0021's prose said otherwise and the one reference that shares font machinery does hash its
   density. One canvas means one drawing buffer and one `devicePixelRatio`, so the DPR is globally
   constant across the registry — a component every key shares cannot separate two keys, and putting
@@ -315,9 +315,10 @@ The list below is what lands **when the multi-grid work does**, and the entries 
 ## Known holes / open
 
 - **The per-grid selectors are loose fields that travel together** (#928, recorded rather than
-  filed by the maintainer). Family, size, both weights, letter spacing and line height sit on
-  `GridTier` as six fields and are copied field by field in `key_of`, the snapshot and rollback in
-  `adopt_selectors`, and `GridTier::new` — so a seventh selector is an edit at each. Holding one
+  filed by the maintainer). Family, size, both weights, letter spacing, line height and the subpixel setting sit on
+  `GridTier` as seven fields and are copied field by field in `key_of`, the snapshot and rollback in
+  `adopt_selectors`, and `GridTier::new` — so each new selector is an edit at each. The seventh
+  (#961, the subpixel setting) was exactly that: one edit at all four sites. Holding one
   `ConfigKey` on the tier would make those one clone each; ADR-0021 D1 settles that the selectors are
   per-grid, not how they are stored. The wasm and TS positional `addGrid` arguments would still move.
 
