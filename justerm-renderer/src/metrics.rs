@@ -51,20 +51,21 @@ pub const MAX_CELL_PX: u32 = 4096;
 ///
 /// So ask, then adopt — as `resize_surface` does with the drawing buffer (#339). The caller reports the cell
 /// it actually got through `cell_height()`.
-/// `bleed_y` is the band a slot reserves above *and* below the cell for ink that leaves it
-/// (ADR-0019 R1.2, #791). It is spent out of the same per-layer height as the guard band, so it
-/// lowers the tallest cell the atlas can hold — and it is a separate argument rather than something
-/// the caller folds into `padding` because the bleed is **vertical only**: folding it in would
-/// narrow the width ceiling for a band the width never reserves.
+/// `bleed` is the band a slot reserves on each side of the cell for ink that leaves it, `(x, y)`
+/// (ADR-0019 R1.2; vertical #791, horizontal #966). The x band is spent out of the texture's width
+/// and the y band out of the per-layer height, each beside the guard band — two arguments rather
+/// than one folded into `padding`, because the two bands differ in depth and each narrows only its
+/// own axis.
 pub fn fit_cell_to_atlas(
     cell: (u32, u32),
     padding: u32,
-    bleed_y: u32,
+    bleed: (u32, u32),
     glyphs_per_layer: u32,
     max_texture_size: u32,
 ) -> (u32, u32) {
+    let (bleed_x, bleed_y) = bleed;
     let pad2 = 2 * padding;
-    let max_w = max_texture_size.saturating_sub(pad2).max(1);
+    let max_w = max_texture_size.saturating_sub(pad2 + 2 * bleed_x).max(1);
     // Every layer stacks `glyphs_per_layer` padded cells vertically, and each of those now carries
     // the bleed band on both sides of the cell.
     let max_h = (max_texture_size / glyphs_per_layer.max(1))
@@ -76,7 +77,8 @@ pub fn fit_cell_to_atlas(
 /// The device-pixel grid cell for a glyph box of `char_px`, given the consumer's policy.
 ///
 /// `letter_spacing_css` may be negative (xterm and alacritty both allow it, and some fonts want
-/// it); the cell then narrows past the glyph, which the shader crops rather than stretching. The
+/// it); the cell then narrows past the glyph, which then overlaps its neighbour up to the horizontal
+/// band and is cropped past it (#966) — never stretched. The
 /// cell never reaches zero — alacritty floors its own at 1 (`compute_cell_size`, `.max(1.)`), and a
 /// zero-width cell would make the whole grid degenerate.
 ///
@@ -111,7 +113,7 @@ pub fn device_cell(
 /// Arbitrary-looking, and mirrored on purpose — the alternative is to invent a different arbitrary.
 ///
 /// A cell narrower than the glyph (negative spacing) offsets by zero: the glyph starts at the cell's
-/// edge and is cropped on the far side.
+/// edge and reaches into its neighbour on the far side, as far as the horizontal band (#966).
 /// Underline / strikethrough thickness in device pixels, from the font SIZE — `max(1, round(font_px
 /// / 15))`, where `font_px = font_size * dpr` is the em in device px. This is xterm.js's rule
 /// (`addon-webgl/src/TextureAtlas.ts`, `Math.max(1, Math.floor(fontSize * dpr / 15))`), used because a
@@ -165,7 +167,7 @@ pub fn glyph_offset(cell: (u32, u32), char_px: (u32, u32)) -> (u32, u32) {
 /// The atlas slot a bake fills, and where inside it the glyph's box starts (#791).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlotGeometry {
-    /// The padded slot: the cell, plus the bleed band above and below, plus the guard band all round.
+    /// The padded slot: the cell, plus the bleed band on each side, plus the guard band all round.
     pub padded: (u32, u32),
     /// Top-left of the glyph's box inside that slot, device px.
     pub draw_origin: (u32, u32),
@@ -173,25 +175,32 @@ pub struct SlotGeometry {
 
 /// Lay out one atlas slot: how big it is, and where the glyph goes inside it.
 ///
-/// Three offsets stack on the vertical axis and they belong to three different things, which is why
-/// this is one function rather than three additions at the call site: the **guard band** keeps
-/// neighbouring slots from bleeding into each other under sampling (#288), the **bleed band** is the
-/// room `I_neighbour` needs for ink that leaves the cell (ADR-0019 R1.2), and `char_offset` is where
-/// the spacing policy put the glyph *within* the cell (#338). Only the last is horizontal too — the
-/// bleed is vertical for now, so `padded.0` grows by the guard band alone.
+/// Three offsets stack on each axis and they belong to three different things, which is why this is
+/// one function rather than three additions at the call site: the **guard band** keeps neighbouring
+/// slots from bleeding into each other under sampling (#288), the **bleed band** `(x, y)` is the room
+/// `I_neighbour` needs for ink that leaves the cell (ADR-0019 R1.2; y #791, x #966), and
+/// `char_offset` is where the spacing policy put the glyph *within* the cell (#338).
 ///
-/// `bleed_y = 0` reproduces the pre-#791 bake exactly. **No configuration is actually without a
-/// band** — [`vertical_bleed`] floors at [`BLEED_HEADROOM_PX`] — so this is the property that keeps
-/// the arithmetic checkable against the old behaviour in a test, not a mode the renderer runs in.
+/// `bleed = (0, 0)` reproduces the pre-#791 bake exactly. **No configuration is actually without a
+/// band** — [`vertical_bleed`] and [`horizontal_bleed`] both floor at [`BLEED_HEADROOM_PX`] — so this
+/// is the property that keeps the arithmetic checkable against the old behaviour in a test, not a
+/// mode the renderer runs in.
 pub fn slot_geometry(
     cell: (u32, u32),
     char_offset: (u32, u32),
-    bleed_y: u32,
+    bleed: (u32, u32),
     padding: u32,
 ) -> SlotGeometry {
+    let (bleed_x, bleed_y) = bleed;
     SlotGeometry {
-        padded: (cell.0 + 2 * padding, cell.1 + 2 * bleed_y + 2 * padding),
-        draw_origin: (padding + char_offset.0, padding + bleed_y + char_offset.1),
+        padded: (
+            cell.0 + 2 * bleed_x + 2 * padding,
+            cell.1 + 2 * bleed_y + 2 * padding,
+        ),
+        draw_origin: (
+            padding + bleed_x + char_offset.0,
+            padding + bleed_y + char_offset.1,
+        ),
     }
 }
 
@@ -246,6 +255,18 @@ pub fn vertical_bleed(
     above.max(below) + BLEED_HEADROOM_PX
 }
 
+/// How deep a band each slot reserves left and right of the cell, for this font configuration (#966).
+///
+/// `block_ink_w` is the ink width of this face's `█` and `box_w` the glyph box, both device px. What
+/// the block overhangs the box is room a cell sized from the ink box used to hold inside itself, so
+/// reserving it here keeps every glyph that fit that cell fitting this one; [`BLEED_HEADROOM_PX`] is
+/// added on top, as on the vertical axis — xterm.js draws a glyph the same 4 device px in from its bake
+/// canvas's left edge (`TextureAtlas.ts:542`, `TMP_CANVAS_GLYPH_PADDING * 2`, SHA `699f553`). One
+/// number serves both edges. What exceeds it is condensed at bake ([`horizontal_fit`], #792).
+pub fn horizontal_bleed(block_ink_w: u32, box_w: u32) -> u32 {
+    block_ink_w.saturating_sub(box_w) + BLEED_HEADROOM_PX
+}
+
 /// How far a glyph's measured ink may exceed its box before the bake condenses it, device px (#792).
 ///
 /// Empirical, and recorded as such — the same shape as [`BLEED_HEADROOM_PX`]. The bake decides from
@@ -272,48 +293,52 @@ pub struct HorizontalFit {
 ///
 /// The vertical axis is deliberately absent. Since #791 a slot carries a bleed band above and below
 /// the cell and the receiving cell reads it back (ADR-0019 R1.2), so vertical ink already has
-/// somewhere to go; horizontal ink does not, and the Canvas API exposes no face-level horizontal
-/// counterpart to `fontBoundingBox{Ascent,Descent}` for a band to be sized from. Scaling uniformly
+/// somewhere to go; horizontal ink has only the band [`horizontal_bleed`] sizes (#966), a few pixels
+/// deep, because the Canvas API exposes no face-level horizontal counterpart to
+/// `fontBoundingBox{Ascent,Descent}` for a deeper one to be sized from. Scaling uniformly
 /// would spend budget this renderer already owns and partially undo #791's recovery — so the glyph
 /// is condensed, never shrunk, and its height is untouched by construction rather than by a check.
 ///
 /// Both inputs are `measureText`'s, in device px against the pen: `ink_left` is how far the ink
 /// reaches **left** of the pen (negative when the ink starts to its right) and `ink_right` how far
-/// right. The visible window is `[0, box_w)`.
+/// right. The window is `[-bleed, box_w + bleed)`: the box, plus the horizontal band on each side
+/// that a neighbour reads back (#966). With `bleed = 0` it is the box alone, the pre-#966 window.
 ///
 /// `box_w` is the **glyph box**, never the cell. [`device_cell`] documents that a negative
-/// `letter_spacing` narrows the cell past the glyph, *which the shader crops rather than
-/// stretching*: a predicate keyed on the cell would read that consumer policy as a font fact and
+/// `letter_spacing` narrows the cell past the glyph, *which then overlaps its neighbour rather than
+/// being stretched*: a predicate keyed on the cell would read that consumer policy as a font fact and
 /// condense every glyph on the grid.
 ///
 /// Two treatments, and which one applies is a property of the ink rather than a mode:
 ///
-/// - ink **wider** than the box is condensed to exactly the box and aligned to its origin;
+/// - ink **wider** than the window is condensed to exactly the window and aligned to its left edge;
 /// - ink that **fits** and sits outside is moved in by the least that puts it inside — never
 ///   further, since a glyph's side bearing is the font's and a period is not meant to sit on the
 ///   cell's left edge.
-pub fn horizontal_fit(ink_left: f32, ink_right: f32, box_w: u32) -> HorizontalFit {
+pub fn horizontal_fit(ink_left: f32, ink_right: f32, box_w: u32, bleed: u32) -> HorizontalFit {
     let identity = HorizontalFit {
         scale_x: 1.0,
         pen_offset: 0.0,
     };
-    let box_w = box_w as f32;
+    let (box_w, bleed) = (box_w as f32, bleed as f32);
+    let window = box_w + 2.0 * bleed;
     let ink_w = ink_left + ink_right;
     // A blank grapheme measures no ink, and a font that reports something worse than that must not
     // reach the division below.
     if !ink_w.is_finite() || ink_w <= 0.0 {
         return identity;
     }
-    if ink_w > box_w + FIT_TOLERANCE_PX {
-        // Condensed to exactly the box, then aligned to its origin. The offset is pre-scale, so
-        // cancelling the bearing costs the same arithmetic whichever side it is on.
+    if ink_w > window + FIT_TOLERANCE_PX {
+        // Condensed to exactly the window, then aligned to its left edge at `-bleed`. The offset is
+        // pre-scale, so the edge is divided back out of the scale.
+        let scale_x = window / ink_w;
         return HorizontalFit {
-            scale_x: box_w / ink_w,
-            pen_offset: ink_left,
+            scale_x,
+            pen_offset: ink_left - bleed / scale_x,
         };
     }
-    let over_left = ink_left.max(0.0);
-    let over_right = (ink_right - box_w).max(0.0);
+    let over_left = (ink_left - bleed).max(0.0);
+    let over_right = (ink_right - box_w - bleed).max(0.0);
     let pen_offset = if over_left > FIT_TOLERANCE_PX {
         over_left
     } else if over_right > FIT_TOLERANCE_PX {
@@ -383,14 +408,14 @@ mod tests {
         // neither is touched, and the second is the side condition — "fits" must not mean
         // "left-align", or every period moves to the cell's edge.
         assert_eq!(
-            horizontal_fit(0.0, 8.0, 12),
+            horizontal_fit(0.0, 8.0, 12, 0),
             HorizontalFit {
                 scale_x: 1.0,
                 pen_offset: 0.0
             }
         );
         assert_eq!(
-            horizontal_fit(-3.0, 9.0, 12),
+            horizontal_fit(-3.0, 9.0, 12, 0),
             HorizontalFit {
                 scale_x: 1.0,
                 pen_offset: 0.0
@@ -401,7 +426,7 @@ mod tests {
     #[test]
     fn ink_wider_than_the_box_is_condensed_to_exactly_the_box() {
         // `Ǆ` on the demo face, measured 2026-08-21: 32 device px of ink in a 12 px box.
-        let fit = horizontal_fit(0.0, 32.0, 12);
+        let fit = horizontal_fit(0.0, 32.0, 12, 0);
         assert_eq!(fit.scale_x, 12.0 / 32.0);
         let (l, r) = ink_after(fit, 0.0, 32.0);
         assert_eq!((l, r), (0.0, 12.0));
@@ -411,7 +436,7 @@ mod tests {
     fn a_condensed_glyph_keeps_its_bearing_out_of_the_box() {
         // Same total ink, but 2 px of it left of the pen. The condensed ink must still start at the
         // box origin — an offset applied before the scale, not after.
-        let fit = horizontal_fit(2.0, 30.0, 12);
+        let fit = horizontal_fit(2.0, 30.0, 12, 0);
         assert_eq!(fit.scale_x, 12.0 / 32.0);
         let (l, r) = ink_after(fit, 2.0, 30.0);
         assert_eq!((l, r), (0.0, 12.0));
@@ -422,14 +447,14 @@ mod tests {
         // `ᾷ` on the demo face: ink exactly as wide as the cell, sitting 2 px to its right. Scaling
         // is a no-op on this class — 59 to 177 codepoints per face — so it must translate, and the
         // scale must stay 1 or the glyph shrinks for no reason.
-        let fit = horizontal_fit(-2.0, 14.0, 12);
+        let fit = horizontal_fit(-2.0, 14.0, 12, 0);
         assert_eq!(fit.scale_x, 1.0);
         assert_eq!(ink_after(fit, -2.0, 14.0), (0.0, 12.0));
     }
 
     #[test]
     fn ink_reaching_left_of_the_pen_is_moved_in_by_exactly_what_it_overhangs() {
-        let fit = horizontal_fit(3.0, 5.0, 12);
+        let fit = horizontal_fit(3.0, 5.0, 12, 0);
         assert_eq!(fit.scale_x, 1.0);
         assert_eq!(ink_after(fit, 3.0, 5.0), (0.0, 8.0));
     }
@@ -438,7 +463,7 @@ mod tests {
     fn ink_within_the_tolerance_is_not_condensed_on_the_metric_s_own_bias() {
         // One px past the box is the measurement's known bias against the alpha scan, not ink the
         // reader loses. Condensing here would fire on glyphs a pixel scan says already fit.
-        let fit = horizontal_fit(0.0, 13.0, 12);
+        let fit = horizontal_fit(0.0, 13.0, 12, 0);
         assert_eq!(
             fit,
             HorizontalFit {
@@ -447,13 +472,46 @@ mod tests {
             }
         );
         // ... and one px beyond the tolerance is condensed, so the threshold is a threshold.
-        assert!(horizontal_fit(0.0, 14.0, 12).scale_x < 1.0);
+        assert!(horizontal_fit(0.0, 14.0, 12, 0).scale_x < 1.0);
+    }
+
+    #[test]
+    fn ink_inside_the_band_is_left_exactly_alone() {
+        // #966: Consolas at 18.9 device px draws `@` about 12 wide over a 10 px advance box. With a
+        // 6 px band on each side that ink has a home in the neighbour, so the bake must not touch it.
+        let identity = HorizontalFit {
+            scale_x: 1.0,
+            pen_offset: 0.0,
+        };
+        assert_eq!(horizontal_fit(1.0, 11.0, 10, 6), identity);
+        // The same ink with no band is condensed, which is the pre-#966 behaviour.
+        assert!(horizontal_fit(1.0, 11.0, 10, 0).scale_x < 1.0);
+    }
+
+    #[test]
+    fn ink_wider_than_box_and_band_is_condensed_to_exactly_that_window() {
+        // 30 px of ink in a 10 px box with 6 px either side: the window is 22 px, from -6 to 16.
+        let fit = horizontal_fit(2.0, 28.0, 10, 6);
+        assert_eq!(fit.scale_x, 22.0 / 30.0);
+        let (l, r) = ink_after(fit, 2.0, 28.0);
+        assert!(
+            (l + 6.0).abs() < 1e-4 && (r - 16.0).abs() < 1e-4,
+            "{l}..{r}"
+        );
+    }
+
+    #[test]
+    fn ink_that_fits_the_window_but_sits_past_the_band_is_moved_in_to_its_edge() {
+        // 16 px of ink starting 3 px right of the pen reaches 19, 3 past the band's edge at 16.
+        let fit = horizontal_fit(-3.0, 19.0, 10, 6);
+        assert_eq!(fit.scale_x, 1.0);
+        assert_eq!(ink_after(fit, -3.0, 19.0), (0.0, 16.0));
     }
 
     #[test]
     fn a_blank_glyph_produces_no_scale_at_all() {
         // A space measures no ink; the fit must not divide by it.
-        let fit = horizontal_fit(0.0, 0.0, 12);
+        let fit = horizontal_fit(0.0, 0.0, 12, 0);
         assert_eq!(
             fit,
             HorizontalFit {
@@ -473,13 +531,13 @@ mod tests {
         // the cell's texcoords have to land on the middle band and leave the bleed to whoever owns
         // the ink in it. Worked by hand: a 12x24 cell with bleed 4 and guard 1 is a 14x34 slot, so
         // the cell occupies y 5..=28 of 34 and x 1..=12 of 14.
-        let (o, s) = cell_uv(slot_geometry((12, 24), (0, 0), 4, 1), (12, 24));
+        let (o, s) = cell_uv(slot_geometry((12, 24), (0, 0), (0, 4), 1), (12, 24));
         assert_eq!(o, (1.0 / 14.0, 5.0 / 34.0));
         assert_eq!(s, (12.0 / 14.0, 24.0 / 34.0));
 
         // Bleed 0 reproduces the guard-band inset the shader has always applied, which is the
         // assertion that keeps every existing pixel proof meaningful across this change.
-        let (o0, s0) = cell_uv(slot_geometry((12, 24), (0, 0), 0, 1), (12, 24));
+        let (o0, s0) = cell_uv(slot_geometry((12, 24), (0, 0), (0, 0), 1), (12, 24));
         assert_eq!(o0, (1.0 / 14.0, 1.0 / 26.0));
         assert_eq!(s0, (12.0 / 14.0, 24.0 / 26.0));
     }
@@ -491,7 +549,7 @@ mod tests {
         // the guard band, past the bleed, and past wherever the spacing policy put it in the cell.
         let cell = (12, 24);
 
-        let g = slot_geometry(cell, (0, 0), 4, 1);
+        let g = slot_geometry(cell, (0, 0), (0, 4), 1);
         assert_eq!(
             g.padded,
             (14, 34),
@@ -505,7 +563,7 @@ mod tests {
 
         // `letterSpacing` / `lineHeight` move the glyph inside the cell (#338); the band is outside
         // it, so the two offsets simply add.
-        let spaced = slot_geometry(cell, (2, 3), 4, 1);
+        let spaced = slot_geometry(cell, (2, 3), (0, 4), 1);
         assert_eq!(
             spaced.padded,
             (14, 34),
@@ -515,7 +573,7 @@ mod tests {
 
         // Bleed 0 must reproduce today's bake exactly — this is the assertion that lets the band be
         // switched on per configuration without every other configuration moving.
-        let none = slot_geometry(cell, (2, 3), 0, 1);
+        let none = slot_geometry(cell, (2, 3), (0, 0), 1);
         assert_eq!(none.padded, (14, 26));
         assert_eq!(none.draw_origin, (3, 4));
     }
@@ -564,16 +622,98 @@ mod tests {
         // Continued by hand from the arithmetic the #359 test below pins: one layer gets
         // 8192/32 = 256 rows, and a slot spends `2*padding + 2*bleed` of them before the cell.
         // At padding 1, bleed 4 that is 256 - 2 - 8 = 246.
-        assert_eq!(fit_cell_to_atlas((10, 246), 1, 4, 32, 8192), (10, 246));
-        assert_eq!(fit_cell_to_atlas((10, 247), 1, 4, 32, 8192), (10, 246));
-        assert_eq!(fit_cell_to_atlas((10, 4096), 1, 4, 32, 8192), (10, 246));
-        // The width budget is untouched — the bleed is vertical only (#791's scope), so a cell that
-        // fits today still fits. This is the half that would silently regress if the bleed were
+        assert_eq!(fit_cell_to_atlas((10, 246), 1, (0, 4), 32, 8192), (10, 246));
+        assert_eq!(fit_cell_to_atlas((10, 247), 1, (0, 4), 32, 8192), (10, 246));
+        assert_eq!(
+            fit_cell_to_atlas((10, 4096), 1, (0, 4), 32, 8192),
+            (10, 246)
+        );
+        // With no horizontal band the width budget is untouched, so a cell that fits today still
+        // fits. This is the half that would silently regress if the bleed were
         // folded into `padding` at the call site instead of being its own argument.
-        assert_eq!(fit_cell_to_atlas((8190, 16), 1, 4, 32, 8192), (8190, 16));
-        assert_eq!(fit_cell_to_atlas((9000, 16), 1, 4, 32, 8192), (8190, 16));
+        assert_eq!(
+            fit_cell_to_atlas((8190, 16), 1, (0, 4), 32, 8192),
+            (8190, 16)
+        );
+        assert_eq!(
+            fit_cell_to_atlas((9000, 16), 1, (0, 4), 32, 8192),
+            (8190, 16)
+        );
         // And bleed 0 is exactly today's ceiling: the limit moves only when the feature is on.
-        assert_eq!(fit_cell_to_atlas((10, 4096), 1, 0, 32, 8192), (10, 254));
+        assert_eq!(
+            fit_cell_to_atlas((10, 4096), 1, (0, 0), 32, 8192),
+            (10, 254)
+        );
+    }
+
+    #[test]
+    fn the_horizontal_bleed_holds_what_the_block_glyph_overhangs_its_box_plus_the_headroom() {
+        // #966, measured 2026-09-22 in headless Chromium: Consolas at 18.9 device px inks `█` 12 wide
+        // over a 10.39 advance, so an advance-floored box of 10 leaves 2 px of it outside — which a
+        // cell sized from the ink box used to hold inside itself.
+        assert_eq!(horizontal_bleed(12, 10), 6, "2 px overhang + 4 px headroom");
+        // A box that IS the ink box (every configuration before #962) keeps only the headroom.
+        assert_eq!(horizontal_bleed(14, 14), 4);
+        // An ink box narrower than the box owes nothing, and does not underflow.
+        assert_eq!(horizontal_bleed(9, 10), 4);
+    }
+
+    #[test]
+    fn a_horizontal_bleed_eats_the_width_budget_as_the_vertical_one_eats_the_height() {
+        // 8192 wide, 1 guard band and 6 bleed on each side: 8192 - 2 - 12 = 8178 for the cell.
+        assert_eq!(
+            fit_cell_to_atlas((9000, 16), 1, (6, 4), 32, 8192),
+            (8178, 16)
+        );
+        assert_eq!(
+            fit_cell_to_atlas((8178, 16), 1, (6, 4), 32, 8192),
+            (8178, 16)
+        );
+        // The height budget is the vertical band's alone.
+        assert_eq!(
+            fit_cell_to_atlas((10, 4096), 1, (6, 4), 32, 8192),
+            (10, 246)
+        );
+    }
+
+    #[test]
+    fn a_slot_carries_the_horizontal_band_on_both_sides_and_the_glyph_starts_past_it() {
+        let g = slot_geometry((10, 24), (0, 0), (6, 4), 1);
+        assert_eq!(g.padded, (10 + 2 * 6 + 2, 24 + 2 * 4 + 2));
+        assert_eq!(g.draw_origin, (1 + 6, 1 + 4));
+        // The spacing offset still stacks on top, on both axes.
+        let spaced = slot_geometry((12, 24), (1, 3), (6, 4), 1);
+        assert_eq!(spaced.draw_origin, (1 + 6 + 1, 1 + 4 + 3));
+        // And the cell's own texcoords start past the guard band and the band, on both axes.
+        let (o, s) = cell_uv(g, (10, 24));
+        assert_eq!((o.0 * 24.0, s.0 * 24.0), (7.0, 10.0));
+    }
+
+    #[test]
+    fn the_shaders_one_cell_step_across_is_the_same_mapping_as_the_column_arithmetic() {
+        // The x twin of the row test below: `inner.x ± u_cell_uv.z` must name the column the
+        // band arithmetic does. Left neighbour = `Above` (the lower index), right = `Below`.
+        let (cell_w, bleed, pad) = (10u32, 6u32, 1u32);
+        let slot = slot_geometry((cell_w, 24), (0, 0), (bleed, 4), pad);
+        let (origin, span) = cell_uv(slot, (cell_w, 24));
+        let pw = slot.padded.0 as f32;
+        let mut seen = 0;
+        for x in 0..cell_w {
+            let cols = ink_rows(x, cell_w, bleed);
+            let Some((which, src_col)) = cols.neighbour else {
+                continue;
+            };
+            seen += 1;
+            let u_own = origin.0 + (x as f32 + 0.5) / cell_w as f32 * span.0;
+            let u_shader = match which {
+                Adjacent::Above => u_own + span.0,
+                Adjacent::Below => u_own - span.0,
+            };
+            let col_from_shader = (u_shader * pw - pad as f32).floor() as u32;
+            assert_eq!(col_from_shader, src_col, "x={x} {which:?}");
+        }
+        // A band wider than half the cell reaches every column from one side or the other.
+        assert_eq!(seen, cell_w);
     }
 
     #[test]
@@ -582,7 +722,7 @@ mod tests {
         // CELL (`inner.y ± u_cell_uv.w`), which is far simpler than the row form and therefore
         // worth checking rather than trusting. Both must name the same slot row.
         let (cell_h, bleed, pad) = (24u32, 4u32, 1u32);
-        let slot = slot_geometry((12, cell_h), (0, 0), bleed, pad);
+        let slot = slot_geometry((12, cell_h), (0, 0), (0, bleed), pad);
         let (origin, span) = cell_uv(slot, (12, cell_h));
         let ph = slot.padded.1 as f32;
 
@@ -725,23 +865,35 @@ mod tests {
         // runs** — `vertical_bleed` floors at its headroom, so production always spends a band here.
         // The pin is kept in this form because it is the one the #359 measurement was taken against;
         // the ceiling that actually ships is the bleed-4 case pinned above it.
-        assert_eq!(fit_cell_to_atlas((10, 254), 1, 0, 32, 8192), (10, 254));
-        assert_eq!(fit_cell_to_atlas((10, 255), 1, 0, 32, 8192), (10, 254));
-        assert_eq!(fit_cell_to_atlas((10, 4096), 1, 0, 32, 8192), (10, 254));
+        assert_eq!(fit_cell_to_atlas((10, 254), 1, (0, 0), 32, 8192), (10, 254));
+        assert_eq!(fit_cell_to_atlas((10, 255), 1, (0, 0), 32, 8192), (10, 254));
+        assert_eq!(
+            fit_cell_to_atlas((10, 4096), 1, (0, 0), 32, 8192),
+            (10, 254)
+        );
         // The width is bounded by the texture directly, not by the layer stack.
-        assert_eq!(fit_cell_to_atlas((8190, 16), 1, 0, 32, 8192), (8190, 16));
-        assert_eq!(fit_cell_to_atlas((9000, 16), 1, 0, 32, 8192), (8190, 16));
+        assert_eq!(
+            fit_cell_to_atlas((8190, 16), 1, (0, 0), 32, 8192),
+            (8190, 16)
+        );
+        assert_eq!(
+            fit_cell_to_atlas((9000, 16), 1, (0, 0), 32, 8192),
+            (8190, 16)
+        );
         // A real GPU's 16384 doubles both.
-        assert_eq!(fit_cell_to_atlas((10, 4096), 1, 0, 32, 16384), (10, 510));
+        assert_eq!(
+            fit_cell_to_atlas((10, 4096), 1, (0, 0), 32, 16384),
+            (10, 510)
+        );
         // Degenerate limits never produce a zero cell.
-        assert_eq!(fit_cell_to_atlas((10, 20), 1, 0, 32, 1), (1, 1));
+        assert_eq!(fit_cell_to_atlas((10, 20), 1, (0, 0), 32, 1), (1, 1));
     }
 
     #[test]
     fn a_negative_spacing_narrows_the_cell_and_never_reaches_zero() {
         // Both references allow it (alacritty's `offset.x` is an `i8`; xterm validates only
         // `lineHeight`). alacritty floors the cell at 1 px; so do we. The glyph then starts at the
-        // cell edge and the shader crops it — it is never stretched.
+        // cell edge and overlaps its neighbour up to the band (#966) — it is never stretched.
         assert_eq!(device_cell(CHAR, -2.0, 1.0, 1.0).0, 8);
         assert_eq!(glyph_offset((8, 16), CHAR), (0, 0));
         assert_eq!(device_cell(CHAR, -100.0, 1.0, 1.0).0, 1);

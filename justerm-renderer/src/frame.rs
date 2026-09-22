@@ -61,7 +61,7 @@ use crate::render_policy::{ColorPolicy, dim_foreground, resolve_cell};
 /// state, not an accident of the fold — so the packer, which knows every layer that touched the bg,
 /// emits the answer and the shader stops guessing. It costs its own float because #513 already spent
 /// the line inks' exact-integer budget: a colour fills all 24 f32-safe bits, leaving no spare bit to ride.
-pub const INSTANCE_FLOATS: usize = 16;
+pub const INSTANCE_FLOATS: usize = 20;
 
 /// Named float offsets inside one instance. They exist because the layout used to be addressed by
 /// arithmetic — `INSTANCE_FLOATS - 1` for the last field, a literal `12` for the stride — and both
@@ -73,15 +73,21 @@ pub const FG_RGB: usize = 5;
 pub const GLYPH_FIELD: usize = 8;
 /// 1.0 iff this cell's bg is the pristine default backdrop (#455).
 pub const BACKDROP: usize = 11;
-/// `I_neighbour` handles (ADR-0019 R1.2, #791): the glyph field of the cell above and of the cell
-/// below, or [`BLANK_SLOT`] where that neighbour's ink is withdrawn.
+/// `I_neighbour` handles (ADR-0019 R1.2): the glyph field of the cell above, below (#791), to the
+/// left and to the right (#966), or [`BLANK_SLOT`] where that neighbour's ink is withdrawn. Four
+/// consecutive floats, read by the shader as one `vec4` attribute.
 pub const NEIGHBOUR_UP: usize = 12;
 pub const NEIGHBOUR_DN: usize = 13;
+pub const NEIGHBOUR_LT: usize = 14;
+pub const NEIGHBOUR_RT: usize = 15;
 /// The ink each of those neighbours draws in, packed `0xRRGGBB` one per float — the same
 /// idiom the two line inks use (#513). ADR-0019 R1.2: foreign ink keeps its OWNER's colour,
-/// so the receiver's own `fg` is the wrong answer even though it is already to hand.
-pub const NEIGHBOUR_UP_FG: usize = 14;
-pub const NEIGHBOUR_DN_FG: usize = 15;
+/// so the receiver's own `fg` is the wrong answer even though it is already to hand. Four
+/// consecutive floats in the same order, one `vec4` attribute.
+pub const NEIGHBOUR_UP_FG: usize = 16;
+pub const NEIGHBOUR_DN_FG: usize = 17;
+pub const NEIGHBOUR_LT_FG: usize = 18;
+pub const NEIGHBOUR_RT_FG: usize = 19;
 
 /// A decoded frame's per-cell grid: dimensions + the four parallel column arrays the packer
 /// reads (all row-major, ideally length `cols*rows`). `bg`/`fg` are tagged-u32 colour refs,
@@ -700,6 +706,10 @@ pub fn pack_instances(
                 // must both end up blank.
                 f32::from(BLANK_SLOT),
                 f32::from(BLANK_SLOT),
+                f32::from(BLANK_SLOT),
+                f32::from(BLANK_SLOT),
+                0.0,
+                0.0,
                 0.0,
                 0.0,
             ]);
@@ -744,6 +754,25 @@ pub fn pack_instances(
                     out[idx * INSTANCE_FLOATS + NEIGHBOUR_DN] =
                         out[dn * INSTANCE_FLOATS + GLYPH_FIELD];
                     out[idx * INSTANCE_FLOATS + NEIGHBOUR_DN_FG] = fg_packed_at(&out, dn);
+                }
+            }
+            // The same grant across (#966). A wide pair needs no reconciliation on this axis: each
+            // of its outer edges spills into a different receiver, and its inner band is empty by
+            // construction (`bitmap::split_wide_bitmap`).
+            if col > 0 {
+                let lt = idx - 1;
+                if bg_at(&out, lt) == mine {
+                    out[idx * INSTANCE_FLOATS + NEIGHBOUR_LT] =
+                        out[lt * INSTANCE_FLOATS + GLYPH_FIELD];
+                    out[idx * INSTANCE_FLOATS + NEIGHBOUR_LT_FG] = fg_packed_at(&out, lt);
+                }
+            }
+            if col + 1 < cols {
+                let rt = idx + 1;
+                if bg_at(&out, rt) == mine {
+                    out[idx * INSTANCE_FLOATS + NEIGHBOUR_RT] =
+                        out[rt * INSTANCE_FLOATS + GLYPH_FIELD];
+                    out[idx * INSTANCE_FLOATS + NEIGHBOUR_RT_FG] = fg_packed_at(&out, rt);
                 }
             }
         }
@@ -1006,6 +1035,89 @@ mod tests {
         assert_eq!(up(5), BLANK_SLOT, "column 2 has no glyph above to receive");
     }
 
+    /// A cell's horizontal `I_neighbour` handles (#966): the slot of the cell to its left and to its
+    /// right, or [`BLANK_SLOT`] where that neighbour's ink is withdrawn.
+    fn side_neighbours(v: &[f32], cell: usize) -> (u16, u16) {
+        let b = cell * INSTANCE_FLOATS;
+        (v[b + NEIGHBOUR_LT] as u16, v[b + NEIGHBOUR_RT] as u16)
+    }
+
+    #[test]
+    fn a_cell_is_handed_its_side_neighbours_ink_in_their_own_colours() {
+        // #966: ink that overhangs the advance lands in the cell beside it, the horizontal twin of
+        // #791's rows. One row of three, three different foregrounds, one shared background.
+        let p = palette();
+        let f = Frame {
+            preedit: None,
+            cols: 3,
+            rows: 1,
+            bg: &[0; 3],
+            fg: &[
+                (2 << 24) | 0xE0_6C_75,
+                (2 << 24) | 0x61_AF_EF,
+                (2 << 24) | 0x98_C3_79,
+            ],
+            slots: &[33, 44, 55],
+            flags: &[0; 3],
+            codepoints: &[],
+            underline_colors: &[],
+        };
+        let got = pack_instances(
+            &f,
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[],
+        );
+        assert_eq!(side_neighbours(&got, 0), (BLANK_SLOT, 44), "left edge");
+        assert_eq!(side_neighbours(&got, 1), (33, 55));
+        assert_eq!(side_neighbours(&got, 2), (44, BLANK_SLOT), "right edge");
+        let fg = |c: usize, field: usize| got[c * INSTANCE_FLOATS + field] as u32;
+        assert_eq!(fg(1, NEIGHBOUR_LT_FG), 0xE0_6C_75, "the left owner's red");
+        assert_eq!(
+            fg(1, NEIGHBOUR_RT_FG),
+            0x98_C3_79,
+            "the right owner's green"
+        );
+        // The vertical handles of a one-row grid stay withdrawn beside them.
+        assert_eq!(neighbours(&got, 1), (BLANK_SLOT, BLANK_SLOT));
+    }
+
+    #[test]
+    fn a_side_neighbours_ink_is_withdrawn_where_the_two_cells_backgrounds_differ() {
+        // Rule 5, on the other axis: a selection covering column 1 alone puts a resolved-background
+        // edge on both sides of it, and no ink crosses either.
+        let p = palette();
+        let f = Frame {
+            preedit: None,
+            cols: 3,
+            rows: 1,
+            bg: &[0; 3],
+            fg: &[0; 3],
+            slots: &[33, 44, 55],
+            flags: &[0; 3],
+            codepoints: &[],
+            underline_colors: &[],
+        };
+        let sel = [0u32, 1, 1];
+        let ov = Overlay {
+            active: &[],
+            selection: &sel,
+            matches: &[],
+            link_hover: &[],
+            colors: HighlightColors {
+                selection_bg: 0x30_60_C0,
+                match_bg: 0x30_60_C0,
+                active_match_bg: 0x30_60_C0,
+            },
+        };
+        let got = pack_instances(&f, &p, true, &ov, &ColorPolicy::default(), &[]);
+        assert_eq!(side_neighbours(&got, 0), (BLANK_SLOT, BLANK_SLOT));
+        assert_eq!(side_neighbours(&got, 1), (BLANK_SLOT, BLANK_SLOT));
+        assert_eq!(side_neighbours(&got, 2), (BLANK_SLOT, BLANK_SLOT));
+    }
+
     #[test]
     fn a_neighbours_ink_arrives_in_its_own_colour_not_the_receivers() {
         // ADR-0019 R1.2: `I_neighbour` carries its OWNER's resolved ink. A descender falling out of
@@ -1147,12 +1259,17 @@ mod tests {
             // #455 `bg_default`: this cell's bg is an explicit Rgb (E06C75), NOT the default ref, so it
             // is content — opaque, flag 0.0.
             0.0,
-            // #791 `I_neighbour` handles: a 1x1 grid has no cell above or below, so both stay
-            // withdrawn. Spelled `BLANK_SLOT` rather than `0` for what it means — the two coincide
-            // because the atlas reserves index zero for the empty glyph, not by accident here.
+            // #791/#966 `I_neighbour` handles: a 1x1 grid has no cell above, below or beside it, so
+            // all four stay withdrawn. Spelled `BLANK_SLOT` rather than `0` for what it means — the
+            // two coincide because the atlas reserves index zero for the empty glyph, not by
+            // accident here.
+            f32::from(BLANK_SLOT),
+            f32::from(BLANK_SLOT),
             f32::from(BLANK_SLOT),
             f32::from(BLANK_SLOT),
             // ...and no colour travels with ink that is not there.
+            0.0,
+            0.0,
             0.0,
             0.0,
         ];

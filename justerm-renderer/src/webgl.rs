@@ -37,8 +37,20 @@ use crate::dpr::{css_px, dpr_changed};
 use crate::emoji::is_emoji_text;
 use crate::frame::{
     BACKDROP, BG_RGB, Frame, GLYPH_FIELD, INSTANCE_FLOATS, NEIGHBOUR_DN, NEIGHBOUR_DN_FG,
-    NEIGHBOUR_UP, NEIGHBOUR_UP_FG, pack_instances,
+    NEIGHBOUR_LT, NEIGHBOUR_LT_FG, NEIGHBOUR_RT, NEIGHBOUR_RT_FG, NEIGHBOUR_UP, NEIGHBOUR_UP_FG,
+    pack_instances,
 };
+
+// The shader reads each group of four neighbour floats as one `vec4` (up, down, left, right), so
+// the packer's offsets must stay consecutive in that order.
+const _: () = assert!(
+    NEIGHBOUR_DN == NEIGHBOUR_UP + 1
+        && NEIGHBOUR_LT == NEIGHBOUR_UP + 2
+        && NEIGHBOUR_RT == NEIGHBOUR_UP + 3
+        && NEIGHBOUR_DN_FG == NEIGHBOUR_UP_FG + 1
+        && NEIGHBOUR_LT_FG == NEIGHBOUR_UP_FG + 2
+        && NEIGHBOUR_RT_FG == NEIGHBOUR_UP_FG + 3
+);
 use crate::frame_grid::{DamageFrame, FrameGrid, cell_count};
 use crate::glyph_cache::{
     FontStyle, GLYPHS_PER_LAYER, GlyphCache, GlyphSlot, WIDE_BASE, WIDE_CAPACITY, slot_texcoord,
@@ -106,13 +118,12 @@ layout(location = 6) in float a_strike_fg;
 // instance: 1.0 iff this cell's bg is the pristine DEFAULT backdrop — the only surface #298 makes
 // translucent (#455). Provenance, packed by the Rust side, not re-inferred from the resolved colour.
 layout(location = 7) in float a_bg_default;
-// instance: `I_neighbour` (ADR-0019 R1.2, #791) — the glyph field of the cell above and below, and
-// the ink each of them draws in. BLANK_SLOT where that neighbour's ink is withdrawn, which the
-// packer decides because only it holds both cells' resolved backgrounds.
-layout(location = 8) in float a_glyph_up;
-layout(location = 9) in float a_glyph_dn;
-layout(location = 10) in float a_up_fg;
-layout(location = 11) in float a_dn_fg;
+// instance: `I_neighbour` (ADR-0019 R1.2) — the glyph field of the cell above, below (#791), left
+// and right (#966), and the ink each of them draws in, in that order. BLANK_SLOT where that
+// neighbour's ink is withdrawn, which the packer decides because only it holds both cells' resolved
+// backgrounds.
+layout(location = 8) in vec4 a_glyph_nb;
+layout(location = 9) in vec4 a_nb_fg;
 uniform mat4 u_projection;
 uniform vec2 u_cell_size;   // the GRID cell in device px
 out vec3 v_bg;
@@ -123,10 +134,8 @@ flat out float v_bg_default;
 flat out uint v_glyph;
 flat out vec2 v_cell;
 out vec2 v_tex;
-flat out uint v_glyph_up;
-flat out uint v_glyph_dn;
-flat out vec3 v_up_fg;
-flat out vec3 v_dn_fg;
+flat out uvec4 v_glyph_nb; // up, down, left, right
+flat out uvec4 v_nb_fg;    // their inks, still packed 0xRRGGBB
 void main() {
     vec2 origin = a_cell * u_cell_size;
     vec2 pos = floor(origin + a_pos * u_cell_size + 0.5); // pixel-snapped
@@ -146,12 +155,8 @@ void main() {
     // text because the BITMAP has wider margins, and a wide glyph's halves touch because it was
     // baked centred over its two-cell advance.
     v_tex = a_pos;
-    v_glyph_up = uint(a_glyph_up);
-    v_glyph_dn = uint(a_glyph_dn);
-    uint uf = uint(a_up_fg);
-    v_up_fg = vec3(float((uf >> 16u) & 255u), float((uf >> 8u) & 255u), float(uf & 255u)) / 255.0;
-    uint df = uint(a_dn_fg);
-    v_dn_fg = vec3(float((df >> 16u) & 255u), float((df >> 8u) & 255u), float(df & 255u)) / 255.0;
+    v_glyph_nb = uvec4(a_glyph_nb);
+    v_nb_fg = uvec4(a_nb_fg);
 }
 "#;
 
@@ -197,15 +202,14 @@ flat in float v_bg_default; // 1.0 = the default backdrop (#455/#298)
 flat in uint v_glyph;
 flat in vec2 v_cell;
 in vec2 v_tex;
-flat in uint v_glyph_up;
-flat in uint v_glyph_dn;
-flat in vec3 v_up_fg;
-flat in vec3 v_dn_fg;
-// How deep a band of THIS cell's top and bottom edge may receive a neighbour's ink, device px
-// (#791). Derived per font configuration by `metrics::vertical_bleed`, which floors at its
-// headroom — so 0 does not reach here in practice, and the `armed` guard below defends a value
-// the pipeline does not currently produce rather than a mode anything selects.
-uniform float u_bleed_px;
+flat in uvec4 v_glyph_nb; // up, down, left, right
+flat in uvec4 v_nb_fg;    // their inks, packed 0xRRGGBB
+// How deep a band of THIS cell's left/right (x) and top/bottom (y) edges may receive a neighbour's
+// ink, device px (#966, #791). Derived per font configuration by `metrics::horizontal_bleed` and
+// `metrics::vertical_bleed`, which both floor at their headroom — so 0 does not reach here in
+// practice, and the `armed` guards below defend a value the pipeline does not currently produce
+// rather than a mode anything selects.
+uniform vec2 u_bleed_px;
 // Per-channel (LCD) text coverage (#961): 0 for a grayscale configuration, else the exponent dark ink
 // raises the slot's light mask to (`lcd::fit_dark_gamma`).
 uniform float u_lcd_gamma;
@@ -264,7 +268,7 @@ float cursor_dx() {
     float dx = v_cell.x - u_cursor.x;
     return (dx < -0.5 || dx > u_cursor.z - 0.5) ? -1.0 : dx;
 }
-// Is the cell in THIS column at grid row `row` painted by a block cursor? (#791)
+// Is the cell at grid `cell` (col, row) painted by a block cursor? (#791; any column since #966)
 //
 // A block replaces the cell's background at fragment time (`base_bg`, below), so it never reaches
 // the packed instance — and the packer is where ADR-0019 rule 5 withdraws `I_neighbour` at a
@@ -273,11 +277,22 @@ float cursor_dx() {
 // without it: a neighbour's descender drew *over* the block, and a cursor cell's own glyph — which
 // paints in `u_cursor_text_color` — spilled into the next row in the pre-cursor `fg`, one glyph in
 // two colours split at the cell boundary.
-bool block_cursor_at(float row) {
+bool block_cursor_at(vec2 cell) {
     if (int(u_cursor.w) != 1) return false;
-    if (abs(row - u_cursor.y) > 0.5) return false;
-    float dx = v_cell.x - u_cursor.x;
+    if (abs(cell.y - u_cursor.y) > 0.5) return false;
+    float dx = cell.x - u_cursor.x;
     return !(dx < -0.5 || dx > u_cursor.z - 0.5);
+}
+// The texel of atlas slot `glyph` (its low 13 bits) at slot-local texcoord `uv`, explicit LOD so it
+// may be fetched outside uniform control flow. The same nudge off the texel edge as the cell's own.
+vec4 slot_texel(uint glyph, vec2 uv) {
+    uint slot = glyph & 0x1FFFu;
+    return textureLod(u_atlas,
+        vec3(uv.x + 0.001, (float(slot & 31u) + uv.y + 0.001) / 32.0, float(slot >> 5u)), 0.0);
+}
+// A neighbour's packed `0xRRGGBB` ink, as the colour it draws in.
+vec3 unpack_rgb(uint c) {
+    return vec3(float((c >> 16u) & 255u), float((c >> 8u) & 255u), float(c & 255u)) / 255.0;
 }
 // Does this fragment fall on a cursor STROKE? Mirrors `cursor::cursor_rects` in device pixels; a
 // hard edge, like the rects it mirrors — the strokes are pixel-aligned, so antialiasing them would
@@ -320,46 +335,69 @@ void main() {
     // chain. The quad is still exactly this cell, so nothing overlaps, the composite stays one
     // evaluation per pixel, and no GL blending is involved.
     //
-    // A slot holds `bleed | cell | bleed` rows, so the band that spilled toward me sits exactly one
-    // CELL away from where my own row reads — `± u_cell_uv.w` — and no arithmetic about padding or
-    // band depth is needed here. `metrics::ink_rows` states the same mapping in device-px rows and
-    // is where it is tested; this is its texcoord form.
+    // A slot holds `bleed | cell | bleed` on each axis, so the band that spilled toward me sits
+    // exactly one CELL away from where my own texel reads — `± u_cell_uv.w` down the slot for the
+    // rows above and below (#791), `± u_cell_uv.z` across it for the cells beside (#966) — and no
+    // arithmetic about padding or band depth is needed here. `metrics::ink_rows` states the same
+    // mapping in device px and is where it is tested, on both axes; this is its texcoord form.
     //
     // Sampled unconditionally and masked rather than branched: an implicit-LOD fetch under
     // non-uniform control flow is undefined in GLSL ES 3.00.
-    float y_px = v_tex.y * u_cell_size.y;
-    float armed = step(0.5, u_bleed_px);
+    vec2 px = v_tex * u_cell_size;
+    vec2 armed = step(vec2(0.5), u_bleed_px);
     // ...and the block-cursor half of rule 5's withdrawal, which the packer could not apply.
-    float same_up = block_cursor_at(v_cell.y) == block_cursor_at(v_cell.y - 1.0) ? 1.0 : 0.0;
-    float same_dn = block_cursor_at(v_cell.y) == block_cursor_at(v_cell.y + 1.0) ? 1.0 : 0.0;
-    float from_above = step(y_px, u_bleed_px) * armed * same_up;
-    float from_below = step(u_cell_size.y - u_bleed_px, y_px) * armed * same_dn;
+    bool me = block_cursor_at(v_cell);
+    vec4 same = vec4(
+        me == block_cursor_at(v_cell - vec2(0.0, 1.0)) ? 1.0 : 0.0,
+        me == block_cursor_at(v_cell + vec2(0.0, 1.0)) ? 1.0 : 0.0,
+        me == block_cursor_at(v_cell - vec2(1.0, 0.0)) ? 1.0 : 0.0,
+        me == block_cursor_at(v_cell + vec2(1.0, 0.0)) ? 1.0 : 0.0);
+    // up, down, left, right — the order of `v_glyph_nb`.
+    vec4 gate = same * vec4(
+        step(px.y, u_bleed_px.y) * armed.y,
+        step(u_cell_size.y - u_bleed_px.y, px.y) * armed.y,
+        step(px.x, u_bleed_px.x) * armed.x,
+        step(u_cell_size.x - u_bleed_px.x, px.x) * armed.x);
 
-    vec4 tex_up = textureLod(u_atlas, vec3(inner.x + 0.001,
-        (float(v_glyph_up & 31u) + inner.y + u_cell_uv.w + 0.001) / 32.0,
-        float((v_glyph_up & 0x1FFFu) >> 5u)), 0.0);
-    vec4 tex_dn = textureLod(u_atlas, vec3(inner.x + 0.001,
-        (float(v_glyph_dn & 31u) + inner.y - u_cell_uv.w + 0.001) / 32.0,
-        float((v_glyph_dn & 0x1FFFu) >> 5u)), 0.0);
-    float cov_up = tex_up.a * from_above;
-    float cov_dn = tex_dn.a * from_below;
+    vec4 tex_up = slot_texel(v_glyph_nb.x, inner + vec2(0.0, u_cell_uv.w));
+    vec4 tex_dn = slot_texel(v_glyph_nb.y, inner - vec2(0.0, u_cell_uv.w));
+    vec4 tex_lt = slot_texel(v_glyph_nb.z, inner + vec2(u_cell_uv.z, 0.0));
+    vec4 tex_rt = slot_texel(v_glyph_nb.w, inner - vec2(u_cell_uv.z, 0.0));
+    vec4 cov_nb = vec4(tex_up.a, tex_dn.a, tex_lt.a, tex_rt.a) * gate;
 
-    // Each carries its OWNER's ink — including the emoji rule, which is the *owner's* bit 15 and not
+    // One neighbour supplies this fragment's foreign ink: the one laying down the most, the earlier
+    // in up-down-left-right order on a tie (so a fragment only rows reach behaves as before #966).
+    uint owner = v_glyph_nb.x;
+    uint owner_fg = v_nb_fg.x;
+    vec4 owner_tex = tex_up;
+    float owner_gate = gate.x;
+    float foreign = cov_nb.x;
+    if (cov_nb.y > foreign) {
+        owner = v_glyph_nb.y; owner_fg = v_nb_fg.y; owner_tex = tex_dn; owner_gate = gate.y;
+        foreign = cov_nb.y;
+    }
+    if (cov_nb.z > foreign) {
+        owner = v_glyph_nb.z; owner_fg = v_nb_fg.z; owner_tex = tex_lt; owner_gate = gate.z;
+        foreign = cov_nb.z;
+    }
+    if (cov_nb.w > foreign) {
+        owner = v_glyph_nb.w; owner_fg = v_nb_fg.w; owner_tex = tex_rt; owner_gate = gate.w;
+        foreign = cov_nb.w;
+    }
+
+    // It carries its OWNER's ink — including the emoji rule, which is the *owner's* bit 15 and not
     // this cell's. Reading only coverage here drew a colour emoji's overflow as a monochrome
     // silhouette in the receiving cell's SGR foreground: measured, a brown pile spilling into the row
     // below arrived as 11 device px of pure red. R1.2 says foreign ink keeps its owner's ink, and the
     // owner's ink for an emoji lives in the atlas rather than in the instance.
-    vec3 ink_up = mix(v_up_fg, tex_up.rgb, float((v_glyph_up >> 15u) & 1u));
-    vec3 ink_dn = mix(v_dn_fg, tex_dn.rgb, float((v_glyph_dn >> 15u) & 1u));
-
-    // ONE position in rule 6 serves both, and that is a property of the rule rather than of what can
-    // spill: the clause is "above the receiver's own tile, below everything else the receiver owns",
-    // which never asks the neighbour's class. (An earlier comment here justified it by claiming a
-    // background-class glyph cannot overflow. That is false — Powerline `U+E0A4..=U+E0D6` is
-    // background-class by `glyph_class`, is drawn by the FONT rather than by `builtin`, and is free
+    //
+    // ONE position in rule 6 serves every direction, and that is a property of the rule rather than
+    // of what can spill: the clause is "above the receiver's own tile, below everything else the
+    // receiver owns", which never asks the neighbour's class. (An earlier comment here justified it by
+    // claiming a background-class glyph cannot overflow. That is false — Powerline `U+E0A4..=U+E0D6`
+    // is background-class by `glyph_class`, is drawn by the FONT rather than by `builtin`, and is free
     // to spill like any other font glyph.)
-    vec3 foreign_ink = cov_up >= cov_dn ? ink_up : ink_dn;
-    float foreign = max(cov_up, cov_dn);
+    vec3 foreign_ink = mix(unpack_rgb(owner_fg), owner_tex.rgb, float((owner >> 15u) & 1u));
     // ── end I_neighbour ───────────────────────────────────────────────────────────────────────
 
     // A BLOCK cursor recolours the cell before anything composites over it. The instance colours
@@ -661,12 +699,9 @@ void main() {
     // The same for ink a neighbour spilled into this cell (I_neighbour): its owner's slot, its
     // owner's ink colour, and only for a text-class owner that is not an emoji — a background-class
     // slot's RGB is not a mask (a builtin glyph keeps white there).
-    bool from_up = cov_up >= cov_dn;
-    uint owner = from_up ? v_glyph_up : v_glyph_dn;
     vec3 foreign_cov = vec3(foreign);
     if (lcd && ((owner >> 15u) & 1u) == 0u && ((owner >> 16u) & 1u) == 0u) {
-        foreign_cov = lcd_cov(from_up ? tex_up.rgb : tex_dn.rgb, foreign_ink)
-                    * (from_up ? from_above : from_below);
+        foreign_cov = lcd_cov(owner_tex.rgb, foreign_ink) * owner_gate;
     }
     vec3 ink = mix(vec3(0.0), fg, coverage * bg_class);        // background-class ink joins the bg
     ink = mix(ink, foreign_ink, foreign_cov);                  // I_neighbour, over this cell's tile
@@ -2268,8 +2303,8 @@ impl JustermRenderer {
             gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 8, 0);
             gl.enable_vertex_attrib_array(0);
 
-            // Per-instance [col, row, bg(3), fg(3), glyph, underline_fg, strike_fg, bg_default]
-            // → locations 1..7.
+            // Per-instance [col, row, bg(3), fg(3), glyph, underline_fg, strike_fg, bg_default,
+            // neighbour slots(4), neighbour inks(4)] → locations 1..9.
             let instance_vbo = gl.create_buffer().map_err(js_err)?;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_vbo));
             // Byte offsets are derived from `frame`'s named float offsets, not written out: this
@@ -2284,10 +2319,9 @@ impl JustermRenderer {
                 (5, 1, 9 * F),
                 (6, 1, 10 * F),
                 (7, 1, BACKDROP as i32 * F),
-                (8, 1, NEIGHBOUR_UP as i32 * F),
-                (9, 1, NEIGHBOUR_DN as i32 * F),
-                (10, 1, NEIGHBOUR_UP_FG as i32 * F),
-                (11, 1, NEIGHBOUR_DN_FG as i32 * F),
+                // The four neighbours' slots and the four inks, one `vec4` each (#966).
+                (8, 4, NEIGHBOUR_UP as i32 * F),
+                (9, 4, NEIGHBOUR_UP_FG as i32 * F),
             ] {
                 gl.vertex_attrib_pointer_f32(
                     loc,
@@ -2408,18 +2442,18 @@ impl JustermRenderer {
         // rather than predicting it: a cell the atlas texture cannot hold leaves that texture
         // storage-less, and a storage-less sampler answers alpha 1 for every glyph (#339/#359).
         let char_size = rasterizer.glyph_box();
-        // The band this face needs, measured before the cell is sized because it is spent out of the
-        // same per-layer height (#791).
-        let bleed_y = rasterizer.bleed_y();
+        // The bands this face needs, measured before the cell is sized because they are spent out of
+        // the same texture budget (#791 the per-layer height, #966 the width).
+        let bleed = (rasterizer.bleed_x(), rasterizer.bleed_y());
         let cell_size = fit_cell_to_atlas(
             device_cell(char_size, key.letter_spacing(), key.line_height(), dpr),
             PADDING,
-            bleed_y,
+            bleed,
             GLYPHS_PER_LAYER as u32,
             max_texture_size,
         );
         let char_offset = glyph_offset(cell_size, char_size);
-        rasterizer.set_cell(cell_size, char_offset, bleed_y)?;
+        rasterizer.set_cell(cell_size, char_offset, bleed)?;
         let atlas_cell = rasterizer.padded_size();
         let atlas = Self::build_atlas(gl, atlas_cell.0, atlas_cell.1)?;
         let baked = match resident {
@@ -2482,7 +2516,8 @@ impl JustermRenderer {
             let rgba = rasterizer.finish(rgba, &k.text, k.style, wide, colour)?;
             let base = slot.slot_id();
             if wide {
-                let (left, right) = split_wide_bitmap(&rgba, 2 * pad_w - 2 * PADDING, pad_w, pad_h);
+                let m = rasterizer.margin_x();
+                let (left, right) = split_wide_bitmap(&rgba, 2 * pad_w - 2 * m, pad_w, pad_h, m);
                 upload_glyph(gl, atlas, atlas_cell, base, &left);
                 upload_glyph(gl, atlas, atlas_cell, base + 1, &right);
             } else {
@@ -3409,10 +3444,11 @@ impl JustermRenderer {
             },
             |base, wide, rgba: Vec<u8>| {
                 if wide {
-                    // The wide source is 2*padded_w - 2*PADDING wide (two content halves plus
-                    // one outer guard band each side); split into two padded cells.
+                    // The wide source is two content cells plus one outer margin (guard band and
+                    // horizontal band, #966) each side; split into two padded cells.
+                    let m = rasterizer.margin_x();
                     let (left, right) =
-                        split_wide_bitmap(&rgba, 2 * pad_w - 2 * PADDING, pad_w, pad_h);
+                        split_wide_bitmap(&rgba, 2 * pad_w - 2 * m, pad_w, pad_h, m);
                     upload_glyph(gl, atlas, atlas_cell, base, &left);
                     upload_glyph(gl, atlas, atlas_cell, base + 1, &right);
                 } else {
@@ -3843,10 +3879,12 @@ impl JustermRenderer {
             self.global
                 .gl
                 .uniform_1_f32(Some(&self.global.u_bg_alpha), grid.bg_alpha);
-            // Per configuration, not per grid: the band is a property of the face (#791).
-            self.global.gl.uniform_1_f32(
+            // Per configuration, not per grid: the bands are a property of the face (#791, #966).
+            let (bleed_x, bleed_y) = config.rasterizer.bleed();
+            self.global.gl.uniform_2_f32(
                 Some(&self.global.u_bleed_px),
-                config.rasterizer.bleed_y() as f32,
+                bleed_x as f32,
+                bleed_y as f32,
             );
             // Per configuration too: whether its atlas carries per-channel coverage, and the
             // dark-ink curve it was measured with (#961).

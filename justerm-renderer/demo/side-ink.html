@@ -1,0 +1,195 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — a glyph's ink may leave its cell sideways (I_neighbour, #966)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  ADR-0019 R1.2 on the horizontal axis. A glyph whose ink overhangs its box by a pixel or two used to
+  be condensed or clipped at bake (#792): the slot had no room beside the cell. #966 gives it a band
+  there, and the cell beside it reads the band back. The twin of `neighbour-ink.html`, one row of
+  three cells instead of one column of three.
+
+  The probe is FOUND on this machine, never listed (#578): a glyph whose ink, drawn at the pen the
+  rasteriser uses, reaches past the box on exactly ONE side by 1 to 3 device px — inside the band's
+  4 px of headroom, so the bake leaves it alone — and stays inside the cell vertically, so nothing
+  here is the vertical band's doing. No probe on this face is a failure, not a pass.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="64"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, 0xffffff, 0x000000);
+  const canvas = document.querySelector("#c");
+  const gl = canvas.getContext("webgl2");
+  const dpr = window.devicePixelRatio;
+  const [cw, ch] = [r.cell_width(g), r.cell_height(g)];
+
+  // What the FONT draws, where no cell can clip it, at the renderer's alpha threshold. The pen is at
+  // `pen`, which is where the renderer's box starts: the box is `[pen, pen + cw)` (spacing is 0).
+  const FONT = `${16 * dpr}px monospace, monospace`;
+  const big = Math.ceil(16 * dpr * 4);
+  const off = new OffscreenCanvas(big, big).getContext("2d", { willReadFrequently: true });
+  off.textBaseline = "alphabetic";
+  off.textAlign = "left";
+  const pen = Math.round(16 * dpr * 1.5);
+  const base = Math.round(16 * dpr * 2);
+
+  const freeInk = (text) => {
+    off.clearRect(0, 0, big, big);
+    off.font = FONT;
+    off.fillStyle = "white";
+    off.fillText(text, pen, base);
+    const d = off.getImageData(0, 0, big, big).data;
+    let lit = 0, minY = 1e9, maxY = -1, minX = 1e9, maxX = -1;
+    for (let y = 0; y < big; y++)
+      for (let x = 0; x < big; x++)
+        if (d[(y * big + x) * 4 + 3] >= 128) {
+          lit++;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+        }
+    return { lit, above: base - minY, below: maxY - base, left: pen - minX, right: maxX + 1 - (pen + cw) };
+  };
+  // The cell's vertical reach is the block's ink (ADR-0022); its horizontal reach is the box.
+  const blockInk = freeInk("█");
+
+  const metric = (t) => {
+    off.font = FONT;
+    const m = off.measureText(t);
+    return { left: m.actualBoundingBoxLeft, right: m.actualBoundingBoxRight - cw, width: m.width };
+  };
+  const insideVertically = (i) => i.above <= blockInk.above && i.below <= blockInk.below;
+  // One side only, by 1..3 px, and STRADDLING that edge — at least 2 px of the ink inside the box —
+  // which is the case #966 is about: a glyph a pixel wider than its advance, not one a face happens
+  // to place wholly outside its own box.
+  const oneSide = (i) =>
+    (i.left >= 1 && i.left <= 3 && i.right <= 0 && i.right >= 2 - cw) ||
+    (i.right >= 1 && i.right <= 3 && i.left <= 0 && i.left >= 2 - cw);
+
+  let probe = null;
+  scan: for (const [from, to] of [
+    [0x0021, 0x007e],
+    [0x00c0, 0x024f],
+    [0x0386, 0x03ce],
+    [0x0400, 0x045f],
+    [0x1e00, 0x1eff],
+  ]) {
+    for (let cp = from; cp <= to; cp++) {
+      const t = String.fromCodePoint(cp);
+      const m = metric(t);
+      if (m.width === 0 || (m.left < 0.5 && m.right < 0.5)) continue;
+      const i = freeInk(t);
+      if (i.lit > 0 && insideVertically(i) && oneSide(i)) {
+        probe = { t, ink: i };
+        break scan;
+      }
+    }
+  }
+
+  const RED = (2 << 24) | 0xff_00_00;
+  const BLUE = (2 << 24) | 0x00_80_ff;
+
+  /**
+   * Draw `text` in the middle cell of a 3x1 grid and report what reached the buffer, per column.
+   * `opts.fill` puts a glyph in the two receiving cells, so something below `I_neighbour` in rule 6
+   * is composited too.
+   */
+  const drawn = (text, opts = {}) => {
+    const { select = null, fill = null, cursorCol = -1 } = opts;
+    const [ROWS, COLS] = [1, 3];
+    r.resizeGrid(g, COLS, ROWS);
+    r.resizeSurface(COLS * cw, ROWS * ch);
+    r.setViewport(g, 0, 0, COLS * cw, ROWS * ch);
+    r.setOverlay(g, new Uint32Array(select ?? []), new Uint32Array(), 0x30_60_C0, 0x30_60_C0);
+    if (cursorCol >= 0) r.setCursor(g, cursorCol, 0, 0, 0x00_00_FF, 0x00_FF_00);
+    else r.clearCursor(g);
+    const cps = new Uint32Array(COLS);
+    const fg = new Uint32Array(COLS);
+    cps[1] = text.codePointAt(0);
+    fg[1] = RED;
+    if (fill) {
+      cps[0] = fill.codePointAt(0);
+      cps[2] = fill.codePointAt(0);
+      fg[0] = BLUE;
+      fg[2] = BLUE;
+    }
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(COLS), fg, cps, new Uint16Array(COLS), true);
+    r.render();
+    const { buf } = readRect(gl, { x: 0, y: 0, w: COLS * cw, h: ROWS * ch });
+    const perCol = [0, 0, 0];
+    const redCol = [0, 0, 0];
+    for (let y = 0; y < ROWS * ch; y++)
+      for (let x = 0; x < COLS * cw; x++) {
+        const col = Math.floor(x / cw);
+        const i = (y * COLS * cw + x) * 4;
+        const [R, G, B] = [buf[i], buf[i + 1], buf[i + 2]];
+        if (R >= 128 || G >= 128 || B >= 128) perCol[col]++;
+        if (R >= 128 && G < 64 && B < 64) redCol[col]++;
+      }
+    return { perCol, redCol, total: perCol[0] + perCol[1] + perCol[2] };
+  };
+
+  const checks = {};
+  if (!probe) {
+    checks.probeAvailable = false;
+  } else {
+    checks.probeAvailable = true;
+    const toLeft = probe.ink.left >= 1;
+    const [near, far] = toLeft ? [0, 2] : [2, 0];
+    const own = drawn(probe.t);
+    // 1. Ink reached the neighbour on the side the font overhangs, and not the other side.
+    checks.theInkLandsOnTheCorrectSide = own.perCol[near] > 0 && own.perCol[far] === 0;
+    // 2. Withdrawal at a background edge, both edges: select the owner.
+    const split = drawn(probe.t, { select: [0, 1, 1] });
+    checks.withdrawnAtABackgroundEdge = split.redCol[near] === 0 && split.redCol[far] === 0;
+    // 3. ...and one edge only: select the receiver; the owner's own ink is unchanged.
+    const oneEdge = drawn(probe.t, { select: [0, near, near] });
+    checks.withdrawnOnOneEdgeOnly =
+      oneEdge.redCol[near] === 0 && oneEdge.redCol[1] === own.redCol[1];
+    // 4. A receiver with its own glyph keeps it, and the foreign ink is still the owner's red.
+    const filled = drawn(probe.t, { fill: "i" });
+    const plain = drawn("i", { fill: "i" });
+    checks.aReceiverKeepsItsOwnInk = filled.perCol[near] > plain.perCol[near];
+    checks.foreignInkKeepsItsOwnersColour = filled.redCol[near] > 0;
+    // 5. A block cursor on the receiver is a background edge only the shader can see.
+    const underCursor = drawn(probe.t, { cursorCol: near });
+    checks.withdrawnUnderABlockCursor = underCursor.redCol[near] === 0;
+  }
+
+  // Controls: a glyph inside the box on both sides and inside the cell vertically deposits nothing
+  // beside it, and the block still fills exactly its cell.
+  const controls = {};
+  for (const chr of ["i", "l", "."]) {
+    const f = freeInk(chr);
+    if (!(insideVertically(f) && f.left <= 0 && f.right <= 0)) continue;
+    const d = drawn(chr);
+    controls[chr] = d.perCol;
+    checks[`${chr}DepositsNothingBesideIt`] = d.perCol[0] === 0 && d.perCol[2] === 0;
+  }
+  checks.aControlRan = Object.keys(controls).length > 0;
+  const blk = drawn("█");
+  checks.theBlockStillFillsExactlyItsCellAndNoMore =
+    blk.perCol[1] === cw * ch && blk.perCol[0] === 0 && blk.perCol[2] === 0;
+
+  const ok = Object.values(checks).every(Boolean);
+  window.__proof = {
+    ok,
+    checks,
+    measured: { controls },
+    probe: probe ? probe.t : null,
+    probeReach: probe ? probe.ink : null,
+    cell: [cw, ch],
+    dpr,
+  };
+  window.__done = true;
+</script>

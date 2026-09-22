@@ -13,8 +13,8 @@
   Three things are asserted, and the third is the one that makes the first two mean something:
 
     - a glyph THIS FONT cannot fit VERTICALLY in its cell draws all of its ink, counted against the
-      same glyph drawn with no cell at all. The probe must fit horizontally: the band is vertical
-      only, and the horizontal residue is tracked separately, not fixed here;
+      same glyph drawn with no cell at all. The probe must fit horizontally: the horizontal band has
+      its own page (`side-ink.html`, #966), and a probe crossing both would be two claims at once;
     - the ink lands on the NEIGHBOUR, not inside the owner (otherwise the owner simply grew);
     - `g`, `M` and the full block — which always fitted — are unchanged, so the instrument is not
       merely counting more pixels everywhere.

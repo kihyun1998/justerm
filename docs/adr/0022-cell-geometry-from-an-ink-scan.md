@@ -177,6 +177,21 @@ because it is the first of its kind here: a **per-glyph** scale now sits between
 the bitmap, so not every geometric quantity in this renderer is a uniform derivation of the one
 measurement any more.
 
+**Corrected 2026-09-22 (#966): the "at most 13 %" came from rounding the advance UP.** The same
+sweep, re-run over the same 2095 codepoints, reproduces both of #792's columns exactly: the ink-box
+window gives 462 / 560 / 252 (Consolas / Cascadia Mono / DejaVu Sans Mono), and a window of
+`ceil(advance)` gives 462 / 484 / 290. The advance window #792 measured was therefore rounded up.
+Consolas's `ceil(13.195)` is 14, which is its ink box, so the count could not move. But the cell a
+metrics-sized renderer adopts is the advance rounded **down**: xterm.js floors it
+(`WebglRenderer.ts:654`), alacritty floors it (`display/mod.rs:1608-1615`), and #962 would too. At
+`floor(advance)` the counts are 559 / 560 / 440, which is +21 % on Consolas and +75 % on DejaVu Sans
+Mono. So the horizontal axis does **not** exclude alternative (A). It prices it: an advance-sized
+cell sends more glyphs past their box, and with #792 alone those are condensed or clipped. #966
+answers that price with a horizontal band. The band's depth is what the face's `█` overhangs the
+glyph box, plus headroom. So every glyph that fit an ink-box cell still fits an advance-sized cell's
+box plus band, and adopting (A) on the width axis stops costing glyph shapes. The paragraph above
+is kept as written, because #962 and #966 cite it; its conclusion is superseded by this one.
+
 **And a bound worth recording:** the browser cannot reach GDI's budget. Canvas text metrics expose no
 equivalent of the OS/2 win-ascent that `tm.tmHeight` reflects — hence Cascadia Mono's 28 against 32.
 The ceiling for any browser-side metric read is the line box, which is exactly the metric xterm.js

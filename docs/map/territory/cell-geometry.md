@@ -37,24 +37,27 @@ See [multi-viewport](multi-viewport.md) for the tier and its lifetime.
 - **That split is prior-art consensus, unlike the measurement.** Both references carry a char box
   beside a cell box — this is one of the few places the renderer can point at agreement rather than
   at its own reasoning.
-- **The slot is no longer the cell plus a guard band** (#791). It carries a **bleed band** above and
-  below as well — room for ink that leaves the cell, which the receiving cell reads back
-  (ADR-0019 R1.2). Three consequences worth knowing before touching anything here: the band is
+- **The slot is no longer the cell plus a guard band** (#791, #966). It carries a **bleed band** on
+  every side as well — room for ink that leaves the cell, which the receiving cell reads back
+  (ADR-0019 R1.2). Three consequences worth knowing before touching anything here: each band is
   derived *per font configuration* (`metrics::vertical_bleed`, from the gap between this face's `█`
-  ink box and its declared line box, plus an empirical headroom), it is spent out of the same
-  per-layer height as the guard band so it **lowers** the tallest cell the atlas can hold, and every
-  site that places something into a slot must use the same origin — `pad()`, the path that lays a
+  ink box and its declared line box; `metrics::horizontal_bleed`, from what that `█` overhangs the
+  glyph box; each plus the same empirical headroom), each is spent out of its own axis of the
+  texture beside the guard band so it **lowers** the largest cell the atlas can hold on that axis,
+  and every site that places something into a slot must use the same origin — `pad()`, the path that lays a
   builtin bitmap in without going through the font, did not, and every block glyph sat a band too
   high until the pixel proofs said so.
 - **The bake may now change the glyph, on one axis, and only to make it fit** (#792). A face draws
   many single-cell glyphs wider than the box it is given — measured over 2095 codepoints at em 24
   device px, 252 of them on DejaVu Sans Mono and 1153 on the demo face, with 35 to 629 losing more
-  than 30 % of their ink — and the horizontal axis has no band to catch them: the vertical bleed is
-  sized from the face's declared line box, and the Canvas API exposes no horizontal counterpart to
-  `fontBoundingBox{Ascent,Descent}`. So `metrics::horizontal_fit` condenses such a glyph into its
-  box at bake, and translates one that fits but sits outside. Three properties are load-bearing and
-  each was a defect the proof caught: it is keyed on the **glyph box**, never the cell (a negative
-  `letter_spacing` narrows the cell past the glyph *on purpose*, and the shader crops it); it scales
+  than 30 % of their ink — and the horizontal band (#966) holds only a few pixels of them: the Canvas
+  API exposes no horizontal counterpart to `fontBoundingBox{Ascent,Descent}`, so that band is sized
+  from the face's `█` rather than from a declared extent. So `metrics::horizontal_fit` condenses
+  such a glyph into its **window** — the box plus the band on each side — at bake, and translates
+  one that fits the window but sits outside it. Three properties are load-bearing and each was a
+  defect the proof caught: it is keyed on the **glyph box**, never the cell (a negative
+  `letter_spacing` narrows the cell past the glyph *on purpose*; since #966 the glyph then overlaps
+  its neighbour up to the band, as xterm.js lets it, where before the shader cropped it); it scales
   **x only**, so the vertical band's recovery is untouched by construction rather than by a check;
   and it fires on nothing that fits, which is what `.` and `i` guard in the proof.
 - **The nesting is why tiling glyphs are a separate problem.** Once the glyph box sits *inside* the
@@ -157,9 +160,12 @@ grounds as unverified, which is unusual enough to be worth knowing before buildi
   and on DejaVu Sans Mono it destroys ink on 439 of 1579 sampled codepoints against the line box's
   84. The *decision* is still unchanged — adopting the line-box metric would move every grid's size
   and does not fix clipping on its own — so alternative (A) remains open, but it is no longer open
-  for lack of evidence. **Narrowed again 2026-08-21 (#792): on the horizontal axis alternative (A)
-  is excluded outright** — swapping the window from the ink box to the advance moves the clipped
-  count by at most 13 %, so the metric is not the term there at all.
+  for lack of evidence. ~~**Narrowed again 2026-08-21 (#792): on the horizontal axis alternative
+  (A) is excluded outright**~~ — **withdrawn 2026-09-22 (#966)**: that "at most 13 %" measured a
+  window of the advance rounded *up*, which on Consolas is its ink box again. At the advance rounded
+  *down*, which is the width xterm.js and alacritty adopt, the clipped count rises 21–75 % (ADR-0022
+  records the re-run). The horizontal band #966 adds is what pays for that, so the width axis now
+  waits only on #962 itself.
 - ~~**Nothing catches ink that leaves the cell sideways.**~~ — **closed 2026-08-21 (#792)** by
   condensing at bake rather than by a band; see the design model above. What the closure does *not*
   cover is a **width-2** glyph whose ink exceeds two cells — and that turned out to be measurably

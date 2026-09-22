@@ -27,12 +27,15 @@
   const r = new JustermRenderer("#c");
   const g = r.addGrid(palette, FG, BG);
   const CW = r.cell_width(g), CH = r.cell_height(g);
-  const COLS = 4;
+  const COLS = 5;
   fitGrid(r, g, COLS, 1);
 
-  // Row: [🚀 lead][spacer][A][space]. Default fg/bg refs (0) → white on gray.
-  const cps   = new Uint32Array([0x1F680, 0x20,          0x41, 0x20]);
-  const flags = new Uint16Array([WIDE_CHAR, WIDE_SPACER, 0,    0]);
+  // Row: [🚀 lead][spacer][space][A][space]. Default fg/bg refs (0) → white on gray. The letter
+  // sits a blank cell away from the emoji: since #966 a glyph's ink may land up to a band's width
+  // inside the cell beside it, in its owner's colours (`side-ink.html` owns that claim), and 🚀 is
+  // a pixel or two wider than its two-cell box on common faces.
+  const cps   = new Uint32Array([0x1F680, 0x20,          0x20, 0x41, 0x20]);
+  const flags = new Uint16Array([WIDE_CHAR, WIDE_SPACER, 0,    0,    0]);
   const zeros = new Uint32Array(COLS);
   r.apply_frame(g, COLS, 1, zeros, zeros, cps, flags, true);
   r.render();
@@ -52,7 +55,7 @@
     return { lit, coloured };
   };
 
-  const lead = scan(0), spacer = scan(1), letter = scan(2), blank = scan(3);
+  const lead = scan(0), spacer = scan(1), letter = scan(3), blank = scan(4);
   const colourEmojiFontPresent = hasColourEmojiFont(); // #334 precondition, see proof.js
   window.__proof = {
     dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, g, COLS, 1),
