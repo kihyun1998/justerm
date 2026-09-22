@@ -1,6 +1,6 @@
 {
   "name": "justerm-web",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "Browser terminal widget for the justerm engine: consumes decoded frames and paints them with justerm-renderer (WASM + WebGL2).",
   "type": "module",
   "license": "MIT OR Apache-2.0",
