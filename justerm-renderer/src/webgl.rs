@@ -231,11 +231,11 @@ out vec4 FragColor;
 // the next row (the invariant alacritty holds with `max_y` and we did not). `fwidth` is one device
 // pixel in normalised units, for a single-pixel antialiased edge — crisp, not stair-stepped at
 // fractional DPR.
-// Per-channel coverage from a subpixel slot's light mask for ink of colour `ink` (#961): the mask
-// as-is for light ink (luminance >= 0.75), raised to the configuration's measured exponent for darker.
+// Per-channel coverage from a subpixel slot's light mask for ink of colour `ink` (#961), chosen per
+// channel: the mask as-is where that channel of the ink is light (>= 0.75), raised to the
+// configuration's measured exponent where it is darker.
 vec3 lcd_cov(vec3 mask, vec3 ink) {
-    float lum = dot(ink, vec3(0.2126, 0.7152, 0.0722));
-    return lum >= 0.75 ? mask : pow(mask, vec3(u_lcd_gamma));
+    return mix(pow(mask, vec3(u_lcd_gamma)), mask, step(vec3(0.75), ink));
 }
 float hline(float gy, float c, float thick_px, float char_h) {
     float th = max(thick_px, 1.0) / max(char_h, 1.0); // device-px thickness, in gy units

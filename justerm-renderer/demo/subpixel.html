@@ -51,8 +51,10 @@
   const WHITE = 0xffffff, BLACK = 0x000000;
   // Either side of the light-ink threshold (0.75): GREY is luminance 0.56, PALE 0.88.
   const GREY = 0x909090, PALE = 0xe0e0e0;
-  // YELLOW is luminance 0.93 by Rec. 709 weights and 0.67 by equal ones: the two sides of it.
-  const YELLOW = 0xffff00;
+  // Saturated inks: the curve is chosen per channel, so GREEN (whose luminance, 0.72, is below the
+  // threshold while its green channel is far above it) is the ink a luminance rule gets wrong.
+  const YELLOW = 0xffff00, GREEN = 0x00ff00;
+  const BOLD = 1;                              // attrs flag bit 0
   const palette = new Uint32Array(256);
   // Large enough that the default face is antialiased at every swept density.
   const SIZE = 28;
@@ -86,19 +88,20 @@
   const cell = () => [r.cell_width(g), r.cell_height(g)];
 
   /** The same glyphs drawn by the browser into an opaque canvas, one per cell, in real colours. */
-  const truth = (bgRgb, fgRgb) => {
+  const truth = (bgRgb, fgRgb, weight = 400) => {
     const [cw, ch] = cell();
     const c = new OffscreenCanvas(COLS * cw, ch * 2);
     const x = c.getContext("2d", { alpha: false, willReadFrequently: true });
     const css = (v) => "#" + v.toString(16).padStart(6, "0");
     x.fillStyle = css(bgRgb); x.fillRect(0, 0, c.width, c.height);
-    x.font = `400 ${SIZE * devicePixelRatio}px monospace, monospace`;
+    x.font = `${weight} ${SIZE * devicePixelRatio}px monospace, monospace`;
     x.fillStyle = css(fgRgb); x.textBaseline = "middle";
     TEXT.forEach((cp, i) => x.fillText(String.fromCodePoint(cp), i * cw, ch));
     return x.getImageData(0, 0, c.width, c.height).data;
   };
   const truthLight = truth(BLACK, WHITE), truthDark = truth(WHITE, BLACK), truthGrey = truth(BLACK, GREY),
-    truthPale = truth(BLACK, PALE), truthYellow = truth(BLACK, YELLOW);
+    truthPale = truth(BLACK, PALE), truthYellow = truth(BLACK, YELLOW), truthGreen = truth(BLACK, GREEN),
+    truthBold = truth(BLACK, WHITE, 700);
   const lcdAvailable = fringe(truthLight) > 0;
 
   const scenes = {
@@ -107,6 +110,8 @@
     grey: { bg: RGB(BLACK), fg: RGB(GREY) },
     pale: { bg: RGB(BLACK), fg: RGB(PALE) },
     yellow: { bg: RGB(BLACK), fg: RGB(YELLOW) },
+    green: { bg: RGB(BLACK), fg: RGB(GREEN) },
+    bold: { bg: RGB(BLACK), fg: RGB(WHITE), flags: new Uint16Array(N).fill(BOLD) },
     defaultBg: { bg: DEFAULT, fg: RGB(WHITE) },
     emoji: { bg: RGB(BLACK), fg: RGB(WHITE), cps: [0x1f680, 0x20, ...new Array(N - 2).fill(0x20)], flags: Uint16Array.from([WIDE_CHAR, WIDE_SPACER, ...new Array(N - 2).fill(0)]) },
     halfBlock: { bg: RGB(BLACK), fg: RGB(WHITE), cps: new Array(N).fill(0x258c) }, // '▌' — builtin
@@ -211,6 +216,8 @@
       greyTruth: weight(truthGrey, BLACK), greyOff: weight(off.grey, BLACK), greyOn: weight(on.grey, BLACK),
       paleTruth: weight(truthPale, BLACK), paleOff: weight(off.pale, BLACK), paleOn: weight(on.pale, BLACK),
       yellowTruth: weight(truthYellow, BLACK), yellowOff: weight(off.yellow, BLACK), yellowOn: weight(on.yellow, BLACK),
+      greenTruth: weight(truthGreen, BLACK), greenOff: weight(off.green, BLACK), greenOn: weight(on.green, BLACK),
+      boldTruth: weight(truthBold, BLACK), boldOff: weight(off.bold, BLACK), boldOn: weight(on.bold, BLACK),
     },
   };
   const w = measured.weight;
@@ -225,6 +232,8 @@
     checks.darkInkIsWithin1PctOfTheTruth = err(w.darkOn, w.darkTruth) <= 0.01;
     checks.paleInkIsWithin1PctOfTheTruth = err(w.paleOn, w.paleTruth) <= 0.01;
     checks.yellowInkIsWithin1PctOfTheTruth = err(w.yellowOn, w.yellowTruth) <= 0.01;
+    checks.greenInkIsWithin1PctOfTheTruth = err(w.greenOn, w.greenTruth) <= 0.01;
+    checks.boldInkIsWithin1PctOfTheTruth = err(w.boldOn, w.boldTruth) <= 0.01;
     checks.midGreyInkIsWithin8PctOfTheTruth = err(w.greyOn, w.greyTruth) <= 0.08;
     checks.grayscaleIsFurtherFromTheTruthThanOn = err(w.darkOff, w.darkTruth) > err(w.darkOn, w.darkTruth);
     if (spill && spill.off.darkNear > 0) {
