@@ -8,6 +8,11 @@ the status open — the two are different questions and conflating them would le
 neither. Scoped to **cell geometry and what derives from it**; cell *composition* is ADR-0019, resource
 *ownership* is ADR-0021.
 
+**Amended 2026-09-22 (#962): the cell's WIDTH is no longer the ink box.** It is the face's advance,
+floored — alternative (A) adopted on the width axis, see *Amendment* below. The HEIGHT is still the ink
+box of `█`, and the title keeps describing that half. Read every "the cell is the ink box" below as
+true of the height and, before #962, of the width.
+
 ## Context
 
 ### What we do
@@ -102,6 +107,40 @@ the same families ahead of the font for the same reason, so this is convergence,
 `█` via `fill_text`; `block_glyph` is reachable only from `Rasterizer::builtin`. Any future path that
 measures, re-measures or validates the cell must take the same care. This is the price of measuring by
 rasterisation, and it is not optional.
+
+### Amendment (2026-09-22, #962): the width is the floored advance
+
+**The glyph box's width is `floor(measureText('W').width)` at `font_size × dpr`**
+(`metrics::advance_width`), measured with the same `normal`-weight font string as the ink scan (#928).
+xterm.js takes the same reference glyph (`CharSizeService`) and floors the device width the same way
+(`WebglRenderer.ts:654`), and alacritty floors its advance too (`compute_cell_size`). The height and the
+ascent still come from the ink scan of `█`, unchanged.
+
+**Why now:** the question left open above — *should our cols x rows agree with the other terminals for
+the same font and size* — got its measurement and its answer. #962 measured the answer in a shipping
+consumer: PenTerm on WebView2, Consolas at 18.9 device px, where the ink box is 12 and the advance is
+10.39, so the grid was ~20 % wider than xterm.js's. The maintainer asked for the width to come from the
+advance. The cost the horizontal axis used to charge was more glyphs past their box, which were then
+condensed or clipped. #966 paid that cost first with a horizontal bleed band sized from exactly this gap,
+so every glyph that fit the ink-box cell still fits the advance cell plus its band. That was measured
+through `readPixels` over three faces, two sizes and two densities: no ASCII glyph is narrowed.
+
+**The divergence goes both ways**, which is why this is not a "shrink": on the demo face at dpr 1, `█`
+inks 5 px at 11 px where the advance is 6, so the cell grows, and 14 px at 18 px × 1.5 where the advance
+is 13, so it shrinks. `demo/advance-cell.html` sweeps sizes until it finds a size where the two differ,
+and fails if it finds none.
+
+**Not a two-source cell (alternative C).** (C) is two sources for *one* number, reconciled differently in
+different places. Here each number has exactly one source: the width comes from the advance, the height
+from the ink box.
+
+**The invariant is untouched on the width axis.** A `measureText` read draws nothing, so it cannot
+close the feedback loop the invariant guards. The ink scan, which still sizes the height, keeps the
+obligation exactly as stated.
+
+**What this did not decide:** the vertical axis. Alternative (A) on the height — the line box — stays
+as open as the evidence above leaves it. #962 excluded it (justerm 26 against xterm.js 27 there), and
+the clipping it would address belongs to #791.
 
 ### Grade of evidence, stated because it is uneven
 
@@ -199,7 +238,9 @@ takes, and it compensates in the atlas rather than in the cell.
 
 ## Consequences
 
-- **Our grid can differ from alacritty's and xterm's for the same font and size.** If a font's `█`
+- ~~**Our grid can differ from alacritty's and xterm's for the same font and size.**~~ — **on the
+  width axis, no longer (#962)**: the width is the floored advance, as theirs is. The height still can,
+  and the rest of this bullet now describes the height only. If a font's `█`
   under- or over-fills its advance, the cell differs, and with it cols × rows for a given pixel box. This
   is a real, user-visible divergence with no test pinning it; it has simply never been compared.
 - **The invariant is enforced by call-site discipline only.** Nothing fails if someone calls
@@ -216,7 +257,9 @@ takes, and it compensates in the atlas rather than in the cell.
 
 ## Alternatives considered
 
-- **(A) Size the cell from font metrics, as both references do.** **Not rejected — deferred pending
+- **(A) Size the cell from font metrics, as both references do.** **Adopted for the width on 2026-09-22
+  (#962); still open for the height** — see *Amendment*. The text below is the record of how it stood
+  before that. **Not rejected — deferred pending
   measurement.** It is the majority practice and it removes the feedback hazard outright by making
   measurement a metrics read rather than a rasterisation. What stops it being adopted here is that
   switching would move every existing grid's size with no evidence that the new size is better; the

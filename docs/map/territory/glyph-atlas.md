@@ -107,7 +107,7 @@ target**, not one of the three reference terminals, and pinned by nothing.
   the frame
 - [GPU upload](gpu-upload.md) — an LRU eviction changes the slot of a cell that was **not
   damaged**, which is why the upload planner diffs instead of trusting damage
-- [cell geometry](cell-geometry.md) — slot size comes from the same ink scan that defines the cell
+- [cell geometry](cell-geometry.md) — slot size comes from the same measurement that defines the cell
 - [built-in block glyphs](builtin-block-glyphs.md) — occupy slots like any glyph but are produced
   geometrically rather than rasterised
 - [wide glyph](wide-glyph.md) — the double-width LRU region exists for these, and the emoji

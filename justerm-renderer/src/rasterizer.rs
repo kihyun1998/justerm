@@ -4,23 +4,24 @@
 //! shaping, and — later, #268 — colour emoji) and returns its coverage bitmap: white
 //! pixels with the coverage in the alpha channel.
 //!
-//! Cell metrics come from an **ink scan** of the full-block glyph `█` (#288): the cell is the
-//! block's real pixel bounds (alpha ≥ threshold), which avoids the rounding / box-gap issues
-//! of `fontBoundingBox`. Every glyph is rasterised into a **padded** cell — the physical cell
+//! Cell metrics come from two reads of the face (ADR-0022). The **width** is its advance,
+//! `measureText('W')` floored (#962), as xterm.js and alacritty size theirs. The **height** and the
+//! baseline come from an **ink scan** of the full-block glyph `█` (#288): the block's real pixel
+//! bounds at alpha ≥ threshold. Every glyph is rasterised into a **padded** cell — the physical cell
 //! grown by [`PADDING`] on each side — with the glyph drawn inset, so the atlas carries a
 //! transparent guard band that stops band bleed and gives tall/fallback glyphs room.
 //!
-//! This ink scan is a divergence from both references, recorded here (from #361) so it is not later
-//! rediscovered as a defect — and adjudicated in **ADR-0022**, which grades the evidence behind it:
+//! The ink scan — the height's source — is a divergence from both references, recorded here (from
+//! #361) so it is not later rediscovered as a defect — and adjudicated in **ADR-0022**, which grades the evidence behind it:
 //! alacritty sizes its cell from font metrics (`compute_cell_size`, `alacritty/src/display/mod.rs:1608-1615`
 //! — `average_advance` + `line_height` from the font tables, where `average_advance` is the advance of
 //! `'0'`; `builtin_font.rs:51` only *consumes* those metrics) and xterm from `CharSizeService`
 //! (`measureText('W').width` + `fontBoundingBox*`, becoming the device cell in
 //! `addons/addon-webgl/src/WebglRenderer.ts:646-671`). The method here is inherited from beamterm
 //! (`canvas_rasterizer::measure_cell_metrics`) and justified only by beamterm's own unmeasured comment
-//! that text metrics "have rounding issues" — so it is 1 of 3, not the consensus. So
-//! if a font's `█` under- or over-fills its advance, justerm's grid ends up sized differently from
-//! theirs. It is safe only as long as the **builtin** `█` never re-enters measurement: the scan
+//! that text metrics "have rounding issues" — so it is 1 of 3, not the consensus. The width left it
+//! for the advance in #962, after a WebView2 app measured `█` 2 px wider than Consolas's advance. It is
+//! safe only as long as the **builtin** `█` never re-enters measurement: the scan
 //! reads the *font's* `█` via `fill_text` + ink bounds, while `block_glyph` (the renderer's own
 //! drawn `█`) is called from `Rasterizer::builtin` alone, never from `Rasterizer::new`. Were it
 //! ever called during measurement, the cell would feed the glyph that defines it — a feedback loop.
@@ -92,8 +93,8 @@ pub struct Rasterizer {
 
 impl Rasterizer {
     /// Build a rasteriser for `font_family` at `font_size` (CSS px), drawing regular text at
-    /// `font_weight` and bold text at `font_weight_bold`. Measures the cell from the `█` ink bounds
-    /// at the `normal` weight and sizes an internal double-width padded canvas. With `subpixel` it
+    /// `font_weight` and bold text at `font_weight_bold`. Measures the cell — the advance for its
+    /// width, the `█` ink bounds for its height — at the `normal` weight and sizes an internal double-width padded canvas. With `subpixel` it
     /// also holds an opaque canvas for per-channel coverage and measures the dark-ink curve (#961).
     pub fn new(
         font_family: &str,
@@ -141,9 +142,12 @@ impl Rasterizer {
         let fm = ctx.measure_text("\u{2588}")?;
         let font_ascent = fm.font_bounding_box_ascent().max(0.0).round() as u32;
         let font_descent = fm.font_bounding_box_descent().max(0.0).round() as u32;
-        // Clamp all three like siblings: a negative ascent (ink below the draw point) would draw
-        // glyphs above the padded cell and clip their tops.
-        let (phys_w, phys_h, ascent) = (m.width.max(1), m.height.max(1), m.ascent.max(0.0));
+        // The width is the face's advance, read from `W` as xterm.js reads it (`CharSizeService`);
+        // the height and ascent are the ink scan's (ADR-0022, #962).
+        let phys_w = crate::metrics::advance_width(ctx.measure_text("W")?.width() as f32);
+        // Clamp like siblings: a negative ascent (ink below the draw point) would draw glyphs above
+        // the padded cell and clip their tops.
+        let (phys_h, ascent) = (m.height.max(1), m.ascent.max(0.0));
         let (padded_w, padded_h) = (phys_w + 2 * PADDING, phys_h + 2 * PADDING);
 
         // Size the canvas to a DOUBLE padded cell (so a wide glyph fits); resizing clears the
@@ -262,8 +266,6 @@ impl Rasterizer {
         ctx.set_fill_style_str("white");
     }
 
-    /// The ink-scanned box of `█` in device px — the GLYPH box, which is the grid cell only while
-    /// the spacing policy is the identity (#338).
     /// How deep a band this configuration's slots reserve for ink that leaves the cell (#791).
     ///
     /// Derived rather than fixed: the gap between the ink box of this face's block glyph and the
@@ -298,6 +300,8 @@ impl Rasterizer {
         PADDING + self.bleed_x
     }
 
+    /// The GLYPH box in device px — the face's floored advance wide and its `█`'s ink box tall
+    /// (ADR-0022) — which is the grid cell only while the spacing policy is the identity (#338).
     pub fn glyph_box(&self) -> (u32, u32) {
         (self.phys_w, self.phys_h)
     }

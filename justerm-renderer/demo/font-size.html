@@ -7,7 +7,7 @@
 </style>
 <!--
   setFontSize (#406) re-bakes the atlas at css_px * dpr — the same seam a DPR change uses (#322) —
-  so the grid cell re-derives from the new size. The cell is an ink-scan of the font's glyph box, so
+  so the grid cell re-derives from the new size. The cell is measured from the face at that size, so
   the DEVICE cell size (cell_width()/cell_height()) is the measurable signal: doubling the font size
   roughly doubles the cell. The ratio is dpr-independent (both cells scale by dpr), so it holds across
   the runner's dpr 1 / 1.1 / 1.5 / 2 sweep.

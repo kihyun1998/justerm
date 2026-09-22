@@ -113,8 +113,9 @@ test("the atlas is rasterised in device pixels, not CSS pixels", async ({ browse
 
   for (const m of measured) {
     for (const axis of [0, 1]) {
-      // The device cell tracks the density. `±1` because the cell is an ink-scan of `█` at the
-      // scaled font size, not an exact multiple — e.g. the height is 33, not 32, at dpr 2.
+      // The device cell tracks the density. `±1` because the cell is measured from the face at the
+      // scaled font size (a floored advance, an ink-scanned height), not an exact multiple — e.g. the
+      // height is 33, not 32, at dpr 2.
       const expectedDevice = at1.deviceCell[axis] * m.dpr;
       expect(Math.abs(m.deviceCell[axis] - expectedDevice), `device cell @ dpr ${m.dpr}: ${label}`)
         .toBeLessThanOrEqual(1);

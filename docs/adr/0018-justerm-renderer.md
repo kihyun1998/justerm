@@ -96,8 +96,9 @@ or what the bake may do to a glyph before the composite sees it
 ([ADR-0031](0031-glyph-bake-geometry-answers-to-our-own-model.md)). All three were first decided in
 this file and are cited from it rather than restated.
 
-The cell is *measured* in device pixels — the rasteriser ink-scans `█` at `FONT_SIZE * devicePixelRatio`
-— and that integer is what the shader receives as `u_cell_size`. Everything else is derived from it:
+The cell is *measured* in device pixels — the rasteriser reads the face's advance (width, since #962)
+and ink-scans its `█` (height) at `FONT_SIZE * devicePixelRatio`, ADR-0022 — and that integer is what the
+shader receives as `u_cell_size`. Everything else is derived from it:
 
 - `cell_width()` / `cell_height()` → **device px, `u32`**. The exact cell. The bare name carries it, as in
   xterm.js's `dimensions.device.cell` and beamterm's `cell_size()`.
