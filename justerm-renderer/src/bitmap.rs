@@ -98,13 +98,20 @@ pub fn is_color_bitmap(rgba: &[u8]) -> bool {
 pub const PADDING: u32 = 1;
 
 /// Split a padded double-width glyph into its two `cell_w × cell_h` (padded) halves. `src` is
-/// `src_w × cell_h` (RGBA, row-major) with a [`PADDING`] guard band only on its *outer* edges;
-/// each output half becomes `[outer padding][half content][inner padding]`, the inner (centre-
-/// join) padding left transparent so the two halves keep a guard band on every side. The left
+/// `src_w × cell_h` (RGBA, row-major) with a `margin` only on its *outer* edges — the [`PADDING`]
+/// guard band plus the slot's horizontal bleed band (#966); each output half becomes `[outer
+/// margin][half content][inner margin]`, the inner (centre-join) margin left transparent so the two
+/// halves keep a guard band on every side and neither half's band holds its partner's ink. The left
 /// half uploads to the lead cell's slot, the right to the spacer's (`slot+1`). Mirrors beamterm
 /// `split_double_width_glyph`.
-pub fn split_wide_bitmap(src: &[u8], src_w: u32, cell_w: u32, cell_h: u32) -> (Vec<u8>, Vec<u8>) {
-    let padding = PADDING as usize;
+pub fn split_wide_bitmap(
+    src: &[u8],
+    src_w: u32,
+    cell_w: u32,
+    cell_h: u32,
+    margin: u32,
+) -> (Vec<u8>, Vec<u8>) {
+    let padding = margin as usize;
     let (cell_w, src_w) = (cell_w as usize, src_w as usize);
     let content_w = cell_w.saturating_sub(2 * padding);
     let src_stride = src_w * 4;
@@ -281,7 +288,7 @@ mod tests {
         let zero = [0u8, 0, 0, 0];
         let src: Vec<u8> = [px(11), px(22), px(33), px(44)].concat(); // 4px, 1 row
 
-        let (left, right) = split_wide_bitmap(&src, 4, 3, 1);
+        let (left, right) = split_wide_bitmap(&src, 4, 3, 1, PADDING);
 
         assert_eq!(
             left,
@@ -293,6 +300,22 @@ mod tests {
             [zero, px(33), px(44)].concat(),
             "right: inner-pad, content, outer-pad"
         );
+    }
+
+    #[test]
+    fn split_keeps_the_outer_bleed_band_and_leaves_both_inner_bands_transparent() {
+        // #966: a margin of 2 (guard band + horizontal bleed). Slot = [m m][c][m m], 5 px; the wide
+        // source is [m m][c0][c1][m m], 6 px. The OUTER margins carry ink that left the pair —
+        // what the cell beside it reads back — and the inner ones stay empty, so neither half can
+        // read its own partner's ink back as a neighbour's.
+        let px = |a| [255u8, 255, 255, a];
+        let zero = [0u8, 0, 0, 0];
+        let src: Vec<u8> = [px(1), px(2), px(33), px(44), px(5), px(6)].concat();
+
+        let (left, right) = split_wide_bitmap(&src, 6, 5, 1, 2);
+
+        assert_eq!(left, [px(1), px(2), px(33), zero, zero].concat());
+        assert_eq!(right, [zero, zero, px(44), px(5), px(6)].concat());
     }
 
     #[test]
@@ -313,7 +336,7 @@ mod tests {
         ]
         .concat();
 
-        let (left, right) = split_wide_bitmap(&src, 4, 3, 2);
+        let (left, right) = split_wide_bitmap(&src, 4, 3, 2, PADDING);
 
         assert_eq!(left, [px(11), px(22), zero, px(51), px(52), zero].concat());
         assert_eq!(right, [zero, px(33), px(44), zero, px(53), px(54)].concat());

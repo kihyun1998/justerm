@@ -44,7 +44,13 @@
     [0x2B1B, W, "sq_lead"], [0x20, S, "sq_spacer"],   // ⬛ achromatic emoji (case 2)
     [0x26AB, W, "circ_lead"], [0x20, S, "circ_spacer"],// ⚫ achromatic emoji (case 2)
     [0x1F680, W, "rocket_lead"], [0x20, S, "rocket_sp"],// 🚀 colour emoji (regression)
+    // The control sits a blank cell away from every emoji: since #966 a glyph's ink may land up to
+    // a band's width inside the cell beside it, in its owner's colours, and a colour emoji a pixel or
+    // two wider than its box does exactly that. `side-ink.html` owns that claim; this one is about
+    // what the letter itself is drawn in.
+    [0x20, 0, "gap_before_control"],
     [0x41, 0, "A_control"],                             // A text → must be RED
+    [0x20, 0, "gap_after_control"],
     [0x2764, 0, "heart_2764"],                          // ❤ narrow probe (case 1)
     [0x2665, 0, "heart_2665"],                          // ♥ narrow probe
     [0x263A, 0, "smiley_263A"],                         // ☺ narrow probe

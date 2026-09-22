@@ -100,17 +100,22 @@ becomes an actual colour — the engine never does that by identity.
   declares the underline's and there is no SGR for a strikethrough's. A cell with no `SGR 58` has
   both inks equal, which is what keeps the split from inventing a divergence of its own.
 - **The instance is flat and fixed-width**: `col, row, bg(3), fg(3), glyph_field, underline_fg,
-  strike_fg, bg_default`, and since #791 also `neighbour_up, neighbour_dn, neighbour_up_fg,
-  neighbour_dn_fg` — 16 floats. One buffer, one instanced draw call — the same fixed-stride
+  strike_fg, bg_default`, then the four neighbours' slots `up, dn, lt, rt` and their four inks in
+  the same order (#791 the vertical pair, #966 the horizontal) — 20 floats. Each group of four is
+  one `vec4` attribute, so the instance spends 10 of WebGL2's guaranteed 16 attribute locations
+  rather than the 16 one-float-per-location would have (#792 recorded that ceiling as a reason
+  against a horizontal band); `webgl.rs` asserts at compile time that the four stay consecutive. One buffer, one instanced draw call — the same fixed-stride
   reasoning the wire format uses, for the same reason. **The offsets are named** (`frame.rs`), not
   arithmetic: `INSTANCE_FLOATS - 1` for "the last field" and a literal stride both read the *wrong*
   float the moment a field is appended, and appending four is how that was found.
-- **A cell's ink can come from the cell above or below it** (#791, ADR-0019 **R1.2**). A glyph whose
+- **A cell's ink can come from the cell above, below or beside it** (#791 vertical, #966
+  horizontal, ADR-0019 **R1.2**). A glyph whose
   ink exceeds its cell used to have the excess destroyed — at bake, by a slot the size of the cell,
   and again at sample, by a texcoord inset that never reached past it. The slot now carries a
-  **bleed band** above and below, derived per font configuration from what that face overshoots its
-  own `█`, and the receiving cell's fragment reads the adjacent slots and folds their coverage into
-  the same rule-6 chain. Reader-side, deliberately: the quad stays exactly one cell, so nothing
+  **bleed band** on every side, derived per font configuration — above and below from what that face
+  overshoots its own `█` vertically, left and right from what its `█` overhangs the glyph box — and
+  the receiving cell's fragment reads the four adjacent slots and folds the strongest one's coverage
+  into the same rule-6 chain. Reader-side, deliberately: the quad stays exactly one cell, so nothing
   overlaps, the composite stays one evaluation per pixel, and no GL blending is involved — the
   writer-side shape every reference uses would have forced a premultiplied buffer and put
   foreign-vs-own occlusion back under instance order.

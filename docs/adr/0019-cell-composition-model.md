@@ -141,6 +141,14 @@ it lands in. Three properties, all of which follow from its owner rather than fr
   axis that never had a band. What survives of the original sentence is the vertical claim: ink
   beyond the vertical band is still destroyed, because the band is what bounds that axis and a
   face can overshoot even its own declared line box.
+  **Amended 2026-09-22 (#966): the horizontal axis now has a band too**, so "an axis that never had
+  a band" no longer describes it. Its depth is what the face's `█` overhangs the glyph box plus
+  the same headroom (`metrics::horizontal_bleed`), and a cell reads its left and right
+  neighbours' bands exactly as it reads the rows above and below. #792's condense still answers
+  what exceeds box + band on each side. So the bullet's rule now holds on both axes: the band
+  bounds its own axis, and what lies past it is either condensed first (horizontal) or lost
+  (vertical). A wide pair's inner edges carry no band ink (`bitmap::split_wide_bitmap` leaves
+  them transparent), so neither half reads its partner back as foreign ink.
 
 The renderer produces this **reader-side**: the receiving cell's fragment samples the adjacent slots
 and folds their coverage into its own chain. That is a mechanism note rather than part of the model,

@@ -77,6 +77,11 @@ pub struct Rasterizer {
     off_y: u32,
     /// Band reserved above and below the cell for ink that leaves it (ADR-0019 R1.2, #791).
     bleed_y: u32,
+    /// Band reserved left and right of the cell for the same (#966).
+    bleed_x: u32,
+    /// The ink width of this face's `█`, device px — what [`Self::bleed_x`] measures the glyph box
+    /// against.
+    block_ink_w: u32,
     /// The opaque canvas per-channel (LCD) coverage is drawn on (#961), or `None` for a grayscale
     /// configuration. Sized like `canvas`.
     lcd: Option<(OffscreenCanvas, OffscreenCanvasRenderingContext2d)>,
@@ -182,6 +187,8 @@ impl Rasterizer {
             off_x: 0,
             off_y: 0,
             bleed_y: 0,
+            bleed_x: 0,
+            block_ink_w: m.width,
             lcd,
             lcd_gamma,
         })
@@ -273,6 +280,24 @@ impl Rasterizer {
         )
     }
 
+    /// How deep a band this configuration's slots reserve left and right for ink that leaves the
+    /// cell (#966): what this face's `█` overhangs the glyph box, plus the headroom.
+    pub fn bleed_x(&self) -> u32 {
+        crate::metrics::horizontal_bleed(self.block_ink_w, self.phys_w)
+    }
+
+    /// The bands this rasteriser adopted in [`Self::set_cell`], `(x, y)` device px.
+    pub fn bleed(&self) -> (u32, u32) {
+        (self.bleed_x, self.bleed_y)
+    }
+
+    /// How far into a slot, or into a wide glyph's source, the cell starts across, device px: the
+    /// guard band plus the horizontal band. A wide source keeps this margin on its two outer edges
+    /// only, which is what [`crate::bitmap::split_wide_bitmap`] is given to cut it by.
+    pub fn margin_x(&self) -> u32 {
+        PADDING + self.bleed_x
+    }
+
     pub fn glyph_box(&self) -> (u32, u32) {
         (self.phys_w, self.phys_h)
     }
@@ -284,13 +309,13 @@ impl Rasterizer {
         &mut self,
         cell: (u32, u32),
         off: (u32, u32),
-        bleed_y: u32,
+        bleed: (u32, u32),
     ) -> Result<(), JsValue> {
         self.cell_w = cell.0.max(1);
         self.cell_h = cell.1.max(1);
         self.off_x = off.0;
         self.off_y = off.1;
-        self.bleed_y = bleed_y;
+        (self.bleed_x, self.bleed_y) = bleed;
         // A wide source is two padded cells minus the shared inner bands; the canvas must hold it.
         let (padded_w, padded_h) = self.padded_size();
         let (need_w, need_h) = (2 * padded_w, padded_h);
@@ -322,18 +347,14 @@ impl Rasterizer {
         crate::metrics::slot_geometry(
             (self.cell_w, self.cell_h),
             (self.off_x, self.off_y),
-            self.bleed_y,
+            (self.bleed_x, self.bleed_y),
             PADDING,
         )
     }
 
-    /// Rasterise one grapheme in the given font `style` into a white/coverage RGBA bitmap,
-    /// row-major, with the glyph drawn inset by [`PADDING`]. A normal glyph is
-    /// `padded_w × padded_h`; a `wide` glyph is `(2*phys_w + 2*PADDING) × padded_h` (its two
-    /// content halves plus outer guard bands — see [`crate::bitmap::split_wide_bitmap`]).
     /// Rasterise one grapheme into a white/coverage RGBA bitmap, row-major, sized to the PADDED
     /// CELL with the glyph drawn at its offset inside it. A `wide` glyph is
-    /// `(2*cell_w + 2*PADDING) x padded_h` (two content cells plus outer guard bands — see
+    /// `(2*cell_w + 2*margin_x) x padded_h` (two content cells plus one outer margin each side — see
     /// [`crate::bitmap::split_wide_bitmap`]), its ink centred over the two-cell advance, so the
     /// halves the splitter cuts at the cell boundary are contiguous by construction.
     ///
@@ -385,12 +406,12 @@ impl Rasterizer {
         Ok(with_lcd(&rgba, &mask.data()))
     }
 
-    /// The width of a rasterised source: one padded cell, or for a `wide` glyph one PADDING band on
-    /// each outer edge and `2 * cell_w` of content between (`== 2*padded_w - 2*PADDING`).
+    /// The width of a rasterised source: one padded cell, or for a `wide` glyph one [`Self::margin_x`]
+    /// on each outer edge and `2 * cell_w` of content between (`== 2*padded_w - 2*margin_x`).
     fn src_w(&self, wide: bool) -> u32 {
         let padded_w = self.padded_size().0;
         if wide {
-            2 * padded_w - 2 * PADDING
+            2 * padded_w - 2 * self.margin_x()
         } else {
             padded_w
         }
@@ -422,21 +443,22 @@ impl Rasterizer {
         let origin = self.geometry().draw_origin;
         // `x_off` replaces the glyph's own horizontal offset for a wide source (its ink spans two
         // cells), so only the vertical half of the geometry is taken wholesale.
-        let x = (PADDING + x_off) as f64;
+        let x = (self.margin_x() + x_off) as f64;
         let y = origin.1 as f32 + self.ascent;
-        // Horizontally the slot has no band and never can (#792): the Canvas API exposes no
-        // face-level counterpart to `fontBoundingBox{Ascent,Descent}` for one to be sized from, so
-        // ink past this window is destroyed here rather than landing on a neighbour. Condense it
-        // instead — on this axis alone, because the vertical one already has somewhere to go
-        // (ADR-0019 R1.2). The box is the GLYPH box, never the cell: `metrics::device_cell` lets a
-        // negative `letter_spacing` narrow the cell past the glyph and crop it, and a predicate
-        // keyed on the cell would read that consumer policy as a font fact.
+        // Horizontally the slot's band is only `bleed_x` deep (#966) — the Canvas API exposes no
+        // face-level counterpart to `fontBoundingBox{Ascent,Descent}` for a deeper one to be sized
+        // from — so ink past the box and that band would be destroyed here rather than land on a
+        // neighbour. Condense it instead (#792) — on this axis alone, because the vertical one has a
+        // band sized from the face (ADR-0019 R1.2). The box is the GLYPH box, never the cell:
+        // `metrics::device_cell` lets a negative `letter_spacing` narrow the cell past the glyph, and
+        // a predicate keyed on the cell would read that consumer policy as a font fact.
         let box_w = if wide { 2 * self.phys_w } else { self.phys_w };
         let metrics = ctx.measure_text(text)?;
         let fit = crate::metrics::horizontal_fit(
             metrics.actual_bounding_box_left() as f32,
             metrics.actual_bounding_box_right() as f32,
             box_w,
+            self.bleed_x,
         );
         if fit.scale_x == 1.0 && fit.pen_offset == 0.0 {
             ctx.fill_text(text, x, y as f64)?;
@@ -471,7 +493,7 @@ impl Rasterizer {
         // right only while the slot's content *was* the cell: with a band reserved it puts every
         // builtin glyph `bleed_y` rows too high, which is a run of `█` that no longer meets its
         // neighbour. Caught by `spacing.html` and `cursor.html` at all four densities (#791).
-        let (px, py) = (PADDING as usize, (PADDING + self.bleed_y) as usize);
+        let (px, py) = (self.margin_x() as usize, (PADDING + self.bleed_y) as usize);
         let (cw, ch) = (self.cell_w as usize, self.cell_h as usize);
         for row in 0..ch {
             let src = row * cw * 4;
