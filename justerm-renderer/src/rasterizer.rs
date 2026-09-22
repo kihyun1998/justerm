@@ -353,9 +353,10 @@ impl Rasterizer {
     }
 
     /// A [`rasterize`](Self::rasterize)d bitmap in this configuration's slot layout (#961).
-    /// Unchanged for a grayscale configuration or a `colour` glyph; otherwise its RGB becomes the
-    /// light mask — the same glyph drawn white over opaque black — per [`with_lcd`], or the alpha
-    /// repeated for a builtin glyph, which the font never draws.
+    /// Unchanged for a grayscale configuration, a `colour` glyph, or a builtin glyph — which the font
+    /// never draws, and whose coverage the shader reads from alpha alone, since every glyph `builtin`
+    /// owns is background-class ink (`glyph_class::treat_glyph_as_background_color`). Otherwise its
+    /// RGB becomes the light mask, the same glyph drawn white over opaque black, per [`with_lcd`].
     pub fn finish(
         &self,
         rgba: Vec<u8>,
@@ -367,11 +368,8 @@ impl Rasterizer {
         let Some((_, ctx)) = &self.lcd else {
             return Ok(rgba);
         };
-        if colour {
+        if colour || (!wide && self.builtin(text).is_some()) {
             return Ok(rgba);
-        }
-        if !wide && self.builtin(text).is_some() {
-            return Ok(with_lcd(&rgba, None));
         }
         let (padded_w, padded_h) = self.padded_size();
         ctx.set_fill_style_str("black");
@@ -379,7 +377,7 @@ impl Rasterizer {
         ctx.set_fill_style_str("white");
         self.draw(ctx, text, style, wide)?;
         let mask = ctx.get_image_data(0.0, 0.0, self.src_w(wide) as f64, padded_h as f64)?;
-        Ok(with_lcd(&rgba, Some(&mask.data())))
+        Ok(with_lcd(&rgba, &mask.data()))
     }
 
     /// The width of a rasterised source: one padded cell, or for a `wide` glyph one PADDING band on

@@ -43,23 +43,11 @@ pub fn fit_dark_gamma(light: &[u8], dark: &[u8]) -> f32 {
 }
 
 /// A glyph bitmap in the subpixel layout: `rgba`'s alpha (grayscale coverage) kept, and its RGB
-/// replaced by `lcd`'s RGB (the light mask). With no mask — a glyph the font never drew, such as a
-/// builtin block element — RGB is the alpha repeated, so the per-channel coverage the shader reads
-/// equals the grayscale one.
-pub fn with_lcd(rgba: &[u8], lcd: Option<&[u8]>) -> Vec<u8> {
+/// replaced by `mask`'s RGB (the light mask).
+pub fn with_lcd(rgba: &[u8], mask: &[u8]) -> Vec<u8> {
     let mut out = rgba.to_vec();
-    match lcd {
-        Some(mask) => {
-            for (px, m) in out.chunks_exact_mut(4).zip(mask.chunks_exact(4)) {
-                px[..3].copy_from_slice(&m[..3]);
-            }
-        }
-        None => {
-            for px in out.chunks_exact_mut(4) {
-                let a = px[3];
-                px[..3].fill(a);
-            }
-        }
+    for (px, m) in out.chunks_exact_mut(4).zip(mask.chunks_exact(4)) {
+        px[..3].copy_from_slice(&m[..3]);
     }
     out
 }
@@ -131,16 +119,6 @@ mod tests {
     fn a_mask_replaces_rgb_and_keeps_the_grayscale_alpha() {
         let rgba = vec![255, 255, 255, 90, 255, 255, 255, 0];
         let mask = vec![10, 120, 200, 255, 0, 0, 0, 255];
-        assert_eq!(
-            with_lcd(&rgba, Some(&mask)),
-            vec![10, 120, 200, 90, 0, 0, 0, 0]
-        );
-    }
-
-    #[test]
-    fn no_mask_repeats_the_alpha_so_the_channels_equal_the_grayscale_coverage() {
-        // White RGB outside the ink would read as full coverage in the subpixel branch.
-        let rgba = vec![255, 255, 255, 0, 255, 255, 255, 140];
-        assert_eq!(with_lcd(&rgba, None), vec![0, 0, 0, 0, 140, 140, 140, 140]);
+        assert_eq!(with_lcd(&rgba, &mask), vec![10, 120, 200, 90, 0, 0, 0, 0]);
     }
 }
