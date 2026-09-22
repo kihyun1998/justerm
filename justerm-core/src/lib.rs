@@ -105,8 +105,20 @@ impl Engine {
     /// unrecognised 8-bit introducer leaves its payload to print as ordinary text,
     /// and an OSC "closed" with `0x9C` stays open, accumulating everything after it
     /// until a `BEL`, `ESC`, `CAN` or `SUB` arrives.
+    ///
+    /// **An OSC ended by `CAN` or `SUB` is cancelled, not applied**, as xterm does.
+    /// Each of those bytes is advanced on its own so the engine can tell the OSC it
+    /// ends from one ended by `ST`.
     pub fn feed(&mut self, bytes: &[u8]) {
-        self.parser.advance(&mut self.term, bytes);
+        let mut rest = bytes;
+        while let Some(i) = rest.iter().position(|&b| matches!(b, 0x18 | 0x1a)) {
+            self.parser.advance(&mut self.term, &rest[..i]);
+            self.term.cancel_byte_in_flight = true;
+            self.parser.advance(&mut self.term, &rest[i..=i]);
+            self.term.cancel_byte_in_flight = false;
+            rest = &rest[i + 1..];
+        }
+        self.parser.advance(&mut self.term, rest);
     }
 
     /// Resize the screen to `cols` x `rows`. Rows that scroll off the top enter

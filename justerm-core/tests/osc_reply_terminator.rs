@@ -185,27 +185,24 @@ fn every_slot_of_one_stacked_query_carries_that_sequences_terminator() {
     );
 }
 
-/// **An OSC does not have to end with a terminator at all**, and those streams
-/// resolve to `St`.
+/// **An OSC does not have to end with a terminator at all**, and that stream
+/// resolves to `St`.
 ///
 /// `vte` ends a string on three byte classes, not two: `BEL`, `CAN`/`SUB` (`0x18` /
 /// `0x1a`, the cancel pair), and a bare `ESC` beginning the next sequence. Only the
-/// first is reported as bell-terminated, so the other two produce a query the engine
+/// first is reported as bell-terminated. A bare `ESC` produces a query the engine
 /// answers with `ST` — and the answer is right: xterm hardcodes `ST` on exactly this
 /// shape (`charproc.c:8964`, `unparseputc(xw, '\\'); /* should be ST */`) and
-/// ghostty's `Terminator.init` returns `.st` for a missing byte.
+/// ghostty's `Terminator.init` returns `.st` for a missing byte. The cancel pair
+/// produces nothing at all; see [`a_query_cancelled_by_can_or_sub_is_not_answered`].
 ///
 /// This test exists because the first draft of this file asserted the opposite in
 /// prose — *"no byte stream can reach this default"* — and an adversarial pass
-/// measured three that do. A default nothing can reach needs no test; one that three
-/// byte classes reach needs this.
+/// measured three that do. A default nothing can reach needs no test; one that a
+/// byte class reaches needs this.
 #[test]
 fn a_query_ended_without_a_terminator_is_answered_st() {
-    for (label, stream) in [
-        ("CAN", b"\x1b]11;?\x18".as_slice()),
-        ("SUB", b"\x1b]11;?\x1a".as_slice()),
-        ("bare ESC", b"\x1b]11;?\x1bc".as_slice()),
-    ] {
+    for (label, stream) in [("bare ESC", b"\x1b]11;?\x1bc".as_slice())] {
         let mut e = Engine::new(80, 24);
         e.feed(stream);
         let events = e.drain_events();
@@ -222,6 +219,23 @@ fn a_query_ended_without_a_terminator_is_answered_st() {
             b"\x1b]11;rgb:1e/1e/2e\x1b\\",
             "{label}: answered ST"
         );
+    }
+}
+
+/// `CAN` and `SUB` cancel the OSC they end, so a cancelled query is neither
+/// relayed nor answered (#970). xterm resets to ground without calling `do_osc`
+/// (`charproc.c:3612`, `:3640`); `vte` dispatches first and executes the cancel
+/// second, which the engine undoes.
+#[test]
+fn a_query_cancelled_by_can_or_sub_is_not_answered() {
+    for (label, stream) in [
+        ("CAN", b"\x1b]11;?\x18".as_slice()),
+        ("SUB", b"\x1b]11;?\x1a".as_slice()),
+    ] {
+        let mut e = Engine::new(80, 24);
+        e.feed(stream);
+        assert_eq!(e.drain_events(), vec![], "{label}: nothing relayed");
+        assert_eq!(e.drain_replies(), b"", "{label}: nothing answered");
     }
 }
 
