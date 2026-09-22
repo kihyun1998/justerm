@@ -54,6 +54,7 @@ pub(crate) mod frame_grid;
 pub(crate) mod glyph_cache;
 pub(crate) mod glyph_class;
 pub(crate) mod glyph_resolve;
+pub(crate) mod lcd;
 pub(crate) mod mat4;
 pub(crate) mod metrics;
 pub(crate) mod overlay;
