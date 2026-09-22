@@ -1975,7 +1975,8 @@ interface WeightSample {
 
 /** #961 — colour fringes in the weight probe's text, across the subpixel setting and back. */
 interface SubpixelSample {
-  /** Pixels whose channels spread by more than 8 — per-channel coverage shows as colour fringes. */
+  /** Pixels whose per-channel coverage, between bg and fg, spreads by more than 0.1 — the colour
+   * fringe of per-channel coverage, measured so that a coloured fg is not one. */
   fringe: number;
   cellW: number;
   cellH: number;
@@ -2699,6 +2700,17 @@ window.__fontWeightProbe = (): FontWeightProbe => {
 
 window.__subpixelProbe = (): SubpixelProbe => {
   // #961. Reuses the weight probe's row of `M`s, drawn in the default fg over the opaque default bg.
+  // That fg is itself a colour, so a fringe is not "the channels differ" but "the channels are at
+  // different points between bg and fg": per-channel coverage spread by more than 0.1.
+  const FG = [0xcd, 0xd6, 0xf4], BG = [0x1e, 0x1e, 0x2e];
+  const fringeOf = (d: Uint8Array | Uint8ClampedArray): number => {
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      const cov = [0, 1, 2].map((k) => (d[i + k]! - BG[k]!) / (FG[k]! - BG[k]!));
+      if (Math.max(...cov) - Math.min(...cov) > 0.1) n++;
+    }
+    return n;
+  };
   const gl = canvas.getContext("webgl2")!;
   const sample = (): SubpixelSample => {
     const { width: cw, height: ch } = renderer.cellSize(); // device px
@@ -2708,11 +2720,7 @@ window.__subpixelProbe = (): SubpixelProbe => {
     const x = Math.round(WEIGHT_COL * cw);
     const y = gl.drawingBufferHeight - Math.round((WEIGHT_ROW + 1) * ch); // readPixels counts from the bottom
     gl.readPixels(x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-    let fringe = 0;
-    for (let i = 0; i < buf.length; i += 4) {
-      if (Math.max(buf[i]!, buf[i + 1]!, buf[i + 2]!) - Math.min(buf[i]!, buf[i + 1]!, buf[i + 2]!) > 8) fringe++;
-    }
-    return { fringe, cellW: cw, cellH: ch };
+    return { fringe: fringeOf(buf), cellW: cw, cellH: ch };
   };
   const lcdAvailable = ((): boolean => {
     const size = 16 * devicePixelRatio;
@@ -2723,11 +2731,7 @@ window.__subpixelProbe = (): SubpixelProbe => {
     x.font = `${size}px monospace`;
     x.fillStyle = "#cdd6f4";
     x.fillText("MMMM", 0, size * 1.5);
-    const d = x.getImageData(0, 0, c.width, c.height).data;
-    for (let i = 0; i < d.length; i += 4) {
-      if (Math.max(d[i]!, d[i + 1]!, d[i + 2]!) - Math.min(d[i]!, d[i + 1]!, d[i + 2]!) > 8) return true;
-    }
-    return false;
+    return fringeOf(x.getImageData(0, 0, c.width, c.height).data) > 0;
   })();
 
   const savedText = weightText;
