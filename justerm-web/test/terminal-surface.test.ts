@@ -204,8 +204,20 @@ describe("GridLease — a stale id becomes unrepresentable", () => {
     });
     surface.addGrid();
 
-    expect(backend.addGridArgs[0]).toEqual([palette, 1, 2, "Fira Code", 14, 0.5, 1.2, 300, "900"]);
-    expect(backend.addGridArgs[1]?.slice(7)).toEqual([undefined, undefined]);
+    expect(backend.addGridArgs[0]?.slice(0, 9)).toEqual([palette, 1, 2, "Fira Code", 14, 0.5, 1.2, 300, "900"]);
+    expect(backend.addGridArgs[1]?.slice(7, 9)).toEqual([undefined, undefined]);
+  });
+
+  it("names the grid's subpixel setting at birth, in the slot after the weights (#961)", () => {
+    const { surface, backend } = harness();
+
+    surface.addGrid({ fontWeight: 300, fontWeightBold: "900", subpixelAntialiasing: true });
+    surface.addGrid({ subpixelAntialiasing: false });
+    surface.addGrid();
+
+    expect(backend.addGridArgs[0]?.slice(7)).toEqual([300, "900", true]);
+    expect(backend.addGridArgs[1]?.slice(9)).toEqual([false]);
+    expect(backend.addGridArgs[2]?.slice(9)).toEqual([undefined]);
   });
 
   it("releases exactly once, however many times it is asked", () => {

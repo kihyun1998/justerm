@@ -20,9 +20,9 @@ export interface SurfaceBackend {
   /** Register a terminal grid and return its id — since renderer 0.15.0 the **only** way to get one:
    * a renderer arrives holding none, and every per-terminal method names the grid it acts on.
    *
-   * The six font selectors are optional and trailing, and this package passes all six. They key
+   * The seven font selectors are optional and trailing, and this package passes all seven. They key
    * the atlas, so naming them here means **one** bake: a grid born at the renderer's defaults and
-   * then moved by the six setters would bake an atlas per call and free each one again. */
+   * then moved by the seven setters would bake an atlas per call and free each one again. */
   addGrid(
     paletteColors: Uint32Array,
     defaultFg: number,
@@ -33,6 +33,7 @@ export interface SurfaceBackend {
     lineHeight?: number,
     fontWeight?: FontWeight,
     fontWeightBold?: FontWeight,
+    subpixelAntialiasing?: boolean,
   ): number;
   /** Unregister a grid and release what it owned: its VAO, its instance buffer, and — if it was the
    * last grid standing on its font configuration — that configuration's glyph atlas, rasteriser and
@@ -148,6 +149,7 @@ export interface AddGridOptions {
   lineHeight?: number;
   fontWeight?: FontWeight;
   fontWeightBold?: FontWeight;
+  subpixelAntialiasing?: boolean;
 }
 
 /**
@@ -476,6 +478,7 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
       opts.lineHeight,
       opts.fontWeight,
       opts.fontWeightBold,
+      opts.subpixelAntialiasing,
     );
     const lease = new Lease(grid, (l) => {
       this.leases.delete(l);
