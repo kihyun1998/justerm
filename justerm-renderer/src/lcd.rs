@@ -169,7 +169,10 @@ mod tests {
                 dark.extend([d.round() as u8; 3]);
                 dark.push(255);
             }
-            assert_eq!(fit_dark_gamma(&light, &dark), fit_directly(&light, &dark), "g = {g}");
+            let fit = fit_dark_gamma(&light, &dark);
+            assert_eq!(fit, fit_directly(&light, &dark), "g = {g}");
+            // Two fits agreeing on a degenerate answer would prove nothing: this one found the curve.
+            assert!((fit - g).abs() < 0.3, "drew with {g}, fitted {fit}");
         }
     }
 
