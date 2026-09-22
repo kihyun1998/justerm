@@ -12,9 +12,9 @@
   into an opaque 2D canvas, but a face it draws without antialiasing at a small size (the default
   `monospace` here, below about 28 device px — so the grid is 28 CSS px) gets none, and a platform
   without LCD text hands back three equal channels. So the page draws the same glyphs, font and size
-  into a plain opaque canvas
-  in the scene's real colours — the TRUTH the browser would put on screen — and the checks that need
-  fringes run only where that draw shows them (`lcdAvailable`, printed under `measured`).
+  into a plain opaque canvas in the scene's real colours — the TRUTH the browser would put on screen —
+  and the checks that need fringes run only where that draw shows them (`lcdAvailable`, printed under
+  `measured`).
 
   Everywhere:
   · off is the default, and turning it on and off again draws the same bytes as never turning it on;
@@ -25,9 +25,10 @@
   · no fringe appears on a platform whose canvas draws none (`lcdAvailable` false).
   Where the canvas draws LCD text:
   · light ink on an opaque background shows fringes on, none off;
-  · light, dark and pale ink lay down within 1 % of the truth draw's total ink, and mid-grey within
-    8 % — the claim of the feature, and what the dark-ink exponent and the light-ink threshold answer
-    to (the four inks sit either side of that threshold); grayscale misses dark ink by more;
+  · light, dark, pale and yellow ink lay down within 1 % of the truth draw's total ink, and mid-grey
+    within 8 % — the claim of the feature, and what the dark-ink exponent, the light-ink threshold
+    and the luminance weights answer to (the inks sit either side of the threshold, and yellow falls
+    on different sides of it under different weights); grayscale misses dark ink by more;
   dpr 1/1.1/1.5/2.
 
   Build: wasm-pack build --target web --dev --out-dir pkg
@@ -46,6 +47,8 @@
   const WHITE = 0xffffff, BLACK = 0x000000;
   // Either side of the light-ink threshold (0.75): GREY is luminance 0.56, PALE 0.88.
   const GREY = 0x909090, PALE = 0xe0e0e0;
+  // YELLOW is luminance 0.93 by Rec. 709 weights and 0.67 by equal ones: the two sides of it.
+  const YELLOW = 0xffff00;
   const palette = new Uint32Array(256);
   // Large enough that the default face is antialiased at every swept density.
   const SIZE = 28;
@@ -91,7 +94,7 @@
     return x.getImageData(0, 0, c.width, c.height).data;
   };
   const truthLight = truth(BLACK, WHITE), truthDark = truth(WHITE, BLACK), truthGrey = truth(BLACK, GREY),
-    truthPale = truth(BLACK, PALE);
+    truthPale = truth(BLACK, PALE), truthYellow = truth(BLACK, YELLOW);
   const lcdAvailable = fringe(truthLight) > 0;
 
   const scenes = {
@@ -99,6 +102,7 @@
     dark: { bg: RGB(WHITE), fg: RGB(BLACK) },
     grey: { bg: RGB(BLACK), fg: RGB(GREY) },
     pale: { bg: RGB(BLACK), fg: RGB(PALE) },
+    yellow: { bg: RGB(BLACK), fg: RGB(YELLOW) },
     defaultBg: { bg: DEFAULT, fg: RGB(WHITE) },
     emoji: { bg: RGB(BLACK), fg: RGB(WHITE), cps: [0x1f680, 0x20, ...new Array(N - 2).fill(0x20)], flags: Uint16Array.from([WIDE_CHAR, WIDE_SPACER, ...new Array(N - 2).fill(0)]) },
     halfBlock: { bg: RGB(BLACK), fg: RGB(WHITE), cps: new Array(N).fill(0x258c) }, // '▌' — builtin
@@ -144,6 +148,7 @@
       lightTruth: weight(truthLight, BLACK), lightOff: weight(off.light, BLACK), lightOn: weight(on.light, BLACK),
       greyTruth: weight(truthGrey, BLACK), greyOff: weight(off.grey, BLACK), greyOn: weight(on.grey, BLACK),
       paleTruth: weight(truthPale, BLACK), paleOff: weight(off.pale, BLACK), paleOn: weight(on.pale, BLACK),
+      yellowTruth: weight(truthYellow, BLACK), yellowOff: weight(off.yellow, BLACK), yellowOn: weight(on.yellow, BLACK),
     },
   };
   const w = measured.weight;
@@ -157,6 +162,7 @@
     checks.lightInkIsWithin1PctOfTheTruth = err(w.lightOn, w.lightTruth) <= 0.01;
     checks.darkInkIsWithin1PctOfTheTruth = err(w.darkOn, w.darkTruth) <= 0.01;
     checks.paleInkIsWithin1PctOfTheTruth = err(w.paleOn, w.paleTruth) <= 0.01;
+    checks.yellowInkIsWithin1PctOfTheTruth = err(w.yellowOn, w.yellowTruth) <= 0.01;
     checks.midGreyInkIsWithin8PctOfTheTruth = err(w.greyOn, w.greyTruth) <= 0.08;
     checks.grayscaleIsFurtherFromTheTruthThanOn = err(w.darkOff, w.darkTruth) > err(w.darkOn, w.darkTruth);
   } else {
