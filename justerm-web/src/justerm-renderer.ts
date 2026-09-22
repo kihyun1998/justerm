@@ -176,6 +176,16 @@ export interface JustermRendererOptions {
   fontWeight?: FontWeight;
   fontWeightBold?: FontWeight;
   /**
+   * Draw text with per-channel (LCD / subpixel) coverage where the browser produces it, which reads
+   * sharper on a subpixel display. Omit for `false` (grayscale). Change it at runtime with
+   * {@link JustermRenderer.setSubpixelAntialiasing}.
+   *
+   * It applies only where the cell's background is opaque: under a {@link JustermRendererOptions.bgAlpha} below 1, cells on
+   * the default background keep grayscale, since one alpha cannot carry three coverages. It does not
+   * move the cell.
+   */
+  subpixelAntialiasing?: boolean;
+  /**
    * Force the cursor to blink (`true`) or stay steady (`false`), overriding the application.
    * Omit (or `undefined`) to **follow the application's** DECSCUSR / `CSI ?12` mode, which is the
    * default and what both references default to.
@@ -457,6 +467,9 @@ export interface RendererBackend extends SurfaceBackend {
    * weight outside {@link FontWeight} is ignored by the renderer; unchanged is a no-op. */
   setFontWeight(grid: number, weight: FontWeight): void;
   setFontWeightBold(grid: number, weight: FontWeight): void;
+  /** Re-bake the atlas with or without per-channel (LCD) text coverage. The cell does not move;
+   * unchanged is a no-op. */
+  setSubpixelAntialiasing(grid: number, on: boolean): void;
   /** Extra space between columns in **CSS px** (ADR-0023 — the space `fontSize` already speaks), and
    * a multiplier on the glyph height (`>= 1`). Both move the cell, so the consumer must re-fit; both
    * are clamped or rolled back by the renderer, so the result is read back rather than assumed (#338,
@@ -1041,9 +1054,9 @@ export class JustermRenderer implements Renderer {
     const paletteColors = decoder.buildPalette(Uint32Array.from(t.ansi));
     const backend = surface.rendererBackend();
     // A renderer arrives holding no terminal since 0.15.0, so this widget's single grid is created
-    // here — and its font is named at birth rather than pushed by setters afterwards. The six
-    // selectors key the atlas, so this is **one** bake where the setter route was up to seven, each
-    // of the first six freed again by the next (#773, #928).
+    // here — and its font is named at birth rather than pushed by setters afterwards. The seven
+    // selectors key the atlas, so this is **one** bake where the setter route was up to eight, each
+    // of the first seven freed again by the next (#773, #928, #961).
     //
     // The values are the same ones the setters used, defaults included, so the initial fit is still
     // computed at the consumer's final cell.
@@ -1058,6 +1071,7 @@ export class JustermRenderer implements Renderer {
       lineHeight: opts.lineHeight ?? 1,
       fontWeight: opts.fontWeight,
       fontWeightBold: opts.fontWeightBold,
+      subpixelAntialiasing: opts.subpixelAntialiasing,
     });
     try {
       return await JustermRenderer.assemble(surface, composedSurface, opts, lease, decoder, paletteColors);
@@ -1259,6 +1273,16 @@ export class JustermRenderer implements Renderer {
   /** Change the weight bold (SGR 1) text is drawn at (#928). See {@link setFontWeight}. */
   setFontWeightBold(weight: FontWeight): void {
     this.backend.setFontWeightBold(this.lease.id, weight);
+    this.backend.render();
+  }
+
+  /**
+   * Turn per-channel (LCD / subpixel) text coverage on or off — the live counterpart of
+   * {@link JustermRendererOptions.subpixelAntialiasing}. Re-bakes the atlas and presents. No re-fit:
+   * the cell does not move.
+   */
+  setSubpixelAntialiasing(on: boolean): void {
+    this.backend.setSubpixelAntialiasing(this.lease.id, on);
     this.backend.render();
   }
 

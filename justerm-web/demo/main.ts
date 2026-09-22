@@ -79,6 +79,8 @@ const bootWeight = (key: string): FontWeight | undefined => {
 };
 const bootFontWeight = bootWeight("fontWeight");
 const bootFontWeightBold = bootWeight("fontWeightBold");
+// #961: subpixel text, an option like the weights. `?subpixelAntialiasing=1` boots with it on.
+const bootSubpixel = bootParams.get("subpixelAntialiasing");
 // #908: a `Terminal` construction option, so it too is only reachable by booting with it set.
 const bootScrollSensitivity = bootParams.get("scrollSensitivity");
 
@@ -93,6 +95,7 @@ const renderer = await JustermRenderer.create({
   ...(bootCursorStyle === null ? {} : { cursorStyle: bootCursorStyle }),
   ...(bootFontWeight === undefined ? {} : { fontWeight: bootFontWeight }),
   ...(bootFontWeightBold === undefined ? {} : { fontWeightBold: bootFontWeightBold }),
+  ...(bootSubpixel === null ? {} : { subpixelAntialiasing: bootSubpixel === "1" }),
   theme: {
     ansi: [
       0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5, 0x7f7f7f,
@@ -1812,6 +1815,7 @@ declare global {
     __cursorPolicyProbe?: () => CursorPolicyProbe;
     __spacingProbe?: () => SpacingProbe;
     __fontWeightProbe?: () => FontWeightProbe;
+    __subpixelProbe?: () => SubpixelProbe;
     __preeditProbe?: () => PreeditProbe;
     __preeditOriginProbe?: () => Promise<PreeditOriginProbe>;
     __scrolledPreeditProbe?: () => Promise<ScrolledPreeditProbe>;
@@ -1967,6 +1971,27 @@ interface WeightSample {
   bold: number;
   cellW: number;
   cellH: number;
+}
+
+/** #961 — colour fringes in the weight probe's text, across the subpixel setting and back. */
+interface SubpixelSample {
+  /** Pixels whose channels spread by more than 8 — per-channel coverage shows as colour fringes. */
+  fringe: number;
+  cellW: number;
+  cellH: number;
+}
+interface SubpixelProbe {
+  /** Whether this browser draws LCD text for the demo's font at all: the same glyph drawn into an
+   * opaque 2D canvas in the demo's colours shows fringes. Without it, no sample below can. */
+  lcdAvailable: boolean;
+  /** Before this probe touches the setting: what `create` applied. */
+  boot: SubpixelSample;
+  /** After `setSubpixelAntialiasing(true)`, read with no frame emitted — only the setter presents. */
+  on: SubpixelSample;
+  /** After `setSubpixelAntialiasing(false)`. */
+  off: SubpixelSample;
+  /** After the setter is handed the boot value back. */
+  restored: SubpixelSample;
 }
 
 /** #928 — the two weights, sampled across a change and back. */
@@ -2670,6 +2695,54 @@ window.__fontWeightProbe = (): FontWeightProbe => {
   weightText = savedText;
   render();
   return { boot, lightBold, heavyRegular, restored };
+};
+
+window.__subpixelProbe = (): SubpixelProbe => {
+  // #961. Reuses the weight probe's row of `M`s, drawn in the default fg over the opaque default bg.
+  const gl = canvas.getContext("webgl2")!;
+  const sample = (): SubpixelSample => {
+    const { width: cw, height: ch } = renderer.cellSize(); // device px
+    const w = Math.round(2 * WEIGHT_WIDTH * cw);
+    const h = Math.round(ch);
+    const buf = new Uint8Array(w * h * 4);
+    const x = Math.round(WEIGHT_COL * cw);
+    const y = gl.drawingBufferHeight - Math.round((WEIGHT_ROW + 1) * ch); // readPixels counts from the bottom
+    gl.readPixels(x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    let fringe = 0;
+    for (let i = 0; i < buf.length; i += 4) {
+      if (Math.max(buf[i]!, buf[i + 1]!, buf[i + 2]!) - Math.min(buf[i]!, buf[i + 1]!, buf[i + 2]!) > 8) fringe++;
+    }
+    return { fringe, cellW: cw, cellH: ch };
+  };
+  const lcdAvailable = ((): boolean => {
+    const size = 16 * devicePixelRatio;
+    const c = new OffscreenCanvas(Math.ceil(size * 4), Math.ceil(size * 2));
+    const x = c.getContext("2d", { alpha: false, willReadFrequently: true })!;
+    x.fillStyle = "#1e1e2e";
+    x.fillRect(0, 0, c.width, c.height);
+    x.font = `${size}px monospace`;
+    x.fillStyle = "#cdd6f4";
+    x.fillText("MMMM", 0, size * 1.5);
+    const d = x.getImageData(0, 0, c.width, c.height).data;
+    for (let i = 0; i < d.length; i += 4) {
+      if (Math.max(d[i]!, d[i + 1]!, d[i + 2]!) - Math.min(d[i]!, d[i + 1]!, d[i + 2]!) > 8) return true;
+    }
+    return false;
+  })();
+
+  const savedText = weightText;
+  weightText = true;
+  render();
+  const boot = sample();
+  renderer.setSubpixelAntialiasing(true);
+  const on = sample();
+  renderer.setSubpixelAntialiasing(false);
+  const off = sample();
+  renderer.setSubpixelAntialiasing(bootSubpixel === "1");
+  const restored = sample();
+  weightText = savedText;
+  render();
+  return { lcdAvailable, boot, on, off, restored };
 };
 
 window.__spacingProbe = (): SpacingProbe => {

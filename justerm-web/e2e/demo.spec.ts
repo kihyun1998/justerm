@@ -2649,6 +2649,39 @@ test.describe("fontWeight / fontWeightBold given at create reach the renderer (#
   });
 });
 
+// #961: subpixel text, live. Whether the browser draws LCD text for the demo's font is the platform's
+// (and the size's — a face drawn aliased has none), so the probe asks a plain opaque canvas first and
+// the test is skipped, saying so, where that control sees no fringe: it cannot pass vacuously.
+test("the consumer turns subpixel text on and off, live, without moving the cell (#961)", async ({ page }) => {
+  await expect(page.getByRole("button", { name: "Letter spacing: 0px" })).toBeVisible();
+  const p = await page.evaluate(() => window.__subpixelProbe!());
+  test.skip(!p.lcdAvailable, "this browser draws no LCD text for the demo's font");
+  const cellOf = (s: { cellW: number; cellH: number }): string => `${s.cellW}x${s.cellH}`;
+
+  // Unset = grayscale: no fringe until the setter turns it on, and none after it turns it off —
+  // presented by the setter itself, since the probe emits no frame after it.
+  expect(p.boot.fringe).toBe(0);
+  expect(p.on.fringe).toBeGreaterThan(0);
+  expect(p.off.fringe).toBe(0);
+  for (const s of [p.on, p.off, p.restored]) expect(cellOf(s)).toBe(cellOf(p.boot));
+});
+
+// #961: the OPTION half, which only a boot can reach.
+test.describe("subpixelAntialiasing given at create reaches the renderer (#961)", () => {
+  test.use({ bootUrl: "/?subpixelAntialiasing=1" });
+
+  test("booting with it on draws fringes before any setter runs", async ({ page }) => {
+    await expect(page.getByRole("button", { name: "Letter spacing: 0px" })).toBeVisible();
+    const p = await page.evaluate(() => window.__subpixelProbe!());
+    test.skip(!p.lcdAvailable, "this browser draws no LCD text for the demo's font");
+
+    expect(p.boot.fringe).toBeGreaterThan(0);
+    expect(p.off.fringe).toBe(0);
+    // …and the probe's restore hands the BOOT setting back, not the default.
+    expect(p.restored.fringe).toBe(p.boot.fringe);
+  });
+});
+
 // #578: the OPTION half. `create` runs once per page load, so `letterSpacing`/`lineHeight` passed
 // there are only reachable by booting with them — and the claim is specifically that they are applied
 // BEFORE the first fit, so the initial grid is computed at the consumer's cell rather than at the
