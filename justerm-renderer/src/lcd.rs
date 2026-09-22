@@ -105,9 +105,10 @@ mod tests {
     #[test]
     fn the_fit_reads_each_channel_on_its_own() {
         // A pixel whose three channels differ, as an LCD edge does: each channel is its own sample.
-        // The light mask is (60, 128, 200) and the dark draw follows g = 2.5 per channel.
+        // Red is fully covered and says nothing about the curve (every exponent ties on it); only
+        // green and blue carry g = 2.5, so a fit reading one channel per pixel lands on 1.0.
         let g = 2.5f32;
-        let l = [60u8, 128, 200];
+        let l = [255u8, 128, 200];
         let d = l.map(|v| (255.0 - (v as f32 / 255.0).powf(g) * 255.0).round() as u8);
         let fit = fit_dark_gamma(&opaque(&[l]), &opaque(&[d]));
         assert!((fit - g).abs() <= GAMMA_STEP, "fitted {fit}");
