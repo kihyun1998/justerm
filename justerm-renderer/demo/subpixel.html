@@ -21,7 +21,8 @@
   · it keys the atlas — one bake on, none moving back to a sibling's setting — and moves no cell;
   · a colour emoji and a builtin half block draw the same bytes on as off (their RGB is not a mask);
   · a default-background cell under a translucent `setBgAlpha` draws the same bytes on as off — one
-    alpha cannot carry three coverages, so it keeps grayscale;
+    alpha cannot carry three coverages, so it keeps grayscale (grey ink, which the dark-ink exponent
+    would change even with no LCD text);
   · no fringe appears on a platform whose canvas draws none (`lcdAvailable` false).
   Where the canvas draws LCD text:
   · light ink on an opaque background shows fringes on, none off;
@@ -29,6 +30,9 @@
     within 8 % — the claim of the feature, and what the dark-ink exponent, the light-ink threshold
     and the luminance weights answer to (the inks sit either side of the threshold, and yellow falls
     on different sides of it under different weights); grayscale misses dark ink by more;
+  · a glyph this face draws past its cell vertically keeps its coverage where the ink lands in the
+    neighbouring row: fringes there for light ink, and dark ink changing weight by the same factor
+    as the part that stayed in the cell (skipped, and printed, when no such glyph is found);
   dpr 1/1.1/1.5/2.
 
   Build: wasm-pack build --target web --dev --out-dir pkg
@@ -36,7 +40,7 @@
 <canvas id="c" width="64" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readRect, fitGrid } from "./proof.js";
+  import { readRect, readCells, fitGrid } from "./proof.js";
   await init();
 
   const TEXT = [..."Hamburgefonstiv"].map((c) => c.codePointAt(0));
@@ -119,10 +123,13 @@
   checks.itMovesNoCell = cell()[0] === baseCell[0] && cell()[1] === baseCell[1];
   const on = shoot();
 
+  // Grey ink: below the light-ink threshold, so the exponent would change it even where the canvas
+  // draws no LCD text — the gate is visible on every platform, not only a subpixel one.
+  const translucent = { bg: DEFAULT, fg: RGB(GREY) };
   r.setBgAlpha(g, 0.5);
-  const translucentOn = draw(scenes.defaultBg);
+  const translucentOn = draw(translucent);
   r.setSubpixelAntialiasing(g, false);
-  const translucentOff = draw(scenes.defaultBg);
+  const translucentOff = draw(translucent);
   r.setBgAlpha(g, 1);
   const offAgain = shoot();
 
@@ -140,8 +147,62 @@
   r.setSubpixelAntialiasing(g, false);
   r.removeGrid(sib);
 
+  // ── ink that leaves its cell (I_neighbour) keeps the coverage it had inside it ──
+  // A probe this face draws past the block's box vertically (and inside it horizontally) is FOUND,
+  // not listed: which glyphs overflow is a property of the face behind `monospace` here (#578). It
+  // sits in the middle of three rows; the rows above and below read only its spilled ink.
+  const probe = (() => {
+    const x = new OffscreenCanvas(8, 8).getContext("2d");
+    x.font = `400 ${SIZE * devicePixelRatio}px monospace, monospace`;
+    const box = x.measureText("█");
+    let best = null;
+    for (const [lo, hi] of [[0xc0, 0x24f], [0x1e00, 0x1fff]]) {
+      for (let cp = lo; cp <= hi; cp++) {
+        const m = x.measureText(String.fromCodePoint(cp));
+        const over = Math.max(m.actualBoundingBoxAscent - box.actualBoundingBoxAscent,
+          m.actualBoundingBoxDescent - box.actualBoundingBoxDescent);
+        const inside = m.actualBoundingBoxLeft <= box.actualBoundingBoxLeft
+          && m.actualBoundingBoxRight <= box.actualBoundingBoxRight;
+        if (inside && over >= 2 && (!best || over > best.over)) best = { cp, over };
+      }
+    }
+    return best;
+  })();
+  /** Row 1 filled with the probe, rows 0 and 2 blank; returns [in-cell row, neighbour rows]. */
+  const bleed = (bgRgb, fgRgb) => {
+    const n = COLS * 3;
+    fitGrid(r, g, COLS, 3);
+    const cps = new Uint32Array(n).fill(0x20);
+    cps.fill(probe.cp, COLS, 2 * COLS);
+    r.apply_frame(g, COLS, 3, new Uint32Array(n).fill(RGB(bgRgb)), new Uint32Array(n).fill(RGB(fgRgb)),
+      cps, new Uint16Array(n), true);
+    r.render();
+    const row = (i) => readCells(gl, r, g, 0, i, COLS).buf;
+    return [row(1), [row(0), row(2)]];
+  };
+  let spill = null;
+  if (probe) {
+    const shots = {};
+    for (const on of [false, true]) {
+      r.setSubpixelAntialiasing(g, on);
+      const [lightCell, lightNear] = bleed(BLACK, WHITE);
+      const [darkCell, darkNear] = bleed(WHITE, BLACK);
+      shots[on ? "on" : "off"] = {
+        lightNearFringe: lightNear.reduce((s, b) => s + fringe(b), 0),
+        darkCell: weight(darkCell, WHITE),
+        darkNear: darkNear.reduce((s, b) => s + weight(b, WHITE), 0),
+      };
+    }
+    r.setSubpixelAntialiasing(g, false);
+    spill = { cp: probe.cp.toString(16), over: probe.over, ...shots };
+    // Dark ink changes weight under the fitted curve; what spilled must change by the same factor
+    // as what stayed, or the stroke visibly steps at the row edge.
+    spill.cellRatio = shots.on.darkCell / shots.off.darkCell;
+    spill.nearRatio = shots.on.darkNear / shots.off.darkNear;
+  }
+
   const measured = {
-    dpr: devicePixelRatio, lcdAvailable,
+    dpr: devicePixelRatio, lcdAvailable, spill,
     fringe: { lightOff: fringe(off.light), lightOn: fringe(on.light), darkOn: fringe(on.dark), defaultBgOn: fringe(on.defaultBg), translucentOn: fringe(translucentOn) },
     weight: {
       darkTruth: weight(truthDark, WHITE), darkOff: weight(off.dark, WHITE), darkOn: weight(on.dark, WHITE),
@@ -165,6 +226,10 @@
     checks.yellowInkIsWithin1PctOfTheTruth = err(w.yellowOn, w.yellowTruth) <= 0.01;
     checks.midGreyInkIsWithin8PctOfTheTruth = err(w.greyOn, w.greyTruth) <= 0.08;
     checks.grayscaleIsFurtherFromTheTruthThanOn = err(w.darkOff, w.darkTruth) > err(w.darkOn, w.darkTruth);
+    if (spill && spill.off.darkNear > 0) {
+      checks.spilledLightInkShowsFringesOn = spill.on.lightNearFringe > 0 && spill.off.lightNearFringe === 0;
+      checks.spilledDarkInkChangesWeightWithTheCell = Math.abs(spill.nearRatio - spill.cellRatio) <= 0.05;
+    }
   } else {
     checks.noFringeWhereTheCanvasDrawsNone = measured.fringe.lightOn === 0 && measured.fringe.darkOn === 0;
   }

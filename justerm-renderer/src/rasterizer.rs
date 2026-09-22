@@ -44,6 +44,10 @@ use crate::lcd::{fit_dark_gamma, with_lcd};
 /// round and diagonal strokes, so every channel sees partial coverage at many levels.
 const CALIBRATION_TEXT: &str = "Hamburgefonstiv 0123 {}[] @#%&";
 
+/// The largest size, in device px, the calibration string is drawn at. Larger configurations are
+/// calibrated here, which keeps the calibration canvas bounded however large the font.
+const CALIBRATION_MAX_PX: f32 = 64.0;
+
 /// A browser-backed glyph rasteriser bound to one font family, size and pair of weights.
 pub struct Rasterizer {
     /// Held only to keep the JS canvas alive for the context's lifetime.
@@ -144,14 +148,15 @@ impl Rasterizer {
         Self::apply_state(&ctx, &measuring);
 
         let (lcd, lcd_gamma) = if subpixel {
+            let size = font_size.min(CALIBRATION_MAX_PX);
             let regular = font_string(
                 font_family,
-                font_size,
+                size,
                 FontStyle::Normal,
                 font_weight,
                 font_weight_bold,
             );
-            let gamma = Self::calibrate(&regular, font_size)?;
+            let gamma = Self::calibrate(&regular, size)?;
             (
                 Some(Self::opaque_canvas(padded_w * 2, padded_h, &measuring)?),
                 gamma,

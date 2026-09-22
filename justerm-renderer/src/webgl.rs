@@ -231,6 +231,12 @@ out vec4 FragColor;
 // the next row (the invariant alacritty holds with `max_y` and we did not). `fwidth` is one device
 // pixel in normalised units, for a single-pixel antialiased edge — crisp, not stair-stepped at
 // fractional DPR.
+// Per-channel coverage from a subpixel slot's light mask for ink of colour `ink` (#961): the mask
+// as-is for light ink (luminance >= 0.75), raised to the configuration's measured exponent for darker.
+vec3 lcd_cov(vec3 mask, vec3 ink) {
+    float lum = dot(ink, vec3(0.2126, 0.7152, 0.0722));
+    return lum >= 0.75 ? mask : pow(mask, vec3(u_lcd_gamma));
+}
 float hline(float gy, float c, float thick_px, float char_h) {
     float th = max(thick_px, 1.0) / max(char_h, 1.0); // device-px thickness, in gy units
     float top = clamp(c - th * 0.5, 0.0, 1.0 - th);   // centre-clamp: stay in the cell
@@ -647,17 +653,23 @@ void main() {
     float bg_alpha = (!block && v_bg_default > 0.5) ? u_bg_alpha : 1.0;
     float bg_class = float((v_glyph >> 16u) & 1u);
     // #961: text-class coverage per channel. A subpixel configuration's slot carries the light mask
-    // in RGB (`lcd.rs`), used as-is for light ink (luminance >= 0.75) and raised to the measured
-    // exponent for darker ink. Only over an opaque background — one alpha cannot carry three
-    // coverages — and never for a colour emoji, whose RGB is its own colour. A grayscale
+    // in RGB (`lcd.rs`), read through `lcd_cov`. Only over an opaque background — one alpha cannot
+    // carry three coverages — and never for a colour emoji, whose RGB is its own colour. A grayscale
     // configuration and every excluded fragment read the alpha coverage on all three channels.
-    vec3 text_cov = vec3(coverage);
-    if (u_lcd_gamma > 0.0 && emoji < 0.5 && bg_alpha >= 1.0) {
-        float lum = dot(fg, vec3(0.2126, 0.7152, 0.0722));
-        text_cov = lum >= 0.75 ? texel.rgb : pow(texel.rgb, vec3(u_lcd_gamma));
+    bool lcd = u_lcd_gamma > 0.0 && bg_alpha >= 1.0;
+    vec3 text_cov = (lcd && emoji < 0.5) ? lcd_cov(texel.rgb, fg) : vec3(coverage);
+    // The same for ink a neighbour spilled into this cell (I_neighbour): its owner's slot, its
+    // owner's ink colour, and only for a text-class owner that is not an emoji — a background-class
+    // slot's RGB is not a mask (a builtin glyph keeps white there).
+    bool from_up = cov_up >= cov_dn;
+    uint owner = from_up ? v_glyph_up : v_glyph_dn;
+    vec3 foreign_cov = vec3(foreign);
+    if (lcd && ((owner >> 15u) & 1u) == 0u && ((owner >> 16u) & 1u) == 0u) {
+        foreign_cov = lcd_cov(from_up ? tex_up.rgb : tex_dn.rgb, foreign_ink)
+                    * (from_up ? from_above : from_below);
     }
     vec3 ink = mix(vec3(0.0), fg, coverage * bg_class);        // background-class ink joins the bg
-    ink = mix(ink, foreign_ink, foreign);                      // I_neighbour, over this cell's tile
+    ink = mix(ink, foreign_ink, foreign_cov);                  // I_neighbour, over this cell's tile
     ink = mix(ink, base_ul, ul_band);                          // the band, over that background
     ink = mix(ink, fg, text_cov * (1.0 - bg_class));           // text-class ink, over the band
     ink = mix(ink, base_st, st_band);
@@ -668,7 +680,7 @@ void main() {
     // total weight and disagreed with the colour chain wherever two sources overlapped (a descender
     // crossing its underline is the reachable case, #712's own geometry). The two agreed only where
     // at most one source was partial, which is why it never showed while alpha was the only consumer.
-    vec3 w_bg = (1.0 - coverage * bg_class) * (1.0 - foreign) * (1.0 - ul_band)
+    vec3 w_bg = (1.0 - coverage * bg_class) * (1.0 - foreign_cov) * (1.0 - ul_band)
               * (1.0 - text_cov * (1.0 - bg_class)) * (1.0 - st_band) * (1.0 - cur);
 
     // Only the DEFAULT terminal background is translucent (the see-through backdrop). An explicit
