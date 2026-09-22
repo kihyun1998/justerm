@@ -200,6 +200,10 @@ for a terminal engine, that list is half the specification.
   **Not guarded, by the maintainer's call.** Refusing at exactly 16 fields would drop the complete
   value on the boundary. And reach measured low: `ls --hyperlink` and penterm's bash, zsh, fish and
   pwsh OSC 7 integrations percent-encode `;`, and only its cmd.exe integration sends a raw path.
+  **One payload is marked instead (#964):** `TermEvent::Notification` (`OSC 9`/`777`) carries
+  `maybe_truncated`, set when all 16 fields arrived — complete at 14 `;`, a prefix from 15. A
+  mark drops nothing, so it sits beside that call rather than reversing it; see
+  [events and replies](events-and-replies.md).
 - **Tab stops are explicit per-column state**, not a modulo: HTS sets, TBC clears, default every
   eighth column. A modulo would be wrong the moment an application moves one — and since #826 that
   is two verbs' problem rather than one, because `CBT` walks the same table backwards. The two walks

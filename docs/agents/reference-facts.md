@@ -3594,3 +3594,20 @@ this — a gap, not an absence. What justerm took from them, and what it measure
 | The fragment shader emits the per-channel coverage as a second output (`ALPHA_MASK = vec4(textColor, textColor.r)`, `index = 1`) | alacritty | `alacritty/res/glsl3/text.f.glsl:69-70`, `:28` |
 | …which dual-source blending applies per channel (`BlendFunc(SRC1_COLOR, ONE_MINUS_SRC1_COLOR)`) | alacritty | `alacritty/src/renderer/text/glsl3.rs:52` |
 | Without dual-source blending (GLES2) the same result takes three subpixel passes | alacritty | `alacritty/src/renderer/text/gles2.rs:400`, `:410`, `:415` |
+
+## Notification sequences — `OSC 9` and `OSC 777` (#964, verified 2026-09-23)
+
+Where each tree reads the two notification codes, which decides whether the engine or its consumer
+tells iTerm2 free text from ConEmu progress and splits `notify;title;body`.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Neither `9` nor `777` is in xterm's OSC list, so the binding tree does not define them | xterm | `ctlseqs.txt:2005` (the section, scanned) |
+| `OSC 9;4;…` is parsed in the engine into a progress report | ghostty | `src/terminal/osc/parsers/osc9.zig:152` |
+| Any other `OSC 9` payload is a desktop notification with the payload as body | ghostty | `src/terminal/osc/parsers/osc9.zig:280` |
+| `OSC 777;notify;title;body` is parsed in the engine into a desktop notification | ghostty | `src/terminal/osc/parsers/rxvt_extension.zig:39` |
+| The core registers no handler for either code; progress is an addon registering `9` from outside and declining any payload not starting `4;` | xterm.js | `addons/addon-progress/src/ProgressAddon.ts:50` |
+| The parser path alacritty pins has no arm for either code, so both are dropped | vte 0.15.0 (alacritty's parser) | `src/ansi.rs:1329` (`osc_dispatch`) |
+
+**What justerm took.** The xterm.js split: the engine relays the payload raw and the consumer
+reads it, as ADR-0017 puts it. ghostty is the counterexample, doing the reading in the engine.

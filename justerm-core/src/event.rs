@@ -239,7 +239,7 @@ pub enum NotificationSequence {
 ///   `TermEvent`, and `justerm-web`'s `events.ts` mirrors this union by hand
 ///   rather than deriving it. **That mirror was narrower than this enum when the
 ///   measurement was taken and no longer is in the same way:** it now
-///   carries the `OSC 52` pair as well, and what stayed at title/bell/cwd is its
+///   carries the `OSC 52` pair as well, and what stays narrower is its
 ///   `EventHandlers` — the *notification* surface, not the channel. The cost
 ///   measured here is unaffected, since a hand-written mirror never had a
 ///   compiler relationship to this enum to break.

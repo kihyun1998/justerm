@@ -82,6 +82,22 @@ nothing about it appears in the frame.
   shape, not a luxury bought by being the whole terminal, so it was never a reason we *could not*
   do the same. The conclusion is unchanged and rests on the ADR alone: policy is the consumer's,
   and an engine that touches no clipboard buys nothing by holding a gate in front of a relay.
+- **A notification is relayed, not read (#964).** `OSC 9` and `OSC 777` become one
+  `TermEvent::Notification { sequence, payload, maybe_truncated }` with the payload as sent after
+  the code — `params[1..]` rejoined, under the same no-field guard as the title and cwd arms. The
+  engine does not tell iTerm2's free text from ConEmu's `9;4` progress form, nor split
+  rxvt-unicode's `notify;title;body`: that is reading, and reading is the consumer's (ADR-0017).
+  The references split on exactly that line — ghostty reads both in its engine, xterm.js leaves
+  them to an addon, alacritty drops them — in
+  [notification sequences](../../agents/reference-facts.md#notification-sequences--osc-9-and-osc-777-964-verified-2026-09-23).
+  **`maybe_truncated` is the maintainer's call (2026-09-23), and theirs to reverse.** Shown three
+  options — flag, lift the 16-field bound for these two codes (a shadow capture beside `vte`, or a
+  `vte` change), or relay unmarked as `Title` does — they chose the flag. What it was decided on: the
+  bound cannot be *detected*, only *reached* (see [VT interpretation](vt-interpretation.md), #840),
+  so the flag is set at 16 fields and is a false positive on the payload with exactly 14 `;`. It
+  does **not** reopen #840's call, which declined a guard that *drops* the value; this drops
+  nothing. What it did **not** cover: whether `Title`/`Cwd`/`OSC 8` should carry the same flag —
+  those stay unmarked, and #840's reasoning still governs them.
 - **A `report_*` takes back what it needs rather than the engine remembering it.**
   `report_clipboard(target, text, terminator)` follows `report_palette_color(index, spec,
   terminator)`: the consumer names the target it is answering about. alacritty is the alternative and
@@ -131,9 +147,11 @@ nothing about it appears in the frame.
   the engine because it is mechanism and kept out of the dependency list because it is small
 - `justerm-web/src/events.ts` — the widget's mirror of this channel. **The narrowing moved in
   #841, and where it moved to is the point**: the `TermEvent` *union* now carries the `OSC 52`
-  pair too, because a backend has one stream to push down. What stayed at title/bell/cwd is
-  `EventHandlers`, the *notification* surface — so a new event here still does not automatically
-  owe a callback; it owes a decision about which of the two surfaces it belongs on
+  pair too, because a backend has one stream to push down. What stays narrower is
+  `EventHandlers`, the *notification* surface — title, bell, cwd and, since #964, the
+  `OSC 9`/`OSC 777` notification — so a new event here still does not automatically owe a
+  callback; it owes a decision about which of the two surfaces it belongs on. `Notification`
+  took the callback because the consumer is only told: no reply is owed
 - `justerm-web/src/clipboard.ts` — the `OSC 52` consumer half (#841). `ClipboardController` takes
   the pair off that same subscription, routes it to an embedder-injected `ClipboardProvider`, and
   answers a query on a `ClipboardPort`. The widget holds no clipboard and no policy: with no
@@ -150,6 +168,8 @@ In `docs/agents/reference-facts.md` — **linked, never restated**.
   — what each reference puts in a DA2 reply's three fields, which of them gate on the first
   parameter, and the one field where justerm follows none of the majority's *reasons* even though it
   matches their value (#824)
+- [Notification sequences — `OSC 9` and `OSC 777`](../../agents/reference-facts.md#notification-sequences--osc-9-and-osc-777-964-verified-2026-09-23)
+  — which trees read the two codes in the engine and which leave them to the consumer (#964)
 
 alacritty's `EventListener` is still named as the rejected alternative in a module comment and is
 still **unpinned** — a rejected design is exactly the claim worth pinning, since it is the argument
