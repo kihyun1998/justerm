@@ -111,7 +111,7 @@ impl Engine {
     /// ends from one ended by `ST`.
     pub fn feed(&mut self, bytes: &[u8]) {
         let mut rest = bytes;
-        while let Some(i) = rest.iter().position(|&b| matches!(b, 0x18 | 0x1a)) {
+        while let Some(i) = memchr::memchr2(0x18, 0x1a, rest) {
             self.parser.advance(&mut self.term, &rest[..i]);
             self.term.cancel_byte_in_flight = true;
             self.parser.advance(&mut self.term, &rest[i..=i]);
