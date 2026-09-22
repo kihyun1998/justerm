@@ -282,7 +282,7 @@
   r.apply_damage(w, ...stripes(W_COLS, W_ROWS, W_INK));
   checks.aNewConfigurationRegisteredMidLossIsBakedThereAndThenAgainAtRestore =
     r.atlasCount() === atlasesBeforeLoss + 1 && r.bakes() === bakesBeforeW + 1;
-  // The half that is not waste: the cell is derived on the CPU (an ink-scan), so it is honest
+  // The half that is not waste: the cell is derived on the CPU (an advance read and an ink scan), so it is honest
   // immediately — which is why deferring the whole bake is not available as a fix.
   checks.andItsCellIsAlreadyItsOwn =
     r.cell_width(w) !== cwA && r.cell_width(w) !== cwH && r.cell_width(w) > 0;

@@ -15,8 +15,9 @@
     - A LETTER must NOT stretch. `M`'s ink keeps the size the rasteriser measured and merely MOVES to
       its place inside the wider cell — by exactly `floor(dx/2)` across and `ceil(dy/2)` down.
 
-  Measuring the move rather than the fill is what pins the placement. And `█` fills its own ink box by
-  definition — the rasteriser measures the cell BY ink-scanning it — so at the defaults the two agree,
+  Measuring the move rather than the fill is what pins the placement. And `█` fills the cell by
+  construction — `builtin` draws it to the cell, never through the font (#359) — so at the defaults
+  the two agree,
   which is how AC 4 ("defaults reproduce today's pixels") is checked here and by the other 46 proofs.
 
   The runner sweeps dpr 1 / 1.1 / 1.5 / 2, which is the point: `letterSpacing` is CSS px, so the DEVICE

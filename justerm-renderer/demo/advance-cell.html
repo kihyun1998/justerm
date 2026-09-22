@@ -1,0 +1,83 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — the cell is as wide as the face's advance, floored (#962)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; }
+</style>
+<!--
+  ADR-0022 as amended by #962: the cell's WIDTH is the face's advance at the drawn size, floored —
+  `measureText('W')`, as xterm.js's `CharSizeService` reads it and `WebglRenderer` floors it — while
+  its HEIGHT is still the ink box of the face's `█`. The two used to share one measurement, the ink
+  box, and on most faces that box is a pixel or two wider than the advance, so the grid came out
+  wider than xterm.js's for the same font and size.
+
+  The expected width is computed here with the browser's own `measureText`, independently of the
+  renderer, at every size in a sweep. The sweep has to include a size where the ink box and the
+  floored advance DISAGREE, or the page cannot tell the two methods apart; which sizes those are is a
+  property of the face behind `monospace` on this machine (#578), so the page finds out rather than
+  assuming, and fails if there is none.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="64"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  await init();
+
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(new Uint32Array(256), 0xffffff, 0x000000);
+  const dpr = window.devicePixelRatio;
+
+  const off = new OffscreenCanvas(256, 256).getContext("2d", { willReadFrequently: true });
+  /** The ink box of the face's `█` at `px` device px — the measurement the width used to be. */
+  const blockInk = (px) => {
+    off.clearRect(0, 0, 256, 256);
+    off.font = `${px}px monospace`;
+    off.fillStyle = "white";
+    off.textBaseline = "alphabetic";
+    off.fillText("█", 64, 160);
+    const d = off.getImageData(0, 0, 256, 256).data;
+    let minX = 1e9, maxX = -1, minY = 1e9, maxY = -1;
+    for (let y = 0; y < 256; y++)
+      for (let x = 0; x < 256; x++)
+        if (d[(y * 256 + x) * 4 + 3] >= 128) {
+          minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+        }
+    return { w: maxX - minX + 1, h: maxY - minY + 1 };
+  };
+  const flooredAdvance = (px) => {
+    off.font = `${px}px monospace`;
+    return Math.max(1, Math.floor(off.measureText("W").width));
+  };
+
+  const rows = [];
+  for (const css of [10, 11, 12, 12.6, 13, 14, 15, 16, 17, 18, 20]) {
+    r.setFontSize(g, css);
+    const px = css * dpr;
+    const ink = blockInk(px);
+    rows.push({
+      css, cell: [r.cell_width(g), r.cell_height(g)],
+      advance: flooredAdvance(px), ink: [ink.w, ink.h],
+    });
+  }
+
+  // Spacing still lands on top of the advance, rounded from CSS to device px (ADR-0023).
+  r.setFontSize(g, 16);
+  r.setLetterSpacing(g, 2);
+  const spaced = r.cell_width(g);
+  r.setLetterSpacing(g, 0);
+  const plain = r.cell_width(g);
+
+  const checks = {
+    everyCellIsTheFlooredAdvance: rows.every((x) => x.cell[0] === x.advance),
+    // The window: a size where the old measurement and the new one disagree. Without one, the
+    // check above could not tell the two methods apart.
+    aSizeWhereInkAndAdvanceDisagree: rows.some((x) => x.ink[0] !== x.advance),
+    everyCellIsStillTheBlockInkTall: rows.every((x) => x.cell[1] === x.ink[1]),
+    spacingLandsOnTopOfTheAdvance: spaced === plain + Math.round(2 * dpr),
+  };
+  window.__proof = { ok: Object.values(checks).every(Boolean), checks, measured: { rows, spaced, plain }, dpr };
+  window.__done = true;
+</script>

@@ -54,7 +54,7 @@ machine that decides what the renderer does in between.
   point. Both alternatives are closed to it: refusing is the constructor's privilege and only because
   a constructor has nothing to defer into, and deferring would defer the **cell** — which the five
   deferring setters can do and this one cannot, since a consumer reads `cellWidth` back the moment
-  `addGrid` returns and the cell is a CPU ink-scan a dead context does not obstruct. So a grid asking
+  `addGrid` returns and the cell is a CPU measurement a dead context does not obstruct. So a grid asking
   mid-loss for a configuration nobody holds costs **one thrown-away bake** (measured: `bakes()` +1 in
   the loss window, and the restore bakes it again). Bounded, not merely small: `render` cannot draw
   while `gpu_work_must_wait()` holds, and a grid born on a configuration is that configuration's own

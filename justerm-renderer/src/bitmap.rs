@@ -9,9 +9,9 @@ pub struct InkBounds {
     pub max_y: u32,
 }
 
-/// The physical (content) cell derived from a reference glyph's ink box, plus the baseline
-/// `ascent` (pixels the ink rose above the draw position). The atlas cell adds the guard band
-/// ([`PADDING`]) around this; the on-screen grid cell is this physical size.
+/// A reference glyph's ink box, plus the baseline `ascent` (pixels the ink rose above the draw
+/// position). The rasteriser takes the physical cell's **height** and `ascent` from it; the cell's
+/// width is the face's advance instead (`metrics::advance_width`, ADR-0022).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CellMetrics {
     pub width: u32,
@@ -32,9 +32,9 @@ pub fn cell_metrics(bounds: InkBounds, draw_offset: f32) -> CellMetrics {
 
 /// Scan an RGBA bitmap (`w`×`h`, row-major) for the tight bounding box of pixels whose alpha
 /// is `>= alpha_threshold`. Returns `None` when nothing meets the threshold (a blank glyph).
-/// This is the basis of ink-scan cell metrics (#288): the cell is measured from the `█` glyph's real
-/// pixel bounds rather than from `fontBoundingBox` (mirrors beamterm
-/// `canvas_rasterizer::measure_cell_metrics`, verbatim down to the 128 threshold).
+/// This is the basis of the cell's **height** (#288): measured from the `█` glyph's real pixel
+/// bounds rather than from `fontBoundingBox` (mirrors beamterm `canvas_rasterizer::measure_cell_metrics`,
+/// verbatim down to the 128 threshold). The width stopped coming from here in #962.
 ///
 /// **ADR-0022 grades that choice.** The "more accurate — `fontBoundingBox` has rounding/box-gap issues"
 /// rationale is beamterm's own comment, asserted without measurement and inherited here; both named

@@ -1,7 +1,7 @@
 //! Cell metrics: how the grid cell relates to the glyph box (#338).
 //!
-//! One link in the chain ADR-0022 records: the cell comes from an ink scan of the font's `█`
-//! ([`rasterizer`](crate::rasterizer)), this module nests the glyph box inside it, and that nesting is
+//! One link in the chain ADR-0022 records: the cell comes from the face's advance (width, #962) and
+//! an ink scan of its `█` (height) ([`rasterizer`](crate::rasterizer)), this module nests the glyph box inside it, and that nesting is
 //! why tiling glyphs must be drawn to the *cell* ([`builtin`](crate::builtin)) instead of to their ink
 //! box. Unlike the measurement itself, this split IS the prior-art consensus — both references carry a
 //! char box beside a cell box, as the paragraphs below quote.
@@ -34,7 +34,7 @@
 /// `setLetterSpacing(1e9)` is finite, so neither setter's `is_finite` check stops it, and a cell of
 /// `u32::MAX` makes `resize`'s adopt-what-fits loop unsatisfiable: no allocatable buffer holds one
 /// such cell, so it exhausts its passes and adopts a `size` describing a buffer WebGL never granted
-/// (#339). Far above any real cell — a 16 px font ink-scans to roughly 10x16 device px at dpr 1 —
+/// (#339). Far above any real cell — a 16 px font measures roughly 10x16 device px at dpr 1 —
 /// and below the smallest `MAX_TEXTURE_SIZE` we have measured (8192, headless SwiftShader).
 pub const MAX_CELL_PX: u32 = 4096;
 
@@ -72,6 +72,17 @@ pub fn fit_cell_to_atlas(
         .saturating_sub(pad2 + 2 * bleed_y)
         .max(1);
     (cell.0.min(max_w), cell.1.min(max_h))
+}
+
+/// The glyph box width in device px for a face whose reference glyph advances `advance_px` device
+/// px (ADR-0022, #962): the advance floored, as xterm.js floors it (`WebglRenderer.ts:654`,
+/// `Math.floor(charSizeService.width * dpr)`) and alacritty floors its own (`compute_cell_size`,
+/// `display/mod.rs:1608-1615`). At least 1 and at most [`MAX_CELL_PX`]; a non-finite advance is 1.
+pub fn advance_width(advance_px: f32) -> u32 {
+    if !advance_px.is_finite() {
+        return 1;
+    }
+    (advance_px.floor().clamp(1.0, MAX_CELL_PX as f32)) as u32
 }
 
 /// The device-pixel grid cell for a glyph box of `char_px`, given the consumer's policy.
@@ -236,7 +247,7 @@ pub const BLEED_HEADROOM_PX: u32 = 4;
 
 /// How deep a band each slot reserves above and below the cell, for this font configuration (#791).
 ///
-/// The cell is the ink box of `█` (ADR-0022) and the face's own glyphs are not bounded by it, so the
+/// The cell's height is the ink box of `█` (ADR-0022) and the face's own glyphs are not bounded by it, so the
 /// band has to cover the gap between the two — **per face**, because that gap is a property of how
 /// the designer drew one glyph and varies by several device px between faces at the same size. One
 /// number serves both edges, so the larger gap wins; [`BLEED_HEADROOM_PX`] is added on top for what
@@ -400,6 +411,21 @@ mod tests {
         let left = (-ink_left + fit.pen_offset) * fit.scale_x;
         let right = (ink_right + fit.pen_offset) * fit.scale_x;
         (left, right)
+    }
+
+    #[test]
+    fn the_glyph_box_width_is_the_advance_floored_not_the_ink() {
+        // #962's measurement: Consolas at 18.9 device px advances 10.39 while its `█` inks 12 wide
+        // in a WebView2 app. xterm.js takes 10 there, so this does.
+        assert_eq!(advance_width(10.39), 10);
+        // A whole advance stays whole; a fraction just short of the next pixel still floors.
+        assert_eq!(advance_width(10.0), 10);
+        assert_eq!(advance_width(10.99), 10);
+        // Degenerate advances cannot produce a zero-width cell or an unbounded one.
+        assert_eq!(advance_width(0.4), 1);
+        assert_eq!(advance_width(f32::NAN), 1);
+        assert_eq!(advance_width(-3.0), 1);
+        assert_eq!(advance_width(1e9), MAX_CELL_PX);
     }
 
     #[test]

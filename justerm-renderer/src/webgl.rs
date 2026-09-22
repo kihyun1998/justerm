@@ -1036,7 +1036,8 @@ struct GlobalTier {
 /// `cell_size` — see `docs/map/invariant/cell-size-is-derived-state.md` for what such a copy owes.
 struct ConfigTier {
     atlas: glow::Texture,
-    /// The glyph box in device px — the rasteriser's ink-scan of `█`. Equal to `cell_size` only
+    /// The glyph box in device px — the face's floored advance wide and the ink box of its `█` tall
+    /// (ADR-0022). Equal to `cell_size` only
     /// while both spacing options are at their defaults (#338).
     char_size: (u32, u32),
     /// Where the glyph box sits inside the cell, device px from its top-left (#338).
@@ -1044,7 +1045,7 @@ struct ConfigTier {
     rasterizer: Rasterizer,
     cache: GlyphCache,
     /// Physical (content) cell size in **device pixels** — the on-screen grid cell, and the exact
-    /// `u_cell_size` the shader lays it out with. Integral by construction (an ink-scan).
+    /// `u_cell_size` the shader lays it out with. Integral by construction (a floored advance and an ink scan).
     cell_size: (u32, u32),
     /// Padded atlas cell size in device pixels (physical + `2*PADDING`) — glyph upload dims.
     atlas_cell: (u32, u32),
@@ -3125,8 +3126,8 @@ impl JustermRenderer {
     }
 
     /// The cell width in **device pixels** — exactly the `u_cell_size.x` the shader lays the grid
-    /// out with: the rasteriser's ink-scan of `█` at `font_size * dpr`, **plus the consumer's
-    /// `letterSpacing`**. It is the *grid* cell, as xterm's `device.cell.width` is; the glyph
+    /// out with: the face's advance at `font_size * dpr`, floored as xterm.js floors it, **plus the
+    /// consumer's `letterSpacing`**. It is the *grid* cell, as xterm's `device.cell.width` is; the glyph
     /// box inside it is smaller whenever the spacing policy is not the identity.
     ///
     /// This is *the* cell. The bare name carries it because it is the exact, measured
@@ -3197,7 +3198,7 @@ impl JustermRenderer {
     /// `width`×`height` **device pixels**.
     ///
     /// The consumer sets the canvas's CSS display box itself from `cssWidth` /
-    /// `cssHeight`, exactly as it did when the buffer came from a grid (the ink-scan geometry
+    /// `cssHeight`, exactly as it did when the buffer came from a grid (the measured cell geometry
     /// couples the two; beamterm's `auto_resize_canvas_css = false` is the same split). Forget it
     /// and the device-px buffer is displayed at device px — twice its intended size on a Retina
     /// display.

@@ -7,8 +7,8 @@
 </style>
 <!--
   setFontFamily (#413) re-bakes the atlas for a new CSS font-family — the same seam a size change
-  uses (#406). The measurable, env-robust signal: the grid cell is an ink-scan of the font's block
-  glyph, and a MONOSPACE font's block is narrower than a PROPORTIONAL font's, so switching monospace
+  uses (#406). The measurable, env-robust signal: the grid cell's width is the font's advance of `W`
+  (#962), and a MONOSPACE font's `W` is narrower than a PROPORTIONAL font's, so switching monospace
   → serif changes the device cell width. This is a font-CLASS property (fixed vs proportional advance),
   not an exact metric, so the proof asserts the RELATIONSHIP (differs / reverts), never a pixel count —
   and two proportional families are tried so one env's coincidence can't pass it. dpr 1/1.1/1.5/2.

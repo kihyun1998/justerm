@@ -3,7 +3,7 @@
 //! `U+2580`–`U+259F` are meant to tile. A region of `█` is one solid fill; `▀▄▌▐` halve the cell
 //! exactly; `▖▗▘▝` quarter it. The browser's text engine draws them as glyphs, and #338 masks every
 //! glyph to its ink box — so as soon as `letterSpacing` or `lineHeight` moves the cell away from the
-//! ink box, the fills stop meeting. Worse, the renderer *measures* its cell by ink-scanning `█`
+//! ink box, the fills stop meeting. Worse, the renderer *measures* its cell's height by ink-scanning `█`
 //! ([`rasterizer`](crate::rasterizer)), so at `lineHeight = 1.5` the very glyph that defines the
 //! cell no longer fills it.
 //!

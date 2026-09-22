@@ -3,8 +3,8 @@
 ## What it is
 
 How big a cell is, where the glyph sits inside it, and how those numbers survive the trip between
-device pixels and CSS pixels. Everything geometric derives from **one measurement**: an ink scan of
-the font's `█`.
+device pixels and CSS pixels. Everything geometric derives from **one measurement of the face**: its
+advance, floored, for the width (#962), and an ink scan of its `█` for the height and the baseline.
 
 One measurement *per font configuration*, since #772 — the renderer keys the ink scan, the cell and
 the glyph box by (family, size, weight, bold weight, letter-spacing, line-height) and refcounts them, so two terminals in
@@ -17,6 +17,8 @@ See [multi-viewport](multi-viewport.md) for the tier and its lifetime.
 ## Governing decisions
 
 - [**ADR-0022 — the grid cell is the ink box of the font's `█`**](../../adr/0022-cell-geometry-from-an-ink-scan.md)
+  — **amended by #962: the width is the face's floored advance**, as xterm.js and alacritty size it; the
+  height is still the ink box
   — and everything geometric follows from it. The measurement method is inherited from beamterm and
   its grounds are **marked unverified in the record itself**
 - [**ADR-0023 — a spacing setting is CSS pixels**](../../adr/0023-spacing-settings-are-css-pixels.md)
@@ -25,8 +27,8 @@ See [multi-viewport](multi-viewport.md) for the tier and its lifetime.
 
 ## Design model
 
-- **Device pixels are the source of truth; the CSS view is derived.** The rasteriser ink-scans `█` at
-  `FONT_SIZE * dpr`, the shader lays the grid out in device px (`u_cell_size`), and the drawing
+- **Device pixels are the source of truth; the CSS view is derived.** The rasteriser reads the
+  advance and ink-scans `█` at `FONT_SIZE * dpr`, the shader lays the grid out in device px (`u_cell_size`), and the drawing
   buffer is an exact multiple of them. `cssCellWidth()` is a **float** on purpose, so the derivation
   can be undone — a consumer's `cols * cssCellWidth()` box scales back to `cols * cell` device px
   exactly.
@@ -98,7 +100,7 @@ See [multi-viewport](multi-viewport.md) for the tier and its lifetime.
 
 ## Code
 
-- `justerm-renderer/src/rasterizer.rs` — the ink scan of `█` (browser-only)
+- `justerm-renderer/src/rasterizer.rs` — the advance read and the ink scan of `█` (browser-only)
 - `justerm-renderer/src/css_font.rs` — `FontWeight` and `font_string`, the `font` the scan and every
   glyph are drawn with (host-testable)
 - `justerm-renderer/src/metrics.rs` — the cell box / glyph box nesting
@@ -121,9 +123,10 @@ recorded SHA; a paraphrase drops the pin).
 - [Renderer ink channels](../../agents/reference-facts.md#renderer-ink-channels)
 - [Font weight — what it reaches, and what the cell is measured at](../../agents/reference-facts.md#font-weight--what-it-reaches-and-what-the-cell-is-measured-at-928-verified-2026-09-17)
 
-The cell/glyph box split is quoted directly in `metrics.rs`'s module doc from both references. **The
-ink-scan measurement itself has no such backing** — ADR-0022 records it as inherited and grades its
-grounds as unverified, which is unusual enough to be worth knowing before building on it.
+The cell/glyph box split is quoted directly in `metrics.rs`'s module doc from both references, and so
+is the width since #962 (`metrics::advance_width`). **The ink-scan measurement that still sizes the
+height has no such backing** — ADR-0022 records it as inherited and grades its grounds as unverified,
+which is unusual enough to be worth knowing before building on it.
 
 ## Cross-cutting invariants
 
@@ -164,8 +167,9 @@ grounds as unverified, which is unusual enough to be worth knowing before buildi
   (A) is excluded outright**~~ — **withdrawn 2026-09-22 (#966)**: that "at most 13 %" measured a
   window of the advance rounded *up*, which on Consolas is its ink box again. At the advance rounded
   *down*, which is the width xterm.js and alacritty adopt, the clipped count rises 21–75 % (ADR-0022
-  records the re-run). The horizontal band #966 adds is what pays for that, so the width axis now
-  waits only on #962 itself.
+  records the re-run). The horizontal band #966 adds is what pays for that. **Width axis closed
+  2026-09-22 (#962)**: the width is the floored advance. What stays open is alternative (A) on the
+  height, which #962 left alone.
 - ~~**Nothing catches ink that leaves the cell sideways.**~~ — **closed 2026-08-21 (#792)** by
   condensing at bake rather than by a band; see the design model above. What the closure does *not*
   cover is a **width-2** glyph whose ink exceeds two cells — and that turned out to be measurably
