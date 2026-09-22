@@ -6,14 +6,10 @@
 //! in RGB and the grayscale coverage in A ([`with_lcd`]).
 //!
 //! One mask serves every ink colour. Dark ink is drawn with a different coverage curve, so the
-//! shader raises the mask to [`fit_dark_gamma`]'s exponent for ink darker than
-//! [`LIGHT_INK_LUMINANCE`]. The exponent is measured per configuration from a calibration draw
-//! rather than fixed, because the curve is the platform's text gamma and not a property of a face.
-
-/// The ink luminance (Rec. 709 weights over the 0..1 sRGB channels) at and above which the light
-/// mask is used as-is; darker ink raises it to the fitted exponent. Mirrored as a literal in the
-/// fragment shader's subpixel branch.
-pub const LIGHT_INK_LUMINANCE: f32 = 0.75;
+//! fragment shader raises the mask to [`fit_dark_gamma`]'s exponent for ink whose luminance is
+//! below the light-ink threshold it holds. The exponent is measured per configuration from a
+//! calibration draw rather than fixed, because the curve is the platform's text gamma and not a
+//! property of a face.
 
 /// The exponents [`fit_dark_gamma`] searches, lowest first, in steps of `GAMMA_STEP`.
 const GAMMA_MIN: f32 = 1.0;

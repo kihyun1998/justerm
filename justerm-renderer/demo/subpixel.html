@@ -1,0 +1,157 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — setSubpixelAntialiasing: per-channel (LCD) text coverage (#961)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  A grid that opts in draws text with per-channel coverage where the browser produces it (#961).
+
+  Whether it does is the platform's, and the face's at that size: Chromium on Windows draws LCD text
+  into an opaque 2D canvas, but a face it draws without antialiasing at a small size (the default
+  `monospace` here, below about 28 device px — so the grid is 28 CSS px) gets none, and a platform without LCD text hands back
+  three equal channels. So the page draws the same glyphs, font and size into a plain opaque canvas
+  in the scene's real colours — the TRUTH the browser would put on screen — and the checks that need
+  fringes run only where that draw shows them (`lcdAvailable`, printed under `measured`).
+
+  Everywhere:
+  · off is the default, and turning it on and off again draws the same bytes as never turning it on;
+  · it keys the atlas — one bake on, none moving back to a sibling's setting — and moves no cell;
+  · a colour emoji and a builtin half block draw the same bytes on as off (their RGB is not a mask);
+  · a default-background cell under a translucent `setBgAlpha` draws the same bytes on as off — one
+    alpha cannot carry three coverages, so it keeps grayscale;
+  · no fringe appears on a platform whose canvas draws none (`lcdAvailable` false).
+  Where the canvas draws LCD text:
+  · light ink on an opaque background shows fringes on, none off;
+  · for light, dark and mid-grey ink, the ink laid down is closer to the truth draw's than grayscale's
+    is — the claim of the feature, and the check the dark-ink exponent answers to;
+  dpr 1/1.1/1.5/2.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect, fitGrid } from "./proof.js";
+  await init();
+
+  const TEXT = [..."Hamburgefonstiv"].map((c) => c.codePointAt(0));
+  const COLS = TEXT.length, ROWS = 1, N = COLS * ROWS;
+  const RGB = (c) => ((2 << 24) | c) >>> 0;    // absolute Rgb colour ref (tag 2)
+  const DEFAULT = 0;                           // default colour ref
+  const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
+  const WHITE = 0xffffff, BLACK = 0x000000, GREY = 0x909090; // GREY: luminance 0.56, dark-ink side
+  const palette = new Uint32Array(256);
+  // Large enough that the default face is antialiased at every swept density.
+  const SIZE = 28;
+
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, WHITE, BLACK, null, SIZE);
+  const gl = document.querySelector("#c").getContext("webgl2");
+
+  /** Draw one row and read it back. `bg`/`fg` are colour refs; `cps`/`flags` default to TEXT. */
+  const draw = ({ bg, fg, cps = TEXT, flags = new Uint16Array(N) }) => {
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(N).fill(bg), new Uint32Array(N).fill(fg),
+      Uint32Array.from(cps), flags, true);
+    r.render();
+    return readRect(gl, { x: 0, y: 0, w: gl.drawingBufferWidth, h: gl.drawingBufferHeight }).buf;
+  };
+  /** Pixels whose channels spread by more than 8 — the colour fringe of per-channel coverage. */
+  const fringe = (buf) => {
+    let n = 0;
+    for (let i = 0; i < buf.length; i += 4) if (Math.max(buf[i], buf[i + 1], buf[i + 2]) - Math.min(buf[i], buf[i + 1], buf[i + 2]) > 8) n++;
+    return n;
+  };
+  /** Total distance from the background colour, over all channels — how much ink was laid down. */
+  const weight = (buf, bgRgb) => {
+    const b = [(bgRgb >> 16) & 255, (bgRgb >> 8) & 255, bgRgb & 255];
+    let s = 0;
+    for (let i = 0; i < buf.length; i += 4) for (let k = 0; k < 3; k++) s += Math.abs(buf[i + k] - b[k]);
+    return s;
+  };
+  const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+  const cell = () => [r.cell_width(g), r.cell_height(g)];
+
+  /** The same glyphs drawn by the browser into an opaque canvas, one per cell, in real colours. */
+  const truth = (bgRgb, fgRgb) => {
+    const [cw, ch] = cell();
+    const c = new OffscreenCanvas(COLS * cw, ch * 2);
+    const x = c.getContext("2d", { alpha: false, willReadFrequently: true });
+    const css = (v) => "#" + v.toString(16).padStart(6, "0");
+    x.fillStyle = css(bgRgb); x.fillRect(0, 0, c.width, c.height);
+    x.font = `400 ${SIZE * devicePixelRatio}px monospace, monospace`;
+    x.fillStyle = css(fgRgb); x.textBaseline = "middle";
+    TEXT.forEach((cp, i) => x.fillText(String.fromCodePoint(cp), i * cw, ch));
+    return x.getImageData(0, 0, c.width, c.height).data;
+  };
+  const truthLight = truth(BLACK, WHITE), truthDark = truth(WHITE, BLACK), truthGrey = truth(BLACK, GREY);
+  const lcdAvailable = fringe(truthLight) > 0;
+
+  const scenes = {
+    light: { bg: RGB(BLACK), fg: RGB(WHITE) },
+    dark: { bg: RGB(WHITE), fg: RGB(BLACK) },
+    grey: { bg: RGB(BLACK), fg: RGB(GREY) },
+    defaultBg: { bg: DEFAULT, fg: RGB(WHITE) },
+    emoji: { bg: RGB(BLACK), fg: RGB(WHITE), cps: [0x1f680, 0x20, ...new Array(N - 2).fill(0x20)], flags: Uint16Array.from([WIDE_CHAR, WIDE_SPACER, ...new Array(N - 2).fill(0)]) },
+    halfBlock: { bg: RGB(BLACK), fg: RGB(WHITE), cps: new Array(N).fill(0x258c) }, // '▌' — builtin
+  };
+  const shoot = () => Object.fromEntries(Object.entries(scenes).map(([k, s]) => [k, draw(s)]));
+
+  const checks = {};
+  const off = shoot();
+  const baseCell = cell();
+
+  let b0 = r.bakes();
+  r.setSubpixelAntialiasing(g, true);
+  checks.turningItOnBakesOnce = r.bakes() - b0 === 1;
+  checks.itMovesNoCell = cell()[0] === baseCell[0] && cell()[1] === baseCell[1];
+  const on = shoot();
+
+  r.setBgAlpha(g, 0.5);
+  const translucentOn = draw(scenes.defaultBg);
+  r.setSubpixelAntialiasing(g, false);
+  const translucentOff = draw(scenes.defaultBg);
+  r.setBgAlpha(g, 1);
+  const offAgain = shoot();
+
+  checks.offAgainDrawsTheSameBytesAsNeverOn = Object.keys(off).every((k) => same(off[k], offAgain[k]));
+  checks.aColourEmojiIsUnchanged = same(off.emoji, on.emoji);
+  checks.aBuiltinHalfBlockIsUnchanged = same(off.halfBlock, on.halfBlock);
+  checks.aTranslucentDefaultBackgroundDrawsAsOff = same(translucentOn, translucentOff);
+  checks.offDrawsNoFringe = fringe(off.light) === 0 && fringe(off.dark) === 0;
+
+  // Moving back to a setting a sibling holds joins its atlas.
+  const sib = r.addGrid(palette, WHITE, BLACK, null, SIZE, null, null, null, null, true);
+  b0 = r.bakes();
+  r.setSubpixelAntialiasing(g, true);
+  checks.joiningASiblingsSettingBakesNothing = r.bakes() - b0 === 0;
+  r.setSubpixelAntialiasing(g, false);
+  r.removeGrid(sib);
+
+  const measured = {
+    dpr: devicePixelRatio, lcdAvailable,
+    fringe: { lightOff: fringe(off.light), lightOn: fringe(on.light), darkOn: fringe(on.dark), defaultBgOn: fringe(on.defaultBg), translucentOn: fringe(translucentOn) },
+    weight: {
+      darkTruth: weight(truthDark, WHITE), darkOff: weight(off.dark, WHITE), darkOn: weight(on.dark, WHITE),
+      lightTruth: weight(truthLight, BLACK), lightOff: weight(off.light, BLACK), lightOn: weight(on.light, BLACK),
+      greyTruth: weight(truthGrey, BLACK), greyOff: weight(off.grey, BLACK), greyOn: weight(on.grey, BLACK),
+    },
+  };
+  const w = measured.weight;
+  const err = (v, t) => Math.abs(v - t) / t;
+  if (lcdAvailable) {
+    checks.lightInkShowsFringesOn = measured.fringe.lightOn > 0;
+    checks.darkInkShowsFringesOn = measured.fringe.darkOn > 0;
+    checks.anOpaqueDefaultBackgroundShowsFringesOn = measured.fringe.defaultBgOn > 0;
+    checks.lightInkIsCloserToTheTruthOn = err(w.lightOn, w.lightTruth) < err(w.lightOff, w.lightTruth);
+    checks.darkInkIsCloserToTheTruthOn = err(w.darkOn, w.darkTruth) < err(w.darkOff, w.darkTruth);
+    checks.midGreyInkIsCloserToTheTruthOn = err(w.greyOn, w.greyTruth) < err(w.greyOff, w.greyTruth);
+  } else {
+    checks.noFringeWhereTheCanvasDrawsNone = measured.fringe.lightOn === 0 && measured.fringe.darkOn === 0;
+  }
+
+  window.__proof = { ok: Object.values(checks).every(Boolean), checks, measured };
+  window.__done = true;
+</script>
