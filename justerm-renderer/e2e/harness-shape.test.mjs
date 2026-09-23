@@ -1,19 +1,9 @@
-// #731 — the proof specs may not hand `awaitPromise` a promise nothing keeps reachable.
+// #731 — the proof specs may not hand `awaitPromise` a promise nothing keeps reachable
+// (docs/map/invariant/an-awaited-in-page-promise-needs-an-anchor.md). The renderer's half of the
+// family guard; justerm-web's is `test/e2e-async-probe-shape.test.ts`.
 //
-// `page.evaluate(() => window.__someAsyncHook())` makes Chromium park a
-// `Runtime.callFunctionOn({ awaitPromise: true })` handler on a promise the page no longer names.
-// When that handler is lost, playwright reports "Execution context was destroyed, most likely
-// because of a navigation" — a sentence about a page lifecycle that never moved. It cost
-// justerm-web a full investigation (CI run 30979831545, 2026-08-05).
-//
-// This harness mostly got it right on its own: `proofs.spec.mjs` waits for `__done` and *then*
-// reads `__proof`, which is the safe shape. `screen-composited.spec.mjs` did not, and #731 fixed
-// it. The rule now has a check on both sides of the family instead of only on justerm-web's, which
-// is the asymmetry that let one of two sibling harnesses drift in the first place.
-//
-// It is a **proxy** and cannot fail when the hazard fires — only when the shape that admits it
-// comes back. The hazard is timing-dependent and did not reproduce on a 28-core host across four
-// conditions (2026-08-10); the shape is what recurs.
+// A structural proxy: it fails when the shape that admits the hazard comes back, never when the
+// hazard fires.
 //
 // Run: `node --test e2e/harness-shape.test.mjs` (via `pnpm run test:unit`).
 import test from "node:test";
@@ -35,9 +25,8 @@ function asyncHooks() {
 
 /**
  * Reduce a spec to code the paren balance can trust: comment-only lines dropped, whitespace
- * squashed, string literals emptied — double quotes before single ones, because prose apostrophes
- * inside double-quoted strings would otherwise pair with each other and delete whole calls.
- * A reduction, not a parser; its blind spot is a trailing `//` after code, which fails loud.
+ * squashed, string literals emptied — double quotes before single ones, deliberately (see
+ * docs/map/territory/browser-proof-harness.md). A reduction, not a parser.
  */
 const codeOnly = (src) =>
   src
@@ -68,8 +57,7 @@ function evaluateCalls(src) {
 }
 
 /**
- * Does this evaluate call **resolve to** `hook`'s promise? Two refinements, both forced by real
- * false positives this check produced against the very fix it guards:
+ * Does this evaluate call **resolve to** `hook`'s promise? Two refinements:
  *
  * - **Return position.** A callback that *starts* the hook and parks its outcome must name it;
  *   `void window.__composited(b64).then(…)` is the repair, not the defect. Only `=> window.__x(`
@@ -77,8 +65,7 @@ function evaluateCalls(src) {
  * - **A word boundary.** `__composited` is a prefix of `__compositedSettled`, so a bare `includes`
  *   flags the harvest that reads the parked slot.
  *
- * The bound, stated because it is real: a callback that assigns the promise to a local and returns
- * *that* escapes. Closing it means parsing.
+ * Bound: a promise assigned to a local and returned escapes (docs/map/territory/browser-proof-harness.md).
  */
 const resolvesTo = (call, hook) =>
   new RegExp(`(?:=>|return)window\\.${hook}(?![A-Za-z0-9_])`).test(call);

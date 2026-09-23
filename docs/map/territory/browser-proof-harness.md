@@ -26,12 +26,24 @@ a justerm shape here wrong, only corroborate one.
   document running underneath — its `ResizeObserver`, its debounced fit, its timers — and a
   `page.on("console")` listener does not reset across navigations, so a log belonging to the page a
   test is leaving can answer a poll about the page it is entering. A test needing a different *boot*
-  asks through `test.use()`.
+  asks through `test.use()`. That is why `bootUrl` is an **option** rather than a literal `"/"`: a
+  `baseURL` cannot carry a query string (`new URL("/", "http://host/?bgAlpha=0.6")` is
+  `http://host/`), so a query-string boot could not *be* the single navigation, and the rule would
+  have had three standing exceptions (`?bgAlpha=0.6`, `?bgAlpha=foo`, `?letterSpacing=…`).
+- **The boot window is machine speed, not a property.** `beforeEach` returns once the control bar is
+  visible, before the mount fit's 100ms debounce is guaranteed to have fired, so a body-attached
+  listener may or may not see the first `[fit] resize` — measured both ways on one machine, idle and
+  under load. That is what made #653 read as flaky for three CI runs while every local run passed; a
+  test that watches the boot takes the `consoleLines` fixture instead.
 - **A listener that must precede the hook is an `{ auto: true }` fixture.** A fixture the test merely
   *declares* is set up **after** `beforeEach` — measured, `["auto", "beforeEach", "declared-by-test",
   "test"]` — which would leave it attached exactly as late as one written by hand.
 - **Asynchronous state is parked, then harvested**, never awaited straight out of an `evaluate`. See
   the invariant below; this is the one rule the two suites disagreed on, in silence, for months.
+  Parking changes no value: the harvest returns through `jsonValue()` where the old shape returned
+  through `evaluate`, and `NaN`, `±Infinity`, `-0`, `undefined`-valued keys, `null` and numbers past
+  `MAX_SAFE_INTEGER` round-trip byte-identically in `playwright-core@1.61.1`, which routes both
+  through `parseEvaluationResultValue` (measured when the shape was introduced).
 - **A boot gate is either a proxy with a validity condition, or a node the subject emits.** Both
   shapes are in the tree and the difference is worth knowing before writing a third. `demo/index.html`
   waits for a control bar that mounts ~350 lines before the probe assignments — sound only because
@@ -53,14 +65,34 @@ a justerm shape here wrong, only corroborate one.
   from a budget, and why they are not exposed: their budget is a 60s test timeout, not 5s.
   The two rejected repairs are the ones that make the gate stop reporting: a retry runs against an
   already-warm process so it always passes, and a bigger `expect` timeout hides a boot that is
-  genuinely slowing.
+  genuinely slowing. A separate, discarded context is enough, counter-intuitively — contexts share no
+  HTTP cache, but they share the process, and the process is what is cold. Uncontended it costs one
+  navigation, ~200ms. **The boot gate itself no longer meets that 5s clock** — it took the second
+  rejected repair, below — so this reasoning now holds only for the first test's *later* `expect`s;
+  see Known holes.
+- **The boot gate's own timeout is 30s, not the 5s default**, because it asserts *that* the app
+  booted, not how fast; every other `expect` keeps 5s, being a claim about behaviour where a slow one
+  is worth seeing. Measured on `dc85158` (2026-08-25): the gate timed out once in `web-e2e` on a
+  markdown-only commit, at 5.9s, while its three parameterised-boot siblings in the same run finished
+  in 1.3/1.4/2.1s including assertions — one boot stalled, the run was not slow. Locally the same URL
+  boots in 274ms median / 544ms worst of 8.
 - **A hook that asserts nothing fails soft — and its budgets, not its `catch`, are what keep it
   soft.** The warm-up proves nothing `beforeEach` does not prove again, per test, with a better
   message, so a throw in it is logged and swallowed. But a hook's slot timeout is raced *outside* the
   hook body and cannot be caught, and a failed `beforeAll` skips the rest of the file — the same
   failure mode it exists to remove, one budget up. So every await in such a hook needs an explicit
   budget summing under the slot, the more so because a context built by hand off `browser` inherits
-  none of the config's defaults.
+  none of the config's defaults — not `baseURL`, and not `navigationTimeout`, so an unbudgeted `goto`
+  would take playwright's own 30s and blow the slot alone. The #735 hook's `GOTO_BUDGET_MS +
+  BAR_BUDGET_MS` = 20s leaves ~10s for `newContext` / `newPage` / `close`. Sources (playwright
+  1.61.1): the slot is `Promise.race([cb(), running.timeoutPromise])`
+  (`playwright/lib/worker/workerProcessEntry.js:425-428`); a failed `beforeAll` skips the rest of the
+  file (`:1795`, `_skipRemainingTestsInSuite`); `workers` defaults to 50% of logical cores
+  (`playwright/lib/common/index.js:595`).
+- **A seed runs to a condition, never to a count** (#818). How many output rows move the scrollbar
+  thumb to a given pixel depends on the fitted row count, which follows the cell — the font's ink box
+  (ADR-0022) — so it differs between a workstation and CI. A fixed seed passed locally and timed out
+  on CI. No absolute cell dimension is portable.
 - **A reader that supplies the thing under test cannot fail** (#776). The sharpest form found so
   far: a probe that calls `present()` before it reads pixels is *itself* what runs the renderer's
   deferred post-restore rebuild — so a restore proof written that way stayed green with the surface's
@@ -70,6 +102,27 @@ a justerm shape here wrong, only corroborate one.
   assertion on a coordinate the *page recorded* holds when the call that would have sent it is
   deleted, so a placement claim has to be a pixel at an independently derived point. Both were caught
   by mutation and neither by reading; assume a third and mutate.
+- **A placement proof is laid out so that every wrong answer is visible** (#776's two-pane page).
+  Neither pane sits at the origin or fills the canvas — a sole tenant at `(0, 0)` exercises no
+  coordinate, and a pane at `y = 0` would assert GL's bottom-origin flip only at the one value where a
+  sign error is invisible. The panes do not overlap: grids paint in registration order and a later
+  grid's `clear` *replaces* what is under it, so every per-pane pixel claim would report the topmost
+  grid (the renderer's `context-loss-grids.html` keeps its four rects apart for the same reason).
+  Both panes share one ANSI palette and differ only in `defaultBg`, and each background differs from
+  the other and from the page's checkerboard, so one sampled pixel names who painted it — a page
+  background matching a terminal's is the #577 failure, green for six slices, and here it would read
+  the gutter sample as "one grid spanning both", the opposite conclusion.
+- **A size claim stands on a quantity derived from neither the buffer nor the grant.** `cssWidth()`
+  is `bufW / dpr` inside the renderer, so `bufW === round(cssW * dpr)` holds for any buffer — measured
+  7×5 device px short and green; the canvas element's box is written by `resizeSurface` from
+  `cssWidth()`, the same number in DOM shape, and measured green too. The two-pane suite reads the
+  **stage's** CSS box, which the page sizes from its intended layout.
+- **A second page gets its own page, not a widening of `demo/main.ts`.** `main.ts` accumulated one
+  slice at a time and its probes are calibrated against each other (a cursor cell no other probe
+  samples, rows reserved per feature); editing it quietly changes what unrelated assertions mean.
+  The two-pane page existed because, measured at the start of #776, nothing outside `src/` had
+  called `TerminalSurface.open`, `JustermRenderer.attach`, `observeViewportRect` or
+  `onDensityChange` — the adapter's `composedSurface === false` branch had never run in a browser.
 - **A second page/spec pair is a second cold browser.** `beforeAll` runs once per file per worker,
   `browser` is worker-scoped, and playwright spreads files across workers — so a new spec file
   inherits no warm-up from an existing one and needs its own copy of the #735 hook. That was written
@@ -79,8 +132,53 @@ a justerm shape here wrong, only corroborate one.
   for the other, and wanting to *look* at renderer output is a reason to open a real browser, not to
   screenshot the headless run.
 - **Isolation differs by suite, deliberately.** The web suite takes a fresh context per test; the
-  renderer's screen proofs take a fresh browser per demo and burn the process's first navigation,
-  whose composited copy is garbage.
+  renderer's screen proofs launch a browser per demo and burn one navigation first, because **the
+  first document a headless Chromium process renders composites garbage** — solid white at
+  `deviceScaleFactor != 1`, solid black at 1 — while `readPixels` in that same page returns the
+  correct frame. Measured independent of canvas size, of the CSS box (integer, fractional or unset),
+  of the DPR and of WebGL; not cured by ten extra `requestAnimationFrame`s, a 300 ms sleep, a
+  throwaway `page.screenshot()` or `--run-all-compositor-stages-before-draw`; cured by one prior
+  navigation to a real document anywhere in the process (`about:blank` does not count — observed, no
+  source says why). Headed Chromium never shows it. Sharing the pixel runner's browser would hide
+  it, because another proof has already warmed that process: with its own browser, deleting `warmUp`
+  reddens the first density, and warming per context is redundant — one navigation warms the process.
+- **A composited proof refuses a uniform region before measuring it, and checks per cell.**
+  `toHaveScreenshot`'s stability loop cannot stand in: the garbage frame is stable, and two identical
+  blank frames agree. A blur metric reads solid white as perfectly sharp and a coverage metric reads
+  solid black as nothing-drawn-as-expected, so `isUniform` runs first — and treats a degenerate
+  (`NaN`) split as uniform, since `NaN >= 0.9` is false. A tone histogram is blind to structure:
+  shrink the CSS box to 80% and the surviving pixels are still 50/50, so a claim about *where* the
+  image landed is checked per cell and pinned against the drawing buffer's own dimensions.
+- **Both guards' `codeOnly` reduction is order-sensitive, and both wrong orders pass silently.** A
+  `)` inside a string literal closes the paren balance early and ends the slice before the call it
+  should inspect; blanking strings naively over prose that says "playwright's" and "probe's" pairs
+  those apostrophes across lines and deletes whole calls. So comment lines go first, and double
+  quotes are emptied before single ones — the specs' own strings are double-quoted and hold
+  apostrophes (`"a decoration's ruler mark…"`, `"[data-testid='command-live']"`). Trailing `//`
+  comments after code are common in the specs and all balance today; an unbalanced one would be a
+  loud false positive, not a miss.
+- **Every pixel proof runs at 1, 1.1, 1.5 and 2.** 1.5 is Windows at 150% scaling, 2 is Retina, and
+  1.1 is browser zoom at 110% — the density at which every proof's grid overhung its drawing buffer
+  (#331). A sweep of only the easy ratios proves the easy half of the contract.
+- **The pixel runner asserts two identities on every page that publishes `gridFit`.** Grid equals
+  drawing buffer (#331): since #773 that is an arrangement the *page* establishes through `fitGrid`,
+  so it catches a page that sized its surface from something other than its own grid's cells. And
+  `canvas.width` equals `drawingBufferWidth` (#339) — the one that can fail: the attribute is what was
+  asked, the buffer is what WebGL granted (Chromium: `canvas.width = 16385` keeps the attribute and
+  returns a `MAX_TEXTURE_SIZE` buffer), and `resizeSurface` must adopt the grant. Neither is waived on
+  `oversized.html`, the one page exercising a clamp: it re-fits the surface alongside the grid as a
+  consumer would, and an opt-out would trade equality for containment exactly where a larger buffer
+  most needs to show.
+- **A red proof names its failing checks and prints the page's `measured`** (#791). Several pages
+  derive their expectations from the host's fonts (#578), so a CI-only red is otherwise
+  undiagnosable without reproducing the runner's font stack.
+- **A proof never re-derives the device cell, and never sizes its geometry from a constant.**
+  Neither `cssCellWidth() * dpr` nor `drawingBufferWidth / COLS` recovers the integer the rasteriser
+  ink-scans; both were in use before #328 and misread the buffer at `devicePixelRatio !== 1`, and
+  since #331/#335 `cell_width()`/`cell_height()` report it exactly. A margin sized from a constant
+  fails on a font that scans differently: `cursor.html`'s fixed `letterSpacing(120)` cleared the cell
+  height by ~2 device px and went red at dpr 1.1/1.5 on CI only (#374), so `spacingForThickBar`
+  sizes it from the measured cell.
 - **Neither suite adopts a server already on its port** (`reuseExistingServer: false`, #945). A
   listener there may be another worktree's, and adopting it tests that checkout's sources — red
   when a probe is missing, and **green** when the foreign tree happens to behave the same, which is
@@ -134,6 +232,16 @@ proposal, not a finding.
 The section exists at all because a harness question wants `test/`, and the sparse checkout had only
 `src`: the reference corpus read as absent when in fact it was simply not checked out.
 
+**The first-surface compositing defect, upstream.** `page.screenshot()` is CDP
+`Page.captureScreenshot` (Playwright `screenshotter.ts` / `crPage.ts` — no frame wait, no
+BeginFrame), which lands in `GetSnapshotFromBrowser(from_surface: true)` and copies from a surface the
+first real navigation has not presented. Chromium names the failure in `page_handler.cc` ("capturing
+a surface snapshot will stall because the surface is never presented"), crbug 377715191 / Playwright
+#33330. Playwright 1.61 already passes `--enable-features=CDPScreenshotNewSurface`
+(`chromiumSwitches.ts`), Chromium's remedy for that class, and it does not cover the first-surface
+case — do not rediscover it as the fix. That the white-vs-black split comes from reading a
+default-cleared buffer is a hypothesis, not a citation.
+
 ## Cross-cutting invariants
 
 - [an awaited in-page promise needs an anchor](../invariant/an-awaited-in-page-promise-needs-an-anchor.md)
@@ -165,8 +273,16 @@ The section exists at all because a harness question wants `test/`, and the spar
 - **Which process-local cache the `#735` warm-up actually refills is unpinned.** Holding the dev
   server warm in both arms proved the cost is per-browser-process (8 of 10 paired reps, median
   4865ms → 2191ms), but the instrument's wasm attribution did not separate them, so V8's code cache
-  is a candidate rather than a finding. The hook works either way; a future claim about *why* needs
-  its own measurement.
+  is a candidate rather than a finding (median 167ms cold vs 186ms warm). The hook works either way;
+  a future claim about *why* needs its own measurement. The instrument, so it can be re-run:
+  `addInitScript` wrapping `WebAssembly.{instantiate,compile}{,Streaming}` before any page script,
+  `getEntriesByType("resource")` for the resource wall, the control-bar locator for the bar. Of two
+  designs only the second isolates the caches: (a) one arm per invocation against a fresh vite and a
+  fresh chromium — its warm-up warms both caches; (b) one pre-warmed vite for the run, arms
+  interleaved, a fresh chromium each. At the gate itself, on a 28-core host under heavy contention
+  with only the first test run: hook off → 10084ms (passed) and 15277ms (failed, `Timeout: 5000ms`,
+  the shape of #653); on → 2928ms and 3338ms. The issue's own sweep put the cold boot at 4024ms of
+  the 5000ms budget, warm boots ~490–909ms.
 - **The `#735` exposure that is demonstrated is a loaded developer host, not CI.** The four most
   recent green `web-e2e` runs had first-test durations of 517/601/645/629 ms. The issue's reasoning
   that few-core shared runners are permanently oversubscribed was not confirmed against the run
@@ -180,6 +296,18 @@ The section exists at all because a harness question wants `test/`, and the spar
   its own worker against its own cold browser and needs its own copy. Nothing warns whoever adds it.
 - **`check-map-note.mjs`'s `SRC_ROOTS` does not include any `e2e/`, `test/` or `demo/` tree**, so a
   symbol this note names resolves only because it is written as a full path from the repo root.
+- **The #735 warm-up's stated reason and the boot gate's 30s timeout contradict each other, and
+  nobody has decided which stands.** #735 rejected "a bigger `expect` timeout" because it hides a
+  boot that is genuinely slowing, and warmed the process so the gate's 5s would hold; `dc85158` then
+  gave that same gate `timeout: 30_000` (in both specs) on the ground that it asserts *that* the app
+  booted. Both mechanisms remain. What the warm-up still buys — the first test's later 5s `expect`s,
+  on a process the gate's wait has already warmed — is unmeasured.
+- **The one-navigation rule has a standing exception**: the #914 test in `demo.spec.ts` calls
+  `page.goto("/")` in its body. Nothing flags it.
+- **Both guards' `resolvesTo` misses a promise assigned to a local and then returned**; closing it
+  means parsing, and both guards are reductions by design. On the web side `e2e/probe.ts` is the
+  worst case of it — the helper dereferences its hook into a local, so `return probe().then(` passes
+  every general check — and it is pinned only by one check over-fitted to that file.
 - **Nothing measures whether a proof still proves anything.** A probe that answers `NaN` made one
   spec vacuously green for its whole life; the non-vacuity assertion that caught it was added by
   hand, and no rule says the next probe owes one.

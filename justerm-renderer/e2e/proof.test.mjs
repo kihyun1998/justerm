@@ -1,5 +1,5 @@
 // Unit tests for `demo/proof.js` — the pixel helpers every `demo/*.html` proof reads its evidence
-// through. They had none. A bug here does not fail a proof; it silently weakens all nine of them.
+// through. A bug there does not fail a proof; it silently weakens all of them.
 //
 // Run: `node --test e2e/proof.test.mjs` (node's built-in runner — no dependency).
 import test from "node:test";

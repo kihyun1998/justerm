@@ -1,30 +1,19 @@
-// Shared pixel-reading helpers for the `demo/*.html` proofs (#328).
+// Shared pixel-reading helpers for the `demo/*.html` proofs (#328). Everything here is in device
+// pixels: the drawing buffer, and the cell `cell_width()`/`cell_height()` report.
 //
-// Every proof reads back the GL drawing buffer to check what was actually drawn, and the buffer is
-// addressed in **device pixels**. The renderer's cell is measured in device px too — the rasteriser
-// ink-scans `█` at `FONT_SIZE * devicePixelRatio`, and that integer becomes the shader's
-// `u_cell_size` — and since #331/#335 `cell_width()`/`cell_height()` report exactly that integer.
-//
-// Never re-derive it. Neither `cssCellWidth() * dpr` nor `drawingBufferWidth / COLS` recovers it,
-// and both were in use here before #328, misreading the buffer whenever `devicePixelRatio !== 1`.
+// Deliberate: the cell is always read from the renderer, never re-derived from CSS size or buffer
+// width — see docs/map/territory/browser-proof-harness.md.
 
 /** A grid's exact device-pixel cell, `[width, height]`. Per grid since #773: the cell belongs to
  *  the font configuration that grid selects into, and two grids need not share one. */
 export const deviceCell = (r, g) => [r.cell_width(g), r.cell_height(g)];
 
 /**
- * Mount the arrangement almost every page here assumes — one terminal filling the whole surface —
- * and re-fit it whenever the cell moves.
+ * Mount the arrangement almost every page here assumes — one terminal filling the whole surface,
+ * the buffer exactly `cols * cellWidth` device pixels — the consumer's half of ADR-0021 D3's two
+ * tiers (grid dimensions, drawing buffer).
  *
- * This is what `resize(cols, rows)` was until #773, assembled by the consumer instead of by the
- * renderer. It stopped being one call because it was always two tiers (ADR-0021 D3): the grid's
- * dimensions, and the drawing buffer. A surface drawing N grids in M font configurations has no
- * cell the buffer can be a multiple of, so the buffer became the consumer's to size — and a
- * single-grid consumer keeps #331's exactness by asking for `cols * cellWidth` device pixels, both
- * of them integers this crate handed it.
- *
- * Call it again after anything that moves the cell (a font size, a family, either spacing option),
- * exactly as the pages used to re-`resize`.
+ * Call it again after anything that moves the cell (a font size, a family, either spacing option).
  */
 export function fitGrid(r, g, cols, rows) {
   r.resizeGrid(g, cols, rows);
@@ -41,9 +30,6 @@ export function fitGrid(r, g, cols, rows) {
  * The projection puts the grid's origin at the buffer's TOP-left (`orthographic_from_size` uses
  * `top = 0`), while `readPixels` counts from the BOTTOM — hence the flip. A single-row demo must
  * still use it: reading at `y = 0` only happens to work when the buffer height is exactly one cell.
- *
- * Since #331 the buffer is `cols * cell` device px exactly, so a rect for a cell inside the grid the
- * renderer was sized to always lies inside the buffer.
  */
 export function cellRect(gl, r, g, col, row = 0, cols = 1) {
   const [cw, ch] = deviceCell(r, g);
@@ -132,24 +118,12 @@ export function hasColourEmojiFont() {
 }
 
 /**
- * Whether a `cols × rows` grid of device cells fits inside the drawing buffer.
+ * Whether a `cols × rows` grid of device cells fits inside the drawing buffer — the #331/#339
+ * identities `proofs.spec.mjs` asserts (docs/map/territory/browser-proof-harness.md).
  *
- * While the renderer sized the buffer itself, `grid` equalled `buffer` for any grid it had been
- * sized to, and the comparison was an identity — both sides the same product (#353), kept as a
- * tripwire rather than a live check. Since #773 the buffer is the *consumer's* to size, and
- * [`fitGrid`] is what keeps the identity on these pages; the tripwire now catches a page that sized
- * its surface from something other than its own grid's cells.
- *
- * `attr` is what makes this falsifiable again (#339). `canvas.width` is what we *asked* the browser
- * for; `drawingBufferWidth` is what it *gave* us, and WebGL is free to give less. Measured in
- * Chromium: `canvas.width = 16385` leaves the attribute at 16385 while the buffer comes back at
- * MAX_TEXTURE_SIZE. So `clamped` is the only observable that separates "we asked for this buffer"
- * from "the browser overruled us".
- *
- * Since #773 nothing clamps `cols`/`rows` to anything: they report what `resizeGrid` was told, and
- * it is the SURFACE that adopts what the browser actually granted. So a caller proving a clamp
- * reads `clamped` against the surface, and `r.cols(g)` is no longer where a browser's refusal shows
- * up.
+ * `attr` is what the page asked for (`canvas.width`), `buffer` what WebGL granted, and `clamped` the
+ * only observable that separates the two. A clamp shows on the SURFACE, never in `r.cols(g)`, which
+ * reports what `resizeGrid` was told.
  */
 export function gridFit(gl, r, g, cols, rows) {
   const [cw, ch] = deviceCell(r, g);
@@ -170,13 +144,8 @@ export function gridFit(gl, r, g, cols, rows) {
  * `cursor.rs` `THICKNESS`), and its width is clamped by the cell it sits in — `thickness.min(cell.0)`
  * (`cursor.rs:133`) — never by the cell height. To PROVE that clamp, `cursor.html` needs a cell wide
  * enough that the thickness exceeds the height (else a height-clamp bug is invisible) yet stays under
- * the width (else the width clamp masks it).
- *
- * It used a hardcoded `letterSpacing(120)`, whose thickness sat only ~2 device px above a
- * ~16-device-px cell height. `cellHeight` is an integer ink-scan of `█` at `FONT_SIZE * dpr`, so a
- * font that scans it tall at a fractional dpr erased that margin — `renderer-proofs` went red at dpr
- * 1.1/1.5 on CI while passing at 1 and 2 and everywhere locally (#374). So size the spacing from the
- * MEASURED cell instead: land the thickness at `factor x baseCh`, margin ~= baseCh, not ~2 px.
+ * the width (else the width clamp masks it). Sized from the MEASURED cell (#374): the thickness lands
+ * at `factor x baseCh`.
  *
  * `baseCw`/`baseCh` are the device cell at `letterSpacing 0`; `dpr` maps CSS spacing to device px the
  * way the renderer does (`round(css * dpr)`, `metrics.rs:75`). Returns CSS px for `setLetterSpacing`.
@@ -190,42 +159,16 @@ export function spacingForThickBar(baseCw, baseCh, dpr, factor = 2, thicknessFra
 
 // --- Composited pixels (#352) ---------------------------------------------------------------
 //
-// `gl.readPixels` and a screenshot are DIFFERENT MEASUREMENTS. `readPixels` reads the drawing
-// buffer — what GL drew. A screenshot reads what the compositor put on the screen, which is the
-// buffer after CSS sizing, `image-rendering`, layer promotion and DPR resampling. Every proof in
-// this directory reads the buffer; none of them can say the image ever reached the screen.
-//
-// The trap: **the first document rendered in a headless Chromium process composites garbage** —
-// solid white at `devicePixelRatio != 1`, solid black at 1 — while `readPixels` in that same page
-// returns the correct frame. Measured: it is independent of canvas size, of the CSS box (integer,
-// fractional or unset), of the DPR and of WebGL; it is NOT cured by ten extra
-// `requestAnimationFrame`s, a 300 ms sleep, a throwaway screenshot, or
-// `--run-all-compositor-stages-before-draw`. It IS cured by ONE prior navigation to a real document,
-// anywhere in the process — `about:blank` does not count (observed; no source found that says why).
-// Headed Chromium never shows it.
-//
-// `page.screenshot()` is CDP `Page.captureScreenshot`, which copies from a surface the first real
-// navigation has not presented yet. Chromium names that failure in `page_handler.cc` ("capturing a
-// surface snapshot will stall because the surface is never presented"), crbug 377715191. Playwright
-// already passes `--enable-features=CDPScreenshotNewSurface`, Chromium's remedy for that class; it
-// does not cover this first-surface case. The white-vs-black split is consistent with reading a
-// default-cleared buffer, but that last step is a hypothesis, not a citation.
-//
-// So a composited-pixel proof must (a) not be the first document its browser process renders, and
-// (b) refuse a uniform region before measuring anything about it. A blur metric reads solid white
-// as "perfectly sharp"; a coverage metric reads solid black as "nothing drawn, as expected".
-//
-// And (c): a tone HISTOGRAM is blind to structure. Shrink the CSS box to 80 % and the surviving
-// pixels are still 50/50 white — `isUniform` is happy, and so is any `|composited - source|` tone
-// comparison. Whatever the proof claims about *where* the image landed, it must check per-cell, and
-// it must pin the composited region against the drawing buffer's own dimensions.
+// Helpers for the proofs that read a SCREENSHOT — what the compositor put on screen — rather than
+// the drawing buffer `readPixels` reads. A composited proof must not be its browser process's first
+// document, must refuse a uniform region before measuring it, and must check per cell:
+// docs/map/territory/browser-proof-harness.md says why.
 
 /**
  * Split an RGBA buffer into white / black / intermediate fractions by luminance.
  *
  * Takes **raw RGBA bytes**, unlike `countLit`/`litAt`/`inkCoverage`/`alphaStats`, which take the
- * `{buf, w, h}` rect that `readCells` returns. Handing it that rect used to iterate
- * `undefined.length` zero times and answer `{NaN, NaN, NaN}` — so it throws instead.
+ * `{buf, w, h}` rect that `readCells` returns — and throws on that rect rather than answering `NaN`.
  *
  * Reads the **green** channel, where the other helpers read red. Both are luminance for the
  * grayscale patterns these proofs draw (R=G=B); a coloured composited pattern must not use this.
@@ -250,10 +193,8 @@ export function tonalSplit(data, { lo = 20, hi = 235 } = {}) {
 
 /**
  * Is this region too uniform to be evidence of anything? A composited proof calls this FIRST,
- * before any metric that would happily describe a blank rectangle (see the note above).
- *
- * A degenerate split is uniform. `NaN >= 0.9` is `false`, so a naive comparison called the emptiest
- * possible region "not uniform" — the guard was most permissive exactly where it had to be strictest.
+ * before any metric that would happily describe a blank rectangle. A degenerate (`NaN`) split is
+ * uniform.
  */
 export function isUniform(split, threshold = 0.9) {
   if (!Number.isFinite(split.white) || !Number.isFinite(split.black)) return true;

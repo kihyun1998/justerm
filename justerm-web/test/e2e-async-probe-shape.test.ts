@@ -1,32 +1,14 @@
 /**
  * #731 — **no `evaluate` in the e2e suite may hand `awaitPromise` a promise nothing keeps
- * reachable.** In practice: an evaluate callback may not be `async`, and may not resolve to one of
- * the demo's promise-returning `window.__*` hooks. Those go through `readAsyncProbe`, which parks
- * the outcome on `window` and harvests it from an object playwright retains by `objectId`.
+ * reachable** (docs/map/invariant/an-awaited-in-page-promise-needs-an-anchor.md). In practice: an
+ * evaluate callback may not be `async`, and may not resolve to one of the demo's promise-returning
+ * `window.__*` hooks; those go through `readAsyncProbe`.
  *
- * The defect this guards is not one the suite can reproduce on demand. `Runtime.callFunctionOn({
- * awaitPromise: true })` on a promise the page no longer names came back
- * `{"code":-32000,"message":"Promise was collected"}` on CI (2026-08-05, run `30979831545`, the
- * `#480` spec), and playwright rewrote it into "Execution context was destroyed, most likely
- * because of a navigation" — a sentence about page lifecycle, for a failure that had nothing to do
- * with it. Nothing navigated: the trace held two document loads and no third, and `Page.*` /
- * `Runtime.*` listeners across the failing call saw zero events.
+ * A structural proxy: it fails when the shape that admits the hazard comes back, never when the
+ * hazard fires. It needs no browser, so it runs in `pnpm test`.
  *
- * So the assertion here is **structural, and it is a proxy** — it cannot fail when the hazard
- * fires, only when the shape that admits it comes back. That is deliberate and it is the honest
- * bound on this file: the hazard is timing-dependent (measured 2026-08-10 — a forced
- * `HeapProfiler.collectGarbage` collects 0 of 4 promise shapes, and the pre-fix `#480` spec passes
- * 12/12 on a 28-core host, single- and double-navigation, idle and at 4x oversubscription). What
- * can be pinned is the shape, and the shape is what recurs: a new async probe read the obvious way
- * puts it straight back.
- *
- * Why it lives in `pnpm test` rather than in the e2e suite: both jobs run on every PR, so it is not
- * about reach. It is that a rule about how the suite is *written* needs no browser to check, so it
- * answers in milliseconds and cannot be lost among browser flake.
- *
- * The hook names are **derived from `demo/main.ts`**, never listed here. A hand-kept list is the
- * copy that goes stale, and the one thing this check must not do is silently stop covering a probe
- * added after it was written.
+ * The hook names and the file sets are **derived from the directories**, never listed — the one thing
+ * this check must not do is silently stop covering a probe added after it was written.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -35,23 +17,11 @@ const read = (rel: string): string =>
   readFileSync(new URL(rel, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 /**
- * **The file sets are enumerated from the directory, never listed** — the same reason the hook names
- * below are derived rather than written down, applied one level up.
- *
- * This file read `demo/main.ts` and `e2e/demo.spec.ts` by name until #776, which added the second
- * page/spec pair. Measured before changing it: with a deliberate `await page.evaluate(() =>
- * window.__surfaceLossProbe!())` sitting in the new spec, all three checks below stayed **green**.
- * The new hooks were not in `hooks` (they are declared in the other page) and the new call was not
- * in `calls` (it is in the other spec), so the guard was not weakened by the new file — it simply
- * did not see it. That is precisely the failure this file's own header forbids: *"the one thing this
- * check must not do is silently stop covering a probe added after it was written."* A name in a
- * `read()` call is that stale list wearing a different shape from the array the header warns about.
+ * Every source file in `dir` that `keep` accepts, enumerated from the directory.
  *
  * **Every page's hooks are checked against every e2e module's calls**, rather than pairing a spec to
- * the page it drives. Pairing is not statically derivable — a spec picks its page at `goto` time and
- * `test.use({ bootUrl })` moves it — while the union is strictly stronger: the only thing it can
- * flag that a pairing would not is a spec resolving another page's hook inside an `evaluate`, which
- * is a defect under this rule wherever the hook was declared.
+ * the page it drives: pairing is not statically derivable — a spec picks its page at `goto` time and
+ * `test.use({ bootUrl })` moves it — and the union is strictly stronger.
  */
 const sourcesIn = (dir: string, keep: (f: string) => boolean): { name: string; src: string }[] =>
   readdirSync(new URL(`../${dir}/`, import.meta.url))
@@ -64,17 +34,9 @@ const demoSources = sourcesIn("demo", (f) => f.endsWith(".ts"));
 /**
  * Every e2e module, specs **and** their helpers.
  *
- * `e2e/probe.ts` is in deliberately — it holds the park-and-harvest mechanism, so a regression there
- * reinstates the hazard for every spec at once. **But it is only half covered by the checks below,
- * and that was measured rather than assumed.** `resolvesTo` looks for a literal `window.__hook`
- * being returned, and the helper never names a hook: it dereferences one dynamically into a local.
- * So `void probe().then(` → `return probe().then(` — the exact hazard, in the one file that matters
- * most — leaves all three checks green. What *is* live there is the async-callback check, since
- * making that callback `async` is caught by the regex.
- *
- * The other half is pinned by the last `it` in this file instead. That check is over-fitted to one
- * file on purpose: the general rule needs to know that a local came from a `window[…]` lookup, which
- * is a parser, and this file is deliberately a reduction rather than one.
+ * `e2e/probe.ts` is in deliberately — a regression there reinstates the hazard for every spec at
+ * once — but the general checks cover only its async-callback half; the rest is pinned by the
+ * over-fitted `it` below (docs/map/territory/browser-proof-harness.md § Known holes).
  */
 const e2eSources = sourcesIn("e2e", (f) => f.endsWith(".ts"));
 
@@ -97,20 +59,10 @@ const asyncHookNames = (src: string): string[] => [
  * Reduce a spec to something the paren balance below can trust: comment-only lines dropped,
  * whitespace squashed, string literals emptied.
  *
- * Both steps are load-bearing and the **order within them is too**, which is the part that bit
- * while writing this. A `)` inside a string literal would otherwise close the balance early and end
- * the slice before the call it is meant to inspect — a *silent pass*, not the loud false positive
- * an earlier draft of this comment claimed. But blanking naively over a file whose doc-comments say
- * "playwright's" and "probe's" pairs those apostrophes across prose and deletes whole calls, which
- * is a silent pass of its own. So: comments go first, and double quotes are emptied before single
- * ones, because this file's own strings are double-quoted and hold apostrophes
- * (`"a decoration's ruler mark…"`, `"[data-testid='command-live']"`).
- *
- * This is a reduction, not a parser. Its remaining blind spot is a trailing `//` comment on a line
- * that also holds code **whose own quotes or parens are then left unbalanced**. Trailing comments
- * themselves are ordinary here — `demo.spec.ts` has a dozen and `shared-surface.spec.ts` adds more,
- * and this sentence claimed there were none until #776 counted them. All of them balance, so no call
- * is swallowed; the failure mode if one did not would be a loud false positive rather than a miss.
+ * Deliberate order: comments go first and double quotes are emptied before single ones, or prose
+ * apostrophes pair across lines and delete whole calls — a silent pass (see
+ * docs/map/territory/browser-proof-harness.md). A reduction, not a parser: a trailing `//` comment
+ * whose own quotes or parens are unbalanced would produce a loud false positive.
  */
 const codeOnly = (src: string): string =>
   src
@@ -148,8 +100,7 @@ const evaluateCalls = (src: string): string[] => {
 };
 
 /**
- * Does this evaluate call **resolve to** `hook`'s promise? Two refinements, both forced by real
- * false positives rather than imagined ones — the renderer's copy of this check produced each:
+ * Does this evaluate call **resolve to** `hook`'s promise? Two refinements:
  *
  * - **Return position.** A callback that *starts* the hook and parks its outcome must name it;
  *   `void window.__x(b64).then(…)` is the fix, not the defect. Only `=> window.__x(` and
@@ -157,9 +108,7 @@ const evaluateCalls = (src: string): string[] => {
  * - **A word boundary.** `__composited` is a prefix of `__compositedSettled`, so a bare
  *   `includes` flags the harvest that reads the parked slot.
  *
- * The bound, stated because it is real: a callback that assigns the promise to a local and returns
- * *that* escapes. Closing it means parsing, and every mutation this rule was built against — and
- * the seven in the PR — goes through one of the two forms above.
+ * Bound: a promise assigned to a local and returned escapes (docs/map/territory/browser-proof-harness.md).
  */
 const resolvesTo = (call: string, hook: string): boolean =>
   new RegExp(`(?:=>|return)window\\.${hook}(?![A-Za-z0-9_])`).test(call);
@@ -199,10 +148,8 @@ describe("the e2e suite never awaits an unanchored in-page promise (#731)", () =
   });
 
   it("the shared helper does not hand back its probe's promise", () => {
-    // Over-fitted to one file, deliberately — see `e2eSources`. `resolvesTo` cannot see this file's
-    // regression because the helper never names a hook literally, and the helper is the one place
-    // where a regression would reinstate the hazard for every suite at once. Measured: with
-    // `return probe().then(` in place of `void probe().then(`, the three general checks stay green.
+    // Over-fitted to one file, deliberately — see `e2eSources`: `resolvesTo` cannot see this
+    // file's regression, because the helper never names a hook literally.
     const helper = e2eSources.find((f) => f.name === PROBE_HELPER);
     expect(helper, `${PROBE_HELPER} not found — this check has nothing to say`).toBeDefined();
     const code = codeOnly(helper!.src);

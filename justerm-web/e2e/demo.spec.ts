@@ -3,39 +3,25 @@ import { test as base, expect, type BrowserContext, type Page } from "@playwrigh
 import { DEMO_URL } from "../playwright.config";
 import { readAsyncProbe as harvest } from "./probe";
 
-/**
- * The #735 warm-up's two explicit budgets. They sum to 20s so the hook stays inside its 30s slot
- * with room for the three awaits that have no budget of their own — see the comment on the hook.
- */
+/** The #735 warm-up's two explicit budgets; they sum to 20s, inside the hook's 30s slot. */
 const GOTO_BUDGET_MS = 8_000;
 const BAR_BUDGET_MS = 12_000;
 
 /**
- * End-to-end verification of the demo's a11y features in a REAL headless browser
- * — the automated form of the F-key/HITL smoke. We can't hear the WebAudio earcon
- * or run a screen reader, but we assert the exact things an SR consumes: the
- * aria-live region's text (#160 announce) and the signal path (via its console
- * log), plus the #161 gate that suppresses both. The real wasm decoder + the real
- * controllers run behind the demo's stub backend.
+ * End-to-end suite for the single-terminal widget demo (`demo/index.html`) in a REAL headless
+ * browser: the real wasm decoder, controllers and renderer run behind the demo's stub backend.
+ * What cannot be heard or read by a screen reader is asserted through what one consumes — the
+ * aria-live region's text (#160) and the signal path's console log, gated by #161.
  */
 
 const live = "[data-testid='command-live']";
 
 /**
- * Seed output rows until the scrollbar thumb reaches `threshold`, or give up (#818).
+ * Seed output rows until the scrollbar thumb reaches `threshold`, or give up (#818) — a loop, not a
+ * count, because the rows it takes follow the cell (docs/map/territory/browser-proof-harness.md).
  *
- * **Why a loop and not a count.** `thumbTop` is an absolute pixel position, so how many rows it
- * takes to reach a given one depends on the track height and the fitted row count — and the row
- * count follows the cell, which is the font's ink box (ADR-0022) and therefore differs between this
- * machine and CI. A fixed seed passed locally and timed out on CI, which traded a wall-clock race
- * for a geometry assumption: the same class of error one layer over. `docs/map/` already carries the
- * rule — no absolute cell dimension is portable.
- *
- * It takes the caller's own `read` because the two call sites hold different closures over `page`;
- * duplicating the thumb's DOM query here would be a second copy to drift.
- *
- * Deliberately does NOT assert. The caller keeps its own assertion, so a seed that stops producing
- * the state reddens there with the condition named, rather than here with a helper's message.
+ * `read` is the caller's own thumb query. Deliberately does NOT assert: the caller's assertion
+ * names the condition when a seed stops producing the state.
  */
 async function seedUntilThumb(
   page: import("@playwright/test").Page,
@@ -49,32 +35,10 @@ async function seedUntilThumb(
 }
 
 /**
- * #733 — **one navigation per test, and it is `beforeEach`'s.** Every test body starts on a LIVE,
- * fully mounted demo; navigating again would leave the first document running underneath — its
- * `ResizeObserver`, its debounced `[fit] resize` (100ms), its timers — while the second loads, and a
- * `page.on("console")` listener does not reset across navigations, so a log belonging to the page a
- * test is leaving can answer a poll about the page it is entering (#653, measured again on
- * 2026-08-05). A test that needs a different *boot* — a query string, a viewport, a device scale —
- * asks for it through `test.use()`, which applies to that one navigation.
- *
- * The query-string half of that sentence is why `bootUrl` is an **option** rather than the hook
- * hard-coding `"/"`. A `baseURL` cannot carry it: `new URL("/", "http://host/?bgAlpha=0.6")` is
- * `http://host/`, so as long as the hook navigates to a literal `"/"` a query-string boot has no way
- * to *be* the single navigation, and the rule above would have had three standing exceptions
- * (`?bgAlpha=0.6`, `?bgAlpha=foo`, `?letterSpacing=…`) with nothing but a comment holding them.
- *
- * The consequence that outlives the second `goto` is the **boot window**: `beforeEach` returns as
- * soon as the control bar is visible, which is *before* the mount fit's 100ms debounce is guaranteed
- * to have fired, so a body-attached listener may or may not catch it — measured BOTH ways on this
- * machine, idle (no `[fit] resize` yet at body entry) and under load (already there). Which one you
- * get is machine speed, which is exactly what made #653 read as flaky for three CI runs while every
- * local run passed. Do not read either observation as a property.
- *
- * So a test that watches the boot takes `consoleLines` below instead of attaching its own listener.
- * It is an `auto` fixture on purpose, and that is the whole mechanism: a fixture the test merely
- * *declares* is set up **after** `beforeEach` (measured — `["auto", "beforeEach", "declared-by-test",
- * "test"]`), which would leave the listener attached exactly as late as one written by hand. Only
- * `{ auto: true }` runs in front of the hook.
+ * #733 — **one navigation per test, and it is `beforeEach`'s**; a test that needs a different boot
+ * sets `bootUrl` through `test.use()`. A test that watches the boot takes `consoleLines`, which is
+ * `auto` deliberately so it attaches before `beforeEach`. Why, for all three:
+ * docs/map/territory/browser-proof-harness.md.
  */
 const test = base.extend<{ consoleLines: string[]; bootUrl: string }>({
   /** What `beforeEach` navigates to. Override per describe with `test.use({ bootUrl })`. */
@@ -94,10 +58,8 @@ const fitsIn = (consoleLines: string[]): string[] =>
   consoleLines.filter((l) => l.includes("[fit] resize"));
 
 /**
- * The names of the demo probes that return a **promise**. Kept explicit rather than derived from
- * `Window`, because a structural `[K in keyof Window]` filter matches unrelated DOM methods too;
- * what keeps this list honest is `test/e2e-async-probe-shape.test.ts`, which reads *both* files and
- * fails if `demo/main.ts` declares an async probe this file then reads directly.
+ * The names of the demo probes that return a **promise**. Explicit, because a `[K in keyof Window]`
+ * filter matches unrelated DOM methods too; `test/e2e-async-probe-shape.test.ts` keeps it honest.
  */
 type AsyncProbe =
   | "__aboveTopProbe"
@@ -116,11 +78,8 @@ type AsyncProbe =
   | "__textBlinkProbe";
 
 /**
- * Read one of this page's promise-returning probes, through the park-and-harvest shape #731
- * established. **The mechanism, and the reasoning behind it, moved to `e2e/probe.ts` in #776** when
- * a second spec file needed it; this is the two-line alias that recovers this page's return types
- * from its own {@link AsyncProbe} union, which is where the `Window` declarations for these hooks
- * live.
+ * Read one of this page's promise-returning probes through `e2e/probe.ts`'s park-and-harvest (#731),
+ * typed from this page's own {@link AsyncProbe} union.
  */
 const readAsyncProbe = <K extends AsyncProbe>(
   page: Page,
@@ -129,71 +88,13 @@ const readAsyncProbe = <K extends AsyncProbe>(
   harvest<Awaited<ReturnType<NonNullable<Window[K]>>>>(page, name);
 
 /**
- * #735 — **the cold boot is paid here, where the budget can absorb it.**
+ * #735 — **the cold boot is paid here, where the budget can absorb it**: one navigation from a
+ * discarded context warms this worker's browser process before test one. (Its original reason, the
+ * boot gate's 5s, no longer holds — see Known holes in the note below.)
  *
- * `beforeEach` below waits for the control bar under playwright's default **5s `expect` timeout**,
- * and `retries: 0`. The first navigation of a browser process costs far more than every later one,
- * and the excess lands entirely on the *first test of the run*, since the browser process is shared
- * across contexts within one worker.
- *
- * **Measured at this gate**, on a 28-core host under heavy CPU contention, running only the first
- * test with this hook toggled off and on inside one session: **off** → 10084ms (passed) and 15277ms
- * (**failed**, `expect(locator).toBeVisible() … Timeout: 5000ms` — the exact shape of #653);
- * **on** → 2928ms and 3338ms, both passed. The issue's own sweep put the cold boot at 4024ms against
- * the 5000ms budget, 79% of it, with warm boots at ~490-909ms.
- *
- * **Where the cost lives, and where the measurement stops.** Holding the dev server warm in *both*
- * arms — so vite's on-demand transform cache is out of the comparison — and launching a fresh
- * chromium per arm, the in-process warm-up still won 8 of 10 paired reps, median **4865ms → 2191ms**.
- * So the expensive state is **per-browser-process**, which is the whole reason this hook takes the
- * `browser` fixture: warming a *different* browser process, or only the server, would not cover it.
- * What is **not** established is *which* process-local cache. V8's compile/code cache is the obvious
- * candidate, but the instrument's own wasm attribution did not separate the arms (median 167ms cold
- * vs 186ms warm), so it stays a candidate. The repair does not depend on the answer.
- *
- * The instrument, so the numbers are re-measurable: `addInitScript` wrapping
- * `WebAssembly.{instantiate,compile}{,Streaming}` before any page script, `getEntriesByType(
- * "resource")` for the resource wall, and this same locator for the bar. Two designs, and the second
- * is the one that isolates: (a) one arm per invocation against a fresh vite *and* a fresh chromium,
- * load applied after the server is up because `webServer`'s health check gates vite's dependency
- * optimization before test one; (b) one pre-warmed vite for the whole run, arms interleaved, a fresh
- * chromium each. Design (a) cannot tell the two caches apart — its warm-up warms both.
- *
- * **A separate context is enough, and that is the counter-intuitive part** — playwright contexts are
- * isolated and do not share an HTTP cache, so the obvious reasoning says this cannot work. It works
- * anyway, because what is shared is the process, not the context. It is *not* `retries: 1` (a retry
- * runs against an already-warm process, so it would always pass — disabling the detector rather than
- * fixing the boot), and it is not a bigger `expect` timeout (which would stop the gate reporting the
- * thing it exists to report).
- *
- * **Budget, and why the arithmetic below is the load-bearing part rather than the `catch`.** A
- * `beforeAll` hook gets a fresh slot worth the **test timeout** — 30s, playwright's default, which
- * this config does not override — against `beforeEach`'s 5s `expect` timeout. Six times the
- * headroom, at exactly the operation that needs it. But the slot is enforced *outside* the hook
- * body: `Promise.race([cb(), running.timeoutPromise])`
- * (`playwright/lib/worker/workerProcessEntry.js:425-428`, 1.61.1), so **the `try/catch` below cannot
- * intercept a slot timeout** — only a thrown failure. And a failed `beforeAll` is not one red test,
- * it skips the rest of the file (`:1795`, `_skipRemainingTestsInSuite`).
- *
- * So every await here carries an explicit budget and they must sum under 30s. They are not optional:
- * a context built by hand off `browser` inherits **none** of the config's defaults — not `baseURL`
- * (above), and equally not `navigationTimeout`, so an unbudgeted `page.goto` would take playwright's
- * own 30s and blow the slot by itself. `GOTO_BUDGET_MS + BAR_BUDGET_MS` = 20s leaves ~10s for
- * `newContext` / `newPage` / `close`, which are the three awaits with no budget of their own.
- *
- * **Fail-soft on purpose.** This hook asserts nothing: it is an optimization, and the only thing it
- * could prove is already proven by `beforeEach`, per test, with a better message. So a throw is
- * swallowed and logged, and the run simply pays the cold boot on test one — the behaviour that
- * existed before this hook. On a host so slow that the budgets above are not enough, that is the
- * right outcome: a warm-up which cannot land inside 20s was not going to rescue the first test
- * either.
- *
- * Cost when nothing is contended: one extra navigation, ~200ms. **It covers this spec file only.**
- * `beforeAll` runs once per file per worker, `browser` is worker-scoped, and `workers` is unset —
- * playwright defaults it to 50% of the logical cores (`playwright/lib/common/index.js:595`), and
- * `fullyParallel: false` serialises tests *within* a file while still spreading files across
- * workers. So a second spec file lands in its own worker with its own cold browser process and
- * needs its own copy of this hook; it does not inherit this one.
+ * Deliberate: every await carries an explicit budget (the slot timeout cannot be caught), and a
+ * throw is logged and swallowed (the hook asserts nothing). It covers this spec file only. Why,
+ * and the measurements: docs/map/territory/browser-proof-harness.md.
  */
 test.beforeAll(async ({ browser }) => {
   let context: BrowserContext | undefined;
@@ -215,30 +116,12 @@ test.beforeEach(async ({ page, bootUrl }) => {
   await page.goto(bootUrl);
   // The control bar mounts synchronously; wait for it to prove the app booted.
   //
-  // It is a PROXY, and what makes it a sound one is worth stating because nothing enforces it: the
-  // bar mounts at `demo/main.ts:859`, ~350 lines before the `window.__*Probe` assignments every
-  // test below reaches for, and there is a top-level `await import("justerm-wasm-decode")` between
-  // them. That await resolves on the MICROTASK queue — the module is already in flight from
-  // `JustermRenderer.create` — and microtasks drain before Chromium can service a CDP `evaluate`,
-  // so no test can observe the gap. Put one genuinely task-yielding `await` (a `fetch`, a
-  // `setTimeout`, an `img.decode()`) after the bar mounts and every probe-reading test in this file
-  // starts failing with `window.__xProbe is not a function`. Then this gate must move to something
-  // the probes themselves emit.
-  //
-  // **The timeout is explicit, and larger than the default, because this gate asserts THAT the app
-  // booted and not how fast.** Every other `expect` in this file keeps the 5s default; those are
-  // claims about behaviour, and a slow one is worth seeing. This one is a proxy, so the only thing a
-  // timeout here can report is machine speed — which is the failure this paragraph already warns
-  // about two lines up, and which `retries: 0` turns into a red master.
-  //
-  // Measured on master `dc85158` (2026-08-25): this gate timed out once, in `web-e2e`, on a commit
-  // that changed **one markdown file**. It took 5.9s against the 5s default while its three
-  // parameterised-boot siblings in the same run finished in 1.3s, 1.4s and 2.1s *including* their
-  // assertions — so the run was not broadly slow, one boot stalled. Locally the same URL boots in
-  // 274ms median / 544ms worst of 8, a 9x margin, which is why this is not tuned closer.
-  //
-  // `retries` is deliberately NOT the fix. A retry hides a genuine flake as readily as an
-  // environmental one, and this repo's discipline is that a green you never saw fail is not evidence.
+  // A PROXY, sound only while nothing task-yielding (a `fetch`, a `setTimeout`, an `img.decode()`)
+  // is awaited between the bar mounting and the `window.__*Probe` assignments in `demo/main.ts` —
+  // the `await import("justerm-wasm-decode")` between them resolves on the microtask queue. Break
+  // that and every probe-reading test fails with `window.__xProbe is not a function`; move this gate
+  // to something the probes emit. The 30s timeout is deliberate: this gate asserts THAT the app
+  // booted, not how fast (docs/map/territory/browser-proof-harness.md).
   await expect(page.getByRole("button", { name: /Finish command/ })).toBeVisible({
     timeout: 30_000,
   });
@@ -513,8 +396,8 @@ test("asymmetric spanning selection (row → documentElement) still clamps (#217
   expect(selLog.some((l) => l.includes("[a11y-sel] extend"))).toBe(true);
 });
 
-// #133 (S16): the widget wires input + wheel + focus. Headless can't see the beamterm
-// caret paint, but every routing DECISION has a DOM/console proxy the demo exposes: the
+// #133 (S16): the widget wires input + wheel + focus. These tests assert the routing, not the
+// caret paint: every routing DECISION has a DOM/console proxy the demo exposes: the
 // input sink logs intents (`[input] …`), the local scroll logs `[scroll] → …`, the
 // scrollbar thumb `top` is the scroll DOM-state, and `document.activeElement` is the focus
 // DOM-state. These lock the live-MCP proof as regression gates (the DECISIONS are also
@@ -1091,8 +974,8 @@ test("container resize drives a debounced fit intent with a smaller grid (#114)"
   expect(lastCols).toBeLessThan(firstCols); // the fit tracked the smaller box
 });
 
-// #252: the demo's fit() must pass CSS px to beamterm's resize() (which applies
-// devicePixelRatio itself) — NOT pre-multiply by dpr. Pre-multiplying made the backing
+// #252: the demo's fit() must pass CSS px to the renderer (which applies devicePixelRatio
+// itself) — NOT pre-multiply by dpr. Pre-multiplying made the backing
 // buffer css × dpr² (an over-large atlas). A HiDPI context (deviceScaleFactor 2) makes
 // the two distinguishable: the correct backing is css × 2, the bug's was css × 4.
 test.describe("HiDPI fit sizes the backing buffer to dpr, not dpr² (#252)", () => {
@@ -2694,7 +2577,7 @@ test.describe("letterSpacing / lineHeight given at create apply before the first
     await expect(page.getByRole("button", { name: "Letter spacing: 4px" })).toBeVisible();
     const p = await page.evaluate(() => window.__spacingProbe!());
 
-    // The boot cell carries BOTH options — not the renderer's 9x19 default.
+    // The boot cell carries BOTH options — it differs from the base cell measured without them.
     expect(p.boot.cellW).toBe(p.base.cellW + 4);
     expect(p.boot.cellH).toBeGreaterThan(p.base.cellH);
 

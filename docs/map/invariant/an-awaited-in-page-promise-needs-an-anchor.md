@@ -80,7 +80,7 @@ across the failing call record zero events; the probe ran to completion and its 
 `window`. The protocol error underneath — visible only under `DEBUG=pw:protocol` — is
 `{"code":-32000,"message":"Promise was collected"}`, and playwright rewrites *every* protocol error
 that is neither a JS exception nor a closed session into that one sentence
-(`rewriteError`, the Chromium path; the Firefox backend has its own near-identical copy, which is the
+(`rewriteError` at `coreBundle.js:35099` in `playwright-core@1.61.1`, the Chromium path; the Firefox backend has its own near-identical copy, which is the
 one #731's body cited by mistake).
 
 The tell, when you suspect it: the failure is **specific to the promise-returning path**. A plain

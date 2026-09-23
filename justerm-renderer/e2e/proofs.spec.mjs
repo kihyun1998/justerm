@@ -1,29 +1,17 @@
-// Headless runner for the `demo/*.html` GL proofs (#328).
-//
-// Each proof drives the REAL wasm renderer against a REAL WebGL2 context and publishes
-// `window.__proof.ok` after reading pixels back. Until now they were a manual ritual: someone
-// remembered to open the pages in a browser. That is how #328 went unnoticed — every proof was red
-// on any HiDPI machine because they addressed the device-px drawing buffer with CSS-px arithmetic.
-//
-// So the sweep runs each page at several device pixel ratios. A proof that only holds at dpr 1 is
-// not a proof of anything a real user sees.
+// Headless runner for the `demo/*.html` GL proofs (#328): each page drives the REAL wasm renderer
+// against a REAL WebGL2 context and publishes `window.__proof` after reading pixels back, at every
+// device pixel ratio in `RATIOS`.
 import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
 
 const DEMO_DIR = fileURLToPath(new URL("../demo", import.meta.url));
-// `screen-*.html` proofs read the SCREEN rather than the drawing buffer, so they cannot use this
-// runner: they need the browser process to have rendered a document already (#352), and they publish
-// `__composited` instead of `__proof`. `screen-composited.spec.mjs` collects them by the same prefix
-// and launches its own browser, so a new one is never orphaned between the two runners. Everything
-// else here is picked up automatically.
+// Every page but `screen-*.html`, which `screen-composited.spec.mjs` collects by the same prefix.
 const DEMOS = readdirSync(DEMO_DIR)
   .filter((f) => f.endsWith(".html") && !f.startsWith("screen-"))
   .sort();
 
-// 1 is the baseline; 1.5 is a Windows box at 150 % display scaling; 2 is Retina. 1.1 earns its place:
-// it is browser zoom at 110 %, and it is the density at which every proof's grid used to overhang its
-// drawing buffer (#331). A sweep that skips the awkward ratios proves the easy half of the contract.
+// Why these four: docs/map/territory/browser-proof-harness.md.
 const RATIOS = [1, 1.1, 1.5, 2];
 
 /** Load a proof page and return its `window.__proof` once it has published `__done`. */
@@ -48,11 +36,7 @@ for (const deviceScaleFactor of RATIOS) {
         const { proof, errors } = await runProof(browser, deviceScaleFactor, demo);
         expect(errors, `page errors in ${demo}`).toEqual([]);
 
-        // Name the failing checks rather than just asserting `ok` — a bare `false` tells the next
-        // reader nothing about which property broke. And print whatever the page recorded under
-        // `measured`: several pages here derive their expectations from the machine's own fonts
-        // (#578), so a CI-only red is otherwise undiagnosable without reproducing the runner's
-        // font stack — which is a whole afternoon that a printed number replaces (#791).
+        // Name the failing checks, and print what the page recorded under `measured` (#791).
         const failing = Object.entries(proof.checks ?? {})
           .filter(([, passed]) => !passed)
           .map(([name]) => name);
@@ -63,26 +47,15 @@ measured: ${JSON.stringify(proof.measured)}`
         expect(failing, `failing checks in ${demo}${context}`).toEqual([]);
         expect(proof.ok, `${demo} reported not-ok`).toBe(true);
 
-        // #331: the drawing buffer IS the grid — for a page that mounted one grid over the whole
-        // surface, which is what `fitGrid` does and what almost every page here wants. Since #773
-        // that is an arrangement the PAGE establishes rather than something `resize` guaranteed, so
-        // this is the tripwire for a page that sized its surface from something other than its own
-        // grid's cells — which is what made every demo's grid overhang its buffer at dpr 1.1.
-        //
-        // It stayed unconditional, and `oversized.html` is why that is worth saying: it is the one
-        // page that exercises a clamp, so it was the obvious candidate for an opt-out — and it does
-        // not need one. It re-fits the SURFACE alongside the grid, exactly as a consumer would, so
-        // the two agree again on the far side of the clamp. An opt-out would have swapped equality
-        // for containment on precisely the page where "the buffer came back larger than the grid"
-        // most needs to be visible.
+        // #331: the drawing buffer IS the grid, for a page that mounted one grid over the whole
+        // surface. Deliberately unconditional, `oversized.html` included — see
+        // docs/map/territory/browser-proof-harness.md.
         if (proof.gridFit) {
           expect(
             proof.gridFit.grid,
             `${demo} @ dpr ${deviceScaleFactor}: grid must equal the drawing buffer (#331)`,
           ).toEqual(proof.gridFit.buffer);
-          // #339: this one CAN fail. `canvas.width` is the size we asked for; `drawingBufferWidth`
-          // is the size WebGL granted. If they diverge the renderer is drawing a grid the viewport
-          // cannot hold, and nothing else in the harness would notice.
+          // #339: the size asked for (`canvas.width`) equals the size WebGL granted.
           expect(
             proof.gridFit.attr,
             `${demo} @ dpr ${deviceScaleFactor}: the browser clamped the drawing buffer below ` +

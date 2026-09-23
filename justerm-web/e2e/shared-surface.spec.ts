@@ -6,24 +6,12 @@ import { DEMO_URL } from "../playwright.config";
 import { readAsyncProbe as harvest } from "./probe";
 
 /**
- * Epic #287 S8 (#776) — **two terminals on one canvas, in a real browser.**
+ * Epic #287 S8 (#776) — **two terminals on one canvas, in a real browser**: the consumer-side proof
+ * of the adapter's `composedSurface === false` branch, driving `demo/shared-surface.html`.
  *
- * Every slice of the epic before this one is proven by unit tests against a fake backend and by
- * pixel probes inside the renderer's own crate. This file is the consumer-side proof, and it is not
- * a nicety: measured at the start of the slice, nothing outside `src/` called `TerminalSurface.open`,
- * `JustermRenderer.attach`, `observeViewportRect` or `onDensityChange`, so the adapter's
- * `composedSurface === false` branch had never executed in a browser at all.
- *
- * It drives `demo/shared-surface.html`. `demo/index.html` is untouched by this slice — it is the
- * harness the rest of the suite is written against, and moving it would quietly change what a large
- * number of unrelated assertions mean.
- *
- * **What a pixel here can and cannot say.** `readPixels` reads the drawing buffer *before* the
- * compositor, so it sees what the renderer drew and not what a person sees; the page's checkerboard
- * exists so those two do not diverge (#577). What makes the shared-canvas claim readable at all is
- * that `draw()` clears the whole buffer to `rgba(0,0,0,0)` and each grid then clears only inside its
- * own scissor rect — so canvas that no grid was placed over stays transparent, and a sample there
- * distinguishes "two rects on one buffer" from "one grid spanning both".
+ * `draw()` clears the whole buffer to `rgba(0,0,0,0)` and each grid clears only inside its own
+ * scissor rect, so canvas no grid was placed over stays transparent — a sample there separates "two
+ * rects on one buffer" from "one grid spanning both". Layout rules: docs/map/territory/browser-proof-harness.md.
  */
 
 /** The probes `demo/shared-surface.ts` installs. */
@@ -48,16 +36,8 @@ const readAsyncProbe = <K extends AsyncProbe>(
 const READY = "[data-testid='surface-ready']";
 
 /**
- * The **stage's** CSS box and the density. Deliberately the stage and not the canvas.
- *
- * Every "is the buffer the right size" claim has to stand on something derived from neither the
- * buffer nor the grant, and it took two tries to find one. `cssWidth()` is `bufW / dpr` inside the
- * renderer (`justerm-renderer/src/webgl.rs`), so `bufW === round(cssW * dpr)` is an identity holding
- * for any buffer at all — measured, 7x5 device px short and green. Reading the **canvas** element's
- * box instead does not help and was the second version of this: `resizeSurface` writes that box from
- * `cssWidth()`, so it is the same derived number wearing a DOM shape, and it measured green too. The
- * stage is sized from the page's own intended layout and never from anything the renderer returns,
- * which is what makes it an independent quantity.
+ * The **stage's** CSS box and the density. Deliberately the stage and not the canvas: the canvas box
+ * derives from the renderer, the stage does not (docs/map/territory/browser-proof-harness.md).
  */
 const stageBox = (page: Page): Promise<{ w: number; h: number; dpr: number }> =>
   page.evaluate(() => {
@@ -70,16 +50,9 @@ const GOTO_BUDGET_MS = 8_000;
 const BAR_BUDGET_MS = 12_000;
 
 /**
- * #735 — the cold boot is paid here, where the budget can absorb it.
- *
- * **This is a copy of `demo.spec.ts`'s hook, and it has to be.** `beforeAll` runs once per file per
- * worker, `browser` is worker-scoped, and playwright spreads files across workers — so this file
- * lands in its own worker with its own cold browser process and inherits nothing from the other
- * spec's warm-up. That consequence is stated in the other file's own comment; this is it happening.
- *
- * Fail-soft, for the same reason it is there: the hook asserts nothing, and the only thing it could
- * prove is already proven per test by `beforeEach` with a better message. A throw is logged and the
- * run simply pays the cold boot on test one.
+ * #735 — the cold boot is paid here, where the budget can absorb it. Deliberately a copy of
+ * `demo.spec.ts`'s hook, fail-soft like it: a second spec file gets its own cold browser
+ * (docs/map/territory/browser-proof-harness.md).
  */
 test.beforeAll(async ({ browser }) => {
   let context: BrowserContext | undefined;

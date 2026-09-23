@@ -1,22 +1,9 @@
 // Manual harness for Epic #287 S8 (#776) — TWO terminals on ONE canvas, one WebGL2 context, at two
 // different font sizes. Run `pnpm demo` (NOT `vite demo`) and open `/shared-surface.html`.
 //
-// **Why this page exists rather than a widening of `demo/main.ts`.** Every slice of #287 before this
-// one is proven by unit tests against a fake backend and by pixel probes inside the renderer's own
-// crate, and none of those is the thing a consumer will actually do. More precisely, and measured
-// while starting this slice: nothing outside `src/` called `TerminalSurface.open`,
-// `JustermRenderer.attach`, `observeViewportRect` or `onDensityChange` — so the whole
-// `composedSurface === false` branch of the adapter had never executed in a browser. This page is
-// that branch's first execution, which is why it is the epic's proof rather than a demo of it.
-//
-// `demo/main.ts` is deliberately untouched: it is the harness the rest of the e2e suite is written
-// against, and moving it would quietly change what a large number of unrelated assertions mean.
-//
-// **The shape is deliberately thin.** `main.ts` is ~3.5k lines because it accumulated one slice's
-// affordances at a time, and its probes are calibrated against each other (a cursor cell that no
-// other probe may sample, rows reserved per feature). Nothing here should be read as an example of
-// that: this page holds one arrangement — two panes, two fonts, two cadences — because the
-// arrangement *is* the subject.
+// Deliberately its own page, and deliberately thin: one arrangement — two panes, two fonts, two
+// cadences — because the arrangement is the subject. Why not `demo/main.ts`:
+// docs/map/territory/browser-proof-harness.md.
 import {
   JustermRenderer,
   observeViewportRect,
@@ -36,25 +23,9 @@ const CANVAS = { width: 900, height: 340 } as const;
 /**
  * Where each terminal's DOM overlay sits, in CSS px relative to the stage.
  *
- * **Neither pane is at the origin and neither fills the canvas**, and both of those are the point.
- * A sole tenant sits at `(0, 0)` and covers the whole buffer, so it exercises no coordinate: the x
- * and y a shared tenant is placed at are the numbers `observeViewportRect` derives and the renderer
- * flips to GL's bottom-origin y, and a page that placed pane B at `y = 0` would leave the flip
- * asserted only at the one value where a sign error is invisible.
- *
- * What is left over is the evidence — see `shared-surface.html`'s note on the checkerboard. The
- * gutter `x ∈ [400, 500)` and the band `y ∈ [0, 40)` above pane B are canvas that no grid was
- * placed over, and `draw()` leaves them at `rgba(0,0,0,0)`.
- *
- * **The two rects must not overlap, and that is load-bearing rather than tidy.** Grids paint in
- * registration order and are *not* composited with each other: a later grid opens with a `clear`,
- * and a clear writes, so its rect REPLACES whatever was under it. Every pixel claim on this page —
- * each pane's centre, each pane's whole-rect digest, the sibling that must come back byte-identical
- * — would then be reporting the topmost grid rather than its own. The renderer's own
- * `demo/context-loss-grids.html` states the same dependency for the same reason ("four rects
- * stacked, none overlapping … so a check cannot fail on account of a neighbour painting into it");
- * it was unstated here until the completeness pass asked. Overlap is a legitimate consumer
- * arrangement — it is simply not one any assertion below could survive.
+ * Deliberately: neither pane at the origin, neither filling the canvas, and the two never
+ * overlapping (docs/map/territory/browser-proof-harness.md). The gutter `x ∈ [400, 500)` and the
+ * band `y ∈ [0, 40)` above pane B are canvas no grid was placed over, left at `rgba(0,0,0,0)`.
  */
 interface PaneBox {
   readonly left: number;
@@ -77,13 +48,8 @@ const ANSI = [
 ];
 
 /**
- * The two backgrounds, and the one constraint they are under: **each must differ from the other and
- * from the page's checkerboard**, so a single sampled pixel names which grid painted it.
- *
- * A page whose background matched a terminal's is the #577 failure, and it went green for six
- * slices. Here the same mistake would be worse than invisible — it would be *wrong*: the gutter
- * sample is what proves the two panes share a canvas, and if it matched a pane's background the
- * proof would read as "the grid extends across the gutter", which is the opposite conclusion.
+ * The two backgrounds. **Each must differ from the other and from the page's checkerboard**, so a
+ * single sampled pixel names which grid painted it (#577; docs/map/territory/browser-proof-harness.md).
  */
 const BG_A = 0x1b2a4a; // deep blue
 const BG_B = 0x123a24; // deep green

@@ -21,9 +21,8 @@ export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
-  // Kept at zero on purpose (#735): a retry re-runs against a browser process
-  // whose code cache is now warm, so it would always pass — which does not fix a
-  // slow boot, it disables the detector. It would also have masked #653.
+  // Deliberately zero (#735): a retry runs warm and always passes — see
+  // docs/map/territory/browser-proof-harness.md.
   retries: 0,
   reporter: [["list"]],
   use: {
