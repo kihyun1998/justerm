@@ -14,7 +14,7 @@ declare global {
  * #731 — **start an async probe in one `evaluate`, park its outcome on `window`, harvest that.**
  * The harvest is a `waitForFunction` poller playwright holds by `objectId`, so the promise it awaits
  * stays reachable; a probe's promise returned straight out of `evaluate` would not
- * (docs/map/invariant/an-awaited-in-page-promise-needs-an-anchor.md). Rejections are parked too, so a
+ * (`docs/map/invariant/an-awaited-in-page-promise-needs-an-anchor.md`). Rejections are parked too, so a
  * probe's own throw is reported as a rejection rather than as a harvest that never arrives.
  *
  * The one copy of this for every spec; each wraps it in a two-line typed alias over its own hook

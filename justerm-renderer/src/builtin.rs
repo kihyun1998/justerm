@@ -2,7 +2,7 @@
 //! the block elements, and Symbols for Legacy Computing `1FB00`-`1FB9F` bar the reserved `1FB93`.
 //!
 //! Deliberate: these ranges never reach the font — see ADR-0018 and
-//! docs/map/territory/builtin-block-glyphs.md.
+//! `docs/map/territory/builtin-block-glyphs.md`.
 //!
 //! Coverage only. The bitmap is white with the coverage in the alpha channel, exactly what
 //! [`Rasterizer::rasterize`](crate::rasterizer::Rasterizer::rasterize) returns, so the atlas upload
@@ -48,7 +48,7 @@ const SOLID: u8 = 255; // █
 /// [`glyph_class`](crate::glyph_class) unions it into `treat_glyph_as_background_color` (#507).
 ///
 /// Deliberate: a hand range rather than `block_glyph(cp, 1, 1).is_some()`, pinned to it by
-/// `owns_is_exactly_what_block_glyph_draws` — see docs/map/territory/builtin-block-glyphs.md.
+/// `owns_is_exactly_what_block_glyph_draws` — see `docs/map/territory/builtin-block-glyphs.md`.
 pub fn owns(cp: u32) -> bool {
     // `2500`-`259F` is contiguous: box drawing (`box_glyph`) then block elements. `1FB00`-`1FB9F`
     // is contiguous except the reserved `1FB93`, reached through five drawing paths (sextant,
@@ -90,7 +90,7 @@ pub fn block_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
         // A 2x3 mosaic in equal-third rows, the last row taking the remainder.
         //
         // Deliberate: `saturating_sub`, not alacritty's unfloored `height - 2*y_third` — see
-        // docs/map/territory/builtin-block-glyphs.md.
+        // `docs/map/territory/builtin-block-glyphs.md`.
         let xc = ((w as f32 / 2.0).round() as u32).max(1);
         let third = ((h as f32 / 3.0).round() as u32).max(1);
         let last = h.saturating_sub(2 * third);
@@ -290,7 +290,7 @@ fn box_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     // two arms overlap at the centre and adjacent cells join (alacritty `builtin_font.rs:226-242`).
     //
     // Deliberate: the left/up arm lengths' `.max(1)` keeps a terminal lit on a 1px cell — see
-    // docs/map/territory/builtin-block-glyphs.md.
+    // `docs/map/territory/builtin-block-glyphs.md`.
     if sh_l > 0 {
         fill(
             &mut buf,
@@ -323,7 +323,7 @@ fn box_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
 /// cell; `╳` is the two bands in one buffer.
 ///
 /// The band is a **true perpendicular** stroke of width `stroke` at any cell aspect — see
-/// docs/map/territory/builtin-block-glyphs.md for how that diverges from alacritty.
+/// `docs/map/territory/builtin-block-glyphs.md` for how that diverges from alacritty.
 fn box_diagonal(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     if w == 0 || h == 0 {
         return None;
@@ -506,7 +506,7 @@ fn box_rounded(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
         let center = (w / 2) as usize;
         let extra = usize::from(stroke % 2 != w % 2);
         // Deliberate: `1..=h`, not alacritty's `1..h`, so the flip reaches the last row — see
-        // docs/map/territory/builtin-block-glyphs.md.
+        // `docs/map/territory/builtin-block-glyphs.md`.
         for y in 1..=h as usize {
             let left = (y - 1) * w as usize;
             let right = y * w as usize - 1;
@@ -953,7 +953,7 @@ fn diagonal_hatch(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     }
     let (wf, hf) = (w as f32, h as f32);
     // Deliberate: a one-device-pixel hairline, not the box-line stroke — see
-    // docs/map/territory/builtin-block-glyphs.md.
+    // `docs/map/territory/builtin-block-glyphs.md`.
     let half = 0.5;
     let mut buf = vec![0u8; (w * h * 4) as usize];
     let mut band = |ax: f32, ay: f32, bx: f32, by: f32| {
@@ -997,7 +997,7 @@ const POLY_SS: u32 = 4;
 /// is **even-odd**, and coverage is **max-combined** into the alpha channel.
 ///
 /// Deliberate: a seamless shape is passed as ONE ring, and [`fill`] is kept to regions disjoint from
-/// it — see docs/map/territory/builtin-block-glyphs.md.
+/// it — see `docs/map/territory/builtin-block-glyphs.md`.
 ///
 /// A degenerate ring (fewer than three vertices, zero area, or entirely outside the cell) lights
 /// nothing rather than panicking.
@@ -1018,7 +1018,7 @@ fn fill_polygon(buf: &mut [u8], size: (u32, u32), verts: &[(f32, f32)], alpha: u
             let yline = py as f32 + (s as f32 + 0.5) / ss;
 
             // x where each edge crosses this scanline. Deliberate: the half-open `<=` test, so a
-            // shared vertex is crossed once — see docs/map/territory/builtin-block-glyphs.md.
+            // shared vertex is crossed once — see `docs/map/territory/builtin-block-glyphs.md`.
             let mut xs: Vec<f32> = Vec::with_capacity(verts.len());
             for (i, &(x0, y0)) in verts.iter().enumerate() {
                 let (x1, y1) = verts[(i + 1) % verts.len()];
@@ -1544,7 +1544,7 @@ mod tests {
             .chain(0x1FB98..=0x1FB9B);
         for cp in cps {
             // Realistic cell sizes only: below 8 px a hatch goes near-solid (see
-            // docs/map/territory/builtin-block-glyphs.md).
+            // `docs/map/territory/builtin-block-glyphs.md`).
             for (w, h) in [(16u32, 16u32), (33, 17)] {
                 let buf = block_glyph(cp, w, h)
                     .unwrap_or_else(|| panic!("{cp:x} at {w}x{h} must be owned"));

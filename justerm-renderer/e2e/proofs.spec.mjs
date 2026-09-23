@@ -11,7 +11,7 @@ const DEMOS = readdirSync(DEMO_DIR)
   .filter((f) => f.endsWith(".html") && !f.startsWith("screen-"))
   .sort();
 
-// Why these four: docs/map/territory/browser-proof-harness.md.
+// Why these four: `docs/map/territory/browser-proof-harness.md`.
 const RATIOS = [1, 1.1, 1.5, 2];
 
 /** Load a proof page and return its `window.__proof` once it has published `__done`. */
@@ -49,7 +49,7 @@ measured: ${JSON.stringify(proof.measured)}`
 
         // #331: the drawing buffer IS the grid, for a page that mounted one grid over the whole
         // surface. Deliberately unconditional, `oversized.html` included — see
-        // docs/map/territory/browser-proof-harness.md.
+        // `docs/map/territory/browser-proof-harness.md`.
         if (proof.gridFit) {
           expect(
             proof.gridFit.grid,

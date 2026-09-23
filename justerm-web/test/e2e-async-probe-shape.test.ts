@@ -1,6 +1,6 @@
 /**
  * #731 — **no `evaluate` in the e2e suite may hand `awaitPromise` a promise nothing keeps
- * reachable** (docs/map/invariant/an-awaited-in-page-promise-needs-an-anchor.md). In practice: an
+ * reachable** (`docs/map/invariant/an-awaited-in-page-promise-needs-an-anchor.md`). In practice: an
  * evaluate callback may not be `async`, and may not resolve to one of the demo's promise-returning
  * `window.__*` hooks; those go through `readAsyncProbe`.
  *
@@ -36,7 +36,7 @@ const demoSources = sourcesIn("demo", (f) => f.endsWith(".ts"));
  *
  * `e2e/probe.ts` is in deliberately — a regression there reinstates the hazard for every spec at
  * once — but the general checks cover only its async-callback half; the rest is pinned by the
- * over-fitted `it` below (docs/map/territory/browser-proof-harness.md § Known holes).
+ * over-fitted `it` below (`docs/map/territory/browser-proof-harness.md` § Known holes).
  */
 const e2eSources = sourcesIn("e2e", (f) => f.endsWith(".ts"));
 
@@ -61,7 +61,7 @@ const asyncHookNames = (src: string): string[] => [
  *
  * Deliberate order: comments go first and double quotes are emptied before single ones, or prose
  * apostrophes pair across lines and delete whole calls — a silent pass (see
- * docs/map/territory/browser-proof-harness.md). A reduction, not a parser: a trailing `//` comment
+ * `docs/map/territory/browser-proof-harness.md`). A reduction, not a parser: a trailing `//` comment
  * whose own quotes or parens are unbalanced would produce a loud false positive.
  */
 const codeOnly = (src: string): string =>
@@ -108,7 +108,7 @@ const evaluateCalls = (src: string): string[] => {
  * - **A word boundary.** `__composited` is a prefix of `__compositedSettled`, so a bare
  *   `includes` flags the harvest that reads the parked slot.
  *
- * Bound: a promise assigned to a local and returned escapes (docs/map/territory/browser-proof-harness.md).
+ * Bound: a promise assigned to a local and returned escapes (`docs/map/territory/browser-proof-harness.md`).
  */
 const resolvesTo = (call: string, hook: string): boolean =>
   new RegExp(`(?:=>|return)window\\.${hook}(?![A-Za-z0-9_])`).test(call);

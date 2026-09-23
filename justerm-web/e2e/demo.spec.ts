@@ -18,7 +18,7 @@ const live = "[data-testid='command-live']";
 
 /**
  * Seed output rows until the scrollbar thumb reaches `threshold`, or give up (#818) — a loop, not a
- * count, because the rows it takes follow the cell (docs/map/territory/browser-proof-harness.md).
+ * count, because the rows it takes follow the cell (`docs/map/territory/browser-proof-harness.md`).
  *
  * `read` is the caller's own thumb query. Deliberately does NOT assert: the caller's assertion
  * names the condition when a seed stops producing the state.
@@ -38,7 +38,7 @@ async function seedUntilThumb(
  * #733 — **one navigation per test, and it is `beforeEach`'s**; a test that needs a different boot
  * sets `bootUrl` through `test.use()`. A test that watches the boot takes `consoleLines`, which is
  * `auto` deliberately so it attaches before `beforeEach`. Why, for all three:
- * docs/map/territory/browser-proof-harness.md.
+ * `docs/map/territory/browser-proof-harness.md`.
  */
 const test = base.extend<{ consoleLines: string[]; bootUrl: string }>({
   /** What `beforeEach` navigates to. Override per describe with `test.use({ bootUrl })`. */
@@ -94,7 +94,7 @@ const readAsyncProbe = <K extends AsyncProbe>(
  *
  * Deliberate: every await carries an explicit budget (the slot timeout cannot be caught), and a
  * throw is logged and swallowed (the hook asserts nothing). It covers this spec file only. Why,
- * and the measurements: docs/map/territory/browser-proof-harness.md.
+ * and the measurements: `docs/map/territory/browser-proof-harness.md`.
  */
 test.beforeAll(async ({ browser }) => {
   let context: BrowserContext | undefined;
@@ -121,7 +121,7 @@ test.beforeEach(async ({ page, bootUrl }) => {
   // the `await import("justerm-wasm-decode")` between them resolves on the microtask queue. Break
   // that and every probe-reading test fails with `window.__xProbe is not a function`; move this gate
   // to something the probes emit. The 30s timeout is deliberate: this gate asserts THAT the app
-  // booted, not how fast (docs/map/territory/browser-proof-harness.md).
+  // booted, not how fast (`docs/map/territory/browser-proof-harness.md`).
   await expect(page.getByRole("button", { name: /Finish command/ })).toBeVisible({
     timeout: 30_000,
   });

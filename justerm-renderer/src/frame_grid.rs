@@ -5,7 +5,7 @@
 //! each span sits. [`FrameGrid`] keeps a persistent dense grid and scatters each frame's damage
 //! into it: a Full frame wipes the grid first, a scroll op shifts the region before spans, then
 //! each span's cells scatter into their `(line, left+i)` slots — the algorithm of justerm-web's
-//! `cell-mirror.ts`. Design: docs/map/territory/frame-adapter.md.
+//! `cell-mirror.ts`. Design: `docs/map/territory/frame-adapter.md`.
 
 /// `u32`s per span in the flat span directory: `line, left, right, cell_offset, cell_count`
 /// (mirrors `justerm-wasm-decode` `SPAN_STRIDE`).
@@ -36,7 +36,7 @@ pub struct DamageFrame<'a> {
     /// Span-ordered combining-cluster index per cell (#285): `0` = none (use the base
     /// codepoint), else a 1-based index into `side_table` for this cell's trailing combining
     /// marks. Frame-local, so resolved to text at scatter time. `u32`, as justerm-core emits it
-    /// (#627) — deliberately not `u16`; see docs/map/territory/frame-adapter.md.
+    /// (#627) — deliberately not `u16`; see `docs/map/territory/frame-adapter.md`.
     pub extra: &'a [u32],
     /// This frame's combining-mark clusters, referenced by a cell's `extra - 1`. Each entry is
     /// only the trailing width-0 **marks** (e.g. `"\u{0301}"`) — justerm-core stores the base
@@ -140,7 +140,7 @@ impl FrameGrid {
 
     /// Check every index a scatter would produce, before it produces any of them (#355), so a
     /// refused frame leaves the grid untouched. Deliberately up front rather than as the scatter
-    /// goes — see docs/map/territory/frame-adapter.md.
+    /// goes — see `docs/map/territory/frame-adapter.md`.
     fn validate(&self, frame: &DamageFrame) -> Result<(), DamageError> {
         let (cols, rows) = (self.cols as usize, self.rows as usize);
 
@@ -205,7 +205,7 @@ impl FrameGrid {
         if frame.kind == 0 {
             // A Full frame is the whole viewport — wipe stale cells first, or content outside
             // the new spans resurrects as ghosts. Its `scroll` op is deliberately ignored (see
-            // docs/map/territory/frame-adapter.md).
+            // `docs/map/territory/frame-adapter.md`).
             self.codepoints.fill(0);
             self.fg.fill(0);
             self.bg.fill(0);
@@ -218,7 +218,7 @@ impl FrameGrid {
             // A Partial's scroll op precedes its spans: shift the stored region so retained
             // cells move with it; the spans then repaint the exposed line (core ships it as a
             // full-width span with the BCE background). An over-height `count` blanks the whole
-            // region — deliberately tolerated (see docs/map/territory/frame-adapter.md).
+            // region — deliberately tolerated (see `docs/map/territory/frame-adapter.md`).
             self.shift_region(top as usize, bottom as usize, count as isize);
         }
 

@@ -3,7 +3,7 @@
 //
 // Deliberately its own page, and deliberately thin: one arrangement — two panes, two fonts, two
 // cadences — because the arrangement is the subject. Why not `demo/main.ts`:
-// docs/map/territory/browser-proof-harness.md.
+// `docs/map/territory/browser-proof-harness.md`.
 import {
   JustermRenderer,
   observeViewportRect,
@@ -24,7 +24,7 @@ const CANVAS = { width: 900, height: 340 } as const;
  * Where each terminal's DOM overlay sits, in CSS px relative to the stage.
  *
  * Deliberately: neither pane at the origin, neither filling the canvas, and the two never
- * overlapping (docs/map/territory/browser-proof-harness.md). The gutter `x ∈ [400, 500)` and the
+ * overlapping (`docs/map/territory/browser-proof-harness.md`). The gutter `x ∈ [400, 500)` and the
  * band `y ∈ [0, 40)` above pane B are canvas no grid was placed over, left at `rgba(0,0,0,0)`.
  */
 interface PaneBox {
@@ -49,7 +49,7 @@ const ANSI = [
 
 /**
  * The two backgrounds. **Each must differ from the other and from the page's checkerboard**, so a
- * single sampled pixel names which grid painted it (#577; docs/map/territory/browser-proof-harness.md).
+ * single sampled pixel names which grid painted it (#577; `docs/map/territory/browser-proof-harness.md`).
  */
 const BG_A = 0x1b2a4a; // deep blue
 const BG_B = 0x123a24; // deep green

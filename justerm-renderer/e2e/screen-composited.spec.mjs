@@ -4,7 +4,7 @@
 //
 // Deliberate: this spec launches its own browser and burns one navigation before measuring — the
 // first document a headless process renders composites garbage. Why, what was ruled out and what
-// upstream says: docs/map/territory/browser-proof-harness.md.
+// upstream says: `docs/map/territory/browser-proof-harness.md`.
 import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { chromium, expect, test } from "@playwright/test";
@@ -49,7 +49,7 @@ for (const demo of SCREEN_PROOFS) {
         const shot = await page.screenshot({ scale: "device" });
 
         // Start `__composited`, park its outcome, harvest it — never await its promise across CDP
-        // (#731; docs/map/invariant/an-awaited-in-page-promise-needs-an-anchor.md).
+        // (#731; `docs/map/invariant/an-awaited-in-page-promise-needs-an-anchor.md`).
         await page.evaluate((b64) => {
           delete window.__compositedSettled;
           void window.__composited(b64).then(

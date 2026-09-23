@@ -2,7 +2,7 @@
 // pixels: the drawing buffer, and the cell `cell_width()`/`cell_height()` report.
 //
 // Deliberate: the cell is always read from the renderer, never re-derived from CSS size or buffer
-// width — see docs/map/territory/browser-proof-harness.md.
+// width — see `docs/map/territory/browser-proof-harness.md`.
 
 /** A grid's exact device-pixel cell, `[width, height]`. Per grid since #773: the cell belongs to
  *  the font configuration that grid selects into, and two grids need not share one. */
@@ -119,7 +119,7 @@ export function hasColourEmojiFont() {
 
 /**
  * Whether a `cols × rows` grid of device cells fits inside the drawing buffer — the #331/#339
- * identities `proofs.spec.mjs` asserts (docs/map/territory/browser-proof-harness.md).
+ * identities `proofs.spec.mjs` asserts (`docs/map/territory/browser-proof-harness.md`).
  *
  * `attr` is what the page asked for (`canvas.width`), `buffer` what WebGL granted, and `clamped` the
  * only observable that separates the two. A clamp shows on the SURFACE, never in `r.cols(g)`, which
@@ -162,7 +162,7 @@ export function spacingForThickBar(baseCw, baseCh, dpr, factor = 2, thicknessFra
 // Helpers for the proofs that read a SCREENSHOT — what the compositor put on screen — rather than
 // the drawing buffer `readPixels` reads. A composited proof must not be its browser process's first
 // document, must refuse a uniform region before measuring it, and must check per cell:
-// docs/map/territory/browser-proof-harness.md says why.
+// `docs/map/territory/browser-proof-harness.md` says why.
 
 /**
  * Split an RGBA buffer into white / black / intermediate fractions by luminance.

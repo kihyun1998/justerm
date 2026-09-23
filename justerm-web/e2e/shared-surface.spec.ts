@@ -11,7 +11,7 @@ import { readAsyncProbe as harvest } from "./probe";
  *
  * `draw()` clears the whole buffer to `rgba(0,0,0,0)` and each grid clears only inside its own
  * scissor rect, so canvas no grid was placed over stays transparent — a sample there separates "two
- * rects on one buffer" from "one grid spanning both". Layout rules: docs/map/territory/browser-proof-harness.md.
+ * rects on one buffer" from "one grid spanning both". Layout rules: `docs/map/territory/browser-proof-harness.md`.
  */
 
 /** The probes `demo/shared-surface.ts` installs. */
@@ -37,7 +37,7 @@ const READY = "[data-testid='surface-ready']";
 
 /**
  * The **stage's** CSS box and the density. Deliberately the stage and not the canvas: the canvas box
- * derives from the renderer, the stage does not (docs/map/territory/browser-proof-harness.md).
+ * derives from the renderer, the stage does not (`docs/map/territory/browser-proof-harness.md`).
  */
 const stageBox = (page: Page): Promise<{ w: number; h: number; dpr: number }> =>
   page.evaluate(() => {
@@ -52,7 +52,7 @@ const BAR_BUDGET_MS = 12_000;
 /**
  * #735 — the cold boot is paid here, where the budget can absorb it. Deliberately a copy of
  * `demo.spec.ts`'s hook, fail-soft like it: a second spec file gets its own cold browser
- * (docs/map/territory/browser-proof-harness.md).
+ * (`docs/map/territory/browser-proof-harness.md`).
  */
 test.beforeAll(async ({ browser }) => {
   let context: BrowserContext | undefined;

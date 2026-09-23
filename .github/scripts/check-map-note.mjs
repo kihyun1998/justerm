@@ -1,11 +1,8 @@
 #!/usr/bin/env node
 // Verify ONE map note — the per-note check that makes "verify as you finish it" affordable.
 //
-// The batch gate (check-map-links.mjs) runs in CI over the whole tree. This one is for the author,
-// mid-write, and exists because of a measured failure: 27 notes were written and verified once at
-// the end, and every defect that pass found was the same class, spread across notes written hours
-// apart. Checking after the third would have ended the class there — but only if checking is cheap
-// enough that nobody defers it.
+// The batch gate (check-map-links.mjs) runs in CI over the whole tree; this one is for the author,
+// mid-write (why: `docs/map/territory/ci-and-supply-chain.md`).
 //
 //   node .github/scripts/check-map-note.mjs docs/map/territory/selection.md
 //
@@ -24,8 +21,7 @@ if (!file || !existsSync(file)) {
   process.exit(2);
 }
 
-// Three note kinds, three schemas. Applying the territory schema to an invariant note is the first
-// thing this script got wrong, and it reported three real notes as broken.
+// Three note kinds, three schemas (aggregates are checked for their "owns no detail" line only).
 const TERRITORY_SECTIONS = [
   '## What it is',
   '## Governing decisions',
@@ -71,10 +67,8 @@ if (isAggregate) {
 
 // 2 — symbols named under ## Code
 const codeSection = /^## Code\r?\n([\s\S]*?)^## /m.exec(raw)?.[1] ?? '';
-// A territory can legitimately have no code — a design that is recorded and not built. That is a
-// state worth representing rather than a note to reject, so `## Code` takes the same `**None.**`
-// sentinel the other sections use, and the symbol check stands down for it. The prose after the
-// sentinel is then free to name things that deliberately do not exist yet.
+// `**None.**` under `## Code` — a design recorded and not built — stands the symbol check down, so
+// the prose after it may name things that do not exist yet.
 const noCode = /^\s*\*\*None\.\*\*/.test(codeSection);
 if (codeSection.trim() && !noCode) {
   const blob = [];
@@ -92,9 +86,8 @@ if (codeSection.trim() && !noCode) {
   }
   const tree = blob.join('\n');
 
-  // Notes write a full path once and then bare siblings — `…/src/palette.rs` · `attrs.rs` · `color.rs`.
-  // Resolving a bare name against the repo root reported every one of those as missing, so accept a
-  // basename that exists anywhere in the source roots.
+  // Notes write a full path once and then bare siblings — `…/src/palette.rs` · `attrs.rs` · `color.rs`
+  // — so a basename that exists anywhere in the source roots resolves.
   const allPaths = [];
   const collect = (dir) => {
     if (!existsSync(dir)) return;
@@ -118,14 +111,10 @@ if (codeSection.trim() && !noCode) {
   ]);
   for (const s of syms) {
     if (files.has(s)) continue;
-    // declaration, call/field, enum variant, macro, or TOML key — the four shapes that produced
-    // false positives when only declarations were matched.
+    // declaration, call/field, enum variant, macro, or TOML key.
     const pats = [
-      // Rust and TypeScript declaration keywords — the map spans both, and omitting `class` /
-      // `interface` reported every TS type the notes name as unresolved.
-      // Rust and TypeScript declaration keywords — the map spans both, and omitting `class` /
-      // `interface` reported every TS type the notes name as unresolved. `impl` is here because a
-      // note may legitimately name a *foreign* trait the tree implements but does not declare.
+      // Rust and TypeScript declaration keywords; `impl` because a note may name a *foreign* trait
+      // the tree implements but does not declare.
       new RegExp(`(?:fn|struct|enum|const|static|type|trait|mod|class|interface|let|var|impl)\\s+${s}\\b`),
       new RegExp(`\\b${s}\\s*[:(!]`),
       new RegExp(`^\\s*${s}\\s*,?\\s*$`, 'm'),

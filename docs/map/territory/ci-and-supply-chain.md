@@ -34,6 +34,44 @@ Nothing governs the gate matrix itself — which checks exist, and what each is 
   resolves every relative link and `#anchor` across the docs, one checks a single map note as it is
   written, and the published-prose pair asks only whether a pointer is *resolvable from where it is
   printed* — never whether the prose is accurate, which no machine judges.
+- **The link gate exists because a broken anchor is silent.** A missing *file* 404s on GitHub and
+  in an editor; a missing `#anchor` falls back to the top of the target in both GitHub and Obsidian,
+  so a link that landed on one verified row quietly points at a 200-line file. The anchors the map
+  depends on are *known* volatile: `reference-facts.md` headings embed issue numbers and verification
+  dates (`## Damage / dirty tracking (#536, verified 2026-07-28)`), so a routine re-verification
+  re-slugs the heading and breaks the link without touching the linking file.
+- **False positives are the failure mode the prose gates design against.** Fenced blocks and inline
+  code spans are blanked before links are read — documentation about links quotes link-shaped text
+  (`docs/agents/release.md` quotes `[x](../CLAUDE.md)` in a code span) — and replaced with spaces so
+  line numbers survive. Lines are split on `/\r?\n/`: on a CRLF checkout a `\n` split leaves `\r` on
+  every line, `.` does not match it and `$` does not match before it, so `^#{1,6}\s+(.*)$` found zero
+  headings and the checker reported all 11 valid links of its first run as broken.
+- **The link gate also enforces three map-integrity rules.** *Reciprocity*: an invariant note names
+  the territories it holds in and each must name it back under `## Cross-cutting invariants`, because
+  the reading protocol walks that section as a checklist and Obsidian backlinks are neither on GitHub
+  nor in that section (its first run found `wide-glyph-and-soft-wrap` missing `row-keyed-side-maps`
+  while #557 changed `hyperlink`, a row-keyed side map). *No copied ADR status*: a status restated
+  elsewhere has no gate — CLAUDE.md once called four accepted ADRs "proposed" for five days, and a
+  territory note later re-introduced a parenthetical copy of one. *Code-comment citations*: a backticked
+  `.md` path in a source comment is a link too; #602 replaced a hand-kept list in `term/walk.rs` with
+  a pointer to an invariant note, and a pointer that goes stale on a rename is a lateral move, not a
+  repair. That last scan is tight on purpose — comment lines, backticked, under a known top-level
+  directory, ending `.md`.
+- **The per-note check exists so verifying is cheap enough to do mid-write.** 27 notes were once
+  written and verified only at the end, and every defect found was the same class, spread across
+  notes written hours apart — checking after the third would have ended it. It checks sections per
+  note kind (territory, invariant and aggregate have different schemas; applying the territory one to
+  an invariant note reported three real notes broken), symbols under `## Code` (declarations *and*
+  call/field, enum variant, macro, TOML key, Rust and TS keywords including `impl` for a foreign
+  trait, a bare basename resolved anywhere in the source roots), and restated status. `**None.**`
+  under `## Code` is a legal state — a design recorded and not built — and stands the symbol check down.
+- **`check-tool-pins.mjs` checks that pins agree, never that they are current.** Dependabot never
+  edits a `run:` line (`git log -S "cargo install wasm-pack"` returned three commits, all human), so
+  the realistic failure is one workflow bumped alone and CI building the artifact with a different
+  tool than it tests with. Whether the pin is current is a cost judgement — any version other than
+  the runner image's makes cargo compile the tool from source — kept as a release-time trigger
+  (`docs/agents/release.md`), because a gate that fails when upstream publishes trains people to
+  ignore it.
 - **The supply-chain scan is first-party** (`just-shield`, a sibling repo, itself SHA-pinned), which
   makes the scanner a dependency of the same kind it exists to police.
 

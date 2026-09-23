@@ -1,5 +1,5 @@
 // #731 — the proof specs may not hand `awaitPromise` a promise nothing keeps reachable
-// (docs/map/invariant/an-awaited-in-page-promise-needs-an-anchor.md). The renderer's half of the
+// (`docs/map/invariant/an-awaited-in-page-promise-needs-an-anchor.md`). The renderer's half of the
 // family guard; justerm-web's is `test/e2e-async-probe-shape.test.ts`.
 //
 // A structural proxy: it fails when the shape that admits the hazard comes back, never when the
@@ -26,7 +26,7 @@ function asyncHooks() {
 /**
  * Reduce a spec to code the paren balance can trust: comment-only lines dropped, whitespace
  * squashed, string literals emptied — double quotes before single ones, deliberately (see
- * docs/map/territory/browser-proof-harness.md). A reduction, not a parser.
+ * `docs/map/territory/browser-proof-harness.md`). A reduction, not a parser.
  */
 const codeOnly = (src) =>
   src
@@ -65,7 +65,7 @@ function evaluateCalls(src) {
  * - **A word boundary.** `__composited` is a prefix of `__compositedSettled`, so a bare `includes`
  *   flags the harvest that reads the parked slot.
  *
- * Bound: a promise assigned to a local and returned escapes (docs/map/territory/browser-proof-harness.md).
+ * Bound: a promise assigned to a local and returned escapes (`docs/map/territory/browser-proof-harness.md`).
  */
 const resolvesTo = (call, hook) =>
   new RegExp(`(?:=>|return)window\\.${hook}(?![A-Za-z0-9_])`).test(call);

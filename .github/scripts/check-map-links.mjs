@@ -1,21 +1,8 @@
 #!/usr/bin/env node
 // Validate every relative markdown link under the given roots — INCLUDING `#section-anchors`.
 //
-// Why this exists as a gate rather than as a habit. `docs/map/` is a *link graph*: its value is
-// entirely in edges that resolve, and it links out to `docs/adr/` and `docs/agents/reference-facts.md`
-// — files it must never edit and whose headings it does not control. Two failure modes, and only one
-// of them is loud:
-//
-//   - a missing FILE is at least visible on GitHub (404) and in an editor.
-//   - a missing ANCHOR is SILENT. GitHub and Obsidian both fall back to the top of the target
-//     document, so a reference link that used to land on one verified row quietly starts pointing at
-//     a 200-line file, and the reader never learns they were sent to the wrong place. That is the
-//     defect shape this repo keeps paying for (theflow Step 6): a surface that describes something
-//     accurately when written, with nothing checking it afterwards.
-//
-// And the anchors here are *known* to be volatile: reference-facts.md headings embed issue numbers
-// and verification dates (`## Damage / dirty tracking (#536, verified 2026-07-28)`), so a routine
-// re-verification edits the slug and breaks the link without touching the linking file.
+// Also: invariant↔territory reciprocity, no copied ADR status, and `.md` paths cited from code
+// comments. Why each exists: `docs/map/territory/ci-and-supply-chain.md`.
 //
 // The slug rule mirrors GitHub's: strip inline markdown, lowercase, drop everything that is not
 // [a-z0-9 _-], then spaces -> hyphens. Duplicate headings get GitHub's `-1`, `-2` suffixes.
@@ -47,11 +34,8 @@ function slugify(heading) {
 function anchorsOf(file) {
   const seen = new Map();
   const out = new Set();
-  // Split on /\r?\n/, not '\n'. With CRLF checkouts a '\n' split leaves a trailing '\r' on every
-  // line, and `.` in a JS regex does NOT match '\r' (it is a line terminator) while `$` does not
-  // match before one either — so `^#{1,6}\s+(.*)$` matches ZERO headings, every anchor set comes
-  // back empty, and the checker reports every correct link as broken. It did exactly that on its
-  // first run against 11 valid links.
+  // Deliberately /\r?\n/, not '\n': a CRLF checkout otherwise matches zero headings (see
+  // `docs/map/territory/ci-and-supply-chain.md`).
   for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
     const m = /^#{1,6}\s+(.*)$/.exec(line);
     if (!m) continue;
@@ -84,12 +68,8 @@ let checked = 0;
 
 for (const root of roots) {
   for (const file of markdownFiles(root)) {
-    // Blank out fenced blocks and inline code spans FIRST. Documentation about links contains
-    // link-shaped text: `docs/agents/release.md` explains crates.io's rewriting by quoting
-    // `[x](../CLAUDE.md)` inside a code span, and reading that as a link reports a break that does
-    // not exist. A gate people learn to ignore is not a gate, so false positives are the failure
-    // mode to design against here — replacing with spaces keeps offsets, and therefore line numbers,
-    // intact.
+    // Blank out fenced blocks and inline code spans FIRST — documentation about links quotes
+    // link-shaped text. Spaces keep offsets, and therefore line numbers, intact.
     const body = readFileSync(file, 'utf8')
       .replace(/```[\s\S]*?```/g, (m) => ' '.repeat(m.length))
       .replace(/`[^`\n]*`/g, (m) => ' '.repeat(m.length));
@@ -117,15 +97,6 @@ for (const root of roots) {
 
 // Reciprocity: an invariant note names the territories it holds in, and each of those territories
 // must name it back under `## Cross-cutting invariants`.
-//
-// This is not symmetry for its own sake. The map's reading protocol says a change starts at its
-// territory and follows that section as a checklist — so an invariant the territory does not list is
-// invisible at exactly the moment it is needed. The reverse direction is NOT free here: Obsidian
-// backlinks are a separate panel, absent on GitHub, and not the section the reader was told to read.
-//
-// Found by this check on its first run: `wide-glyph-and-soft-wrap` did not list `row-keyed-side-maps`,
-// while #557 (a wrap-clearing fix entering at exactly that territory) changed `hyperlink` — a
-// row-keyed side map.
 const MAP_ROOT = 'docs/map';
 if (existsSync(join(MAP_ROOT, 'invariant'))) {
   for (const inv of markdownFiles(join(MAP_ROOT, 'invariant'))) {
@@ -151,14 +122,8 @@ if (existsSync(join(MAP_ROOT, 'invariant'))) {
   }
 }
 
-// A decision record's `Status:` line is authoritative and must not be copied into the map.
-//
-// CLAUDE.md states the rule and the reason: a status copied elsewhere has no gate, so it goes stale
-// silently — which already happened once, when CLAUDE.md itself called four accepted ADRs "proposed"
-// for five days. The map re-introduced it anyway (a territory note carrying "*(Status: proposed)*"),
-// which is why this is a gate rather than a convention: the pull toward restating a status is strong
-// because the status is genuinely load-bearing when a shipping model is governed by a proposal.
-// Say "check its Status line" instead.
+// A decision record's `Status:` line is authoritative and must not be copied into the map. Say
+// "check its Status line" instead.
 for (const file of markdownFiles(MAP_ROOT)) {
   const body = readFileSync(file, 'utf8')
     .replace(/```[\s\S]*?```/g, (m) => ' '.repeat(m.length))
@@ -174,19 +139,9 @@ for (const file of markdownFiles(MAP_ROOT)) {
   }
 }
 
-// A repo path cited from a CODE comment is a link too, and until now nothing looked at it.
-//
-// Everything above walks `.md` only. But the map's whole repair for a hand-maintained list is to
-// replace it with a pointer — #602 did exactly that, cutting `term/walk.rs`'s copy of the read-surface
-// set down to "it lives once, in `docs/map/invariant/alt-screen-buffer-floor.md`". That pointer is
-// load-bearing in the same way an anchor is, and it fails the same silent way: rename the note and the
-// comment goes on naming a file that is not there, with no 404 and no gate. Replacing a stale list
-// with a stale pointer would be a lateral move.
-//
-// Scoped deliberately tight, because false positives are the failure mode this file designs against
-// (see the header above): comment lines only, backticked only, and only paths under a known top-level
-// directory ending in `.md`. A path built at runtime or mentioned in prose without backticks is not
-// matched — this checks citations, not every string that looks like one.
+// A repo path cited from a CODE comment is a link too. Scoped deliberately tight: comment lines only,
+// backticked only, and only paths under a known top-level directory ending in `.md` — citations, not
+// every string that looks like one.
 const CODE_ROOTS = [
   'justerm-core',
   'justerm-renderer',

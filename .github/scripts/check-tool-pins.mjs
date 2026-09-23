@@ -1,23 +1,11 @@
 // Fail a PR whose build-tool pins have drifted apart across workflows.
 //
-// `wasm-pack` is the tool that emits both published wasm artifacts, so #616 pinned it — but a pin is
-// a string, and a string that appears in three files has three chances to be edited alone. The usual
-// safety net does not reach here: Dependabot updates `uses:` refs and cargo manifests, never the
-// contents of a `run:` line (measured — `git log -S "cargo install wasm-pack"` returns three
-// commits, all human). So the realistic failure is not "the pin is old", which a human notices at
-// release time; it is "someone bumped one workflow and CI now builds the artifact with a different
-// tool than it tests with", which nobody notices at all.
+// `wasm-pack` emits both published wasm artifacts, so #616 pinned it; this checks that every
+// workflow invoking it reads one declared pin, and that the declarations agree. When to MOVE the pin
+// is `docs/agents/release.md`'s.
 //
-// This is the repo's existing answer to that shape, one file over: a constant quoted in prose is
-// pinned by a check that runs on every PR (justerm-wasm-decode/tests/readme_pins.rs for the README,
-// check-map-links.mjs for the doc graph). Prose asking a human to eyeball three `rg` hits is not
-// that answer — `docs/agents/release.md` carries the human decision of *when* to move the pin, and
-// this carries the machine check that they all moved together.
-//
-// Deliberately NOT checked here: whether the pinned version is current. That is a judgement about
-// cost (any value other than what the runner image ships makes cargo compile the tool from source)
-// and it is recorded as a release-time trigger, not a gate — a gate that fails because upstream
-// published something is a gate that trains people to ignore it.
+// Deliberately NOT checked: whether the pinned version is current — see
+// `docs/map/territory/ci-and-supply-chain.md`.
 //
 // Usage: node .github/scripts/check-tool-pins.mjs [workflow-dir]
 
