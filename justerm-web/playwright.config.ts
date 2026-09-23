@@ -22,7 +22,7 @@ export default defineConfig({
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   // Deliberately zero (#735): a retry runs warm and always passes — see
-  // docs/map/territory/browser-proof-harness.md.
+  // `docs/map/territory/browser-proof-harness.md`.
   retries: 0,
   reporter: [["list"]],
   use: {

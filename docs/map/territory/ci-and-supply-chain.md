@@ -72,6 +72,42 @@ Nothing governs the gate matrix itself — which checks exist, and what each is 
   the runner image's makes cargo compile the tool from source — kept as a release-time trigger
   (`docs/agents/release.md`), because a gate that fails when upstream publishes trains people to
   ignore it.
+- **Why each `test.yml` step is shaped the way it is** — the facts the workflow's comments point here:
+  - *Toolchain*: taken from `rust-toolchain.toml`, which rustup honours on the first cargo call — no
+    install step, and a new Rust release cannot turn CI red on its own.
+  - *rustdoc*: before its step, 15 warnings across the family, 12 of them public docs linking
+    **private** items — doc-comments are written with the source open and published from public
+    items only, so each such link dies silently. The renderer repeats the step by manifest path
+    (#333 is the same blind spot with `cargo fmt --all`); the facade gets one so docs.rs's page for
+    the tombstone exists for the rustdoc pointer gate.
+  - *Map-note schema in CI*: the per-note check was a run-it-yourself habit, which cannot catch a
+    note edited later by someone who never ran it — two invariant notes
+    (`cell-size-is-derived-state`, `composition-is-browser-owned-state`) sat missing `## Where it will
+    recur` until an unrelated change happened to run the script.
+  - *Renderer lockfile*: `--locked` sits on the job's first **bare** cargo command (#613), the only
+    kind it works through — `wasm-pack … -- --locked` resolves and rewrites the lock before cargo sees
+    the flag, so an assertion there passes while inspecting nothing.
+  - *`renderer-proofs`*: Chromium only — xterm.js skips firefox/webkit on Linux because "webgl2 is
+    often not supported in headless firefox on Linux" (`addon-webgl/test/WebglRenderer.test.ts`). The
+    colour-emoji font is installed twice over — the ubuntu image lists `fonts-noto-color-emoji` in
+    `toolsets/toolset-2404.json` `apt.common_packages`, and `playwright install --with-deps` always
+    installs its `tools` group (`fonts-noto-color-emoji`, `fonts-liberation`, `fonts-wqy-zenhei`)
+    whatever browser is named (playwright-core `registry/index.ts`, `targets.add('tools')`) — and the
+    emoji pages still assert `colourEmojiFontPresent` so a font-less runner fails by name (#334). No
+    WebGL flag is passed: Playwright injects `--enable-unsafe-swiftshader` (`chromium.ts`). The
+    renderer's `.d.ts` gate is built ahead of the proofs so a flaky proof cannot hide a prose defect,
+    from `--target web --dev` rather than the published `bundler` — measured to differ only in
+    wasm-pack's own init-function docs.
+  - *pnpm is pinned `@10`*: pnpm 11 defaults `strictDepBuilds` to true and turns the skipped
+    lifecycle scripts (`esbuild`, `@swc/core`) from a warning into `ERR_PNPM_IGNORED_BUILDS`. Skipping
+    them is harmless — esbuild resolves `@esbuild/linux-x64` from optionalDependencies at runtime.
+  - *`web`*: consumes the **published** `justerm-wasm-decode`, so it needs no Rust. Its `tsup` build
+    step guards only the artifact path: six probes (an emit-only TS4023, a `.d.ts` rollup of an
+    `external` package's types, a bare type re-export, an `export *` collision, a missing entry) all
+    reddened `tsc --noEmit` first where they failed at all (#344).
+  - *wasm-pack vs cargo-fuzz*: both installed through cargo, not a third-party action, but only
+    wasm-pack is version-pinned (#616) — `fuzz.yml` publishes nothing and runs a floating nightly, so
+    pinning its tool would be theatre. While the pin matches the runner image, cargo installs nothing.
 - **The supply-chain scan is first-party** (`just-shield`, a sibling repo, itself SHA-pinned), which
   makes the scanner a dependency of the same kind it exists to police.
 

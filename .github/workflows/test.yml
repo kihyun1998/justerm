@@ -1,9 +1,5 @@
-# Build / format / lint / test gate.
-#
-# The toolchain is taken from rust-toolchain.toml (pinned channel + clippy/rustfmt) — rustup
-# honors that file automatically on the first cargo invocation, so there is no install step and a
-# new Rust release cannot turn CI red on its own. Bumping the pin is a deliberate, reviewed change
-# (that file says "keep in sync with ci.yml" — this is that ci).
+# Build / format / lint / test gate. The toolchain comes from rust-toolchain.toml. Why each step is
+# shaped the way it is: `docs/map/territory/ci-and-supply-chain.md`.
 name: test
 
 on:
@@ -14,9 +10,8 @@ on:
 permissions:
   contents: read
 
-# Pinned so the tool that builds the wasm is the same one every run (#616) — see the long
-# rationale in publish-renderer.yml. Nothing watches this string (Dependabot does not read
-# `run:` lines), so its refresh trigger is recorded in `docs/agents/release.md`.
+# The wasm build tool, pinned (#616). Held in agreement by check-tool-pins.mjs; its refresh trigger
+# is in `docs/agents/release.md`.
 env:
   WASM_PACK_VERSION: "0.15.0"
 
@@ -33,51 +28,24 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
-      # rustdoc has its own lint layer, and nothing here ran it: `cargo test` runs DOCTESTS (the code
-      # examples) but never checks that a doc-comment's links resolve, and clippy is a different tool
-      # that does not cover rustdoc lints either. So the surface theflow Step 6 calls out FIRST — the
-      # `///` comments that ship verbatim as the crate's docs.rs page — had no mechanical check at all.
-      # What that let through: 15 warnings across the family, 12 of them public docs linking PRIVATE
-      # items. That is the shape of the gap — doc-comments are written with the source open (where
-      # `store_flags` and `Flat` are right there) and published to a page built from public items only,
-      # so every such link silently dies and the author never sees it.
+      # rustdoc's own lint layer: `cargo test` runs doctests and clippy does not carry rustdoc lints,
+      # so neither checks that a doc-comment's links resolve on the public page.
       - name: Docs (rustdoc lints — links must resolve on the PUBLIC page)
         run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
-      # `justerm-facade` is the `justerm` 0.5.1 tombstone and is EXCLUDED from the root workspace,
-      # so the line above has never built it — the invariant note
-      # docs/map/invariant/workspace-exclusion-is-gate-invisibility.md records it as reached by no
-      # gate at all, and until this step that was still true. It publishes to crates.io, so docs.rs
-      # builds a page from its `//!`, and the pointer gate below needs that page to exist.
+      # `justerm-facade` is EXCLUDED from the root workspace, so the line above never builds it; the
+      # rustdoc pointer gate below needs its page (`docs/map/invariant/workspace-exclusion-is-gate-invisibility.md`).
       - name: Docs (the tombstone — outside the workspace, so --workspace misses it)
         run: cargo doc --manifest-path justerm-facade/Cargo.toml --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
-      # The prose counterpart of the rustdoc gate above: rustdoc checks links inside `///` comments,
-      # and until now nothing checked the ones between the markdown docs. `docs/map/` is a link graph
-      # whose entire value is edges that resolve, and it links OUT to docs/adr/ and to
-      # docs/agents/reference-facts.md — files it must not edit and whose headings it does not own.
-      #
-      # A missing file is at least loud (404 on GitHub). A missing `#anchor` is SILENT: GitHub and
-      # Obsidian both fall back to the top of the target document, so a link that used to land on one
-      # verified row starts pointing at a whole file and the reader never learns they were misrouted.
-      # These anchors are known-volatile — reference-facts.md headings embed issue numbers and
-      # verification dates (`## Damage / dirty tracking (#536, verified 2026-07-28)`), so a routine
-      # re-verification rewrites the slug without touching the file that links to it.
-      #
-      # Runs on every PR (not at publish, like check-published-readme.mjs) because these documents are
-      # read by whoever picks up the next change, not by a registry visitor.
+      # The markdown counterpart of the rustdoc gate: relative links and `#anchors` across the docs.
+      # Every PR, because these documents are read by whoever picks up the next change.
       - name: Doc links (relative paths + #anchors resolve)
         run: node .github/scripts/check-map-links.mjs docs CLAUDE.md CONTEXT.md README.md
-      # The note schema was a run-it-yourself tool, documented in docs/map/README.md as a per-note
-      # habit ("verify a note as you finish it, not the batch at the end"). The cadence argument is
-      # right and unaffected; what it cannot do is catch a note that was *edited later* by someone
-      # who never ran it. Measured: two invariant notes had been sitting incomplete
-      # (cell-size-is-derived-state, composition-is-browser-owned-state — both missing
-      # `## Where it will recur`), found only because an unrelated change happened to run the script.
-      # That is the same case the two gates around this one exist for: a rule that lives only in a
-      # README is held by whoever remembers it. Free to turn on — all 50 notes pass.
+      # The per-note check, run over every note so a note edited later by someone who never ran it
+      # is caught too.
       - name: Map note schema (sections + symbols under ## Code)
         run: |
           bad=0
@@ -85,35 +53,21 @@ jobs:
             node .github/scripts/check-map-note.mjs "$f" || bad=1
           done
           exit $bad
-      # The build-tool pin (#616) lives in three workflow-level `env:` blocks, and nothing else would
-      # notice them drifting apart — Dependabot does not read `run:` lines. Same shape as the doc-link
-      # gate above and as readme_pins.rs: a constant that appears in more than one place is held
-      # together by a check that runs on every PR, not by a human remembering to grep.
+      # The build-tool pin (#616) lives in three workflow-level `env:` blocks; Dependabot does not
+      # read `run:` lines, so this holds them together.
       - name: Build-tool pins agree across workflows
         run: node .github/scripts/check-tool-pins.mjs
-      # A `description` and a README are registry front-matter, not internal notes, and
-      # `publish = false` hides that: it means "not to crates.io" only — wasm-pack lifts both fields
-      # into the npm package.json it generates. Two crates shipped "See ADR-0008" / "(ADR-0018,
-      # supersedes ADR-0002)" across 21 tags, and the READMEs beside them carried bare #258/#776/#810,
-      # before anyone read these as published text. Runs here rather than at publish (unlike
-      # check-published-readme.mjs) because an unresolvable pointer is wrong when typed, not when
-      # snapshotted — and npm never lets a version be re-published. A *linked* reference passes: a
-      # description cannot link, a README can.
+      # The published-prose gates — manifest `description` + README, then the rendered rustdoc
+      # (which reads `cargo doc` output, so it runs after the doc steps above). Why each runs per PR
+      # and what it rejects: `docs/map/territory/published-surface.md`.
       - name: Published surfaces carry no repo-only pointers
         run: node .github/scripts/check-published-pointers.mjs
-      # The same rule on the third published surface, and the one the gate above used to send
-      # pointers TO: a crate that reaches crates.io gets a docs.rs page built from its `///` and
-      # `//!` comments. Measured on the published 0.21.0 before this landed: 384 bare pointers
-      # across 56 of 61 own pages. It reads `cargo doc` output rather than sources — a link nested
-      # in a code span (`` `[CLAUDE.md](url)` ``) is correct-looking text and broken markup, and
-      # only the rendered page tells them apart — so it runs after the two doc steps above, and
-      # hard-fails rather than passing quietly when a published crate's pages are missing.
       - name: Published rustdoc carries no repo-only pointers
         run: node .github/scripts/check-published-rustdoc.mjs
 
   # justerm-renderer is EXCLUDED from the root workspace (its web-sys/glow deps are wasm32-only), so
-  # `cargo test --workspace` above never touches it — for slices #259..#340 nothing gated it at all
-  # (#333). Its pure modules test on the host; its GL/wasm layer only compiles for wasm32.
+  # every gate it needs is named here by manifest path (#333). Its pure modules test on the host; its
+  # GL/wasm layer only compiles for wasm32.
   renderer:
     runs-on: ubuntu-latest
     steps:
@@ -123,41 +77,24 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
       - name: Format
         run: cargo fmt --manifest-path justerm-renderer/Cargo.toml --check
-      # `--locked` here is the lockfile gate (#613): this crate's `Cargo.lock` is tracked, and this
-      # is the first BARE cargo command in the job, which is the only kind the flag works through —
-      # `wasm-pack ... -- --locked` resolves and rewrites the lock before cargo ever sees the flag,
-      # so an assertion placed there passes while inspecting nothing. Fails here, at PR time, when
-      # `Cargo.toml` and `Cargo.lock` disagree.
+      # `--locked` here is the lockfile gate (#613). Deliberately on the first BARE cargo command —
+      # through wasm-pack it inspects nothing (see the territory note named at the top).
       - name: Test (host — pure modules; asserts the lockfile)
         run: cargo test --manifest-path justerm-renderer/Cargo.toml --locked
       - name: Clippy (wasm32 — the GL layer is 0-compile on host)
         run: cargo clippy --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings
       - name: Build (wasm32)
         run: cargo build --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown
-      # Same rustdoc gate as the `test` job — repeated here because this crate is workspace-excluded,
-      # so `cargo doc --workspace` never reaches it. That blind spot is exactly how #333 happened with
-      # `cargo fmt --all`; every gate this crate needs has to be named by manifest path.
+      # Same rustdoc gate as the `test` job, by manifest path — `cargo doc --workspace` never reaches it.
       - name: Docs (rustdoc lints)
         run: cargo doc --manifest-path justerm-renderer/Cargo.toml --no-deps --target wasm32-unknown-unknown
         env:
           RUSTDOCFLAGS: -D warnings
 
   # The `demo/*.html` readPixels proofs (#328), swept across device pixel ratios (#331). Separate from
-  # `renderer` on purpose: this job depends on a browser download, SwiftShader, and the runner's fonts,
-  # so a flake here must not redden the deterministic cargo gate next to it — a gate people learn to
-  # ignore is not a gate. Chromium only: xterm.js skips firefox/webkit on Linux because "webgl2 is
-  # often not supported in headless firefox on Linux" (addon-webgl/test/WebglRenderer.test.ts).
-  #
-  # The emoji proofs need a colour-emoji font, and it is installed TWICE OVER: GitHub's ubuntu images
-  # list `fonts-noto-color-emoji` in `toolsets/toolset-2404.json` apt.common_packages, and Playwright's
-  # own `install --with-deps` unconditionally apt-installs its `tools` group — which contains
-  # `fonts-noto-color-emoji`, `fonts-liberation` (box drawing) and `fonts-wqy-zenhei` (CJK) —
-  # regardless of which browser is named (playwright-core registry/index.ts `targets.add('tools')`).
-  # `demo/emoji*.html` still assert `colourEmojiFontPresent`, so a font-less runner fails by name
-  # rather than through a baffling pixel assertion (#334).
-  #
-  # No WebGL flags are needed: Playwright injects `--enable-unsafe-swiftshader` into Chromium's default
-  # args (chromium.ts), which is what lets headless fall back to SwiftShader for WebGL2.
+  # `renderer` on purpose: this job depends on a browser download, SwiftShader and the runner's fonts,
+  # so a flake here must not redden the deterministic cargo gate. Chromium only, the colour-emoji font
+  # from the runner image and Playwright's `tools` group, no WebGL flags — why: the territory note.
   renderer-proofs:
     runs-on: ubuntu-latest
     defaults:
@@ -170,36 +107,23 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked --version "${{ env.WASM_PACK_VERSION }}"
-      # No new third-party action (same reasoning as wasm-pack / cargo-fuzz above): the runner image
-      # already ships Node, and pnpm is one npm install away.
-      #
-      # The `@10` is load-bearing. pnpm 10 only WARNS about the dependency lifecycle scripts it skips
-      # (`Ignored build scripts: esbuild, @swc/core`); pnpm 11 defaults `strictDepBuilds` to true and
-      # turns that warning into `ERR_PNPM_IGNORED_BUILDS`, killing the install. Skipping them is
-      # harmless — esbuild resolves `@esbuild/linux-x64` from optionalDependencies at runtime, not
-      # from its postinstall — but `pnpm@latest` would not be.
+      # No new third-party action: the runner image ships Node. The `@10` is deliberate — pnpm 11
+      # fails the install on the skipped build scripts (see the territory note).
       - name: Install pnpm
         run: npm install -g pnpm@10
         working-directory: .
       - name: Install deps
         run: pnpm install --frozen-lockfile
-      # The renderer's `.d.ts` — the same fourth published surface the `wasm` job gates for the
-      # decoder. `test:proofs` below builds the package anyway, but the build is pulled ahead and
-      # named so this gate does not sit behind a browser run: a flaky proof must not be able to
-      # stop a prose defect from being reported. The second `build:wasm` inside `test:proofs` is
-      # then a cargo no-op. `--target web --dev` rather than the published `bundler` on purpose —
-      # it is what this job already has, and the prose is the same doc-comments either way
-      # (measured: the two differ only in wasm-pack's own init-function docs, and the gate passes
-      # on both).
+      # Built ahead of the proofs so the `.d.ts` prose gate cannot sit behind a browser run; the
+      # second `build:wasm` inside `test:proofs` is then a cargo no-op.
       - name: Build the renderer package (for the .d.ts gate below)
         run: pnpm run build:wasm
-      # `working-directory: .` because this job defaults to `justerm-renderer`, where the script
-      # does not exist. The same reason the pnpm install above carries it.
+      # `working-directory: .` because this job defaults to `justerm-renderer`.
       - name: Published .d.ts carries no repo-only prose
         working-directory: .
         run: node .github/scripts/check-published-package.mjs justerm-renderer/pkg
-      # The pixel helpers all nine proofs read their evidence through, plus the #731 harness-shape
-      # rule the specs themselves must hold. Fast, browserless.
+      # The pixel helpers every proof reads its evidence through, plus the #731 harness-shape rule
+      # the specs themselves must hold. Fast, browserless.
       - name: Unit (demo/proof.js helpers + harness shape)
         run: pnpm run test:unit
       - name: Install Playwright chromium
@@ -207,11 +131,8 @@ jobs:
       - name: Proofs (dpr 1 / 1.1 / 1.5 / 2)
         run: pnpm run test:proofs
 
-  # justerm-web is a pnpm/TypeScript package with no cargo gate to hide behind, and until #341 nothing
-  # in CI ran its typecheck or its 387 vitest cases. `tsconfig.json` now also covers `demo/` and `e2e/`
-  # — the code that PROVES the a11y contract was itself never type-checked.
-  #
-  # It consumes the PUBLISHED justerm-wasm-decode (not a workspace link), so this job needs no Rust.
+  # justerm-web: typecheck, vitest and the tsup build (#341). It consumes the PUBLISHED
+  # justerm-wasm-decode (not a workspace link), so this job needs no Rust.
   web:
     runs-on: ubuntu-latest
     defaults:
@@ -231,12 +152,8 @@ jobs:
         run: pnpm run typecheck
       - name: Test (vitest)
         run: pnpm run test
-      # What this step does NOT do: catch a type error the step above misses. Six probes were tried
-      # (an emit-only TS4023, a `.d.ts` rollup of an `external` package's types, a bare type re-export,
-      # an `export *` name collision, a missing entry) and `tsc --noEmit` reddened first in every case
-      # that failed at all. It guards the artifact path itself — that `tsup` still resolves the entry,
-      # bundles, and emits `dist/index.d.ts` — not a known gap. Kept because the package is meant to be
-      # publishable and 2s is cheap; do not read a green here as "the public types are sound" (#344).
+      # Guards the artifact path only — that `tsup` resolves the entry, bundles and emits
+      # `dist/index.d.ts`. A green here is not "the public types are sound" (#344; the territory note).
       - name: Build (tsup; artifact path only — see comment)
         run: pnpm run build
 
@@ -273,11 +190,8 @@ jobs:
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
       - name: Add wasm32 target
         run: rustup target add wasm32-unknown-unknown
-      # Installed through cargo rather than a third-party setup action, like fuzz.yml's cargo-fuzz —
-      # but no longer the *same* model: this one is version-pinned (#616) and that one is not, on
-      # purpose (fuzz.yml publishes nothing and runs on a floating nightly, so pinning its tool while
-      # the compiler moves would be theatre). "Compile from source" is also usually wrong here: while
-      # the pin matches the runner image, cargo short-circuits and installs nothing.
+      # Installed through cargo, version-pinned (#616) — deliberately unlike fuzz.yml's cargo-fuzz
+      # (see the territory note).
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked --version "${{ env.WASM_PACK_VERSION }}"
       - name: Test (node)
@@ -288,13 +202,8 @@ jobs:
         run: |
           wasm-pack build --target bundler --out-dir pkg-bundler justerm-wasm-decode
           node justerm-wasm-decode/scripts/finish-pkg.mjs justerm-wasm-decode/pkg-bundler
-      # The `.d.ts` is the fourth published prose surface, after a manifest `description`, a README
-      # (#949) and the rendered rustdoc (#953). wasm-bindgen copies a `///` comment into it verbatim,
-      # and an editor shows that on hover — read more often than the README by anyone calling the
-      # API. It cannot be gated before this step, because it does not exist until wasm-pack runs.
-      # Measured on the published 0.21.0 tarballs before this landed: 164 bare pointers and 20 links
-      # whose LABEL named a Rust method the same file declares under a different name, so a consumer
-      # following the tooltip called something that was not there.
+      # The `.d.ts` prose gate — it cannot run earlier, because the file does not exist until
+      # wasm-pack runs (`docs/map/territory/published-surface.md`).
       - name: Published .d.ts carries no repo-only prose
         run: node .github/scripts/check-published-package.mjs justerm-wasm-decode/pkg-bundler
       - name: Build (web)
