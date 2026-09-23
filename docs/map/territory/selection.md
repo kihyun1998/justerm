@@ -31,6 +31,14 @@ prose, and prose is not a decision record.
 With no record, everything below was **read out of the code** — which is itself this territory's
 status.
 
+- **`SelectionType` is deliberately exhaustive, on convergence rather than on traffic** (#843).
+  Traffic cannot decide it: the type appears in one public signature, as a *parameter* to
+  `Engine::selection_begin`, and nothing hands one outward, so the attribute would cost a consumer
+  nothing (an earlier draft argued the opposite from traffic this API does not have). What keeps it
+  closed is that alacritty arrives at the same four modes independently — `Simple` / `Semantic` /
+  `Lines` / `Block` (`alacritty_terminal/src/selection.rs:93`), glossing `simple` as "without any
+  expansion" and `semantic` as expanding "to the nearest semantic escape char".
+
 - **Typing drops the selection, and it is the widget that decides so** (#913). `LocalPointer` gained
   an **optional** `clear()` — optional so a consumer on the older shape keeps compiling and simply
   does not drop — which `Terminal` calls for any user input. Two things about it are easy to get
@@ -153,6 +161,9 @@ status.
   is a `Term` method reading injected policy, not a free function over a fixed set — the set itself
   lives in `term.rs` (`DEFAULT_WORD_SEPARATORS`, `set_word_separators`, and the `full_reset` line
   that carries it across RIS)
+- `justerm-web/src/selection.ts` — `SelectionController` (the web gestures: char / word / line /
+  block, drag auto-scroll, alt-click) and `SelectionPort`, the write channel to the engine's
+  `selection_*` that pairs with the read-only frame channel
 - Consumers: justerm-web does pixel→cell and clipboard; justerm-renderer paints the highlight.
   `SelectionController` binds no listeners — since #902 `Terminal` feeds it through
   `TerminalOptions.selection`, only the presses the application did not take (see
