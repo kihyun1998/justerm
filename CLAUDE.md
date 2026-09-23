@@ -67,9 +67,11 @@ no gate list or count.
   efficiency — agents read `docs/map/` at *every* start). Other human-facing docs are Korean.
 - **What a comment holds**: a comment says what the code *is*. Why it is this way, what it deliberately
   leaves out, the trap and the measured value go to the territory note under `docs/map/`; history goes to
-  the commit message. **And a comment on a *published* item is read by someone who cannot open `#721`** —
-  a doc-comment ships verbatim to docs.rs and into the generated `.d.ts`, so name the thing or link the
-  number, never leave it bare. Which surfaces those are, and why: `docs/map/territory/published-surface.md`.
+  the commit message. Comments written before this rule still carry the rest: never delete one whose
+  content the map does not yet hold — move it first (`decant`). **And a comment on a *published* item
+  is read by someone who cannot open `#721`** — a doc-comment ships verbatim to docs.rs and into the
+  generated `.d.ts`, so name the thing or link the number, never leave it bare. Which surfaces those
+  are, and why: `docs/map/territory/published-surface.md`.
 - **Commit messages**: reference the GitHub issue (`feat: ... (#12)`), with no `Co-Authored-By`
   trailer.
 - **Compliance is cumulative**: VT conformance (an 8.6K-SLoC-class long tail) is not written in one pass —
