@@ -19,12 +19,10 @@ pub struct LineDamage {
 /// than diff-detected ([ADR-0003](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0003-damage-model-incremental-bounds.md)).
 ///
 /// **A reported `count` never exceeds `bottom - top + 1`** — see
-/// [`crate::Engine::scroll_delta`], which caps it. `count` is `isize` here and
-/// `i16` on the wire, so an uncapped accumulation overflowed the field and
-/// reversed the shift's direction; the bound is also the point past which
-/// the value stops meaning anything, since every source row is then outside the
-/// region. The cap is applied when the op is *read*, not while it accumulates, so
-/// a region that scrolls far and returns still reports its true small net.
+/// [`crate::Engine::scroll_delta`], which caps it: past that bound every source row is
+/// outside the region, so the value means nothing more. The cap is applied when the op is
+/// *read*, not while it accumulates, so a region that scrolls far and returns still reports
+/// its true small net.
 ///
 /// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** 7 out-of-crate literal sites. `{top, bottom, count}` is the
 /// whole of a region shift, so nothing outside this crate can add to it.
