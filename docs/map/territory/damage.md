@@ -35,8 +35,31 @@ pixels either way — and its job is to keep a small update from costing a full 
   outside the region) and starts being unrepresentable: `count` is `isize` here and `i16` on the
   wire, and the overflow arrived as a scroll in the *opposite* direction (#661). The cap is applied
   where the op is **read**, so the accumulator stays exact and a region that scrolls far and returns
-  still reports its true small net. The bound's other half is the wire's, not the region's — see
+  still reports its true small net. Both references that state a quantity at their own scroll sites
+  clamp to the same bound (alacritty `term/mod.rs:773`, ghostty `Terminal.zig:2703`). The bound's other half is the wire's, not the region's — see
   [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md).
+- **`damage_span` clamps both columns to the last column and asserts in debug (#536).** Of its
+  fourteen call sites ten derive the bound from a cursor column or `cols`; **four derive it from a
+  wide pair's width** — `write_glyph`'s `col + width - 1` (which had no guard), `promote_cluster_to_wide`'s
+  `col + 1` (its own `col + 1 >= cols` early return), `demote_cluster_to_narrow`'s
+  `(col + 1).min(cols - 1)`, and `relocate_cluster_wide`'s literal `(0, 1)`, valid only because
+  `MIN_COLUMNS = 2` (#547). No reference has this shape to port a clamp from: alacritty computes
+  damage ranges from a column or `columns()` only (`term/mod.rs:1406`, `:1649` @ `852e971`) and its
+  print path records none, bracketing the line by the previous and current cursor points; xterm.js
+  tracks whole rows (`markDirty(y)`), ghostty a per-row `dirty: bool`; alacritty's
+  `LineDamageBounds::expand`, which `LineBounds::expand` copies, is equally unguarded. The two
+  halves do different jobs. The **assert is the detector**: an out-of-range bound is stored
+  silently and detonates when `frame()` slices the row, so the trace accuses the reader — the delay
+  #536 was filed about; an injected off-by-one moved the panic from `frame()`'s slice to the assert.
+  The **clamp is the release backstop**, toward a false positive: a panic crosses into the
+  consumer's process, while over-damaging repaints an unchanged cell. `left` is the axis that can
+  lose a cell — an `expand` with `left > right` on a clean line leaves it reading undamaged
+  (`left = cols, right = 0`; `is_damaged()` is `left <= right`) and drops the span; unreachable
+  from the column-derived sites, guarded because it is the failure the rule forbids. `row` is left
+  to panic, which is not in tension with `frame_damage` clamping `prev_cursor.0.min(rows - 1)`: a
+  stale remembered coordinate clamped repaints the nearest surviving cell (a false positive), while
+  a live computed row clamped would damage a different line than the one that changed (a false
+  negative).
 - **The ack defines "old".** `reset_damage` advances `prev_cursor`, so what counts as the caret's
   previous cell is a function of the consumer's acknowledgement — not of wall time, and not of the
   previous call.

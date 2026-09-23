@@ -133,6 +133,12 @@ What those calls did not cover is recorded under *Design model* as derivations.
 - **The hovered underline is a single underline drawn where the cell has none**, through the flags
   the line reads (`line_flags`), so it follows every colour rule an `SGR 4` underline does. A cell
   already underlined keeps its own style, so hover shows only as the pointer cursor there.
+- **The frame's link table is numbered per frame, keyed by the `Arc`'s identity** (#26, #628) —
+  two cells of one open share an entry and a distinct open gets its own, the semantics the pool
+  index used to carry. It is sized by the frame, not the session: it used to be
+  `vec![0u32; hyperlink_pool.len() + 1]`, allocated and zeroed on every frame against every OSC 8
+  the session had seen, measured at 10 µs per frame with 100 000 opens retained. The wire keeps its
+  interning — #621 measured inlining a URI per linked cell at +171…403%.
 
 ## Code
 

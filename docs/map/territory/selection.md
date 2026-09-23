@@ -143,6 +143,33 @@ status.
 - **Split of labour** — `src/selection.rs` holds types only (75 lines). The cell-aware logic (text
   extraction, range clipping) lives in `src/term/selection.rs`, where the cells are reachable —
   moved out of `term.rs` in #587.
+- **`set_word_separators` forces `' '` into whatever it is given**, and that is not a convenience.
+  A blank cell packs `' '`, so the space ends the walk at the end of a row's written text *and*
+  backstops the wide-pair rule: without it, double-clicking next to a wide separator starts the
+  highlight on that separator's trailing spacer, bisecting the glyph, and the walk runs to the row's
+  end through the padding. Enforcing it at intake rather than in the walk is ghostty's shape — it
+  prepends its own blank codepoint to every parsed set (`config/Config.zig`, *"Always include null as
+  first boundary"*). The set is the only thing bounding the walk, so one that omits the separators
+  present in the buffer makes a double-click walk the whole soft-wrap run (11.7 ms release, 801,920
+  chars). **A length bound, if ever wanted, is a field beside this one, not an argument**:
+  `word_start` / `word_end` are `pub(super)`, reached through `Term::selection_begin`, so there is
+  no call site for a consumer to inject into.
+- **An alt-screen resize drops the selection, on any geometry change (#660)** — a policy, not a
+  capability limit: the alt branch makes its own `reflow_pane` call with tracked points and uses the
+  result to rotate alt markers (`reflow: false` disables the re-split, not point tracking). The first
+  comment on it claimed alt had "nothing to re-anchor through", which is the failure #660 is.
+  Rotation is the wrong trade because a marker is one point with a binary fate while a selection is
+  two ordered endpoints: when a shrink destroys the row under one and not the other, "dispose" means
+  nothing and the right behaviour is the clamp-and-overtake policy `selection_rotate_region` applies
+  to scrolls — a second policy, not this fix. Both references drop rather than rotate on the axis
+  they consider unsafe: alacritty on a width change (`term/mod.rs:680-682`), xterm.js on a height
+  change (`SelectionService.ts:156-160`). **Any change, not just a shrink**: keeping it on a grow was
+  tried and a randomised sweep refuted it in one run — an alt resize reflows the primary pane, and
+  on alt `scrollback` *is* that history, so `scrollback.len()` moves under an anchor even when the
+  alt grid does not, and `selection_text` walks off the end. Rebasing by the base delta would be
+  unambiguous on a grow but a shrink still needs the two-endpoint policy, and shipping half would
+  leave the axes behaving differently. The exact no-op is not a resize, so a consumer that
+  re-asserts its size does not make alt selection impossible.
 - **`DEFAULT_WORD_SEPARATORS` is alacritty's `SEMANTIC_ESCAPE_CHARS` verbatim plus U+3000**
   (`alacritty_terminal/src/term/mod.rs:45` @ `852e971`): space, tab and a punctuation set that
   omits `.`, `/` and `-` so a path or URL stays one word. Two properties are load-bearing. **It is a

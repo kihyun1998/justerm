@@ -127,7 +127,7 @@ recorded SHA; a paraphrase drops the pin).
   trim, not the counter** — the trim assumes only the run's last row can carry padding, which a
   mid-run cut breaks, so a bound must re-answer `only-U+0020-can-be-padding` at the cut. (The other
   two sites keep their notes where they are: the ~1.0× measurement on `search`, the
-  field-not-an-argument note on `set_word_separators`.) **The zero is dated:** #934's
+  field-not-an-argument note in [selection](selection.md).) **The zero is dated:** #934's
   `LinkPort` tells a backend to answer from `viewport_logical_lines`, one call per question the
   pointer's motion asks, so a consumer that wires links makes the unbounded walk reachable again —
   bounded in count by motion, not in cost.

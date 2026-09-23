@@ -476,20 +476,9 @@ struct Marker {
     command: Option<Box<CommandRecord>>,
 }
 
-/// The part of a command that is **not** in the buffer, frozen on its `OutputStart`
-/// mark.
-///
-/// Both fields are recorded at the instant they are first true, and neither can be
-/// recovered afterwards:
-///
-/// - `text` is complete and on screen exactly when `C` arrives. Re-reading it later
-///   through the recorded `[b_col, c_col)` clip names whatever now occupies those
-///   cells — measured for a plain overwrite, ICH, DCH and an erase, and only the last
-///   of those is a verb any mark-lifetime rule could reach.
-/// - `exit` arrives with `D`, one mark later, and lives in no cell at all. Resolving it
-///   at query time meant pairing over *survivors* (`out.last_mut()`), which re-parented
-///   a code onto the previous command as soon as a disposal broke the run. Written here
-///   when `D` is parsed, a disposal can only drop an answer, never move one.
+/// The part of a command that is not in the buffer, frozen on its `OutputStart` mark: the
+/// command `text` when `C` arrives, and the `exit` code when `D` is parsed (#750). Neither
+/// can be recovered from cells afterwards: `docs/map/territory/marker.md`.
 struct CommandRecord {
     text: Box<str>,
     exit: Option<i32>,
@@ -515,17 +504,12 @@ struct TrackedPoint {
     col: usize,
 }
 
-/// One live marker, as the pull query reports it: its stable id, its
-/// **absolute** `[scrollback ++ screen]` line, and the static facts a consumer
-/// would otherwise have to re-learn from every frame.
+/// One live marker, as the pull query reports it: its stable id, its absolute
+/// `[scrollback ++ screen]` line, and its kind. `kind` rides here rather than on the frame
+/// because it never changes after the marker is made.
 ///
-/// `kind` and `exit` ride here rather than on the frame because they never change
-/// after `push_marker` — re-sending them per frame is the same class of waste as
-/// re-sending the line.
-///
-/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
-/// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
-/// sites, so the attribute would bind nothing it does not already bind.
+/// No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): no public
+/// function accepts one, so the attribute would bind nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkerEntry {
     pub id: MarkerId,
@@ -533,22 +517,16 @@ pub struct MarkerEntry {
     pub kind: MarkerKind,
 }
 
-/// The answer to [`Term::marker_index`] — every live marker of the *active*
-/// buffer, plus the basis that says how long the answer stays usable.
+/// The answer to [`Term::marker_index`]: every live marker of the active buffer, plus the
+/// basis that says how long the answer stays usable.
 ///
-/// The consumer keeps this and rebases per frame:
-/// `current = line - (evicted_total_now - evicted_total)`, valid for exactly as long
-/// as `epoch` is unchanged. When the epoch moves, the held lines are wrong in a way
-/// no offset repairs and the consumer asks again.
+/// Keep it and rebase per frame — `current = line - (evicted_total_now - evicted_total)` —
+/// for exactly as long as `epoch` is unchanged; when the epoch moves, ask again. An
+/// alt-screen switch moves the epoch too, because an absolute line means a different thing
+/// on each screen.
 ///
-/// It reports the active buffer because an absolute index means a different thing on
-/// each screen — the same reason `markers`/`markers_mut` route by `on_alt`. An
-/// alt-screen switch therefore bumps the epoch even though no line moved: what the
-/// answer *describes* changed.
-///
-/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
-/// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
-/// sites, so the attribute would bind nothing it does not already bind.
+/// No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): no public
+/// function accepts one, so the attribute would bind nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkerIndex {
     pub markers: Vec<MarkerEntry>,
@@ -556,70 +534,32 @@ pub struct MarkerIndex {
     pub epoch: u32,
 }
 
-/// One executed shell command recovered from OSC-133 marks, for
-/// screen-reader command navigation. The consumer jumps prompt-to-prompt over
-/// these and announces `command` + a success/fail signal from `exit`.
+/// One executed shell command recovered from OSC-133 marks, for screen-reader command
+/// navigation: the consumer jumps prompt to prompt and announces `command` with a
+/// success/fail signal from `exit`.
 ///
-/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
-/// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
-/// sites, so the attribute would bind nothing it does not already bind.
+/// No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): no public
+/// function accepts one, so the attribute would bind nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandLine {
-    /// The command's jump anchor as a *document* line — the logical-line index of
-    /// the CommandStart(B) mark within [`Term::accessible_text`], so the consumer
-    /// reveals the right row of the accessible view (soft-wrapped rows collapse to
-    /// one logical line). This is core's analog of VSCode's
-    /// `bufferToEditorLineMapping`; the frame-mode web side has no wrap info to
-    /// map it itself.
+    /// The command's jump anchor as a *document* line: the logical-line index of its
+    /// `CommandStart` mark within [`Term::accessible_text`], where soft-wrapped rows collapse to
+    /// one line.
     ///
-    /// **It is an index into a document, so it is only meaningful together with the
-    /// document it indexes** — the one [`Term::accessible_text`] returns *at the same
-    /// instant, on the primary screen*. Neither half is expressible as a number on this
-    /// struct, and they are the two that recur; they are not a proof of
-    /// sufficiency. The hedge was earned: a mark whose row is erased in place also
-    /// answers about content that is gone — on the primary screen, at one instant, and
-    /// a re-ask reproduces it, so neither half below reaches it. That was a
-    /// defect in mark *lifetime* rather than in dating, and it is fixed at the
-    /// lifetime: `ED` now retires the marks on each whole row it blanks, and the
-    /// command's text and exit are frozen when the stream reveals them rather than
-    /// re-read from cells (see [`Term::command_lines`]). One residue is deliberate and
-    /// belongs to this field — `EL`/`ECH` retire nothing, so a mark can still name a
-    /// row they blanked, and this line then resolves onto it:
-    ///
-    /// - **the instant.** No scalar this engine publishes dates a document line, and
-    ///   the reason is not one axis but two. Eviction moves it by the number of evicted
-    ///   *line-ends*, which equals the row count except when an evicted row soft-wraps
-    ///   into the next — measured, one eviction took the absolute lines
-    ///   `[12, 12, 12, 13]` → `[11, 11, 11, 12]` while this line stayed at `11`, and the
-    ///   very next eviction moved both. And flipping a row's wrap bit, which ordinary
-    ///   output does, moves this line while the absolute lines, `evicted_total` and
-    ///   `marker_epoch` all stay put — a motion the absolute space does not have.
-    ///   Carrying the instant is therefore *buildable but expensive*: a line-end counter
-    ///   **and** a generation of its own. [ADR-0029](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md) defers it (alternative D) and takes
-    ///   the re-ask discharge, which D3 grants this surface on its own merits;
-    /// - **the screen.** The document is `[scrollback ++ primary]`, always. While the
-    ///   alt screen is up [`Term::accessible_text`] returns the *alt* document, and this
-    ///   line indexes the other one. When the alt screen is the taller of the two the
-    ///   index still **resolves**, onto unrelated content — so this is not a bounds
-    ///   problem a caller can check its way out of.
-    ///
-    /// So: ask for both together, keep them together, and re-ask rather than rebase.
+    /// **Meaningful only with the document it indexes** — the one [`Term::accessible_text`]
+    /// returns at the same instant, on the primary screen. No published scalar dates a
+    /// document line (eviction and a row's wrap bit both move it independently of the absolute
+    /// lines), and while the alt screen is up `accessible_text` returns the other document, into
+    /// which this index can still resolve onto unrelated content. So ask for both together, keep
+    /// them together, and re-ask rather than rebase ([ADR-0029](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md)).
+    /// `EL`/`ECH` retire no mark, so a line can still name a row they blanked.
     pub line: usize,
-    /// The typed command text, prompt- and output-excluded (B→C columns).
-    ///
-    /// **Frozen at the `133;C` that closed the command**, not re-read from the
-    /// cells when you ask. Those cells are not reserved for it: a plain overwrite,
-    /// `ICH`, `DCH` and an erase were each measured making the recorded column range
-    /// name somebody else's content, and only the last of the four is a verb any
-    /// mark-lifetime rule could reach. Bounded at [`MAX_COMMAND_TEXT`] `char`s.
+    /// The typed command text, prompt- and output-excluded (`B`→`C` columns), frozen when the
+    /// command's `133;C` arrived rather than re-read from cells later. Bounded at
+    /// [`MAX_COMMAND_TEXT`] `char`s.
     pub command: String,
-    /// The CommandFinished(D) exit code, if the shell reported one and the
-    /// command has finished.
-    ///
-    /// **Recorded when `133;D` is parsed**, onto the mark that closed the
-    /// command — not paired here at query time. It lives in no cell, so nothing on
-    /// screen can reconstruct it, and pairing over *survivors* re-parented a code onto
-    /// the previous command as soon as a disposal broke the run.
+    /// The `CommandFinished` (`133;D`) exit code, if the shell reported one and the command has
+    /// finished; recorded onto the closing mark when `D` is parsed.
     pub exit: Option<i32>,
 }
 
@@ -644,15 +584,8 @@ impl Term {
     }
 
     pub fn with_scrollback(cols: usize, rows: usize, scrollback_limit: usize) -> Self {
-        // Both clamps mirror `resize` exactly, so a screen cannot be born at a size a
-        // resize would refuse. They are not the same *kind* of rule, though: the width
-        // floor is a published contract (#547 — one column was supported and no longer
-        // is), while the row floor is `resize`'s own long-standing "a terminal is never
-        // 0-tall" that this constructor merely failed to enforce while carrying the
-        // same `scroll_bottom: rows - 1` below. That gap was a subtract-overflow panic
-        // on `rows == 0`, not a degenerate screen.
-        // …and the ceiling is the header's, not the glyph's: `frame.cols`/`rows` are u16,
-        // so a wider grid would be built and then misdescribed on the wire (#621).
+        // Both clamps mirror `resize`, so a screen cannot be born at a size a resize would refuse:
+        // the width floor (#547) and ceiling (#621), and a terminal is never 0-tall.
         let cols = cols.clamp(MIN_COLUMNS, MAX_COLUMNS);
         let rows = rows.clamp(1, MAX_ROWS);
         Term {
@@ -739,14 +672,9 @@ impl Term {
         TermDamage::Partial(bounds_to_lines(&self.line_damage))
     }
 
-    /// Render damage: content damage plus the cursor cells, for [`Term::frame`].
-    ///
-    /// A pure cursor move changes no cell *content*, so [`Term::damage`] (which
-    /// stays content-only, the cadence/flow-control primitive) would miss it —
-    /// yet a cell-invert caret must clear its old spot and ink the new one. So
-    /// the frame producer folds the old (last-acked) + current cursor cells in,
-    /// but only when the cursor actually moved: a still cursor needs no redraw,
-    /// keeping an idle frame empty. Mirrors Alacritty's `last_cursor`. #38.
+    /// Render damage: content damage plus the old (last-acked) and current cursor cells, folded
+    /// in only when the cursor moved, for [`Term::frame`] (#38). [`Term::damage`] stays
+    /// content-only. Mirrors alacritty's `last_cursor`.
     fn frame_damage(&self) -> TermDamage {
         if self.full_damage {
             return TermDamage::Full;
@@ -785,51 +713,9 @@ impl Term {
         self.full_damage = true;
     }
 
-    /// Record that columns `[left, right]` of `row` changed.
-    ///
-    /// Both columns are **clamped to the last column, and asserted in debug** (#536).
-    ///
-    /// Ten of the fourteen call sites derive their bound from a cursor column or from `cols`.
-    /// **Four derive it from a wide pair's width**, and that is the shape worth centralising:
-    /// `write_glyph`'s `col + width - 1` (which had no guard — this issue), `promote_cluster_to_wide`'s
-    /// `col + 1` (guarded by its own `col + 1 >= cols` early return), `demote_cluster_to_narrow`'s
-    /// `(col + 1).min(cols - 1)` (self-clamped), and `relocate_cluster_wide`'s literal `(0, 1)`
-    /// (valid only because `MIN_COLUMNS = 2`, #547). Three carried a private guard and one did not.
-    ///
-    /// No reference has this shape to port a clamp from: alacritty computes damage ranges too
-    /// (`term/mod.rs:1406`, `:1649` @ `852e971`) but always from a column or `columns()` — its print
-    /// path records no damage at all, relying on the previous and current cursor *points* to bracket
-    /// the line — while xterm.js tracks whole rows (`markDirty(y)`) and ghostty a per-row
-    /// `dirty: bool`. alacritty's `LineDamageBounds::expand`, which this one is a copy of, is equally
-    /// unguarded.
-    ///
-    /// The two halves do different jobs:
-    ///
-    /// - the **`debug_assert` is the detector**. An out-of-range bound is stored silently and
-    ///   detonates later, when `frame()` slices the row, so the stack trace accuses the reader
-    ///   rather than the writer. That delay is what #536 was filed about, and the assert collapses
-    ///   it — a bad caller dies here, at the site that recorded it (measured: an injected off-by-one
-    ///   moved the panic from `frame()`'s slice to this line).
-    /// - the **clamp is the release backstop**, and it clamps *toward a false positive*. justerm is
-    ///   a library, so a panic crosses into the consumer's process; over-damaging repaints a cell
-    ///   that did not change, which costs nothing a consumer can see. ghostty states the asymmetry
-    ///   as a rule: *"Dirty tracking may have false positives but should never have false negatives.
-    ///   A false negative would result in a visual artifact on the screen."* (`page.zig:1993-1995`).
-    ///
-    /// **`left` is guarded for that reason, and it is the axis that can actually lose a cell.**
-    /// Clamping `right` cannot under-report — columns past the last do not exist. But `LineBounds`
-    /// marks a line undamaged with `left = cols, right = 0` and `is_damaged()` is `left <= right`,
-    /// so a single `expand` with `left > right` on an otherwise-clean line leaves the line reading
-    /// as undamaged and **drops its whole span silently**. Unreachable from the ten column-derived
-    /// sites today; guarded because that is precisely the failure ghostty's rule forbids.
-    ///
-    /// `row` is deliberately left to panic on the index, and that is **not** in tension with
-    /// `frame_damage` clamping a row fifty lines below (`prev_cursor.0.min(rows - 1)`). The two
-    /// rows are different kinds of thing under the same rule: `prev_cursor` is a *stale remembered*
-    /// coordinate that a shrinking resize may have put out of range, so clamping it repaints the
-    /// nearest surviving cell — a false positive. `row` here is a *live computed* index for the
-    /// mutation just made, so clamping it would damage a different line than the one that changed:
-    /// a false negative on the real line, which is the outcome the rule forbids.
+    /// Record that columns `[left, right]` of `row` changed. Both columns are clamped to the
+    /// last column and asserted in debug (#536); `row` is left to panic on the index. Why each:
+    /// `docs/map/territory/damage.md`.
     fn damage_span(&mut self, row: usize, left: usize, right: usize) {
         let last = self.grid.cols().saturating_sub(1);
         debug_assert!(
@@ -839,28 +725,12 @@ impl Term {
         self.line_damage[row].expand(left.min(last), right.min(last));
     }
 
-    /// The first-class scroll recorded since the last `reset_damage`, if any.
-    /// Suppressed while scrolled up — a content scroll must not shift the frozen
-    /// viewport.
+    /// The first-class scroll recorded since the last `reset_damage`, if any. `None` while
+    /// scrolled up — a content scroll must not shift the frozen viewport.
     ///
-    /// **The count is capped at the region's own height.** Shifting a region
-    /// by more than its height moves every source row outside it, so the surplus
-    /// names nothing a consumer can act on — while it does overflow the wire's
-    /// `i16` and turn an up-scroll into a down-scroll: measured, a single
-    /// 32 770-byte `feed()` of newlines, no slow consumer required. Both references
-    /// that state a quantity at their own scroll sites clamp it to the same bound
-    /// (alacritty `term/mod.rs:773`, ghostty `Terminal.zig:2703`).
-    ///
-    /// The cap is here, on the **read**, and not on the accumulator in
-    /// `record_scroll`: a region that scrolls far and comes back then still reports
-    /// its true small net, instead of one walked down from a saturated value.
-    ///
-    /// A second, crate-internal bound backs it up, and it is representational rather
-    /// than semantic: [`MAX_ROWS`] is `u16::MAX` while the wire field is `i16`, so a
-    /// region can legally be taller than any count that field can hold. In that
-    /// corner the magnitude truncates. What it never does is wrap — a wrapped count
-    /// arrives with the opposite sign and the consumer shifts the wrong way, which is
-    /// the whole reason the saturation is here.
+    /// The count is capped at the region's own height, since a larger shift names nothing a
+    /// consumer can act on, and it saturates rather than wrapping where a region is taller than
+    /// the wire's `i16` count can hold.
     pub fn scroll_delta(&self) -> Option<ScrollOp> {
         if self.display_offset > 0 {
             return None;
@@ -868,11 +738,9 @@ impl Term {
         self.scroll.map(cap_scroll)
     }
 
-    /// Build a serializable [`Frame`] from the current damage + grid + grapheme
-    /// pool. `Full` ships every row; `Partial` ships the damaged spans. The
-    /// global side-table is remapped to **frame-local** indices — the engine pool
-    /// is append-only and leaky, so a frame carries only the clusters its cells
-    /// reference, renumbered, with each cell's `extra` rewritten to the local id.
+    /// Build a serializable [`Frame`] from the current damage and the viewport. `Full` ships
+    /// every row; `Partial` ships the damaged spans. Each distinct OSC 8 open a shipped cell
+    /// references gets one entry in the frame's own link table.
     pub fn frame(&self) -> Frame {
         let cols = self.grid.cols();
         let rows = self.grid.rows();
@@ -891,16 +759,8 @@ impl Term {
             ),
         };
 
-        // Frame-local numbering for the hyperlink table (#26). Keyed by the URI's
-        // *identity* — the `Arc` pointer — so two cells sharing one open share one entry
-        // and a distinct open gets its own, which is exactly the semantics the pool
-        // index used to carry.
-        //
-        // Sized by this frame, not by session history (#628). It was
-        // `vec![0u32; hyperlink_pool.len() + 1]`, allocated and zeroed on **every**
-        // frame against every OSC 8 the session had ever seen — measured at 10 µs per
-        // frame with 100 000 opens retained. With the pool gone there is nothing left to
-        // size it by, and the cost disappears rather than being reduced.
+        // Frame-local link numbering, keyed by the URI's `Arc` identity and sized by this frame
+        // (#26, #628, `docs/map/territory/hyperlinks.md`).
         let mut link_table: Vec<String> = Vec::new();
         let mut link_remap: std::collections::HashMap<*const u8, u32> =
             std::collections::HashMap::new();
@@ -1077,31 +937,14 @@ impl Term {
         }
     }
 
-    /// Number of lines currently held in scrollback history.
-    /// Replace the word-boundary set used by Word (semantic) selection — the policy half
-    /// of `selection_begin(.., SelectionType::Word)`, injected per [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) (core owns
-    /// the buffer walk, the consumer owns which characters separate words). The default
-    /// is [`DEFAULT_WORD_SEPARATORS`].
+    /// Replace the word-boundary set used by Word (semantic) selection — the policy half of
+    /// `selection_begin(.., SelectionType::Word)` ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
+    /// The default is [`DEFAULT_WORD_SEPARATORS`].
     ///
-    /// **`' '` is forced into whatever you pass**, and that is not a convenience. A
-    /// blank cell packs `' '`, so the space terminates the walk at the end of a row's
-    /// written text *and* backstops the wide-pair rule: without it, double-clicking next
-    /// to a wide separator starts the highlight on that separator's trailing spacer,
-    /// bisecting the glyph, and the walk then runs to the row's end through the padding.
-    /// Enforcing it here rather than in the walk is ghostty's shape — it prepends its own
-    /// blank codepoint to every parsed set at the config intake (`config/Config.zig`,
-    /// *"Always include null as first boundary"*), so `selectWord` never has to.
-    ///
-    /// A consequence worth knowing before you narrow the set: this predicate is the only
-    /// thing bounding the walk, so a set that omits the separators actually present in
-    /// the buffer makes one double-click walk the whole soft-wrap run — measured at 11.7 ms
-    /// (release) selecting 801,920 chars.
-    ///
-    /// If a length bound is ever wanted, **it is a field beside this one, not an argument**:
-    /// `word_start` / `word_end` are `pub(super)`, reached through
-    /// [`Term::selection_begin`], so there is no call site for a consumer to inject into.
-    /// This setter is the shape it would take (injected policy over a core
-    /// mechanism, [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
+    /// **`' '` is forced into whatever you pass**: a blank cell is a space, so it is what ends
+    /// the walk at the end of a row's text and keeps a double-click from starting on a wide
+    /// separator's spacer. The set is also the only bound on the walk — one that omits the
+    /// separators present in the buffer makes a double-click walk the whole soft-wrap run.
     pub fn set_word_separators(&mut self, separators: &str) {
         let mut set: String = separators.to_owned();
         if !set.contains(' ') {
@@ -1117,6 +960,7 @@ impl Term {
         &self.word_separators
     }
 
+    /// Number of lines currently held in scrollback history.
     pub fn scrollback_len(&self) -> usize {
         self.scrollback.len()
     }
@@ -1146,137 +990,41 @@ impl Term {
 
     // ---- selection -----------------------------------------------------------
 
-    /// Resize the screen to `cols` x `rows`. Rows dropped off the top (on shrink)
-    /// enter scrollback. Column reflow of soft-wrapped lines is layered on top
-    /// separately. The whole screen is damaged.
+    /// Resize the screen to `cols` x `rows`, reflowing soft-wrapped lines on the primary
+    /// screen; rows dropped off the top enter scrollback. The whole screen is damaged.
     ///
-    /// `cols` is widened to [`MIN_COLUMNS`] — a narrower screen cannot hold a
-    /// width-2 glyph, so it is clamped rather than represented.
+    /// `cols` is clamped to [`MIN_COLUMNS`]..=[`MAX_COLUMNS`] and `rows` to `1..=`[`MAX_ROWS`].
     pub fn resize(&mut self, cols: usize, rows: usize) {
-        // Not a print — and not a parser callback either, which is the whole reason
-        // [`Term::repeat_anchor`] is stated as a rule rather than as a list of
-        // `Perform` methods. A reflow rewrites cells and moves the cursor, so the cell
-        // `REP` would read back is no longer the one the arming print wrote (#825).
+        // Not a print: a reflow moves the cell `REP` would read back (#825).
         self.repeat_anchor = None;
-        // A terminal is never 0-tall; clamp so the math below (rows - 1) can't
-        // underflow. Columns clamp to MIN_COLUMNS, not 1: chunking by cols needs a
-        // non-zero width, but a *wide glyph* needs two (#547). The ceiling is the frame
-        // header's u16, clamped here as well as in the constructor — a ceiling that held
-        // only until the first resize is the gap `new` had against this function's own row
-        // floor before #547 (#621).
+        // The same clamps as the constructor (#547, #621).
         let cols = cols.clamp(MIN_COLUMNS, MAX_COLUMNS);
         let rows = rows.clamp(1, MAX_ROWS);
         let old_cols = self.grid.cols();
         let old_rows = self.grid.rows();
         let limit = self.scrollback_limit;
 
-        // A reflow rewrites marker lines outright, at three separate sites below and in
-        // two different frames of reference — so a held index goes stale in a way no
-        // offset repairs (#490). Bumped **here**, once, rather than beside each rewrite:
-        // this function is the only way any of them runs, and a per-site obligation is
-        // the shape `docs/map/territory/marker.md` already records as a known hole for
-        // the alt guard. Gated on a *dimension change* as well as on there being a marker:
-        // `resize` has no early return for unchanged geometry and `ResizePort` states no
-        // idempotency guarantee, so a consumer may call this with the size it already has —
-        // `justerm-web`'s fit does exactly that when the *cell* moves and the proposed grid
-        // does not, since it dedupes on cell and grid together. An ungated bump would then be
-        // a full re-pull for a resize that changed nothing — measured at 100 bumps for 100
-        // no-op resizes.
-        //
-        // This comment said the fit loop *"re-asserts the size every frame"*, which stopped being true
-        // when #632 gave `FitController` its four-field dedupe. The gate is unaffected: what it
-        // rests on is the missing early return, and that is still measured.
+        // One marker-epoch bump for the whole reflow, gated on a dimension change (#490,
+        // `docs/map/territory/marker.md`).
         if (cols != old_cols || rows != old_rows)
             && (!self.normal_markers.is_empty() || !self.alt_markers.is_empty())
         {
             self.bump_marker_epoch();
         }
 
-        // A reflow moves match coordinates (and can change the match set), so the
-        // query-derived highlights are invalidated; the consumer re-searches at
-        // the new width. The selection re-anchors below — it is user-authored.
+        // A reflow moves match coordinates, so the query-derived highlights are invalidated; the
+        // selection is user-authored and re-anchors below.
         self.invalidate_search_highlights();
 
-        // ...except on the alt screen, where a *shrink* drops the selection (#660). The
-        // primary pane carries user-authored points through `reflow_pane` and gets them back
-        // mapped to the new geometry; on alt the selection is dropped instead.
-        //
-        // **This is a policy choice, not a capability limit, and the difference matters
-        // because the first version of this comment got it wrong.** It claimed the alt pane
-        // has "nothing to re-anchor through" — measurably false: the alt branch below makes
-        // its own `reflow_pane` call with tracked points and already uses the returned
-        // `extras` / `evicted` to rotate and dispose alt *markers*. `reflow: false` disables
-        // the column re-split, not the point tracking. Installing a false "cannot" as the
-        // justification for fixing a false "cannot" is precisely the failure #660 is.
-        //
-        // What actually makes rotation the wrong trade here is that a marker and a selection
-        // are different shapes. A marker is one point with a binary fate — survive, or be
-        // disposed with an event. A selection is two *ordered* endpoints, so when a shrink
-        // destroys the row under one of them and not the other, "dispose" has no meaning and
-        // the correct behaviour is the clamp-and-overtake policy `selection_rotate_region`
-        // implements for scrolls. Reusing the marker path would give a selection whose ends
-        // moved by different rules; writing the second policy is a feature, not this fix.
-        // And on a column shrink an alt anchor would additionally need the `.min(cols - 1)`
-        // the primary branch applies, which alt markers deliberately do *not* take.
-        //
-        // Both references drop rather than rotate on the axis they consider unsafe —
-        // alacritty on a width change (`term/mod.rs:680-682`), xterm.js on a height change,
-        // its comment naming this bug class outright (`SelectionService.ts:156-160`).
-        //
-        // **Any geometry change, not just a shrink — and the `!=` is load-bearing in the
-        // direction that looks wasteful.** The obvious refinement is to keep the selection on
-        // a *grow*, since the alt pane pads rather than moving content, so no anchor looks
-        // invalidated. That was tried and a randomised sweep refuted it in one run: an alt
-        // resize also reflows the **primary** pane below, and on the alt screen `scrollback`
-        // *is* that primary history — so `scrollback.len()` moves under an anchor whose
-        // absolute line was measured from the old base, even when the alt grid itself does not
-        // move at all. `selection_text` then walks off the end. The branch below already knows
-        // this and converts alt *markers* through `old_base` → new base for exactly that
-        // reason ("the primary scrollback below may rewrap and change length even when the alt
-        // grid does not move"); the selection has no such conversion, so the geometry change
-        // is the honest trigger.
-        //
-        // Rebasing instead of dropping is the better answer and is not done here: a grow has
-        // no destroyed row, so both endpoints could shift by the base delta unambiguously —
-        // but a *shrink* still needs the two-endpoint policy below, and shipping half of it
-        // would leave the two axes behaving differently for no stated reason.
-        //
-        // The exact no-op is still not a resize: nothing reflows when neither axis moves, so
-        // the base cannot shift, and a consumer that re-asserts its size every frame (a
-        // `fit()` loop) must not make selecting on the alt screen impossible.
+        // ...except on the alt screen, where any geometry change drops it (#660):
+        // `docs/map/territory/selection.md`.
         if self.on_alt && (cols != old_cols || rows != old_rows) {
             self.selection = None;
         }
 
-        // Both screens are resized. Scrollback pairs with the PRIMARY screen
-        // (whichever is active) — the alt screen has no history of its own.
-        // `reflow: true` is the *primary* pane's setting and is deliberately a constant, **not**
-        // `self.autowrap`. ghostty gates its equivalent on DECAWM — `.reflow =
-        // self.modes.get(.wraparound)` (`terminal/Terminal.zig` `resize`) — and the reading that
-        // makes that coherent is the one this file just accepted for the alt screen: an application
-        // that turns autowrap off is placing lines itself, so its content is a layout rather than a
-        // flow, and re-wrapping it changes what it drew.
-        //
-        // Not followed here, for three reasons, and they are recorded rather than filed because
-        // nothing observable is known to break either way (measured: with DECAWM off, a full
-        // 6-column row still re-splits into two rows at width 3 exactly as it does with DECAWM on;
-        // the difference against ghostty is that ghostty truncates that row instead).
-        //
-        // - **The wrap flag is not a lie.** `Row::is_wrapped` means "this row continues into the
-        //   next", which after a re-split is simply true. DECAWM governs the **write** path — where
-        //   a glyph goes when the cursor is at the last column — not how stored content is laid out
-        //   again later. Dropping the flag would make `"abcdef"` extract as `"abc\ndef"`.
-        // - **The mode is global and momentary; the buffer is neither.** DECAWM is read at resize
-        //   time and would decide the fate of history written under the opposite setting. A TUI that
-        //   turns it off while drawing would, on a resize landing in that window, leave every
-        //   properly wrapped line in scrollback un-reflowed.
-        // - **It costs content.** Not reflowing truncates each row to the new width, so the tail of
-        //   a long line leaves the grid. justerm keeps it.
-        //
-        // There is no per-row signal to be finer with: a row written under DECAWM off and a row that
-        // merely ended early are both simply unwrapped. "Do not re-split an unwrapped logical line"
-        // would break ordinary reflow, since a line that exactly fills its width carries no wrap
-        // flag either.
+        // Both screens are resized; scrollback pairs with the primary screen, whichever is
+        // active. `reflow: true` is a constant, not `self.autowrap` — reflow is not gated on
+        // DECAWM: `docs/map/territory/reflow.md`.
         let dims = ReflowDims {
             old_cols,
             cols,
@@ -1286,31 +1034,17 @@ impl Term {
         };
         let scrollback = std::mem::take(&mut self.scrollback);
         if self.on_alt {
-            // Active = alt (cursor, no scrollback); inactive = primary. No selection anchors
-            // to track here — but *because the geometry change above dropped them* (#660),
-            // not because there cannot be any. This comment used to read "selection is
-            // primary-only and cleared on alt enter": the clearing is real
-            // (`enter_alt_screen` / `leave_alt_screen`, "a selection cannot survive a screen
-            // swap") and says nothing about a selection made *while* the alt screen is up,
-            // which is the ordinary act of copying out of vim. A premise that held at one
-            // instant was read as an invariant holding for the screen's lifetime.
-            // Alt markers still ride this pane, but **not because it reflows** — since #567 it does
-            // not, so a marker's content no longer moves under it and the old reason here ("justerm
-            // column-reflows the alt grid, so a marker must follow its content") is retracted. What
-            // they ride it for is the row *fit*: a shrink still drops rows off the top, and a marker
-            // on one of those has left a screen with no history to hold it. Their stored line is
-            // `base + alt_row` (base = primary scrollback len), so convert to alt-local rows here
-            // and re-anchor on the new base afterward — the primary scrollback below may rewrap and
-            // change length even when the alt grid does not move at all.
+            // Active = alt (cursor, no scrollback); inactive = primary. The alt pane is re-fit, not
+            // reflowed (#567); its markers and tracked points are stored as `base + alt_row`, so
+            // convert to alt-local rows and re-anchor on the new base afterwards — the primary
+            // scrollback may rewrap even when the alt grid does not move.
             let old_base = scrollback.len();
             let mut alt_pts: Vec<(usize, usize)> = self
                 .alt_markers
                 .iter()
                 .map(|m| (m.line - old_base, m.col))
                 .collect();
-            // Alt-scoped tracked points are stored on the same `base + alt_row`
-            // frame as the alt markers, so they convert and come back the same way
-            // (#691).
+            // Alt-scoped tracked points convert the same way (#691).
             let alt_tracked_off = alt_pts.len();
             alt_pts.extend(
                 self.alt_tracked
@@ -1332,24 +1066,14 @@ impl Term {
             self.grid.set_screen(r_alt.screen, cols, rows);
             self.cursor.set_point(r_alt.cursor, rows, cols);
 
-            // Primary is inactive here, but markers anchor *primary* content, so
-            // they reflow with it. There is no *primary* selection to carry alongside them —
-            // `switch_to_alt` nulls it before the alt screen exists, so one cannot coexist
-            // with `on_alt` — which is a different statement from the "cleared on alt enter"
-            // this comment used to make, and the difference is #660: that clearing says
-            // nothing about the *alt* selection the branch above now drops.
-            // `(line, col)`, not `(line, 0)`: the column is what bounds OSC-133 command-text
-            // extraction (#166), and discarding it here truncated the recorded command for any
-            // resize taken while a full-screen app was up. The primary branch below has always
-            // passed and restored both; this one is the sibling that did not.
+            // Primary is inactive here, but markers anchor primary content, so they reflow with it,
+            // carrying `(line, col)` (#166). No primary selection exists while `on_alt`.
             let mut marker_pts: Vec<(usize, usize)> = self
                 .normal_markers
                 .iter()
                 .map(|m| (m.line, m.col))
                 .collect();
-            // Primary-scoped tracked points anchor primary content too, so they
-            // reflow with this pane even though the alt screen is the active one
-            // (#691) — the same reason the markers above do.
+            // Primary-scoped tracked points reflow with this pane too (#691).
             let tracked_off = marker_pts.len();
             marker_pts.extend(self.normal_tracked.iter().map(|p| (p.line, p.col)));
             let primary = self.alt_grid.take_lines();
@@ -1367,8 +1091,7 @@ impl Term {
                 m.line = r.extras[i].0.saturating_sub(r.evicted);
                 m.col = r.extras[i].1;
             }
-            // Released rather than clamped when the reflow evicted its line — see
-            // the primary-active branch for why the two loops differ (#691).
+            // Released rather than clamped when the reflow evicted its line (#691).
             let mut ti = 0;
             let evicted = r.evicted;
             let extras = &r.extras;
@@ -1384,17 +1107,9 @@ impl Term {
                     None => false,
                 }
             });
-            // The alt half lives in a different frame from the primary one above, and adding the
-            // two was the defect: `extras` count from the top of the alt pane's own history, and
-            // the alt screen **has** no history — every row the shrink pushed off the top is gone,
-            // not archived. Passing the primary's scrollback limit made `reflow_pane` keep them,
-            // so a rows-only resize (no reflow at all) reported a marker four lines past the end of
-            // the buffer. The limit is `0` here because that is what an alt screen's history is.
-            //
-            // A marker whose row went with it is **disposed**, matching what the alt screen already
-            // does when a row leaves by scrolling (`markers_rotate_region` fires `MarkerDisposed`
-            // for the marker on the departing edge). Silently relocating it to row 0 would put a
-            // decoration on content it was never attached to.
+            // The alt half's `extras` count from the top of the alt pane's own history, which is
+            // empty (limit `0`); a marker whose row went with the shrink is disposed, not moved to
+            // row 0: `docs/map/territory/marker.md`.
             let new_base = self.scrollback.len();
             let mut alt_disposed = Vec::new();
             let mut i = 0;
@@ -1404,14 +1119,7 @@ impl Term {
                 match line.checked_sub(r_alt.evicted) {
                     Some(row) if row < rows => {
                         m.line = new_base + row;
-                        // The column rides along for the same reason as the primary half, but
-                        // **unpinned**: `add_marker` always passes column 0, and I could not get an
-                        // OSC-133 mark (the only column-bearing kind) to appear in `alt_markers` at
-                        // all. That is a gap in my knowledge, not evidence the column is
-                        // structurally zero — `push_marker` takes a column and `markers_mut` routes
-                        // by active buffer, so the field is reachable in principle. Carrying it
-                        // keeps the two halves stating one invariant; if the alt path really is
-                        // marker-column-free, this line is a no-op.
+                        // The column rides along as in the primary half (unpinned on alt).
                         m.col = col;
                         true
                     }
@@ -1424,18 +1132,9 @@ impl Term {
             for id in alt_disposed {
                 self.events.push(TermEvent::MarkerDisposed(id));
             }
-            // The alt half's tracked points, on the alt marker's rule: a row the
-            // shrink pushed off an unarchived screen is gone, so the point is
-            // released rather than relocated (#691).
-            //
-            // The `row < rows` half of that guard is **unproven, deliberately kept**.
-            // A mutation dropping it stays green, and a sweep of 324 alt resizes
-            // (rows 1..6 x cols {4,10,30}, both directions, a point on every alt row
-            // at columns 0 / 1 / cols-1 / cols plus one past the pane) never reached
-            // it — the alt fit runs with `reflow: false`, so a surviving row always
-            // maps below the new row count. That is a measured *validity condition*,
-            // not a proof of unreachability, and the marker loop above carries the
-            // same bound: parity is the reason it stays.
+            // The alt half's tracked points, on the alt marker's rule: a row the shrink pushed off
+            // is gone, so the point is released (#691). `row < rows` is kept for parity with the
+            // marker loop, though no measured input reaches it.
             let mut ai = 0;
             let alt_extras = &r_alt.extras;
             let alt_evicted = r_alt.evicted;
@@ -1452,9 +1151,8 @@ impl Term {
                 }
             });
         } else {
-            // Active = primary (cursor, scrollback); inactive = alt. The selection
-            // anchors (absolute) reflow alongside the cursor so they keep their
-            // content across a column change.
+            // Active = primary (cursor, scrollback); inactive = alt. The selection anchors reflow
+            // alongside the cursor so they keep their content across a column change.
             let sel_pts: Vec<(usize, usize)> = self
                 .selection
                 .as_ref()
@@ -1465,14 +1163,10 @@ impl Term {
                     ]
                 })
                 .unwrap_or_default();
-            // Markers reflow on the same pane by (line, col) — the column matters
-            // for OSC-133 command marks, whose B/C columns bound the extracted
-            // command text (#166). They ride after the selection points so each
-            // reads its own reflowed slot back from `extras` (#118).
+            // Markers ride after the selection points, carrying `(line, col)` (#166, #118).
             let mut pts = sel_pts.clone();
             pts.extend(self.normal_markers.iter().map(|m| (m.line, m.col)));
-            // Tracked points ride after the markers, reading their own slots back
-            // by the same offset idiom (#691).
+            // Tracked points ride after the markers, by the same offset idiom (#691).
             let tracked_off = pts.len();
             pts.extend(self.normal_tracked.iter().map(|p| (p.line, p.col)));
 
@@ -1482,12 +1176,8 @@ impl Term {
             self.scrollback = r.scrollback;
             self.cursor.set_point(r.cursor, rows, cols);
             if let Some(sel) = &mut self.selection {
-                // A selection endpoint is **UI** state, so its reading of `col == cols` (#562) is
-                // neither the cursor's nor a mark's: it is clamped into the grid. UI state may not
-                // move the application's content to make room for itself — the criterion that
-                // decided this, and the one ghostty encodes by clamping every non-cursor pin before
-                // it can widen a row (`terminal/PageList.zig:1576-1585` @ `e6e26e1`) while leaving
-                // the cursor pin unclamped (`:1602-1606`).
+                // A selection endpoint is UI state, so a `col == cols` result (#562) is clamped into the
+                // grid: UI state may not move the application's content to make room for itself.
                 sel.anchor.point = BufferPoint {
                     line: r.extras[0].0.saturating_sub(r.evicted),
                     col: r.extras[0].1.min(cols - 1),
@@ -1502,13 +1192,8 @@ impl Term {
                 m.line = r.extras[marker_off + i].0.saturating_sub(r.evicted);
                 m.col = r.extras[marker_off + i].1;
             }
-            // A point whose reflowed line fell inside the evicted prefix has left
-            // the buffer, so it is released rather than clamped to line 0 (#691) —
-            // deliberately unlike the marker loop above, which saturates. A marker
-            // that lands on the wrong line still paints something the consumer can
-            // see and correct; a tracked point is *asked* for a position, and
-            // answering with content the caller never anchored to is the exact
-            // failure this whole module exists to remove.
+            // A tracked point whose line was evicted is released, not saturated like the markers
+            // above (#691, `docs/map/territory/marker.md`).
             let mut i = 0;
             let evicted = r.evicted;
             let extras = &r.extras;
@@ -1540,79 +1225,25 @@ impl Term {
             self.alt_grid.set_screen(r.screen, cols, rows);
         }
 
-        // Carry the deferred wrap across the resize — it is *cursor* state, and it used to be
-        // reset here alongside the scroll margins. Losing it meant the next byte overwrote the
-        // last glyph instead of wrapping past it, on a column resize *and* on a rows-only one
-        // where no reflow runs at all.
-        //
-        // This comment also named the tab stops beside the margins, as state that "does
-        // legitimately reset". That was wrong, and #849 measured it: the table is indexed by
-        // *columns* and written by the *application*, so rebuilding it on a rows-only resize
-        // destroyed it on an axis it does not name. The margins still reset; the table does not,
-        // and the extension below is why.
-        //
-        // The flag means "the cursor is logically one past the column it sits on". Where the
-        // reflow leaves it somewhere other than the last column that logical position **is**
-        // representable, so the flag is cleared and the cursor takes it instead — ghostty's rule,
-        // stated in its own words for the saved cursor: *"If we had pending wrap set and we're no
-        // longer at the end of the line, we unset the pending wrap and move the cursor to reflect
-        // the correct next position"* (`terminal/Screen.zig:2092-2098` @ `e6e26e1`). alacritty
-        // reaches the same place from the other side, lifting the cursor outside the grid before
-        // reflowing and clamping it back afterwards (`grid/resize.rs:113-116`, `:248-251`,
-        // `:173-177` @ `852e971`); xterm.js needs no rule because `x === cols` is representable.
-        //
-        // `col + 1` cannot overflow the row: the branch requires `col != cols - 1`, and `col` is
-        // already clamped below `cols` by `Cursor::set_point`.
+        // Carry the deferred wrap across the resize — it is cursor state (#848). Where the reflow
+        // leaves the cursor short of the last column, the one-past position is representable, so
+        // the flag is cleared and the cursor takes it (ghostty's rule; the reference rows are in
+        // `docs/agents/reference-facts.md`). `col + 1` cannot overflow: the branch requires
+        // `col != cols - 1`.
         if self.cursor.pending_wrap && self.cursor.col != cols - 1 {
             self.cursor.pending_wrap = false;
             self.cursor.col += 1;
         }
-        // The scroll region is a *range over the current screen*, so a geometry change discards
-        // it: at a new row count the range names rows that are not the ones it was set for. Every
-        // reference does the same, and the spec's own width change says so in an enumeration —
-        // xterm's DECCOLM handler calls `resetMargins` under a `DEC 070, pp 5-71 to 5-72`
-        // citation (`charproc.c:7446`, `:7463` @ `6380a3e`).
-        //
-        // What is **not** a geometry change is a resize to the size the terminal already has, and
-        // until this gate the two were the same call. `resize` has no early return, so a consumer
-        // re-asserting its size destroyed a region only the *application* could restore — and the
-        // application is never told, so nothing restores it. Every reference is guarded against
-        // that by an early return this function does not have (`alacritty_terminal/src/term/
-        // mod.rs:662` @ `852e971`, `src/terminal/Terminal.zig:3753` @ `e6e26e1`,
-        // `src/browser/CoreBrowserTerminal.ts:1055` @ `699f553`); the gate is the narrow form of
-        // the same guard, and it is the predicate this function already uses twice above.
+        // The scroll region is a range over the current screen, so a geometry change discards
+        // it; a resize to the current size is not a geometry change, and `resize` has no early
+        // return (`docs/map/territory/reflow.md`).
         if cols != old_cols || rows != old_rows {
             self.scroll_top = 0;
             self.scroll_bottom = rows - 1;
         }
-        // Extend, never rebuild and never trim (#849). A resize changes the *grid*; the
-        // tab-stop table is state the application wrote through the stream. The line this
-        // replaces rebuilt it from defaults on every call, so a window dragged one row
-        // taller — or a consumer merely re-asserting its size, which reaches here because
-        // this function has no early return for unchanged geometry — silently replaced an
-        // application's stops with multiples of eight, on an axis the table is not even
-        // indexed by.
-        //
-        // New columns take the default ladder at their **absolute** index, which is why the
-        // closure carries `index` instead of counting from zero: filling them with `false`
-        // keeps the length right and loses every default stop past the old width.
-        //
-        // Nothing is trimmed, so `tabs.len()` is the widest this terminal has ever been and
-        // the invariant the two walks need is `len() >= cols` rather than equality — every
-        // index site is bounded by `cols` or by `cursor.col`. A stop pushed outside the grid
-        // by a narrowing is unreachable while narrow and returns when the grid widens again.
-        // The corpus splits 2-2 on that half: xterm keeps it structurally (MAX_TABS is 1024,
-        // independent of the screen, `ptyx.h:3611` @ `6380a3e`) and xterm.js keeps it in a
-        // sparse map, while alacritty truncates through `Vec::resize_with`
-        // (`alacritty_terminal/src/term/mod.rs:2341` @ `852e971`) and ghostty rebuilds the
-        // table outright when the column count moves (`src/terminal/Terminal.zig:3759` @
-        // `e6e26e1`). No tie-breaker row covers the axis, so the call is the maintainer's,
-        // recorded on #849.
-        //
-        // Only the *rebuild* is wrong here, not every reset: RIS still restores the default
-        // ladder, because `full_reset` replaces the whole struct and takes the table from
-        // the constructor — the right answer for state the application wrote and `ESC c`
-        // resets.
+        // Extend, never rebuild and never trim (#849): new columns take the default ladder at
+        // their absolute index, so `tabs.len() >= cols` rather than equal
+        // (`docs/map/territory/reflow.md`).
         if cols > self.tabs.len() {
             let mut index = self.tabs.len();
             self.tabs.resize_with(cols, || {

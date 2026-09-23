@@ -150,6 +150,33 @@ the shell emits.
   four never carry it and the population is bounded at `MAX_MARKERS`; living on the marker, it dies
   with it — a side table keyed by `MarkerId` would need its own purge at every disposal site, the
   missing-destruction-funnel defect #750 is about (ADR-0025 D1: a fact lives with its owner).
+- **`resize` bumps the marker epoch once, on a dimension change with a marker present (#490).** A
+  reflow rewrites marker lines at three sites in two frames of reference; bumping at the one
+  function that runs them all beats a per-site obligation. The dimension gate matters because
+  `resize` has no early return and `ResizePort` promises no idempotency — `justerm-web`'s fit
+  re-sends an unchanged grid when only the cell moved — and an ungated bump measured 100 bumps for
+  100 no-op resizes.
+- **Both resize branches carry a marker's column, `(line, col)`, not `(line, 0)`** (#166): the column
+  bounds OSC-133 command-text extraction, and the alt branch once dropped it, truncating the
+  recorded command for any resize taken while a full-screen app was up. On the alt half the column
+  is **unpinned** — `add_marker` passes 0 and no OSC-133 mark has been observed in `alt_markers` —
+  but `push_marker` takes a column and `markers_mut` routes by active buffer, so it is carried to
+  keep the two halves stating one invariant.
+- **The alt half of a resize has no history, so its reflow limit is `0`** — `extras` count from the
+  top of the alt pane's own history, and passing the primary's limit kept the rows a shrink pushed
+  off, reporting a marker four lines past the end on a rows-only resize. A marker whose row went is
+  **disposed** with `MarkerDisposed`, as alt scrolling already does, rather than relocated to row 0
+  onto content it never marked.
+- **A tracked point whose line was evicted is released, where a marker saturates** (#691). A marker
+  on the wrong line still paints something the consumer can see and correct; a tracked point is
+  *asked* for a position, and answering with content the caller never anchored to is the failure
+  tracking exists to remove. The alt half's `row < rows` guard is **unproven, deliberately kept**: a
+  mutation dropping it stays green, and a sweep of 324 alt resizes (rows 1..6 × cols {4,10,30}, both
+  directions, a point on every row at columns 0 / 1 / cols-1 / cols and one past the pane) never
+  reached it, because the alt fit runs with `reflow: false`. That is a measured validity condition,
+  not a proof; the marker loop carries the same bound and parity keeps it.
+- **`CommandLine::line` is a document line, core's analog of VS Code's `bufferToEditorLineMapping`** —
+  the frame-mode web side has no wrap information to map an absolute line itself.
 
 ## Code
 

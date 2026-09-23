@@ -26,10 +26,19 @@ sits inside `term.rs` and `grid.rs`, and no public method is named for it — yo
 - **Primary reflows; the alt screen does not** (#567). The alt pane is re-fit only — rows dropped or
   added to reach the new size, nothing re-wrapped — because a full-screen application places its own
   lines and re-wrapping them changes what it drew.
-- **Reflow is not gated on DECAWM**, deliberately, and ghostty gates its equivalent. Three grounds
-  are recorded at the call site: the wrap flag is not a lie after a re-split, the mode is global and
-  momentary while the buffer is neither, and not reflowing truncates each row so the tail of a long
-  line leaves the grid.
+- **Reflow is not gated on DECAWM**, deliberately, and ghostty gates its equivalent (`.reflow =
+  self.modes.get(.wraparound)` in `terminal/Terminal.zig`'s `resize`) — on the reading that an
+  application turning autowrap off is placing lines itself, so its content is a layout rather than a
+  flow. Nothing observable is known to break either way: with DECAWM off a full 6-column row still
+  re-splits into two at width 3, where ghostty truncates it. Three grounds. **The wrap flag is not a
+  lie** — `Row::is_wrapped` means "continues into the next", true after a re-split; DECAWM governs the
+  write path, not how stored content is laid out again, and dropping the flag would extract
+  `"abcdef"` as `"abc\ndef"`. **The mode is global and momentary; the buffer is neither** — read at
+  resize time it would decide the fate of history written under the opposite setting, so a TUI
+  turning it off while drawing would leave every wrapped line in scrollback un-reflowed. **It costs
+  content** — not reflowing truncates each row. And there is no per-row signal to be finer with: a
+  row written under DECAWM off and one that merely ended early are both unwrapped, and a line that
+  exactly fills its width carries no wrap flag either.
 - **Tracked points travel with the content.** `reflow` takes a `points` slice — the cursor, selection
   anchors, markers — and returns where each landed. Anything anchored to a line has to be in that
   slice or it is silently wrong afterwards.
@@ -46,6 +55,17 @@ sits inside `term.rs` and `grid.rs`, and no public method is named for it — yo
   moved, since a resize to the size the terminal already has changes no meaning. The deferred wrap is
   cursor state, expressible at any geometry, so it is **carried** (#848). The tab-stop table is a set
   of marks that still mean what they meant, so it is **extended, never rebuilt or trimmed** (#849).
+  The line it replaced rebuilt the table from defaults on every call, so a window one row taller — or
+  a consumer re-asserting its size — replaced an application's stops with multiples of eight, on an
+  axis the table is not indexed by. New columns take the default ladder at their *absolute* index;
+  nothing is trimmed, so `tabs.len()` is the widest the terminal has been and the walks need
+  `len() >= cols`, not equality. A stop a narrowing pushed outside the grid returns when it widens.
+  The corpus splits 2-2 on that half: xterm keeps it structurally (`MAX_TABS` 1024, independent of
+  the screen, `ptyx.h:3611` @ `6380a3e`) and xterm.js in a sparse map, while alacritty truncates
+  through `Vec::resize_with` (`alacritty_terminal/src/term/mod.rs:2341` @ `852e971`) and ghostty
+  rebuilds on a column change (`src/terminal/Terminal.zig:3759` @ `e6e26e1`). No tie-breaker row
+  covers the axis, so the call is the maintainer's, recorded on #849. RIS still restores the default
+  ladder, since `full_reset` takes the table from the constructor.
   The three were decided one at a time and separately; see *Known holes*.
 
 ## Code
@@ -102,7 +122,7 @@ rows rather than within one.
 
 - **Zero governing records** for the operation with the widest blast radius in the engine.
 - **The DECAWM divergence is deliberate and unrecorded.** It diverges from a named reference with
-  three stated reasons, in a comment — the exact shape ADR promotion exists for.
+  three stated reasons, held only by this note — the exact shape ADR promotion exists for.
 - **#562 — a point one past the last cell has no representation.** Five rejected designs; read the
   issue before touching relocation.
 - **Nothing states which point sets must be passed.** The `points` slice is a convention: forget to
