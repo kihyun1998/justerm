@@ -90,7 +90,10 @@ for a terminal engine, that list is half the specification.
 
   *Across families*, the obvious generalisation is wrong in both directions: for a **dynamic colour**
   (OSC 10/11/12) an empty field *addresses its slot and changes nothing* while the stack still
-  advances past it, so `OSC 10 ; ; <bg>` is how xterm reaches the background alone (`misc.c:3684`,
+  advances past it, so `OSC 10 ; ; <bg>` is how xterm reaches the background alone (`ChangeColorsRequest`'s offset loop at `misc.c:3679`,
+  walking `OSC_TEXT_FG` → `OSC_TEXT_BG` → `OSC_TEXT_CURSOR`, `ptyx.h:1018-1020` — the stack ends after the cursor here, because xterm's next slots are the
+  pointer colours `OSC_MOUSE_FG` = 13 and `OSC_MOUSE_BG` = 14, which justerm does not model, and
+  dropping a fourth spec is better than mis-addressing it; the skip at `misc.c:3684`,
   `:3687` — its *implementation*; `ctlseqs.txt:2082` documents only the stack); for a **hyperlink**
   (OSC 8) an empty URI *closes* the current link; for a **title** (OSC 0/2) an empty string *is* the
   new title. The neighbour that looks identical is not: xterm's OSC 4 path has no skip at all — an
@@ -160,6 +163,11 @@ for a terminal engine, that list is half the specification.
   choosing `tokenize` over `split`, and ghostty has no test that would catch it. Rows in
   [`reference-facts.md`](../../agents/reference-facts.md#cursor-colour). justerm follows the three,
   which ADR-0004 settles independently: `ctlseqs.txt:2082` indexes by *parameter*, not by value.
+- **XTWINOPS is two operations here, and `CSI t` is not a handled final (#823).** The engine owns no
+  window, so most of the family is meaningless: 14/16 ask about pixels the engine has no concept of,
+  and resize/move/iconify are requests about a window the consumer owns. 22 and 23 are pure VT
+  state, and were the single most-emitted unimplemented sequence in the capture sweep that produced
+  #823; every other first parameter falls through and is ignored.
 - **A sequence can make the engine *retain* something it previously only relayed (#823).** XTWINOPS
   `CSI 22 t` / `CSI 23 t` push and pop the window title, and answering a pop requires holding the
   title — so parsing OSC 0/2 and forwarding the string, which had been enough since #12, stopped

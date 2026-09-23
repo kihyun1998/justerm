@@ -2212,7 +2212,7 @@ default is unrepresentable here — `s` resolves through a *user resource* in xt
 ADR-0017 assigns to the consumer, and cut buffers are unmodelled — so it takes the reading all three
 implementations share. And a payload that fails to decode emits nothing rather than clearing,
 because clearing is destructive and inferring one from unparseable bytes lets line noise wipe what a
-user copied. Both are argued at `Term::clipboard`.
+user copied. Both are argued in `docs/map/territory/events-and-replies.md`.
 
 ### REP's retained character — the two obvious references disagree, and xterm breaks the tie
 

@@ -169,6 +169,37 @@ nothing about it appears in the frame.
   recorded as impossible, on the premise that Zig has no non-exhaustive enum; a trailing `_` is one.
   An OSC ended by a bare `ESC` answers `ST`, as xterm hardcodes (`charproc.c:8964`) and ghostty's
   `Terminator.init` returns for a missing byte (`src/terminal/osc.zig:263`).
+- **`OSC 52` diverges from the spec twice, and both are argued here (#828).** An **empty target is
+  the clipboard**, not the spec's `s0`. Neither half of `s0` is representable: the cut buffer is
+  unmodelled outright, and `s` is *merely* unmodelled — xterm resolves it through a user resource,
+  which is policy ADR-0017 puts in the consumer, and DECSET 1041 sets that resource from the stream,
+  so an engine tracking 1041 could resolve it; justerm declines to. xterm-as-shipped reads the empty
+  field as PRIMARY, so this diverges from xterm's default and not merely from its manual. What
+  decides it is independent lineages — fewer than a naive count, because alacritty never sees an
+  empty field (`vte` substitutes `c` first), so those two are one — ghostty and xterm.js's clipboard
+  addon being the other two: three lineages, one answer. And the emitter agrees: `tmux`'s
+  `set-clipboard` is documented as setting the terminal clipboard, and `tmux` 3.2a is measured
+  sending the empty form. **Malformed in, nothing out**: the spec clears on a payload that is neither
+  base64 nor `?`; clearing is destructive, and inferring one from bytes the engine could not parse
+  lets line noise wipe what the user copied by hand. xterm has no validator to disagree with — it
+  *filters* — so the disagreement is about what to accept, and this engine is the stricter on
+  purpose: a filter hands the consumer text assembled from bytes the application did not send.
+  Non-UTF-8 is refused on the same principle, since every text surface this crate publishes is UTF-8.
+  The payload is `params[2..]` rejoined, #650's rule: reading `params[2]` alone would take a payload
+  containing a `;` and *successfully* decode its well-formed first piece — a truncated clipboard, the
+  one failure this handler must not have. Rejoined, the stray `;` reaches the decoder and is refused.
+  A multi-target list like `pc`, which the spec permits (`ctlseqs.txt:2156`), is dropped rather
+  than approximated: honouring one target of two is the same defect as truncating a payload, one
+  axis over, and `vte`/alacritty's first-byte-wins would do exactly that.
+  Rows in [`reference-facts.md`](../../agents/reference-facts.md#osc-52--where-the-references-converge-and-the-two-places-the-spec-is-not-followed-828-2026-09-02).
+- **`OSC 52`'s size bound is checked on the fields, before the join** (#828) — `join` is itself an
+  unconditional full copy, so checking after it would let a hostile payload buy a second allocation
+  the size of the first. The bound is `MAX_CLIPBOARD_BASE64`; the parser's own allocation is
+  unbounded ([VT interpretation](vt-interpretation.md)).
+- **DECRQM answers from the model it has, not from a flag kept for the query** (#27). DECCOLM (`?3`)
+  is derived from the actual width, never a tracked flag — a flag would lie if the consumer ignored
+  the resize request (#82). Mouse tracking is one enum because the levels are mutually exclusive,
+  so `?1000` queried while `?1002` is active reports *reset* — faithful to that model.
 - **A `report_*` takes back what it needs rather than the engine remembering it.**
   `report_clipboard(target, text, terminator)` follows `report_palette_color(index, spec,
   terminator)`: the consumer names the target it is answering about. alacritty is the alternative and

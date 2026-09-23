@@ -4792,6 +4792,9 @@ fn is_default_tab_stop(col: usize) -> bool {
     col.is_multiple_of(8)
 }
 
+/// First sub-parameter of CSI param `idx`, or `default` when absent or zero
+/// (a zero/omitted numeric param means "1" for cursor movement and "0" for
+/// erase — callers pass the right default).
 fn param_or(params: &Params, idx: usize, default: u16) -> u16 {
     match params.iter().nth(idx).and_then(|p| p.first().copied()) {
         Some(v) if v != 0 => v,
