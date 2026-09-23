@@ -82,6 +82,38 @@ What a stranger *reads* once it has shipped is a different concept — see
   the workspace rather than merely skipped.
 - **Release notes are GitHub Releases; there is no `CHANGELOG.md`.** A published entry is never
   rewritten — a correction opens a new note.
+- **Why the four publish workflows are shaped the way they are** — the facts their comments point
+  here:
+  - *No build cache in a publish job*: just-shield R6 flags a third-party action sharing a job that
+    holds the publish token, so dropping `rust-cache` (and using `npm install -g pnpm@10` rather than
+    `pnpm/action-setup`) keeps `CARGO_REGISTRY_TOKEN` / `NPM_TOKEN` away from any third-party action
+    (ADR-0006). A publish runs on a rare tag, so the cache bought little.
+  - *The `wasm-pack` pin is for determinism, not speed* (#616): unpinned, two tags a week apart could
+    ship differently-generated wasm from one source tree — live when written, with crates.io serving
+    0.15.0 while a maintainer built proofs on 0.14.0. It pins wasm-pack's own codegen and the
+    `wasm-opt` release it downloads, **not** the `wasm-bindgen` CLI, which wasm-pack derives from the
+    crate's lockfile (#613 pinned that half). `--version X.Y.Z` is exact, not a caret (`cargo help
+    install`); `~0.15` was rejected because it absorbs a patch bump silently. While the pin equals the
+    runner image's version the install short-circuits (~0.2 s); any other value builds wasm-pack from
+    source, uncached in the publish jobs by the rule above — the accepted price of a deterministic
+    artifact.
+  - *The renderer's lockfile gate is its own step* (#613): `-- --locked` through wasm-pack inspects
+    nothing, because wasm-pack resolves and writes `Cargo.lock` before cargo runs (measured both ways:
+    no lock, it creates one; a stale lock, it rewrites it) while bare cargo refuses in both.
+    `cargo metadata` is the cheapest bare command that resolves, and on refusal leaves the lock
+    untouched.
+  - *Licence texts must be pushed into `files`* (#472): wasm-pack copies `LICENSE-MIT` /
+    `LICENSE-APACHE` into `pkg/`, but `files` is an allowlist and npm's automatic inclusion covers
+    `LICENSE`/`LICENSE.md`, not the hyphenated form — renderer 0.5.0/0.6.0 and web 0.7.0 shipped a
+    licence declaration with no licence text. The decoder's `finish-pkg.mjs` and the renderer's inline
+    step both add them; the web job asserts them, with the entry and its types, inside the tarball.
+  - *An already-published version is a green no-op*: npm refuses a re-publish (403), so each npm job
+    checks `npm view pkg@ver version` first — re-tagging is always safe.
+  - *A GitHub Release per npm track, in its own job* (#474): a registry publish carries no notes, and
+    the release job needs `contents: write`, which must not share a job with `NPM_TOKEN`. Created at
+    tag time, so `publishedAt` is right by construction; the body is the tag's annotation (a
+    lightweight tag falls through to its commit message, verified); `--latest=false` keeps the Latest
+    badge on the `v*` engine track.
 
 ## Code
 

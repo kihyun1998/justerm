@@ -1,58 +1,15 @@
 // Fail a PR whose PUBLISHED NPM PACKAGE carries prose written for a reader of this repository.
 //
-// wasm-bindgen copies a `///` comment **verbatim** into the `.d.ts` it generates, and that file is
-// what an editor shows on hover — read more often than the README by anyone actually calling the
-// API. Neither crate is on docs.rs (`publish = false`, npm only), so rustdoc's syntax resolves in
-// no context that ships.
-//
-// Measured on the published 0.21.0 tarballs (`npm pack`), which is the artifact, not a proxy:
-//
-//                              #NNN   ADR   [`x`](target)   [`x`]
-//   justerm_renderer.d.ts       101    19            51        4
-//   justerm_wasm_decode.d.ts     39     5             4       19
-//   colors.js                     2     1             0        0
-//
-// Three classes, and they are NOT equally bad:
-//
-//   1. **A bare `#NNN` or `ADR-NNNN`** — the same defect #949 fixed in the descriptions and READMEs
-//      and #953 in the rendered rustdoc, arriving on the fourth published surface.
-//   2. **A dead link target.** Every one of the 55 explicit links is `](Self::x)`, which is not a
-//      URL in any context that ships. So "does the target resolve" is already answered for all of
-//      them: no. This class is noise rather than a trap.
-//   3. **A label naming something the reader cannot call.** THIS is the trap, and it is why the
-//      gate exists. `addGrid`'s own tooltip said *"draws only once [`set_viewport`] says where"* —
-//      `set_viewport` is `setViewport`, so a consumer following the tooltip calls a method that is
-//      not there. 14 in the renderer, 6 in the decoder, including `MARKER_STRIDE`, which is
-//      declared under no spelling at all.
-//
-// Class 3 is checked against the SAME FILE's own declarations, so it needs no roster: a label is
-// broken iff the file that carries it does not declare it. That also makes the check immune to a
-// rename — both halves move together or the gate fires.
-//
-// ## The scope is the package, and it did not start that way
-//
-// This was `check-published-dts.mjs` and scanned `*.d.ts`. The name read as "the typings surface"
-// and meant "the files I thought of": `colors.js` is hand-written, ships beside `colors.d.ts`, and
-// carried three repo-only pointers no run could see. The set is now derived from `package.json`'s
-// own `files` — npm's allowlist, which `finish-pkg.mjs` maintains — so the question "what is
-// published" is answered by the package rather than by an extension guess.
-//
-// ## Where it runs, and why it takes an argument
-//
-// The two packages are built by two different CI jobs — `wasm` runs `wasm-pack build` for the
-// decoder, `renderer-proofs` reaches the renderer's through `pnpm run test:proofs` -> `build:wasm`.
-// Neither job has the other's artifact, so this takes the package directory to check and is invoked
-// once in each. A directory that is not a built package is a hard error: "nothing to scan" and
-// "nothing wrong" must not look alike.
+// Every file in the package's own `files` allowlist is scanned for a bare `#NNN` / `ADR-NNNN`, and
+// every rustdoc link label is checked against the same file's declarations — a label naming a method
+// the file does not declare sends a caller to something that is not there. A directory that is not a
+// built package is a hard error. Why each rule, and the 0.21.0 measurement:
+// `docs/map/territory/published-surface.md`.
 //
 // Usage: node .github/scripts/check-published-package.mjs <pkg-dir> [<pkg-dir>...]
 //
-// **Running it locally after editing a doc-comment: `touch` the source first.** A doc-comment
-// changes no code, so cargo can decide the crate is fresh and `wasm-pack build` then re-emits the
-// previous `.d.ts`. That cost a whole false result here — a mutation that should have reddened this
-// gate came back green twice, and the cause was a stale artifact rather than a blind check. CI is
-// unaffected (a fresh checkout has nothing to reuse), which is exactly why the trap only bites the
-// person trying to verify the gate.
+// **Running it locally after editing a doc-comment: `touch` the source first**, or cargo reuses the
+// crate and `wasm-pack build` re-emits the previous `.d.ts`.
 
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";

@@ -19,10 +19,8 @@ on:
 permissions:
   contents: read
 
-# Pinned so the tool that builds the wasm is the same one every run (#616) — see the long
-# rationale in publish-renderer.yml. Nothing watches this string (Dependabot does not read
-# `run:` lines), so two things stand in: `.github/scripts/check-tool-pins.mjs` keeps the copies
-# identical on every PR, and `docs/agents/release.md` carries the decision of when to move it.
+# The wasm build tool, pinned exactly (#616) — `docs/map/territory/release.md`.
+# check-tool-pins.mjs keeps the copies identical; `docs/agents/release.md` decides when to move it.
 env:
   WASM_PACK_VERSION: "0.15.0"
 
@@ -32,12 +30,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # No build cache here: publishing runs only on a `v*` tag (rare), so a cache buys little, and
-      # just-shield R6 flags a third-party action sharing a job that holds the publish token. Dropping
-      # rust-cache keeps `NPM_TOKEN` away from any third-party action (ADR-0006 blast-radius).
+      # No build cache here, deliberately: it keeps `NPM_TOKEN` away from any third-party action
+      # (R6, ADR-0006; `docs/map/territory/release.md`).
 
-      # Reject a README claim that expires before the build spends any time — see publish-crate.yml
-      # for why this runs at publish rather than on every PR. wasm-pack copies this README into the
+      # Reject a README claim that expires, before the build spends any time
+      # (`docs/map/territory/published-surface.md`). wasm-pack copies this README into the
       # npm tarball verbatim (`readme = "README.md"` in Cargo.toml).
       - name: Verify the README makes no expiring claim
         run: node .github/scripts/check-published-readme.mjs justerm-wasm-decode/README.md
@@ -65,12 +62,7 @@ jobs:
           test "$tag" = "$pkg" || { echo "::error::tag v$tag != package version $pkg"; exit 1; }
 
       # The dual-licence texts are handled by `finish-pkg.mjs` in the build step above: it copies them
-      # from the repo root into `pkg/` AND pushes them into `package.json`'s `files`. Both halves are
-      # required — `files` is an allowlist, and npm's automatic inclusion covers `LICENSE`/`LICENSE.md`
-      # but NOT the hyphenated `LICENSE-MIT` form. (This comment previously claimed "npm auto-includes
-      # LICENSE*" and sat above no step at all; that claim is false, and believing it is how
-      # justerm-renderer and justerm-web came to publish a licence declaration with no licence text —
-      # #472.)
+      # into `pkg/` AND pushes them into `package.json`'s `files` — both are required (#472).
 
       - name: Publish to npm
         env:

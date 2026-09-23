@@ -8,9 +8,8 @@
 # Setup required once by the maintainer: add a `CARGO_REGISTRY_TOKEN` repository secret (a crates.io
 # API token with publish rights). `cargo publish` reads it from the env automatically.
 #
-# Note: a crates.io version cannot be re-published. `justerm-core` is a newly-named crate (the rename
-# from `justerm`, #100); its first publish is v0.6.0 via this workflow, so there is no prior-version
-# collision to avoid. Re-tagging an already-published version would fail here ("already uploaded").
+# A crates.io version cannot be re-published: re-tagging an already-published version fails here
+# ("already uploaded").
 name: publish-crate
 
 on:
@@ -27,16 +26,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # No build cache here: publishing runs only on a `v*` tag (rare), so a cache buys little, and
-      # just-shield R6 flags a third-party action sharing a job that holds the publish token. Dropping
-      # rust-cache keeps `CARGO_REGISTRY_TOKEN` away from any third-party action (ADR-0006 blast-radius).
+      # No build cache here, deliberately: it keeps `CARGO_REGISTRY_TOKEN` away from any third-party
+      # action (R6, ADR-0006; `docs/map/territory/release.md`).
 
-      # This publish snapshots the README onto the registry front page, and nothing on the way there
-      # gates it (theflow Step 6 — the published README is a behavior surface). The check rejects one
-      # narrow class: claims that expire ("under construction", "lands in #N"). That is the class
-      # that let justerm-renderer ship a "the GPU pipeline lands in #260+" scaffold banner through
-      # six published versions. Constants a README *quotes* are pinned separately, by unit tests next
-      # to the crate that owns them, so those fail on every PR instead of here.
+      # This publish snapshots the README onto the registry front page. Reject a claim that expires
+      # ("under construction", "lands in #N") — at publish time only, deliberately
+      # (`docs/map/territory/published-surface.md`).
       - name: Verify the README makes no expiring claim
         run: node .github/scripts/check-published-readme.mjs justerm-core/README.md
 

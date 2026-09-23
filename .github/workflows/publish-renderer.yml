@@ -1,7 +1,7 @@
 # Publish the justerm-renderer WebGL2 renderer to the public npm registry (#394, ADR-0018).
 #
 # Trigger: a `renderer-vX.Y.Z` tag. justerm-renderer is DELIBERATELY outside the workspace
-# version-lockstep (root Cargo.toml) — it carries its own version track (0.1.0-series) because its
+# version-lockstep (root Cargo.toml) — it carries its own version track because its
 # web-sys/glow deps are wasm32-only and it ships on its own cadence. So it uses its own tag prefix,
 # distinct from the workspace `v*` tags that publish justerm-core + justerm-wasm-decode. The verify
 # step fails the publish if the tag and the built package version disagree, making the lockstep a hard
@@ -22,32 +22,9 @@ on:
 permissions:
   contents: read
 
-# The tool that emits the published artifact, pinned (#616) — for **determinism, not speed**.
-# Unpinned, `cargo install wasm-pack` takes whatever is newest at tag time, so two tags cut a week
-# apart can ship differently-generated wasm from an identical source tree. The divergence was live
-# when this was written: crates.io served 0.15.0 while a maintainer's machine built proofs on 0.14.0.
-#
-# What the pin actually buys, stated narrowly because the first draft of this comment overstated it:
-# wasm-pack's own codegen, and the `wasm-opt` (binaryen) release it downloads. It does **not** buy
-# the `wasm-bindgen` CLI — wasm-pack derives that from the crate's lockfile (its binary cache holds
-# `wasm-bindgen-cargo-install-<lock version>`), so #613 already pinned that half.
-#
-# `--version X.Y.Z` is an **exact** requirement, not a caret ("it is not treated as a caret
-# requirement like Cargo dependencies are" — `cargo help install`). `~0.15` was considered and
-# rejected: it would absorb a patch bump silently, which is the nondeterminism this pin exists to
-# remove.
-#
-# **Nothing watches this string.** Dependabot updates `uses:` refs and cargo manifests, never the
-# contents of a `run:` line — measured: `git log -S "cargo install wasm-pack"` returns three commits,
-# all human. Two things stand in for that: `.github/scripts/check-tool-pins.mjs` keeps the three
-# copies of this literal identical (a gate, run on every PR), and `docs/agents/release.md` carries
-# the human decision of *when to move it*.
-#
-# Cost, so the next reader is not surprised: while this equals the version the runner image ships,
-# the install short-circuits (~0.2s, measured). Any other value — including a patch bump in the
-# image — makes cargo build wasm-pack from source, and the two publish jobs pay that uncached,
-# because they drop the cache action on purpose to keep `NPM_TOKEN` away from it (R6 / ADR-0006).
-# That is the accepted price of a deterministic artifact, not an oversight.
+# The tool that emits the published artifact, pinned exactly (#616) — for determinism, not speed.
+# check-tool-pins.mjs keeps the copies identical; `docs/agents/release.md` decides when to move it.
+# Why, what it does and does not pin, and its cost: `docs/map/territory/release.md`.
 env:
   WASM_PACK_VERSION: "0.15.0"
 
@@ -57,15 +34,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # No build cache here: publishing runs only on a `renderer-v*` tag (rare), so a cache buys
-      # little, and just-shield R6 flags a third-party action sharing a job that holds the publish
-      # token. Dropping rust-cache keeps `NPM_TOKEN` away from any third-party action (ADR-0006).
+      # No build cache here, deliberately: it keeps `NPM_TOKEN` away from any third-party action
+      # (R6, ADR-0006). Why each step is shaped as it is: `docs/map/territory/release.md`.
 
-      # Reject a README claim that expires before the build spends any time — see publish-crate.yml
-      # for why this runs at publish rather than on every PR. This crate is the reason the check
-      # exists: its README announced "Under construction … the GPU pipeline lands in #260+" across
-      # renderer-v0.1.0 … v0.6.1, so every consumer who found the package on npm read that it draws
-      # nothing.
+      # Reject a README claim that expires, before the build spends any time
+      # (`docs/map/territory/published-surface.md`).
       - name: Verify the README makes no expiring claim
         run: node .github/scripts/check-published-readme.mjs justerm-renderer/README.md
 
@@ -74,12 +47,8 @@ jobs:
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked --version "${{ env.WASM_PACK_VERSION }}"
 
-      # The lockfile gate for the published artifact (#613), and it has to be its OWN step: passing
-      # `-- --locked` to the build below would be a gate that inspects nothing, because wasm-pack
-      # resolves and writes `Cargo.lock` before cargo build runs — measured both ways (no lock: it
-      # creates one; stale lock: it rewrites one) while bare cargo refuses in both. So the assertion
-      # goes through a bare cargo command first. `cargo metadata` is the cheapest one that resolves,
-      # and on refusal it leaves the lock untouched.
+      # The lockfile gate (#613), deliberately its own bare-cargo step: through wasm-pack it would
+      # inspect nothing.
       - name: Assert the lockfile matches the manifest
         run: cargo metadata --manifest-path justerm-renderer/Cargo.toml --format-version 1 --locked > /dev/null
 
@@ -89,13 +58,8 @@ jobs:
       - name: Build (bundler)
         run: wasm-pack build --target bundler --out-dir pkg justerm-renderer
 
-      # #472: the crate is dual-licensed and the texts must actually ship. `justerm-renderer/` carries
-      # LICENSE-MIT + LICENSE-APACHE, which wasm-pack copies into `pkg/` — but copying is NOT enough:
-      # `files` in the generated package.json is an **allowlist**, and npm's automatic inclusion covers
-      # `LICENSE`/`LICENSE.md`, NOT the hyphenated `LICENSE-MIT` form. Without this step the tarball
-      # ships a licence *declaration* with no licence *text* (which is what 0.5.0 and 0.6.0 did).
-      # Same rule `justerm-wasm-decode/scripts/finish-pkg.mjs` applies; the renderer needs no other
-      # post-processing, so it is inline rather than a script.
+      # #472: the licence texts must be in `files` (an allowlist that does not cover the hyphenated
+      # `LICENSE-MIT` form); wasm-pack only copies them into `pkg/`.
       - name: Add the licence texts to the package allowlist
         run: |
           node -e '
@@ -129,10 +93,7 @@ jobs:
         run: |
           echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
           pkg="$(node -p "require('./justerm-renderer/pkg/package.json').version")"
-          # A version already on npm cannot be re-published (npm 403). Skip gracefully so a tag for a
-          # version first published by hand (the initial renderer-v0.1.0, #394) is a GREEN no-op rather
-          # than a red duplicate-publish — and re-tagging is always safe. `npm view pkg@ver version`
-          # prints the version when it exists and empty when it does not (verified).
+          # A version already on npm cannot be re-published (npm 403), so skip it: re-tagging is safe.
           if [ -n "$(npm view "justerm-renderer@$pkg" version 2>/dev/null || true)" ]; then
             echo "justerm-renderer@$pkg is already on npm — skipping publish."
           else
@@ -140,15 +101,8 @@ jobs:
             npm publish ./justerm-renderer/pkg --access public
           fi
 
-  # #474: a GitHub Release for this track. Behaviour changes ship here (the renderer's semver basis is
-  # the wasm class AND observable rendering, #465), and a registry publish carries no notes — so
-  # without this a consumer bumping a caret has only the commit log.
-  #
-  # A SEPARATE job on purpose: it needs `contents: write`, which must not sit in the job holding
-  # NPM_TOKEN (ADR-0006 — same reasoning that keeps third-party actions out of that job).
-  #
-  # Created at tag time, so `publishedAt` is correct by construction — that removes the objection
-  # release.md raises against backfilling, for everything from here on.
+  # #474: a GitHub Release for this track, deliberately a separate job so `contents: write` never
+  # shares a job with NPM_TOKEN (`docs/map/territory/release.md`).
   release:
     needs: publish
     runs-on: ubuntu-latest
@@ -164,13 +118,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # `%(contents)` is the ANNOTATION for an annotated tag (what `git tag -a -m` wrote, which is
-          # what release.md's flow always creates). For a lightweight tag it falls through to the
-          # tagged COMMIT's message instead of being empty — verified — so the `--generate-notes`
-          # branch below is a true last resort (an empty commit message), not the lightweight-tag path.
+          # `%(contents)` is the tag's annotation (a lightweight tag falls through to its commit
+          # message), so `--generate-notes` below is a last resort only.
           notes="$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")"
-          # `--latest=false`: the Latest badge belongs to the `v*` engine track. Without it, whichever
-          # track tagged most recently steals it, and `gh release create` does not warn.
+          # `--latest=false`: the Latest badge belongs to the `v*` engine track.
           if [ -n "$notes" ]; then
             gh release create "$GITHUB_REF_NAME" --verify-tag --latest=false \
               --title "$GITHUB_REF_NAME" --notes "$notes"

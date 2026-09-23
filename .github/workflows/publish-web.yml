@@ -7,15 +7,9 @@
 # `web-v*` tag publishes only it. The verify step fails the publish when the tag and package.json
 # disagree, making that a hard gate rather than a convention (mirrors publish-wasm/publish-renderer).
 #
-# This workflow is INERT until someone pushes a `web-v*` tag — adding it is not the same decision as
-# starting to publish. It exists so the first publish is a tag push rather than a scramble, and so the
-# npm name stops being unclaimed (#466 records the open questions: whether to publish before or after
-# penterm's migration, and the interaction with #465's versioning-basis decision).
-#
-# Supply-chain posture (ADR-0006): the only action used is GitHub-owned `actions/checkout`, SHA-pinned.
-# pnpm is installed with `npm install -g pnpm@10` rather than `pnpm/action-setup` DELIBERATELY — the
-# same reason publish-renderer.yml drops rust-cache: just-shield R6 flags a third-party action sharing
-# a job that holds the publish token, and `NPM_TOKEN` lives in this job.
+# Supply-chain posture (ADR-0006): the only action used is GitHub-owned `actions/checkout`, SHA-pinned;
+# pnpm is installed with `npm install -g pnpm@10` rather than `pnpm/action-setup` deliberately, to keep
+# `NPM_TOKEN` away from a third-party action (R6; `docs/map/territory/release.md`).
 #
 # Requires the `NPM_TOKEN` repository secret to have publish rights for the `justerm-web` package —
 # a *different* package from justerm-wasm-decode / justerm-renderer, so a token scoped per-package
@@ -36,8 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Reject a README claim that expires before the build spends any time — see publish-crate.yml
-      # for why this runs at publish rather than on every PR.
+      # Reject a README claim that expires, before the build spends any time
+      # (`docs/map/territory/published-surface.md`).
       - name: Verify the README makes no expiring claim
         run: node .github/scripts/check-published-readme.mjs justerm-web/README.md
 
@@ -61,10 +55,7 @@ jobs:
       # Guard the artifact itself, not just the exit code: `files: ["dist"]` plus a build that emitted
       # nothing would publish an empty package that installs fine and imports to undefined. Assert the
       # entry and its types are actually inside the tarball npm is about to upload.
-      # …and the licence texts (#472): `files` is an allowlist and npm's automatic inclusion covers
-      # `LICENSE`/`LICENSE.md` but NOT the hyphenated `LICENSE-MIT` form, so a dual-licence package can
-      # very easily ship a declaration with no text — 0.7.0 did. Asserting it here means the next
-      # regression fails the publish instead of reaching the registry, where it cannot be undone.
+      # …and the licence texts (#472), which the `files` allowlist does not include by itself.
       - name: Verify the tarball carries the entry, its types and the licences
         run: |
           files="$(npm pack --dry-run --json ./justerm-web | node -p "JSON.parse(require('fs').readFileSync(0,'utf8'))[0].files.map(f=>f.path).join('\n')")"
@@ -97,9 +88,8 @@ jobs:
             npm publish ./justerm-web --access public
           fi
 
-  # #474: a GitHub Release for this track — see the same job in publish-renderer.yml for the full
-  # reasoning (separate job so `contents: write` never shares a job with NPM_TOKEN; created at tag
-  # time so `publishedAt` is correct by construction; `--latest=false` keeps the badge on `v*`).
+  # #474: a GitHub Release for this track, deliberately a separate job so `contents: write` never
+  # shares a job with NPM_TOKEN (`docs/map/territory/release.md`).
   release:
     needs: publish
     runs-on: ubuntu-latest
@@ -113,10 +103,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # `%(contents)` is the ANNOTATION for an annotated tag (what `git tag -a -m` wrote, which is
-          # what release.md's flow always creates). For a lightweight tag it falls through to the
-          # tagged COMMIT's message instead of being empty — verified — so the `--generate-notes`
-          # branch below is a true last resort (an empty commit message), not the lightweight-tag path.
+          # `%(contents)` is the tag's annotation (a lightweight tag falls through to its commit
+          # message), so `--generate-notes` below is a last resort only.
           notes="$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")"
           if [ -n "$notes" ]; then
             gh release create "$GITHUB_REF_NAME" --verify-tag --latest=false \
