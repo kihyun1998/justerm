@@ -3,49 +3,15 @@
 //! on its content — three for the buffer moving under it, and one for the content dying
 //! where it stands.
 //!
-//! **That second kind arrived late and is the shape to remember (#750).** The three
-//! movers below repair a *coordinate*, and for a long time they read as the whole job,
-//! because every way a mark could stop describing its content moved the buffer. An
-//! in-place erase does not: the row stays exactly where it is while everything the mark
-//! was about stops existing, so no verb fired, no `MarkerDisposed` was announced, and
-//! `command_lines` answered with commands that were not there. `dispose_markers_on_row`
-//! is the repair for that class, and the two are not interchangeable — a mover cannot
-//! see a destruction and a destroyer cannot see a move.
+//! A mover cannot see a destruction and a destroyer cannot see a move (#750):
+//! `markers_shift_below_margin`, `markers_evict_oldest` and `markers_rotate_region` repair
+//! the coordinate, `dispose_markers_on_row` retires a mark whose row was blanked in place —
+//! `docs/map/invariant/no-funnel-for-destruction-in-place.md`.
 //!
-//! A marker is the same kind of thing as a selection anchor — an absolute
-//! `[scrollback ++ screen]` line index that survives an ordinary scroll and has to be
-//! repaired wherever it does not. Three of those repairs are *calls*, and they are the
-//! ones here: `markers_shift_below_margin`, `markers_evict_oldest` and
-//! `markers_rotate_region` are `pub(super)` because the write path in `term.rs` invokes
-//! them, mostly on the line beside their selection counterparts. #584 weighed merging the
-//! two surfaces into one module on the strength of that pairing and rejected it; the
-//! grounds are recorded there.
-//!
-//! **What a marker's line does *not* go through is this module.** Four sites outside it
-//! also move or drop a marker, and a reader who comes here for "everywhere a marker's
-//! coordinate changes" will find none of them: primary reflow rewrites `m.line` in place,
-//! alt reflow rewrites *and* disposes, alt-leave drains the alt list, and RIS disposes
-//! both. All four live in `term.rs` because #584 put reflow and the write path out of
-//! scope, which is a boundary of the epic rather than a property of markers.
-//!
-//! Two declarations stay in `term.rs`, and neither is forced. `Marker` is the element type
-//! of the `normal_markers` / `alt_markers` fields, so it sits with the fields it describes.
-//! `CommandLine` could have travelled — `mod term` is private, so `pub use
-//! term::markers::CommandLine` would keep `justerm_core::CommandLine` byte-identical — but
-//! that edits `lib.rs`, which this slice holds untouched, and the ticket does not name it.
-//! A child module reads both without any widening.
-//!
-//! `primary_grid` *did* travel, though the ticket does not name it either: after
-//! `command_lines` moved, nothing in `term.rs` called it. It belongs here because command
-//! marks anchor **primary** content — on the alt screen their text must be read from the
-//! swapped-out grid, not the active one — which is a marker rule, not a general accessor.
-//!
-//! Visibility follows the callers. Six items are `pub(super)` because the write path and
-//! `frame()` invoke them from `term.rs`; that is not a widening, since an item private to
-//! `term` was already visible to `term` and all of its descendants. Six are private —
-//! every caller travelled with them. The four entry points are public API and keep
-//! `pub fn`: an inherent impl's methods are reached through the type, not the module path,
-//! so a private child module does not hide them.
+//! **Not every change to a marker's line goes through this module**: primary reflow, alt
+//! reflow, alt-leave and RIS move or drop markers from `term.rs`. `Marker` and
+//! `CommandLine` are declared in `term.rs` too; `primary_grid` lives here because command
+//! marks anchor **primary** content, which on the alt screen is the swapped-out grid.
 
 use std::collections::VecDeque;
 
@@ -111,18 +77,8 @@ impl Term {
     fn push_marker(&mut self, line: usize, col: usize, kind: MarkerKind) -> MarkerId {
         let id = MarkerId(self.next_marker_id);
         self.next_marker_id += 1;
-        // #721: this population is allocated by the *stream* — `add_command_mark` appends
-        // per OSC 133 sequence, several marks share a line, and eviction only drops one
-        // whose line reached abs 0 — so a stream that never emits a newline grows it
-        // without bound. Bounded at `MAX_MARKERS`, which the wire's own `u16` group counts
-        // derive (the same argument `MAX_COLUMNS` is written from).
-        //
-        // Overflow retires the **oldest**, not the newest. Refusing the newest is cheaper
-        // but permanently kills shell integration for the session: once a pile fills the
-        // cap on a line nothing can evict, every later mark would be refused forever. The
-        // oldest is also the one already destined to die, and `MarkerDisposed` is the
-        // channel scrollback eviction announces that on — so the consumer contract is
-        // unchanged rather than extended.
+        // #721: the stream allocates this population, so it is bounded at `MAX_MARKERS`, and
+        // overflow deliberately retires the **oldest** — `docs/map/territory/marker.md`.
         let mut disposed = Vec::new();
         let markers = self.markers_mut();
         while markers.len() >= MAX_MARKERS {
@@ -147,23 +103,10 @@ impl Term {
         for id in disposed {
             self.events.push(TermEvent::MarkerDisposed(id));
         }
-        // Birth is an occurrence, so it rides the event queue (ADR-0020 R1) — the mirror
-        // of the disposal above (#490). A consumer holding a pulled index has no other
-        // way to learn of a marker the *stream* created, and without it the index can
-        // only ever shrink. Not an epoch bump: that would cost an O(M) re-pull for O(1)
-        // information, four times per shell command.
-        //
-        // The basis rides with the line, exactly as `marker_index` pairs them (#737):
-        // `line` is absolute *now*, and the rest of this same `feed` can still evict —
-        // which moves every marker, this one included, without touching the epoch. Read
-        // against the frame's end-of-batch basis instead, the line is short by whatever
-        // the batch evicted after this point.
-        //
-        // And the epoch rides with it for the same reason one axis up (#741): the basis
-        // dates a *uniform* move, and a reflow between this birth and the consumer's drain
-        // is not one. `marker_index` answers with all three, so its incremental mirror
-        // carries all three — a line whose generation is unstated is one the receiver
-        // cannot tell from a current one.
+        // Birth is an occurrence, so it rides the event queue (ADR-0020 R1, #490), carrying
+        // the same `(line, evicted_total, epoch)` `marker_index` answers with (#737, #741) —
+        // `docs/map/territory/events-and-replies.md`. Not an epoch bump: that would cost an
+        // O(M) re-pull for O(1) information.
         self.events.push(TermEvent::MarkerCreated {
             id,
             line: line as u32,

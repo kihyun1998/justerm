@@ -84,7 +84,10 @@ the shell emits.
   OSC 133 sequence with no per-line dedup, and eviction only drops a marker whose line reached
   absolute 0 — so marks piled on one line are unreachable by eviction and grow with the stream
   (measured: 70 000 live in a 24-row buffer, #721). `MAX_MARKERS` caps a buffer's population at
-  `u16::MAX`, retiring the **oldest** through the ordinary disposal event. Two things follow that a
+  `u16::MAX`, retiring the **oldest** through the ordinary disposal event — not refusing the newest,
+  which is cheaper but kills shell integration for the rest of the session once a pile nothing can
+  evict fills the cap; the oldest is the one already destined to die, and `MarkerDisposed` is where
+  eviction already announces that, so the consumer contract is unchanged. Two things follow that a
   reader will otherwise re-derive: the marker list is a `VecDeque` *because of this* (`Vec::remove(0)`
   would memmove the whole population per push once the cap is reached), and the cap is why both
   `u16` wire counts are safe without being widened.
