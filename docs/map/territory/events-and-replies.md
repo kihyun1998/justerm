@@ -82,6 +82,11 @@ nothing about it appears in the frame.
   shape, not a luxury bought by being the whole terminal, so it was never a reason we *could not*
   do the same. The conclusion is unchanged and rests on the ADR alone: policy is the consumer's,
   and an engine that touches no clipboard buys nothing by holding a gate in front of a relay.
+  **An empty payload clears** — the spec's `Pd` *"becomes the new selection"* (`ctlseqs.txt:2166`)
+  and xterm clears before appending (`misc.c:3410`); ghostty pins the same input as *"clear
+  clipboard"* (`src/terminal/osc/parsers/clipboard_operation.zig:93`). It is **not** the spec's
+  *"neither a base64 string nor `?`"* clause (`:2174`), which the engine diverges from: an empty
+  payload is a well-formed encoding of no bytes and never reaches that sentence.
 - **A notification is relayed, not read (#964).** `OSC 9` and `OSC 777` become one
   `TermEvent::Notification { sequence, payload, maybe_truncated }` with the payload as sent after
   the code — `params[1..]` rejoined, under the same no-field guard as the title and cwd arms. The
@@ -103,6 +108,67 @@ nothing about it appears in the frame.
   does **not** reopen #840's call, which declined a guard that *drops* the value; this drops
   nothing. What it did **not** cover: whether `Title`/`Cwd`/`OSC 8` should carry the same flag —
   those stay unmarked, and #840's reasoning still governs them.
+- **`OSC 52`'s base64 is decoded in core, by a local implementation** (`base64.rs`, #828). Decoding is
+  mechanism — it depends only on the byte stream — and pushing it outward would make every consumer
+  carry base64 to use an engine feature; alacritty decodes in its core too, ghostty one layer out.
+  It is not a dependency because `base64` is not in the workspace lockfile at all, so it would be a
+  genuinely new supply-chain entry for `justerm-core` and everything downstream, against a short
+  dependency list whose entries each do something hard; RFC 4648 is a 64-entry alphabet, proven here
+  against the RFC's §10 vectors. The decoder refuses what makes the decoded bytes ambiguous — a byte
+  outside the standard alphabet (`-`/`_` are refused, not mapped), an impossible length, interior
+  padding, non-zero bits in a final partial group, partial padding (`Zg=`) — and **accepts missing
+  padding**, which diverges from **both** references (alacritty requires canonical padding, ghostty
+  rejects unpadded as `InvalidPadding`). The reach of unpadded emitters is unmeasured; the asymmetry
+  decides it, since rejecting costs a silently dropped clipboard and accepting costs nothing. The
+  encoder always pads — the laxity is for what is accepted, never for what is sent.
+- **The widget's half of `OSC 52` declines the policy too, one layer out** (`clipboard.ts`, #841).
+  It holds no clipboard and no permission model: it routes to a `ClipboardProvider` the embedder
+  supplies, and with none it does nothing. The injected-provider shape is xterm.js's
+  `addon-clipboard` (`ClipboardAddon.ts:13-16` @ `699f553`, no policy enum anywhere, handler
+  registered unconditionally at `:20`) — the shape only. Two differences: *layer* (the addon is a
+  separate package; xterm.js's `Terminal` implements no `OSC 52`, where this widget gates it on
+  `TerminalOptions.clipboard`), and *default posture* (the addon defaults to
+  `BrowserClipboardProvider`, permissive both ways, `:15`, `:71-79`; this widget's no-provider
+  default refuses both, as xterm(C) does — `DEF_ALLOW_WINDOW` `False`, `main.h:119`,
+  `DISALLOWED_PASTE64` `",SetSelection,GetSelection"`, `:159`, `:170-172` @ `xterm-410`).
+  **Read and write are refused independently.** Defaulting writes open and reads shut is **2 of 4**,
+  not unanimous (an earlier count said 3-for-3): alacritty's default is `Osc52::OnlyCopy`
+  (`term/mod.rs:377-380` @ `852e971`) and ghostty ships `clipboard-write: allow` beside
+  `clipboard-read: ask` (`src/config/Config.zig:2379-2380` @ `e6e26e1`) — both native applications
+  with a config file; the two embeddable references are symmetric (xterm.js allows both, xterm(C)
+  denies both). **Focus is not a gate — the maintainer's call, 2026-09-10, and theirs to reverse.**
+  alacritty checks focus both ways (`alacritty/src/event.rs:1903`, `:1908` @ `852e971`); ghostty
+  and xterm.js do not — 1 of 3. Knowing focus and deciding refusals from it are different acts, and
+  only the first is the widget's; an embedder can refuse on focus inside its provider. **A refusal is
+  silence at all four references** — alacritty `debug!` and return (`term/mod.rs:1727-1730`),
+  ghostty `log.info` and return (`src/Surface.zig:5837-5844`), xterm(C)'s reply block sits inside
+  `AllowWindowOps` (`misc.c:3378`), xterm.js leaves `OSC 52` unhandled without the addon; none sends
+  a "denied" reply. **A provider's rejection is a refusal, swallowed**; xterm.js's addon returns the
+  promise to the parser, whose `WriteBuffer.ts:283-286` deliberately lets it throw as an uncaught
+  error while the parse resumes. **A browser read hangs rather than rejecting** — measured
+  2026-09-10, Chromium over `localhost`: `readText()` with `userActivation.isActive` `true` stayed
+  pending past 2000 ms, and with it `false` (the 5 s window waited out, `hasBeenActive` `true`)
+  past 3000 ms, while `writeText()` resolved; `permissions.query` read `clipboard-read: "prompt"`,
+  `clipboard-write: "granted"` throughout. The second row is the one that matters, since an `OSC 52`
+  query arrives from the stream and never with a gesture. So a controller promise may never settle
+  (hence `ClipboardController.dispose`), and the widget imposes no deadline — a bounded read is the
+  provider's policy. Not measured: a never-activated page, a denied prompt, other browsers. And
+  `""` and `null` are different answers: an empty clipboard still replies, because the application
+  is blocked waiting — ghostty says so outright (`src/Surface.zig:5945-5946` @ `e6e26e1`).
+- **`ClipboardTarget` models three of `OSC 52`'s selectors and keeps `p` apart from `s`** (#828). The
+  field admits `c`, `p`, `q`, `s` and eight cut buffers; the three a consumer can act on are modelled
+  and the rest ignored, as alacritty ignores them, rather than folded onto a neighbour, which would be
+  the engine inventing an equivalence. ghostty folds every unrecognised kind onto the clipboard
+  (`src/termio/stream_handler.zig:1013`) — read its `switch`, not the comment above it, which claims
+  it always uses the standard clipboard. A first draft collapsed `p` and `s` as alacritty does, and
+  that is wrong *here* though not there: alacritty replies with the byte the application sent, while
+  this engine hands the consumer a value and takes it back at `report_clipboard`, so a collapse would
+  answer `ESC ] 52 ; s ; ?` naming `p`. The type is `#[non_exhaustive]` because `q` and the cut
+  buffers remain unmodelled. ghostty converges on the same three open members
+  (`src/terminal/clipboard.zig:2`, `Location { standard, selection, primary, _ }`) — which #843 had
+  recorded as impossible, on the premise that Zig has no non-exhaustive enum; a trailing `_` is one.
+  An OSC ended by a bare `ESC` answers `ST`, as xterm hardcodes (`charproc.c:8964`) and ghostty's
+  `Terminator.init` returns for a missing byte (`src/terminal/osc.zig:263`).
 - **A `report_*` takes back what it needs rather than the engine remembering it.**
   `report_clipboard(target, text, terminator)` follows `report_palette_color(index, spec,
   terminator)`: the consumer names the target it is answering about. alacritty is the alternative and
@@ -120,7 +186,26 @@ nothing about it appears in the frame.
   can only carry — reached independently by a fact that is not a coordinate. xterm is the
   counterexample worth knowing: it *does* store the terminator, but only for `OSC 52` and only
   because its selection retrieval is asynchronous, in a single scalar with the collision this
-  channel's batch would provoke.
+  channel's batch would provoke. **The spec settles the direction, not only the tally**:
+  `ctlseqs.txt:2020` — *"when returning information, uses the same terminator used in a query"* —
+  which ADR-0004 ranks above every implementation. `OscTerminator` is exhaustive at two members, and
+  ghostty converges on both the partition and the closure (`src/terminal/osc.zig:252`, a two-member
+  enum with no trailing `_`, Zig's open-enum marker). The closure rests on the input space: the 8-bit
+  C1 `ST` (`0x9C`) is absent because `feed` does not treat a lone `0x80..=0x9F` byte as a control, not
+  because the spec stops at two. Pins: [the VT-gap sweep](../../agents/reference-facts.md#the-vt-gap-sweep-of-2026-08-26--five-decisions-the-references-settled-823832-verified-2026-08-26).
+- **`TermEvent` is `#[non_exhaustive]`, by the maintainer on 2026-09-02**, while a slice was adding
+  two variants. What decided it was `CLAUDE.md`'s identity statement — `justerm-core` is a reusable,
+  independent crate — which says there are consumers this repo cannot edit; a crate that were
+  internal to penterm would want the opposite. Three measurements behind it: crates.io reverse
+  dependencies **zero** (248 downloads over 11 versions), so there was nothing external to observe;
+  cost in this workspace **zero** (`cargo test --workspace`, 87 suites, and `clippy -D warnings`
+  green; `justerm-web`'s `events.ts` mirrors the union by hand and never had a compiler relationship
+  to break); and the window **closes at 1.0.0**, after which adding it is itself breaking, while the
+  VT tail adds variants at a measured rate (three, then two, in the two slices before). **The argument
+  that lost is a real cost**: an exhaustive match tells a consumer a new event exists — penterm's
+  `route_event` carries a comment on each dropped arm, written by someone the compiler had just
+  informed — and that signal now has to come from release notes. It lost because this is a
+  notification channel where ignoring an unknown event is documented as safe.
 - **Pull, not push — and the alternative is named.** The engine queues during `feed` and the consumer
   takes with `drain_events`, mirroring `damage` / `frame` / `reset_damage`. No callback crosses the
   boundary, so the engine stays decoupled from the consumer's event loop. alacritty's `EventListener`
@@ -135,6 +220,13 @@ nothing about it appears in the frame.
   consumer never drains; the engine has no timer and no back-pressure of its own.
 - **Replies are raw bytes, not typed.** The engine encodes; the consumer writes them to the PTY
   without interpretation — the same "mechanism here, transport yours" split the wire format uses.
+
+- **`events.ts`'s `ClipboardTarget` and `Terminator` are not on published-surface's hand-copied
+  roster — the maintainer's call, 2026-09-10, and theirs to reverse.** That roster lists value spaces
+  this package transcribes from core that reach it through the decoder's wire lane, where
+  `justerm-wasm-decode` is their proper home; `TermEvent` crosses no decoder lane — it arrives on a
+  side channel the embedder implements, whose only type declaration is this package's — so a string
+  union here is the right home.
 
 ## Code
 
@@ -212,6 +304,10 @@ for the current one.
   waiting for it.
 - **No bound on either queue.** A consumer that never drains grows memory with no signal, and no
   document states whose problem that is.
+- **The web `ClipboardTarget` union is closed while core's is `#[non_exhaustive]`**, and
+  `ClipboardController` passes the target to the provider unexamined — there is no decline arm for a
+  target it does not know. No reachable consequence until core names `q` or a cut buffer, and
+  nothing here gates that day.
 - **The rejected push model is unpinned**, and it is the whole argument for the pull design.
 - **`TermEvent`'s membership has no record.** What earns a place as an event — as opposed to frame
   state or a reply — is answered by ADR-0020 for the frame and by nothing for this channel.

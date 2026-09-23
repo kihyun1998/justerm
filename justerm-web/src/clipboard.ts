@@ -12,62 +12,10 @@
  * **And this widget declines the policy too, one layer further out.** It holds no
  * clipboard and no permission model: it routes the request to a
  * {@link ClipboardProvider} the *embedder* supplies, and with no provider it does
- * nothing at all. The injected-provider *shape* is xterm.js's — its
- * `addon-clipboard` takes an `IClipboardProvider` in its constructor
- * (`addons/addon-clipboard/src/ClipboardAddon.ts:13-16` @ `699f553`) and carries no
- * policy enum anywhere: none in `typings/`, none on `ITerminalOptions`, and the OSC
- * handler is registered unconditionally (`:20`). It is also what the port pattern in
- * this package already does for selection, search and markers.
- *
- * **Two things the reference does NOT support, recorded because an earlier draft of
- * this comment claimed both.**
- *
- * 1. *Layer.* `ClipboardAddon` is a separately published package an embedder
- *    attaches with `loadAddon`; xterm.js's own `Terminal` implements no `OSC 52` at
- *    all. This widget puts the feature inside `Terminal` and gates it on
- *    `TerminalOptions.clipboard`. The shape is borrowed; "the same-layer answer" was
- *    not accurate.
- * 2. *Default posture.* xterm.js's provider argument **defaults** to
- *    `BrowserClipboardProvider` (`:15`), which implements `readText` and `writeText`
- *    against `navigator.clipboard` with no gate on either (`:71-79`) — so a
- *    zero-argument `new ClipboardAddon()` is permissive in both directions. This
- *    widget's no-provider default refuses both. That is a **divergence**, and the
- *    reference for it is xterm(C), which also refuses both by default:
- *    `DEF_ALLOW_WINDOW` is `False` (`main.h:119`) and `DISALLOWED_PASTE64` is
- *    `",SetSelection,GetSelection"` (`:159`), folded into `DEF_DISALLOWED_WINDOW`
- *    (`:170-172`) @ `xterm-410`.
- *
- * **Read and write are refused independently**, which is the split the security
- * question actually has. Prior art on *defaulting writes open and reads shut* is
- * **2 of 4, not unanimous** — an earlier draft said "3-for-3" and that tally was
- * wrong. alacritty ships `Osc52::OnlyCopy` as its `#[default]`, commented *"a
- * compromise between entirely disabling it (the most secure) and allowing `paste`
- * (the less secure)"* (`alacritty_terminal/src/term/mod.rs:377-380` @ `852e971`);
- * ghostty ships `clipboard-write: allow` beside `clipboard-read: ask`
- * (`src/config/Config.zig:2379-2380` @ `e6e26e1`). **Both are native GUI
- * applications with a config file.** The two *embeddable* references — the layer
- * this package is actually at — carry no asymmetry at all: xterm.js allows both,
- * xterm(C) denies both.
- *
- * **Focus is deliberately not a gate here — maintainer's call, 2026-09-10, and
- * theirs to reverse.** alacritty wraps both directions in `if
- * self.ctx.terminal.is_focused` (`alacritty/src/event.rs:1903`, `:1908` @
- * `852e971`); ghostty's `clipboardWrite` (`src/Surface.zig:2177`) and its
- * `clipboard_read` handling (`:1046`) check config only, and xterm.js's addon
- * checks nothing — so it is **1 of 3**. It was still worth putting, because focus
- * is a fact only the widget holds and "the embedder's provider decides" cannot be
- * the whole answer for something the embedder cannot see. The ground for
- * declining: knowing the focus state and deciding refusals from it are different
- * acts, and only the first is the widget's. An embedder that wants the rule can
- * read focus itself and refuse inside its provider.
- *
- * What IS unanimous, checked at all four, is that **a refusal is silence**:
- * alacritty `debug!("Denied osc52 load"); return` (`term/mod.rs:1727-1730`), ghostty
- * `log.info(...); return` (`src/Surface.zig:5837-5844`), xterm(C) emits nothing
- * because the whole reply block sits inside the `AllowWindowOps` branch
- * (`misc.c:3378`), and xterm.js refuses only by leaving the addon unloaded, in which
- * case `OSC 52` is unhandled entirely. **No reference sends a "denied" reply.** A
- * {@link ClipboardProvider} with no `readText` is how that is spelled here.
+ * nothing at all — both reads and writes refused. Read and write are refused
+ * independently; focus is not a gate (an embedder can refuse on focus inside its
+ * provider); and **a refusal is silence** — no "denied" reply, as at every reference.
+ * Why each: `docs/map/territory/events-and-replies.md`.
  */
 import type { ClipboardQueryEvent, ClipboardStoreEvent, ClipboardTarget, Terminator, TermEvent } from "./events";
 
@@ -78,42 +26,13 @@ import type { ClipboardQueryEvent, ClipboardStoreEvent, ClipboardTarget, Termina
  * reading back what the user copied earlier is the sharper of the two risks).
  *
  * Either half may be synchronous or return a promise. **A rejection is a refusal,
- * not a crash**: the controller swallows it. xterm.js's addon does not swallow one
- * — but it does not leak it either, which an earlier draft here got wrong in both
- * directions: the addon returns the promise to the parser as the handler contract
- * allows, and `src/common/input/WriteBuffer.ts:283-286` catches it deliberately
- * (*"spawn a single microtask which we allow to throw hard"*), so it surfaces as an
- * **uncaught error** — not an unhandled rejection — and the parse resumes.
+ * not a crash**: the controller swallows it.
  *
- * **A browser read hangs; it does not reject. Measured 2026-09-10**, Chromium over
- * `localhost` (a secure context), with the deciding field recorded at the moment of
- * the call rather than assumed:
- *
- * | call | `userActivation.isActive` at call | outcome |
- * |---|---|---|
- * | `navigator.clipboard.readText()` | `true` | **pending past 2000 ms** |
- * | `navigator.clipboard.readText()` | **`false`** (waited out the 5 s window; `hasBeenActive` `true`) | **pending past 3000 ms** |
- * | `navigator.clipboard.writeText()` | `true` | resolved |
- *
- * with `permissions.query` reporting `clipboard-read: "prompt"` and
- * `clipboard-write: "granted"` throughout. **The second row is the one that
- * matters**: an `OSC 52` query arrives from the *stream*, never from a gesture, and
- * the first row alone could not speak to that — it was taken with activation live,
- * so it measured the prompt-awaiting-a-human path instead. Re-measured without it,
- * the hang holds.
- *
- * It settles if and when a human answers the prompt; where nobody can, it does not
- * settle at all. Either way the application sees **silence** until then, so the
- * contract is unchanged — but two consequences are not obvious:
- * {@link ClipboardController.handle}'s promise may never settle (hence
- * {@link ClipboardController.dispose}, and hence `Terminal` floating it), and a
- * provider wanting a *bounded* read owes its own timeout. **The widget deliberately
- * imposes none** — a deadline is policy, and inventing one here is what this module
- * declines to do.
- *
- * Not measured: a page that has never been interacted with at all
- * (`hasBeenActive: false`), what a *denied* prompt does, and whether any browser
- * other than Chromium rejects where this one hangs. Gaps, not absences.
+ * **A browser `navigator.clipboard.readText()` from a stream-driven query may hang
+ * rather than reject** (measured in Chromium). The application sees silence until it
+ * settles, {@link ClipboardController.handle}'s promise may never settle (hence
+ * {@link ClipboardController.dispose}), and **the widget imposes no deadline** — a
+ * provider wanting a bounded read owes its own timeout.
  */
 export interface ClipboardProvider {
   /** Put `text` on `target`. An EMPTY `text` is the sequence's clear idiom, not a
@@ -130,9 +49,6 @@ export interface ClipboardProvider {
    * `if (!text) return` — would hang an application over an empty clipboard, which
    * is the ordinary case rather than an exotic one, since the obvious embedder
    * implementation is `() => navigator.clipboard.readText()` and that yields `""`.
-   * ghostty states the rule outright: *"Even if the clipboard data is empty we
-   * reply, since presumably the client app is expecting a reply"*
-   * (`src/Surface.zig:5945-5946` @ `e6e26e1`).
    */
   readText?(target: ClipboardTarget): string | null | Promise<string | null>;
 }

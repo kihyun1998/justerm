@@ -1,39 +1,15 @@
 //! RFC 4648 base64, engine-local (#828).
 //!
 //! `OSC 52` carries its clipboard payload base64-encoded, so the engine decodes
-//! inbound and encodes the reply. That is mechanism under ADR-0017 — it depends
-//! only on the byte stream — and pushing it outward would make every consumer
-//! carry a base64 implementation to use an engine feature. alacritty draws the
-//! same line, decoding in its terminal core
-//! (`alacritty_terminal/src/term/mod.rs:1717`, `:1743`); ghostty draws it one
-//! layer out, handing its apprt the payload still encoded
-//! (`src/termio/stream_handler.zig:1009`).
+//! inbound and encodes the reply. Deliberately a local implementation, not a
+//! dependency, and deliberately laxer than both references on one point:
+//! `docs/map/territory/events-and-replies.md`.
 //!
-//! **Why this is not a dependency.** `base64` is not in this workspace's
-//! `Cargo.lock` at all, so adding it would be a genuinely new supply-chain entry
-//! for `justerm-core` and everything downstream of it. `CLAUDE.md` names the
-//! short dependency list as deliberate, and the four crates on it each do
-//! something hard — a Paul-Williams parser, a regex engine, two Unicode tables.
-//! RFC 4648 is a fixed 64-entry alphabet and no tables, it is proven here
-//! against the RFC's own §10 vectors rather than against our idea of it, and the
-//! caller needs a decoder that *refuses* malformed input rather than one whose
-//! strictness is a configuration.
-//!
-//! **What "malformed" means here, and where it is deliberately laxer than
-//! alacritty.** A byte outside the alphabet, a length that cannot be a base64
-//! encoding, padding anywhere but at the end, and non-zero bits in a final
-//! partial group are all rejected: each of those makes the *decoded* bytes
-//! something the sender did not unambiguously write, which is the one thing the
-//! caller must never hand a consumer. Missing padding is not in that class —
-//! `Zm9vYmE` and `Zm9vYmE=` denote the same five bytes — so both are accepted.
-//! **Partial** padding is: `Zg=` is neither, and is refused.
-//!
-//! That laxity is a divergence from **both** references, not one: alacritty's
-//! `STANDARD` engine requires canonical padding
-//! (`alacritty_terminal/src/term/mod.rs:1717`) and ghostty rejects an unpadded
-//! payload as `InvalidPadding` (`src/Surface.zig:2186`). The reach of unpadded
-//! emitters is **unmeasured**; the asymmetry is what decides it, since rejecting
-//! costs a silently dropped clipboard and accepting costs nothing.
+//! A byte outside the alphabet, a length that cannot be a base64 encoding,
+//! padding anywhere but at the end, non-zero bits in a final partial group and
+//! partial padding (`Zg=`) are rejected — each makes the decoded bytes something
+//! the sender did not unambiguously write. Missing padding is accepted:
+//! `Zm9vYmE` and `Zm9vYmE=` denote the same five bytes.
 
 /// The standard alphabet (RFC 4648 §4). Not the URL-safe one: `-` and `_` are
 /// refused rather than mapped, because a payload written in one alphabet and
@@ -62,12 +38,9 @@ pub(crate) fn decode(input: &[u8]) -> Option<Vec<u8>> {
     if pad > 2 {
         return None;
     }
-    // Interior padding needs no guard of its own, and the first draft's — a
-    // `contains(&b'=')` over everything before the suffix — was measured dead:
-    // mutating it away left all nine tests green. An `=` that is not the suffix
+    // Interior padding needs no guard of its own: an `=` that is not the suffix
     // lands inside a quantum or the remainder, where `sextet` has no value for
-    // it; a stray one after real padding fails the quantum check below. Adding
-    // the guard back buys nothing and costs a branch no input can reach.
+    // it, and a stray one after real padding fails the quantum check below.
     // A payload that pads at all pads to a whole four-character quantum, which
     // is what makes the pad count implied rather than a second thing to check.
     if pad != 0 && !input.len().is_multiple_of(4) {

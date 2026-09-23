@@ -19,60 +19,17 @@ use crate::serialize::{MarkerId, MarkerKind};
 /// terminator the request arrived with, and the consumer hands it back to the
 /// matching `report_*`. Under [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) the parse-time fact is a *mechanism* only
 /// the engine can observe, while *which* terminator to send is policy — and a
-/// consumer cannot exercise a policy on a fact it was never given. That was
-/// measured, not assumed: `bell_terminated` was discarded at the parser boundary
-/// before any event was queued.
+/// consumer cannot exercise a policy on a fact it was never given.
 ///
-/// **The spec settles the direction, not just the reference tally.**
-/// `ctlseqs.txt:2020` — *"XTerm accepts either BEL or ST for terminating OSC
-/// sequences, and when returning information, uses the same terminator used in a
-/// query. While the latter is preferred, the former is supported for legacy
-/// applications."* Under [ADR-0004](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0004-spec-faithful-when-alacritty-omits.md) that outranks every implementation, this one
-/// included. **On the colour path** all three implementations that echo carry the
-/// terminator *outward with the request* rather than remembering it: alacritty
-/// binds it into the reply formatter it sends its consumer
-/// (`alacritty_terminal/src/term/mod.rs:1678`), ghostty makes it a field on the
-/// parsed command (`src/terminal/osc.zig:87`, written at
-/// `src/termio/stream_handler.zig:1497`), and xterm threads it as a parameter
-/// (`misc.c:3567`, emitted at `:3593`). xterm.js is the one that always sends ST
-/// (`CoreBrowserTerminal.ts:239`) — which is what this engine used to do.
+/// The terminator rides the event rather than being remembered by the engine, because
+/// [`crate::Engine::drain_events`] hands over a batch: a consumer may hold two queries at once
+/// and answer them in either order. This follows xterm's documented behaviour — *"when
+/// returning information, uses the same terminator used in a query"* (`ctlseqs.txt`).
 ///
-/// **The colour qualifier is load-bearing, because `OSC 52` has a counterexample.**
-/// xterm *does* store the terminator for the clipboard: `int base64_final;` on the
-/// screen (`ptyx.h:2637`), written when the request is parsed (`misc.c:3389`) and
-/// read a file away when the paste finally arrives (`button.c:2218`), because its
-/// X selection retrieval is asynchronous. That is shape (b) — the one this engine
-/// weighed and did not take — on the exact sequence `report_clipboard` answers.
-///
-/// It is recorded here because it **strengthens** the choice rather than undoing
-/// it. xterm stores precisely because the reply is detached from the request, and
-/// its store is a *single scalar*, so two overlapping paste requests would collide
-/// exactly as one stored terminator does here. Detachment is the condition
-/// [`crate::Engine::drain_events`] creates for every family at once, not just one —
-/// so carrying answers it where storing only postpones it.
-///
-/// **Carrying beats remembering for a reason that is this channel's.**
-/// [`crate::Engine::drain_events`] hands over a batch, so a consumer can hold two
-/// colour queries at once and answer them in either order; one remembered scalar
-/// could not say which exchange it belonged to. An occurrence's payload is
-/// detached from its instant by the queue — [ADR-0029](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md) D4 records the same shape
-/// for coordinates — so there is no re-ask and the fact must ride the event.
-///
-/// **Exhaustive on purpose ([#843](https://github.com/kihyun1998/justerm/issues/843)'s rule).** The space is closed at exactly two,
-/// with a date for each (`ctlseqs.txt:2024-2028`), so there is no member a later
-/// slice may name and nothing for `#[non_exhaustive]` to preserve.
-///
-/// ⚠ **The closure rests on the input space, not on the spec alone.** ECMA-48
-/// gives `ST` a third encoding — the 8-bit C1 `0x9C` — and it is absent here because
-/// [`crate::Engine::feed`] does not treat a lone `0x80..=0x9F` byte as a control at
-/// all, not because the spec stops at two. A reader who finds `0x9C` in `ctlseqs.txt`
-/// and concludes this enum is missing a member has the reasoning backwards: were that
-/// contract ever revisited, the member would follow, and it is the contract that is
-/// load-bearing.
-/// ghostty reaches the same shape independently — `src/terminal/osc.zig:252` is a
-/// two-member `{ st, bel }` with no trailing `_`, which is Zig's marker for an
-/// open enum and is used at 23 other sites in that tree. Convergence on both the
-/// partition and the closure is the non-arbitrariness signal.
+/// **Exhaustive on purpose ([#843](https://github.com/kihyun1998/justerm/issues/843)'s rule).**
+/// The 8-bit C1 `ST` (`0x9C`) is not a third member because [`crate::Engine::feed`] does not
+/// treat a lone `0x80..=0x9F` byte as a control at all; were that contract revisited, the member
+/// would follow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Terminator {
     /// `ESC \` (ST), the terminator ECMA-48 documents and xterm prefers.
@@ -90,9 +47,7 @@ pub enum Terminator {
     /// to carry a terminator and nothing resolves to this variant — the OSC stays
     /// open instead. See [`crate::Engine::feed`] for why that is a contract.
     ///
-    /// That is the right answer, not a fallback: xterm hardcodes ST on exactly this
-    /// shape (`charproc.c:8964`, *"should be ST"*) and ghostty's `Terminator.init`
-    /// returns `.st` for a missing byte (`src/terminal/osc.zig:263`).
+    /// That is the right answer, not a fallback — xterm answers the same shape with ST.
     #[default]
     St,
     /// `BEL` (`0x07`), supported for legacy applications.
@@ -120,46 +75,13 @@ impl Terminator {
 /// the same reason [`TermEvent::SetPaletteColor`] carries a `u8` index rather
 /// than the field it was written in.
 ///
-/// **Three members, and `p` is kept apart from `s` deliberately.** The
-/// sequence's target field admits `c`, `p`, `q`, `s` and the eight cut buffers
-/// (`ctlseqs.txt:2156`); justerm models the three a consumer can act on and
-/// ignores the rest rather than folding them onto a neighbour, since mapping `q`
-/// onto a selection would be the engine inventing an equivalence the application
-/// did not ask for. ghostty folds every unrecognised kind onto the clipboard
-/// (`src/termio/stream_handler.zig:1013`); alacritty ignores them
-/// (`alacritty_terminal/src/term/mod.rs:1714`), and so does this. Read
-/// ghostty's from the `switch` and not from the comment four lines above it,
-/// which says *"we ignore the 'kind' field and always use the standard
-/// clipboard"* and is contradicted by the code under it — only the `else` arm
-/// goes to `.standard`.
+/// **Three members, and `p` is kept apart from `s`**, so the value a consumer hands back to
+/// `report_clipboard` names the selector the application wrote. The sequence's other selectors
+/// (`q` and the eight cut buffers) are ignored rather than folded onto a neighbour.
 ///
-/// **The first draft collapsed `p` and `s` into one member, and that was wrong
-/// on the wire.** alacritty collapses them
-/// (`alacritty_terminal/src/term/mod.rs:1713`) but replies with the byte the
-/// application sent (`:1744`), so the collapse never reaches a client. This
-/// engine hands the consumer a value and gets it back at `report_clipboard`, so
-/// a collapse here would answer `ESC ] 52 ; s ; ?` naming `p` — a selector the
-/// application never wrote, in the one field a client could pair a reply on. The
-/// spec lists the two separately (`ctlseqs.txt:2157`), xterm binds them to
-/// different atoms (`misc.c:3327`) and echoes the recognised list back
-/// (`misc.c:3384`), and ghostty keeps three locations apart in both directions
-/// (`src/Surface.zig:5954`, `src/terminal/c/terminal.zig:2942`). Splitting the
-/// member is what lets the value round-trip without the engine remembering
-/// anything.
-///
-/// **`#[non_exhaustive]` ([#843](https://github.com/kihyun1998/justerm/issues/843)).** The set is open by the paragraph above: `q` and
-/// the eight cut buffers are in the sequence and unmodelled here, so a later slice
-/// may name one. A consumer meeting a member it does not know can decline the
-/// request, which is already how it refuses any of them.
-///
-/// **ghostty reaches the same shape independently**, which [#843](https://github.com/kihyun1998/justerm/issues/843) had recorded as
-/// impossible — its issue says Zig "has no such construct", and Zig does: a
-/// trailing `_` marks a non-exhaustive enum, used at 23 sites in that tree. The
-/// one that matters here is `src/terminal/clipboard.zig:2`, whose `Location` is
-/// `{ standard, selection, primary, _ }` — the same three members this type
-/// carries, and open for the same reason. Convergence on both the partition and
-/// the openness is the non-arbitrariness signal; it was invisible while the
-/// corpus was recorded as having no vote.
+/// **`#[non_exhaustive]` ([#843](https://github.com/kihyun1998/justerm/issues/843)).** `q` and the
+/// cut buffers are unmodelled, so a later slice may name one. A consumer meeting a member it does
+/// not know can decline the request, which is already how it refuses any of them.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClipboardTarget {
@@ -218,55 +140,8 @@ pub enum NotificationSequence {
 /// A consumer-facing event emitted while parsing the VT stream.
 ///
 /// **`#[non_exhaustive]`, so a consumer must carry a `_` arm and a new variant
-/// never breaks one.** Decided 2026-09-02, by the maintainer, while a slice was
-/// adding two variants — and what decided it was neither that slice nor any
-/// consumer we can see.
-///
-/// **What decided it is [`CLAUDE.md`](https://github.com/kihyun1998/justerm/blob/master/CLAUDE.md)'s own identity statement**: *"`justerm-core`
-/// is not penterm-only — it is a reusable, independent crate."* That sentence
-/// says there are consumers we cannot edit, which is precisely what this
-/// attribute defends; a crate whose identity were "internal, used by penterm"
-/// would want the opposite, because there a broken build is the compiler doing
-/// us a favour. So this follows from a call already made rather than from a
-/// preference, and it reverses only if that identity does.
-///
-/// Three measurements, so the next reader does not have to retake them:
-///
-/// - **crates.io reverse dependencies: zero** (the single row the API returns is
-///   this crate itself), across 248 downloads split over 11 versions — i.e. no
-///   external consumer exists *today*. That is why the identity statement had to
-///   decide it: there was nothing to observe.
-/// - **Cost in this workspace: zero.** `cargo test --workspace` (87 suites) and
-///   `clippy -D warnings` both stay green. A same-crate `match` may still be
-///   exhaustive, `justerm-wasm-decode` and `justerm-renderer` never name
-///   `TermEvent`, and `justerm-web`'s `events.ts` mirrors this union by hand
-///   rather than deriving it. **That mirror was narrower than this enum when the
-///   measurement was taken and no longer is in the same way:** it now
-///   carries the `OSC 52` pair as well, and what stays narrower is its
-///   `EventHandlers` — the *notification* surface, not the channel. The cost
-///   measured here is unaffected, since a hand-written mirror never had a
-///   compiler relationship to this enum to break.
-/// - **The window closes at `1.0.0`.** Adding this is free while the crate is
-///   `0.x` and is *itself* a breaking change afterwards, while an enum without
-///   it turns every future variant into a major bump. Conformance here is
-///   cumulative by design — the VT tail is perpetual — and the two slices before
-///   this one added three variants and two, so that rate is measured rather than
-///   assumed.
-///
-/// **The argument that lost, recorded because it is a real cost.** An exhaustive
-/// match is a *feature* for a consumer: the compiler tells them a new event
-/// exists and makes them decide about it. penterm's `route_event` is the worked
-/// example — its `ColumnMode` and `ColorSchemeQuery` arms carry a comment
-/// explaining why each is dropped, written by someone the compiler had just
-/// informed. That signal is given up here, and it now has to come from release
-/// notes. It loses because this is a *notification* channel where ignoring an
-/// unknown event is documented as safe, so the guarantee belongs in prose rather
-/// than in the type — but a consumer who wanted the old behaviour is not
-/// imagining the loss.
-///
-/// (penterm was the evidence that an outside exhaustive matcher can exist — its
-/// five-variant `match` predates nine minor versions of this enum — and not the
-/// reason. It is being reimplemented, which is exactly why it could not be.)
+/// never breaks one.** Ignoring an event you do not recognise is safe on this channel; new
+/// variants are announced in the release notes rather than by the compiler.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TermEvent {
@@ -401,37 +276,13 @@ pub enum TermEvent {
     /// **This is a request, not a fact.** Whether the copy happens is the
     /// consumer's: it owns the platform clipboard, any permission model and any
     /// prompt, and a consumer that drops this event has refused the copy. The
-    /// engine carries no allow/deny knob, which is where it parts company with
-    /// alacritty — alacritty gates the same sequence behind a four-state config
-    /// (`alacritty_terminal/src/term/mod.rs:1706`, `:1727`). Under [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) that
-    /// gate lives one layer out.
+    /// engine carries no allow/deny knob — under
+    /// [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)
+    /// that gate is the consumer's.
     ///
-    /// **The reason once given for that was measurably wrong, and is corrected
-    /// here rather than quietly dropped (re-read 2026-09-10).** This said
-    /// *"because alacritty **is** the consumer"*. It is not the distinction:
-    /// alacritty's gate sits inside `alacritty_terminal`, the **engine** crate,
-    /// with the policy *injected across the crate boundary* — `Osc52` is a field
-    /// on that crate's `Config` (`:353`), written by the application at
-    /// `alacritty/src/config/ui_config.rs:125`. That is [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)'s own shape, so
-    /// it was never a reason this crate *could not* hold an injected gate. The
-    /// conclusion stands on the ADR alone, and on the fact that an engine which
-    /// touches no clipboard buys nothing by putting a gate in front of a relay.
-    ///
-    /// **An empty `text` means "clear it".** `ESC ] 52 ; c ; ESC \` carries a
-    /// payload that decodes to nothing, and both the spec and xterm end that
-    /// exchange with an empty selection — the spec because `Pd` *"becomes the
-    /// new selection"* whatever it is (`ctlseqs.txt:2166`), xterm because it
-    /// clears the buffer before appending anything (`misc.c:3410`). Note this is
-    /// **not** the spec's *"neither a base64 string nor `?`"* clause at
-    /// `ctlseqs.txt:2174`, which the engine diverges from: an empty payload is a
-    /// perfectly well-formed encoding of no bytes, so it never reaches that
-    /// sentence. Citing `:2174` here, as an earlier draft did, would have the
-    /// same line standing as authority followed and as authority departed from.
-    /// ghostty pins the same input under a test named *"clear clipboard"*
-    /// (`src/terminal/osc/parsers/clipboard_operation.zig:93`). It needs no rule
-    /// of its own here, which is the argument for having none: an empty payload
-    /// *is* a well-formed encoding of no bytes, so it reaches the consumer
-    /// through the ordinary path.
+    /// **An empty `text` means "clear it"**, as the spec (`Pd` *"becomes the new selection"*
+    /// whatever it is) and xterm end that exchange: an empty payload is a well-formed encoding of
+    /// no bytes, so it reaches the consumer through the ordinary path.
     ClipboardStore {
         target: ClipboardTarget,
         text: String,
@@ -471,20 +322,10 @@ pub enum TermEvent {
     /// this event is that pull's incremental mirror. The consumer appends the entry with
     /// the basis it arrived on and rebases it exactly like a pulled one.
     ///
-    /// **The two are one fact and neither is usable alone.** A single `feed` can
-    /// create a marker and then evict, so by the end of the batch the buffer's origin has
-    /// moved out from under the line this event already carries. `Frame::evicted_total` is
-    /// the basis at the *end* of that batch, so reading `line` against it misplaces the
-    /// marker by however much the batch evicted after the birth — measured at three lines,
-    /// with the event line, both frame bases, the epoch and `Frame::marker_count` all
-    /// identical to the batch that evicted *first* and needs no adjustment at all.
-    ///
-    /// **And a basis dates only a uniform move.** Eviction shifts every marker by
-    /// the same amount, which is what one scalar can say; a reflow or a region rotate
-    /// moves them *individually*, which is what `epoch` is for. A birth still queued when
-    /// the epoch moves describes a buffer that no longer exists, and carrying only the
-    /// basis leaves that indistinguishable from a birth in the current generation —
-    /// measured, a mark at absolute 3 reflowed to 5 with the basis unmoved at 0.
+    /// **The three are one fact and none is usable alone.** A single `feed` can create a
+    /// marker and then evict, so `Frame::evicted_total` at the end of the batch is not the basis
+    /// `line` is absolute on; and a reflow or region rotate moves markers individually, which
+    /// only `epoch` dates.
     ///
     /// Deliberately not an epoch bump: a bump costs a whole re-pull, and creation is
     /// `O(1)` information.
