@@ -180,16 +180,8 @@ impl Default for KeyEvent {
 /// semantics, not escape hatches, so an unnamed key has nowhere to go and the
 /// attribute is the only way to keep adding one cheap.
 ///
-/// A second argument stood here and was **withdrawn as false** — that naming a
-/// future `Button8` would stop `Other(8)` being produced and break a consumer
-/// matching on it. Three things are wrong with it, and the first is four lines
-/// above: X11 buttons **8 and 9 are already named**, as `Back` and `Forward`, and
-/// `Other` is documented as `10+`. The encoder then collapses the distinction
-/// anyway — `Some(Back)` and `Other(8)` both emit `128` — and nothing outside this
-/// crate matches a `MouseButton` we hand it, because nothing is ever handed one.
-/// Left in view rather than deleted: a doc-comment whose own example contradicts
-/// the enum beside it is worse than no comment, and this one shipped through a
-/// completeness pass before a refuting one caught it.
+/// X11 buttons 8 and 9 are named ([`MouseButton::Back`] / [`MouseButton::Forward`]),
+/// and `Some(Back)` and `Other(8)` encode identically (`128`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseButton {
     Left,
@@ -495,8 +487,9 @@ const KITTY_ASSOCIATED_TEXT: u8 = 0b10000;
 
 /// Kitty `CSI unicode ; mods : event u` encoding. Returns `None` to fall through
 /// to legacy when this event needs no kitty form (a plain press of an
-/// unmodified key under disambiguate, etc.). The functional-key codepoint table
-/// and the remaining flags grow this in later slices.
+/// unmodified key under disambiguate, etc.). All five progressive-enhancement flags are
+/// handled; kitty's private-use codepoints for functional keys are not — those keys keep
+/// their legacy form.
 fn kitty_encode(ev: &KeyEvent, flags: u8) -> Option<Vec<u8>> {
     // Event sub-parameter — only reported when the report-events flag is on, and
     // a plain press is the omitted default.

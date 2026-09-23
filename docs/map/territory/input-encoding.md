@@ -176,6 +176,21 @@ Nothing governs the encoding itself.
     `mousedown` altogether.
   - `CaptureOptions.mouseReporting` survives for a consumer building its own widget from the parts;
     `Terminal` no longer passes it.
+- **A bad `CellGeometry` is reported, not refused** (`geometryViolations`). Every length is CSS px and
+  `NaN` in any field poisons every pointer event silently, so the preconditions are *signalled*. xterm
+  refuses instead, but its refusal is half of a repair loop — the same predicate triggers a
+  re-measure — and this widget does not measure: the geometry arrives per event from the consumer
+  (#578, ADR-0017). alacritty's casts saturate and ghostty's cell is an integer type, so neither
+  transfers. (A clause here once said copying xterm's guard "buys the drop without the recovery"; it
+  measured false in a real browser — `getGeometry` is pulled per event, so a refused gesture resumes
+  on the correct cell once the box returns. The rest stands; its scope is the *cell*, and an absent
+  *box* is refused where it is measured — see the absent-box invariant.) The signal is a bare
+  `console.warn`, as xterm's own converter does rather than its off-by-default `LogService`, and it
+  is **deduped per field**, unlike xterm, because the reach here is every pointer event at `mousemove`
+  rate. Rows: [who bounds a pointer coordinate](../../agents/reference-facts.md#who-bounds-a-pointer-coordinate--the-producer-not-the-engine-667-verified-2026-07-31).
+- **`CellGeometry` is CSS px, and saying so is load-bearing.** The published README's example once
+  built it from `renderer.cellSize()` — device px — so every click resolved to the wrong cell at
+  `devicePixelRatio !== 1`; nothing type-checks a unit.
 
 ## Code
 

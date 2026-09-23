@@ -214,19 +214,12 @@ export interface MouseEventLike {
  *
  * **Every length here is in CSS pixels**, because that is the space `clientX`/`clientY` arrive in
  * and this struct is subtracted from and divided into them directly (see {@link cellEvent} below).
+ * `renderer.cellSize()` is **device** px: use `cssCellWidth()`/`cssCellHeight()`, or divide by
+ * `devicePixelRatio`.
  *
- * The unit is stated because it went undocumented and the published README's example then drifted:
- * it built `cellWidth`/`cellHeight` from `renderer.cellSize()`, which is **device** px, so on any
- * display with `devicePixelRatio !== 1` every click resolved to the wrong cell. The renderer
- * offers `cssCellWidth()`/`cssCellHeight()`, or divide `cellSize()` by `devicePixelRatio` as the demo
- * does. Nothing type-checks a unit, so it has to be written down.
- *
- * **Nothing type-checks a range either, and that is the other half.** `number` admits `0` and
- * `NaN`; `NaN` in *any* one of these six fields propagates through {@link clampTo} and poisons every
- * pointer event for as long as it is there — silently, since the result downstream is an empty
- * selection or a `null` over JSON rather than an error. The preconditions are therefore stated here
- * and *signalled* at the converters ({@link geometryViolations}), not enforced: see that function for
- * why refusing is not a free upgrade in this widget.
+ * `NaN` in *any* field propagates through {@link clampTo} and poisons every pointer event silently,
+ * so the preconditions below are *signalled* at the converters ({@link geometryViolations}), not
+ * enforced.
  *
  * Every field must be finite. Beyond that:
  */
@@ -259,25 +252,10 @@ export interface GeometryViolation {
  * second bad field cannot hide behind the first (the signal below warns once per field, so a masked
  * one would never be reported at all).
  *
- * **Why this reports rather than refuses.** The obvious move is xterm's, which returns `undefined`
- * from its converter when the cell is unmeasured (`getCoords`, `Mouse.ts:35`). That guard is half of
- * a *repair loop* — xterm owns the measurement, so the same predicate that drops the gesture also
- * triggers a re-measure (`CoreBrowserTerminal.ts:1058`, `RenderService.ts:145`, both calling
- * `measure()`). This widget deliberately does not measure: `CellGeometry` arrives per event from the
- * consumer's `getGeometry()` callback (#578, and [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)'s routing — pixel→cell is the consumer's by
- * definition). All three outcomes (drop / clamp / propagate) are equally invisible, which is what
- * makes *diagnosis*, not correction, the thing worth adding. The other two references are total for
- * reasons that do not transfer: alacritty's float→int casts saturate, and ghostty's cell is an
- * integer type, so a zero cell is unrepresentable there rather than handled (`size.zig:139`).
- *
- * **One clause of that reasoning is retired, and only that one.** This paragraph used to add
- * that copying xterm's guard would *"buy the drop without the recovery"*. Measured false in a real
- * browser: `getGeometry` is pulled per event, so a refused gesture resumes on the correct cell as
- * soon as the box comes back — the recovery half is free here, it simply is not the converter's to
- * run. The rest stands, and its scope is the **cell**: a violated field precondition is what this
- * function reports. The refusal this widget does make is on a different axis and at a different
- * site — an *absent box*, refused by whoever measured it (see {@link CaptureOptions.getGeometry}),
- * because that failure leaves every field in range and so cannot be seen from here at all.
+ * It reports rather than refuses, deliberately: this widget does not measure the cell — the
+ * consumer's `getGeometry()` does, per event (pixel→cell is the consumer's under
+ * [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
+ * An absent box is refused at that callback instead (see {@link CaptureOptions.getGeometry}).
  */
 export function geometryViolations(geom: CellGeometry): GeometryViolation[] {
   const out: GeometryViolation[] = [];
@@ -303,17 +281,8 @@ export function geometryViolations(geom: CellGeometry): GeometryViolation[] {
 const warnedGeometryFields = new Set<string>();
 
 /**
- * Signal a violated precondition to whoever is feeding the geometry, then answer anyway.
- *
- * `console.warn` and not a configurable logger: xterm has one (`LogService`) and does **not** route
- * this class of thing through it — its own converter warns directly when it meets a `NaN` coordinate
- * (`AccessibilityManager.ts:332`), because a logger that defaults to off is silent exactly when a
- * defect needs to be seen.
- *
- * Deduped per field, which is the deliberate divergence from xterm: the reach here is *every* pointer
- * event for as long as the field is bad and `mousemove` fires at pointer rate, so an undeduped warn
- * would bury its own first line. xterm does not need this — its warn sites are selection-change, not
- * per-motion.
+ * Signal a violated precondition to whoever is feeding the geometry, then answer anyway — with a
+ * bare `console.warn`, deduped per field (it fires at pointer rate).
  */
 export function checkGeometry(geom: CellGeometry): void {
   for (const { field, message } of geometryViolations(geom)) {
@@ -394,13 +363,9 @@ export interface CaptureOptions {
   /**
    * Current canvas origin + cell size (read per event — it changes on resize).
    *
-   * **`undefined` means "I could not measure it"**, and it is a real answer rather than a failure.
-   * A DOM element with no box — `display: none`, detached, not yet laid out — reports every
-   * `getBoundingClientRect()` field as `0`, and `0` is a legal value for everything derived from
-   * it: {@link CellGeometry.originX} and `originY` are the only two fields with no precondition,
-   * because a position may legitimately be `0` or negative. So *"there is no box"* and *"the box is
-   * at the origin"* reach every reader as the same number, and no guard phrased on the geometry can
-   * separate them — only the code that took the measurement knows which one it saw.
+   * **`undefined` means "I could not measure it"**, and it is a real answer rather than a failure:
+   * an element with no box (`display: none`, detached, not yet laid out) reports every field as `0`,
+   * which is indistinguishable from a box at the origin to anyone but the code that measured it.
    *
    * Answering `undefined` makes the gesture request nothing at all: no cell for the app, no
    * selection change, no scroll. It does **not** end the gesture — a pane shown again under a held
