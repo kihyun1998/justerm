@@ -91,7 +91,15 @@ pinned tree — the single most consequential positional rule here.
   justerm is the outlier: no reference clears it in CBT, and xterm does not normally clear it in the
   *forward* tab either — its one `ResetWrap` there is gated on the `curses` resource, off by default.
   So the "matches xterm" prose is now known to be wrong on at least this axis, in justerm's favour
-  by its own coherence argument and not by the reference's.
+  by its own coherence argument and not by the reference's. Every horizontal-positioning verb here
+  clears the flag, so a back-tab that did not would be the sole exception — and would reproduce the
+  bug #826 fixes from the other side. The two tests that pin justerm's side:
+  `back_tab_with_no_stops_lands_at_column_one` (the 3/4 clamp) and
+  `back_tab_on_a_full_row_prints_where_it_landed_not_on_the_next_row` (the divergence as
+  behaviour). The outer loop breaks at column zero, bounding the work by the grid rather than the
+  parameter — defensive only, since `vte` saturates a parameter at `u16::MAX`, so no test can redden
+  it. **If DECSLRM ever lands, `put_back_tab` is a site**: xterm and ghostty clamp a back-tab to the
+  left margin under origin mode, which reduces to column zero only because there is no DECSLRM.
 
 - [Forward tabulation at the right edge, and the deferred wrap](../../agents/reference-facts.md#forward-tabulation-at-the-right-edge-and-the-deferred-wrap-848-verified-2026-09-03)
   — **whether `HT` at the last column keeps the flag**, measured across all four by #848. 3-1 for

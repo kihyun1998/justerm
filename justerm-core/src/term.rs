@@ -1755,96 +1755,10 @@ impl Term {
         }
     }
 
-    /// CBT (CSI Ps Z): step back `n` tab stops, or to column one if fewer
-    /// remain.
-    ///
-    /// The mirror of [`Term::put_tab`] over the *same* table, walked in the
-    /// other direction. Writing it as a mirror rather than as arithmetic is
-    /// what keeps the two from drifting: an application that moved a stop with
-    /// HTS has moved it for both directions, and a modulo here would disagree
-    /// with the forward walk the moment it did.
-    ///
-    /// The count repeats the walk — `n` stops, not one stop `n` columns away —
-    /// which is what makes a multi-field jump land correctly when the stops are
-    /// unevenly spaced.
-    ///
-    /// Backward tabulation is defined *within the line*: it clamps at column
-    /// one and never wraps to the row above, which would make it a
-    /// cursor-relocating operation across rows and give it interactions with
-    /// the wrap state it should not have. The outer loop breaks at column zero
-    /// for that reason and for a second one — it bounds the work by the grid
-    /// rather than by the parameter, so a hostile `CSI 65535 Z` costs one walk
-    /// of the row. That second reason is **defensive only**: `vte` saturates a
-    /// parameter at `u16::MAX`, so the unbounded form would cost 65535 no-op
-    /// iterations, and no test can redden the guard.
-    ///
-    /// The **count** converges 4/4 — every reference repeats the *walk* rather
-    /// than computing a column: alacritty `term/mod.rs:1571-1585` @ `852e971`,
-    /// ghostty `stream_terminal.zig:593-599` + `Terminal.zig:2124-2136` @
-    /// `e6e26e1`, xterm `charproc.c:3745-3752` + `tabs.c:131-180` @ `6380a3e`,
-    /// xterm.js `InputHandler.ts:1141-1151` + `Buffer.ts:599-603` @ `699f553`.
-    ///
-    /// The **clamp is 3/4**, and the outlier is alacritty — the one whose loop
-    /// shape this most resembles, which is why the resemblance is worth
-    /// distrusting. It seeds `col` with the cursor's current column and
-    /// overwrites it only inside `if self.tabs[i]` (`term/mod.rs:1578-1583`),
-    /// so with **no stop to the left it writes the cursor back unchanged** — a
-    /// no-op where the walk below runs to column zero. Reachable after
-    /// `CSI 3 g`, since clearing all stops clears column zero too in both
-    /// engines. xterm (`TabPrev` returns 0), ghostty (returns at
-    /// `x <= left_limit`) and xterm.js (`x < 0 ? 0 : x`) all clamp, and
-    /// `back_tab_with_no_stops_lands_at_column_one` is the test that pins which
-    /// side justerm is on.
-    ///
-    /// **Clearing the deferred wrap diverges from all four, deliberately.**
-    /// None of them clears it here: alacritty's `move_backward_tabs` writes no
-    /// `input_needs_wrap` though its own CUB does (`term/mod.rs:1253`);
-    /// ghostty's `horizontalTabBack` calls the *screen*-level `cursorLeft`,
-    /// which does not touch `pending_wrap`, where its terminal-level one does
-    /// (`Terminal.zig:1768`); xterm's `TabToPrevStop` has no `ResetWrap` at all
-    /// — the only one in `tabs.c` is in the *forward* walk and is gated on the
-    /// `curses` resource (`tabs.c:113`), off by default; and xterm.js has no
-    /// flag, representing the state as `x == cols` and returning early on it,
-    /// so its CBT from the right margin moves *nothing*.
-    ///
-    /// ADR-0004's spec-first rule has nothing to award here, and the reason is
-    /// stronger than "the spec is quiet". `ctlseqs.txt:755` is one line, but
-    /// that file is xterm's documentation *of xterm* rather than the normative
-    /// text; CBT's normative home is ECMA-48, which no pinned tree carries. The
-    /// argument that does not depend on a document nobody here can open: the
-    /// deferred wrap is an **implementation device** for "the cursor is parked
-    /// at the last column", not an ECMA-48 concept, so no version of that spec
-    /// can rule on it in principle.
-    ///
-    /// So the grounds are this engine's own coherence: **every horizontal-positioning
-    /// verb here clears the flag** — `move_forward`, `move_back`, `set_col`,
-    /// `set_row`, `goto`, `move_up`, `move_down`, `backspace`,
-    /// `carriage_return`, `put_tab` — so a back-tab that did not would be the
-    /// sole exception. Leaving it armed also reproduces the very bug #826
-    /// exists to fix, from the other side: the next character would land on the
-    /// *following row* rather than in the column the back-tab chose.
-    ///
-    /// The unanimity is over that population and not over every writer of
-    /// `cursor.col`. `linefeed_inner` and `reverse_index` do **not** clear it,
-    /// which is a separate and unsettled question — justerm is the outlier 3-1
-    /// there — and deliberately outside this change. `put_tab` is in that
-    /// population only where it moves: at the right edge of a full row it finds
-    /// no stop and leaves the flag armed (#848), which is the same rule — clear
-    /// where the verb moves the cursor — and CBT always moves. See
-    /// [`docs/agents/reference-facts.md`](https://github.com/kihyun1998/justerm/blob/master/docs/agents/reference-facts.md).
-    ///
-    /// **What the divergence actually costs, stated as behaviour rather than as
-    /// a flag.** On a full row, `CSI Z` then a print puts the character where
-    /// the back-tab landed; every reference puts it on the *following row*,
-    /// having in effect discarded the back-tab. Pinned by
-    /// `back_tab_on_a_full_row_prints_where_it_landed_not_on_the_next_row`.
-    ///
-    /// **Cleared concern, with its validity condition.** xterm and ghostty
-    /// clamp a back-tab to the **left margin** under origin mode
-    /// (`tabs.c:171-175`; `Terminal.zig:2126`), not to column zero. That is
-    /// inert here only because this engine implements no DECSLRM, so both
-    /// reduce to zero. **If DECSLRM ever lands, this function is a site**, and
-    /// nothing else in the tree points at it.
+    /// CBT (CSI Ps Z): step back `n` tab stops, or to column one if fewer remain — the mirror
+    /// of [`Term::put_tab`] over the same table, repeating the walk `n` times. Clamps within
+    /// the line and clears the deferred wrap, the second a deliberate divergence from all four
+    /// references (#826, `docs/map/territory/cursor-position.md`).
     fn put_back_tab(&mut self, n: usize) {
         let mut col = self.cursor.col;
         for _ in 0..n {
@@ -1883,25 +1797,9 @@ impl Term {
 
     // ---- printing ------------------------------------------------------------
 
-    /// The extended attributes the pen currently stamps onto a cell it writes: the open OSC 8
-    /// hyperlink (#26/#46) and a non-default underline colour (SGR 58, #520).
-    ///
-    /// The colour is gated on the UNDERLINE attribute — an underline colour is meaningless on a
-    /// cell that draws no underline, and xterm likewise does not persist it there
-    /// (`AttributeData isEmpty()` ignores the colour; `InputHandler.test.ts:2084`). That keeps
-    /// it off the wire for cells that never draw it (ADR-0020: no inert per-cell payload). SGR 58
-    /// is the *underline* colour, so STRIKETHROUGH alone does not arm it.
-    ///
-    /// One place, because three sites take their extended attrs from the PEN — the glyph, its wide
-    /// spacer, and the vacated wrap column — mirroring the pen half of `Row::ext_attrs_at`, so a
-    /// later rider is added here rather than at each of them (#521/#528).
-    ///
-    /// **Five sites build a cell from the pen, not three, and the other two deliberately do not
-    /// come here**: `promote_cluster_to_wide` and `relocate_cluster_wide` synthesise a pair's
-    /// spacer, whose attrs are the LEAD's rather than the pen's (ADR-0025 D4), so they read
-    /// `Row::ext_attrs_at` and the lead's underline style directly. Counting them in is how a
-    /// rider gets added here and silently misses them — which is exactly what #829's underline
-    /// style did until a refuting pass measured it.
+    /// The extended attributes the pen stamps onto a cell it writes: the open OSC 8 link and
+    /// a non-default underline colour, the colour only while `UNDERLINE` is set (#520). Which
+    /// sites build from here and which must not: `docs/map/territory/pen.md`.
     fn pen_ext_attrs(&self) -> ExtAttrs {
         let ucolor = self.cursor.pen.underline_color;
         let armed =
@@ -1909,50 +1807,15 @@ impl Term {
         ExtAttrs::from_pen(self.current_link.clone(), armed.then_some(ucolor))
     }
 
-    /// Free a cell that has stopped being part of a glyph — the *structural repair* every
-    /// overwrite, erase and row-shift owes the no-orphan invariant when it destroys one half of
-    /// a width-2 glyph, plus the spacer a mode-2027 demotion no longer needs.
+    /// Free a cell that has stopped being part of a glyph — the no-orphan repair an overwrite,
+    /// erase or row-shift owes when it destroys one half of a width-2 glyph, plus the spacer a
+    /// mode-2027 demotion no longer needs. It damages the cell, which is the half every site
+    /// used to forget (#530).
     ///
-    /// This is **not** an erase. The app asked for something at a *different* column; freeing
-    /// this one is the engine keeping its own invariant. But it is still a mutation, so it
-    /// **damages** — and that is the half every site used to forget, because each function
-    /// damaged its own range and the repaired cell lies outside it by construction (that is what
-    /// makes it a repair). A frame-mode consumer therefore kept painting the destroyed glyph.
-    /// Bundling the reset with its damage is the point of this helper: a repair site added later
-    /// cannot forget the half that has no compiler behind it (#530).
-    ///
-    /// The cell it leaves is a **blank carrying the current background** — the same rule
-    /// `clear_cells` already applies to a BCE erase, extended to the repair, so one sentence
-    /// covers both: *a blank cell carries the current background.* A bare `Cell::default()`
-    /// would punch an uncoloured notch into a coloured run, which no reference implementation
-    /// does.
-    ///
-    /// Deliberately the pen's **background only** — not its full attributes, and this is not a
-    /// compromise between references: it is byte-for-byte xterm.js's `_eraseAttrData()`
-    /// (`DEFAULT_ATTR_DATA` + `curAttr.bg & ~0xFC000000`, i.e. default everything plus the pen's
-    /// background colour), which is what its `replaceCells` / `insertCells` / `deleteCells`
-    /// repairs are handed — eight of the twelve sites here. Only xterm's *print* path uses the
-    /// whole pen. Taking the whole pen
-    /// (xterm.js `setCellFromCodepoint(x, 0, 1, curAttr)`) would plant the pen's hyperlink and,
-    /// worse, its DECSCA protection onto a cell the app never wrote — a cell no later erase could
-    /// clear. Taking the *cell's own* attributes (alacritty `clear_wide`, which keeps `extra`)
-    /// would leave the destroyed glyph's hyperlink alive and clickable, the defect #529 is filed
-    /// against. Both were considered and rejected; the maintainer chose this on 2026-07-24 and it
-    /// is theirs to reverse (see #530 for what they were shown).
-    ///
-    /// What used to be recorded here as a known limitation is **resolved** (#538, ADR-0025 D1):
-    /// `reset()` still clears the whole content word, but the soft-wrap link is no longer part of
-    /// it. The live flag is on the `Row`, so freeing the last column — here or on the erase path —
-    /// cannot break a wrap; `CellFlags::WRAPLINE` is wire-only, derived onto the last cell at
-    /// encode time and never read back (`cell.rs`). Ending a wrap is now an explicit per-verb call
-    /// (`end_wrap`), which is the shape both references already had and the reason the move was
-    /// made: ghostty and xterm.js hold the flag on the row/line, and xterm.js takes `clearWrap` as
-    /// an explicit argument on its erase helper (`_eraseInBufferLine`, `InputHandler.ts:1175`)
-    /// rather than letting a cell clear decide it.
-    ///
-    /// Known cost, accepted rather than overlooked: with DECSCA the freed cell loses its
-    /// protection. ghostty has the same hole and flags it in its own source; justerm does not
-    /// implement DECSCA today, so revisit if it lands.
+    /// The cell becomes a blank carrying the pen's background only (xterm.js's
+    /// `_eraseAttrData()`), not the whole pen and not the cell's own attributes — maintainer's
+    /// call, 2026-07-24. With DECSCA the freed cell would lose its protection; DECSCA is not
+    /// implemented. See `docs/map/territory/wide-glyph.md`.
     fn free_cell(&mut self, row: usize, col: usize) {
         let bg = self.cursor.pen.bg;
         let cell = self.grid.cell_mut(row, col);
@@ -1963,58 +1826,21 @@ impl Term {
         self.damage_span(row, col, col);
     }
 
-    /// Will the next `wrapline()` actually reach another row?
-    ///
-    /// `wrapline` → `linefeed` advances in exactly two cases: the cursor sits at the scroll
-    /// region's bottom (so the region scrolls under it), or it has a row below it on screen.
-    /// Parked *below* a DECSTBM region on the last row it does neither — it silently stays put.
-    ///
-    /// Both wide-at-boundary paths must ask before they commit anything, because both destroy
-    /// content on the assumption that the row is about to change: `write_glyph` blanks the column
-    /// it is leaving, and `relocate_cluster_wide` writes its cluster to `(cursor.row, 0..=1)`
-    /// *after* the wrap — which is the same row when nothing advanced, so it lands on live cells.
-    /// Reasoning only about the vacated source column misses that second case entirely.
-    ///
-    /// This mirrors `linefeed`'s own condition; the two must be read together.
+    /// Will the next `wrapline()` actually reach another row? It does when the cursor is at the
+    /// region's bottom or has a row below it; parked below a DECSTBM region on the last row it
+    /// stays put. Both wide-at-boundary paths ask first, since both destroy content on the
+    /// assumption that the row changes. Mirrors `linefeed`'s own condition.
     fn wrapline_advances(&self) -> bool {
         self.cursor.row == self.scroll_bottom || self.cursor.row + 1 < self.grid.rows()
     }
 
-    /// Blank the last column as the soft-wrap artefact it is, when a width-2 glyph could not fit
-    /// there (#528). Shared by the two paths that reach this state: `write_glyph`'s wide-at-boundary
-    /// wrap and `relocate_cluster_wide`'s promoted cluster.
-    ///
-    /// The column is **written**, not merely flagged: a blank built from the current pen, exactly
-    /// as every reference does it — xterm.js `setCellFromCodepoint(col, 0, 1, curAttr)`
-    /// (`InputHandler.ts:609-611`; `BufferLine.ts:244-251` takes the pen's fg/bg *and* its
-    /// `extended` link/colour), ghostty `printCell(0, .spacer_head)` (`Terminal.zig:1410-1412`,
-    /// whose `printCell` stamps the cursor's hyperlink), alacritty `write_at_cursor(' ')` under a
-    /// `LEADING_WIDE_CHAR_SPACER` template (`mod.rs:1108-1113`, assigning `extra` from it).
-    ///
-    /// Flagging in place instead left the previous occupant's glyph, hyperlink and underline colour
-    /// alive in a cell every text reader skips — so a renderer drew a character that could not be
-    /// copied, searched or announced (#528). Building from `Pen::cell` also clears the presence
-    /// bits, so no stale side-map entry can be read back through the new cell.
-    ///
-    /// WRAPLINE marks the row a continuation rather than a hard line-end (search, logical lines
-    /// #113 and reflow #7 all read it); the leading-spacer marker makes the text extractors skip
-    /// the blank instead of joining `"ab한"` → `"ab 한"`.
-    ///
-    /// The marker is **alacritty's** `LEADING_WIDE_CHAR_SPACER` (`term/cell.rs`) — ghostty calls
-    /// the same thing `.spacer_head`. It is *not* xterm's: xterm.js has no marker at all, writing
-    /// a bare null cell and re-inferring the artefact at reflow time from "ends in null and the
-    /// following line starts with a wide char". That difference has a consequence here — in
-    /// xterm.js a lost marker degrades to an empty cell that trimming drops anyway, whereas
-    /// justerm writes `' '`, so the marker is the *only* thing keeping this column out of the
-    /// extracted text.
+    /// Blank the last column as the soft-wrap artefact it is, when a width-2 glyph could not
+    /// fit there (#528): a pen blank marked as a leading spacer, so text readers skip it, and
+    /// the row marked soft-wrapped. Shared by `write_glyph`'s wide-at-boundary wrap and
+    /// `relocate_cluster_wide`. Why written rather than flagged:
+    /// `docs/map/territory/wide-glyph.md`.
     fn vacate_for_wrap(&mut self, row: usize, col: usize) {
-        // Writing this column makes the vacate an overwrite like any other, so it inherits the
-        // no-orphan obligation every other overwrite site carries (`write_glyph`,
-        // `promote_cluster_to_wide`, `insert_chars`, `delete_chars`, the erase path): if the
-        // column was the *spacer* of a wide glyph, blanking it destroys the spacer marker and
-        // strands the lead. That is unrecoverable rather than merely untidy — every repair path
-        // keys off `is_wide_spacer()`, so once the marker is gone no later write, ECH, EL, ICH
-        // or DCH can ever clear the orphan.
+        // An overwrite like any other: a spacer here strands its lead unless the lead is freed.
         if col > 0 && self.grid.cell(row, col).is_wide_spacer() {
             self.free_cell(row, col - 1);
         }
@@ -2024,31 +1850,14 @@ impl Term {
         self.begin_wrap(row);
         let ext = self.pen_ext_attrs();
         self.grid.row_mut(row).set_ext_attrs(col, ext);
-        // The cell's contents changed, so a frame-mode consumer must be told or it keeps painting
-        // the old glyph (ADR-0003: every mutation site records damage). The *repaired* lead above
-        // is damaged by `free_cell`, which owns that pairing for all twelve repair sites — this
-        // site used to hand-roll it, and keeping both left neither able to discriminate.
+        // The cell changed, so it is damaged (ADR-0003); the repaired lead is `free_cell`'s.
         self.damage_span(row, col, col);
     }
 
-    /// Place one already-charset-translated scalar: join it to the previous cluster
-    /// under mode 2027, attach it as a combining mark, or write it as a new glyph.
-    ///
-    /// Split out of `print` so `REP` can re-enter the print path *below* two things it
-    /// must not repeat (#825): the VT52 `ESC Y` coordinate intercept, and the GL
-    /// character-set translation — `REP` reads its grapheme back off a cell, which
-    /// holds the *translated* glyph, so passing it through `print` would map it twice.
-    /// Neither is observable today (the intercept is unreachable because `ESC Y`
-    /// disarms the repeat, and no glyph either implemented set produces is a key in
-    /// its own table), so this is insurance, and its condition is worth stating: it
-    /// stops being insurance the moment a set is added whose output overlaps its
-    /// input.
-    ///
-    /// The three arms that place content are exactly the sites that arm
-    /// [`Term::repeat_anchor`]. xterm reaches the same set from the other end — it arms
-    /// on every printed scalar and then rejects the zero-width ones with a guard at
-    /// `REP` (`charproc.c:6154`) — and the two are equivalent because the only scalars
-    /// that reach here with no width are unreachable in the first place.
+    /// Place one already-charset-translated scalar: join it to the previous cluster under mode
+    /// 2027, attach it as a combining mark, or write it as a new glyph. Split out of `print` so
+    /// `REP` re-enters below the VT52 intercept and the charset translation (#825). The three
+    /// arms that place content are exactly the sites that arm [`Term::repeat_anchor`].
     fn place_grapheme(&mut self, c: char) {
         // Grapheme-cluster mode (DEC ?2027, #295): if `c` extends the previous cell's cluster,
         // join it there instead of placing a new cell. OFF → the per-char (wcwidth) path below.
@@ -2062,32 +1871,11 @@ impl Term {
             // Zero-width (combining marks): a zero-width code point is a combining
             // mark — attach it to the previous base glyph rather than dropping it.
             Some(0) => self.repeat_anchor = Some(self.push_combining(c)),
-            // Reachable, and the only scalar that reaches it: `vte` sends C0 and the
-            // 8-bit C1 range to `execute`, but `ground_dispatch` matches only
-            // `'\x00'..='\x1f' | '\u{80}'..='\u{9f}'` there (`vte-0.15.0/src/lib.rs:722`),
-            // so `DEL` (0x7F) arrives here and `'\u{7f}'.width()` is `None`. It writes no
-            // cell, so it clears the anchor — which is xterm's answer too, reached by its
-            // own route (`lastchar` is set only by CASE_PRINT, and REP guards on positive
-            // width, `charproc.c:6154`). An earlier version of this claimed the arm was
-            // unreachable, citing a `0x7F => ()` line that belongs to `CsiIgnore`.
+            // `DEL` (0x7F): `vte` prints it, and its width is `None`. It writes no cell, so it clears
+            // the anchor.
             None => self.repeat_anchor = None,
-            // Coerced to a pair, because a pair is the only multi-column shape the cell model
-            // has (`WIDE_CHAR` + exactly one `WIDE_CHAR_SPACER`) — see ADR-0025, which states
-            // every clause over "a pair" and never over a wider run. `unicode-width` genuinely
-            // returns 3 for at least one codepoint (U+17D8 KHMER SIGN BEYYAL, a ligature drawn
-            // as three characters), and that value is not wrong — it is unrepresentable here.
-            //
-            // Left uncoerced, the width fell through *every* wide branch in `write_glyph`
-            // (each gated on `width == 2`) while still driving the cursor advance, so the glyph
-            // landed as a lone narrow cell followed by columns that no flag distinguished from
-            // real blanks: search could not find the text on screen and word selection split
-            // the run, handing the clipboard a space the buffer never held (#595).
-            //
-            // All three references bound it, and ghostty says why in the same words —
-            // `unicode/props.zig:11-13`, *"We clamp to [0, 2] … i.e. 3-em dash becomes a 2-em
-            // dash"*. Clamping *here* rather than inside `write_glyph` keeps the two jobs apart:
-            // this is the policy for an out-of-range external value, and the invariant it
-            // establishes is asserted at the site that depends on it.
+            // Coerced to a pair — the only multi-column shape the cell model has (ADR-0025); a width
+            // of 3 is unrepresentable (#595, `docs/map/territory/wide-glyph.md`).
             Some(width) => self.repeat_anchor = self.write_glyph(c, width.min(2)),
         }
     }

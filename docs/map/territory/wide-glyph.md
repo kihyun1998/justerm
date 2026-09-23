@@ -53,6 +53,23 @@ ADR-0025 is authoritative; this is routing. **If they disagree, the ADR is right
 - **Width is computed per character.** VS16 (`FE0F`) and keycap sequences therefore arrive as
   `wide = false` — string-level promotion is impossible here, and DECSET 2027 (#295) is the opt-in
   clustering that changes it.
+- **The wide-wrap artefact column is written, not flagged** (#528): a blank from the current pen,
+  as every reference does — xterm.js `setCellFromCodepoint(col, 0, 1, curAttr)`
+  (`InputHandler.ts:609-611`), ghostty `printCell(0, .spacer_head)` (`Terminal.zig:1410-1412`),
+  alacritty `write_at_cursor(' ')` under a `LEADING_WIDE_CHAR_SPACER` template (`mod.rs:1108-1113`).
+  Flagging in place left the previous occupant's glyph, link and underline colour alive in a cell
+  every text reader skips, so a renderer drew a character that could not be copied, searched or
+  announced. The marker is alacritty's (ghostty's `.spacer_head`), not xterm's: xterm.js writes a
+  bare null and re-infers the artefact at reflow time, so a lost marker there degrades to an empty
+  cell trimming drops — justerm writes `' '`, so the marker is the only thing keeping the column
+  out of extracted text. Blanking it is an overwrite like any other, so it owes the no-orphan repair
+  when the column was a spacer.
+- **A width past 2 is coerced to a pair** (#595). `unicode-width` returns 3 for at least U+17D8
+  KHMER SIGN BEYYAL, which is not wrong but unrepresentable here: left uncoerced it fell through
+  every `width == 2` branch while still driving the advance, so the glyph landed as one narrow cell
+  followed by columns no flag distinguished from blanks. All three references bound it — ghostty
+  says why (`unicode/props.zig:11-13`, *"3-em dash becomes a 2-em dash"*). The clamp is at the
+  intake (`place_grapheme`), the invariant asserted where it is relied on (`write_glyph`).
 
 ## Code
 

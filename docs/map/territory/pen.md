@@ -31,6 +31,17 @@ VT couples them in `SGR` + print, not because they are one concept.
 - **`Pen::reset()` is SGR 0** and restores every field at once, including the underline colour.
 - **Colours are references, never resolved.** `Default | Indexed(u8) | Rgb(..)` — the engine is
   theme-agnostic by identity, so the pen never holds a hex value.
+- **`pen_ext_attrs` is the one place a pen's extended attributes are built** — the open OSC 8 link
+  (#26, #46) and a non-default underline colour (SGR 58, #520), the colour gated on `UNDERLINE`
+  because it is meaningless on a cell that draws none (xterm likewise does not persist it:
+  `AttributeData isEmpty()` ignores it, `InputHandler.test.ts:2084`; and ADR-0020 keeps inert
+  per-cell payload off the wire). Strikethrough alone does not arm it. Three sites take their
+  extended attributes from the pen — the glyph, its wide spacer, the vacated wrap column — so a new
+  rider is added here once (#521, #528). **Five sites build a cell, not three**: `promote_cluster_to_wide`
+  and `relocate_cluster_wide` synthesise a pair's spacer, whose attributes are the *lead's*
+  (ADR-0025 D4), so they read `Row::ext_attrs_at` and the lead's underline style directly. Counting
+  them in is how a rider silently misses them — which is what #829's underline style did until a
+  refuting pass measured it.
 
 ## Code
 

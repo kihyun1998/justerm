@@ -68,7 +68,14 @@ for a terminal engine, that list is half the specification.
   *position* is recorded because it cannot be re-derived — with autowrap off the cursor reaches the
   last column both by filling it and by advancing onto it, and an earlier guess
   (`pending_wrap || (!autowrap && col + 1 == cols)`) repeated an unrelated `Z` on
-  `?7l` + `ZZZZZ` + `CUP` + `abcd` + `CSI 1 b`.
+  `?7l` + `ZZZZZ` + `CUP` + `abcd` + `CSI 1 b`. `REP` re-enters the print path at
+  `place_grapheme`, below the VT52 `ESC Y` intercept and the GL charset translation — a cell holds
+  the *translated* glyph, so passing it through `print` would map it twice. Neither is observable
+  today (`ESC Y` disarms the repeat, and no implemented set's output is a key in its own table), so
+  it is insurance that stops being insurance the moment a set whose output overlaps its input is
+  added. xterm arms on every printed scalar and rejects zero-width ones at `REP`
+  (`charproc.c:6154`); equivalent here, because the only width-`None` scalar that reaches
+  `place_grapheme` is `DEL`, which writes no cell and clears the anchor.
   **And the enumeration cannot be completed against `vte` 0.15 at all**: `State::CsiIgnore`
   returns to ground at `src/lib.rs:222` without dispatching, and `State::DcsIgnore` never
   calls `hook`/`unhook`, so a malformed `CSI 1 ? b` or `DCS 1 ? q … ST` ends with no
