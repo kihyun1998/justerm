@@ -42,6 +42,14 @@ VT couples them in `SGR` + print, not because they are one concept.
   (ADR-0025 D4), so they read `Row::ext_attrs_at` and the lead's underline style directly. Counting
   them in is how a rider silently misses them — which is what #829's underline style did until a
   refuting pass measured it.
+- **The colon RGB form of `38`/`48`/`58` is count-based** (#520): a 5-param `38:2:r:g:b` reads
+  RGB directly, while `38:2:cs:r:g:b` — or `38:2::r:g:b` with an empty colorspace, the form kitty and
+  nvim emit — skips the colorspace slot. The short form is non-conformant to T.416 / ISO-8613-6, but
+  tolerating it is the ecosystem-dominant behaviour, verified against source (2026-07): VTE
+  (`src/sgr.hh`, `n > 4`), foot (`csi.c`, `sub.idx >= 5`) and alacritty (`ansi.rs`,
+  `params.len() > 4`) all count the sub-parameters; VTE calls it a "common misinterpretation of the
+  standard" (foot: "bastard version") and supports it anyway. Only xterm.js is strict. ADR-0004's
+  spec-faithfulness is about not *omitting* behaviour, not rejecting a widely emitted input.
 
 ## Code
 

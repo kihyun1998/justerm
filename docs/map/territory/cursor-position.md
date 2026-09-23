@@ -87,6 +87,12 @@ Read out of the source; there is no record to read instead.
   into reverse wraparound, reflow and every text reader. The narrow print path was the one caller
   that committed without asking `wrapline_advances` (found by #540's completeness pass, where a
   row-shift verb inherited the bogus flag and merged two logical lines).
+- **`IL`/`DL` clear the deferred wrap and `SU`/`SD` do not** (#848). IL and DL are 3-1 for clearing
+  (alacritty the outlier — IL: xterm `util.c:1295`, ghostty `Terminal.zig:2691`, xterm.js through
+  `_restrictCursor` at `InputHandler.ts:1346`/`:890`; DL: `util.c:1388`, `Terminal.zig:2856`,
+  `InputHandler.ts:1380`), while ghostty saves
+  and restores the flag around SU and SD on purpose (`Terminal.zig:2390`) — a per-verb answer, not
+  "row-shift verbs clear".
 
 ## Code
 

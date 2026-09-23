@@ -2639,7 +2639,8 @@ impl Term {
                 self.clear_cells(cr, 0, cc + 1);
                 self.drop_artefact_if_erased(cr, 0, cc + 1);
             }
-            // Erase the whole line — see `end_wrap`: a deliberate divergence from xterm.
+            // Erase the whole line — ends the wrap, a deliberate divergence from xterm
+            // (`docs/map/territory/soft-wrap.md`).
             2 => {
                 self.clear_cells(cr, 0, cols);
                 self.end_wrap(cr);
@@ -2657,10 +2658,8 @@ impl Term {
         let (row, col) = (self.cursor.row, self.cursor.col);
         let to = (col + n).min(cols);
         self.clear_cells(row, col, to);
-        // Destroys content from the cursor rightward, so the row can no longer be continuing —
-        // unconditionally, at any column and for any `n`. Both references do exactly this (see
-        // `end_wrap`): xterm routes ECH through the same `ClearRight` as `EL 0`, ghostty calls
-        // `cursorResetWrap()` in `eraseChars`.
+        // Destroys content from the cursor rightward, so the row stops continuing at any column
+        // (`docs/map/territory/soft-wrap.md`).
         self.end_wrap(row);
     }
 
@@ -2674,12 +2673,9 @@ impl Term {
         if n == 0 {
             return;
         }
-        // Shifting a wrapped pair out of columns 0/1 ends it, so the row above's artefact record
-        // is void (#534). Asked **before** the shift, which is what keeps IRM correct: `write_glyph`
-        // routes its wide-at-boundary insert through here *after* `vacate_for_wrap` has just set
-        // the marker on the row above, and a post-shift test would see the freshly blanked gap and
-        // clear the marker inside its own SET site's critical section. Pre-shift the question is
-        // about the pair that was actually there, which is the one the record is about.
+        // Shifting a wrapped pair out of columns 0/1 voids the row above's artefact record
+        // (#534) — asked before the shift, since IRM routes here right after `vacate_for_wrap`
+        // set that record.
         if col <= 1 && self.wrapped_pair_at_row_start(r) {
             self.void_wrap_artefact_above(r);
         }
@@ -2707,9 +2703,8 @@ impl Term {
         if self.grid.cell(r, cols - 1).is_wide() {
             self.free_cell(r, cols - 1);
         }
-        // Note ICH needs no repair to *this* row's marker: a right shift always pushes the last
-        // column off the edge, so it discards a marker rather than carrying one inward —
-        // measured, and pinned by `ich_discards_the_marker_off_the_edge`.
+        // A right shift pushes the last column off the edge, so this row's marker is discarded,
+        // never carried inward (`docs/map/territory/wide-glyph.md`).
         self.damage_span(r, col, cols - 1);
     }
 
@@ -2722,24 +2717,11 @@ impl Term {
         if n == 0 {
             return;
         }
-        // The shift pulls the tail left and blanks the far end, so the row stops continuing —
-        // ghostty says it outright (*"Our row's soft-wrap is always reset"* in `deleteChars`,
-        // `Terminal.zig:3133` @ `e6e26e1`).
-        //
-        // **Before the shift, not after** (#534): `end_wrap` clears the artefact marker at the
-        // *last* column, and the marker is a cell bit that the shift carries inward with every
-        // other cell. Ending the wrap afterwards would clear a column the marker has already left,
-        // stranding it mid-row where it describes nothing (ADR-0025 D3) and silently swallows the
-        // blank between two runs in copy, search and accessible text. Same shape as #540's
-        // `record_scroll` ordering: the clear has to happen where the state still is.
+        // The row stops continuing — ended **before** the shift, which would otherwise carry the
+        // artefact marker inward (#534, `docs/map/territory/wide-glyph.md`).
         self.end_wrap(r);
-        // Deleting a wrapped pair out of columns 0/1 ends it, so the row above's artefact record
-        // is void — and this is where the "ask before, not after" rule earns its keep twice over:
-        // a `DCH` can pull the *next* wide glyph left into column 0, which a post-shift "is a wide
-        // lead standing here?" test happily accepts even though the pair the record was about has
-        // been deleted. ghostty asks the same question at the same point:
-        // `Screen.splitCellBoundary(cursor.x)` from `deleteChars` (`Terminal.zig:3107` @ `e6e26e1`),
-        // whose `x == 0 or x == 1` branch reaches up a row and clears the spacer head.
+        // Deleting a wrapped pair out of columns 0/1 voids the row above's record — asked before
+        // the shift, which can pull the next wide glyph into column 0 (#534).
         if col <= 1 && self.wrapped_pair_at_row_start(r) {
             self.void_wrap_artefact_above(r);
         }
@@ -2831,15 +2813,7 @@ impl Term {
         if cur < self.scroll_top || cur > self.scroll_bottom {
             return;
         }
-        // 3-1 for clearing, and the odd one out is the row-shift family's usual
-        // outlier: xterm `util.c:1295`, ghostty `Terminal.zig:2691` (*"Always unset
-        // pending wrap"*), and xterm.js structurally — `insertLines` opens with
-        // `_restrictCursor()`, whose `Math.min(cols - 1, …)` un-parks the column
-        // (`InputHandler.ts:1346`, `:890`). Only alacritty leaves it.
-        //
-        // `SU`/`SD` deliberately do **not** join them: ghostty saves and restores the
-        // flag around those two on purpose (`Terminal.zig:2390`), so this is a
-        // per-verb answer and not "row-shift verbs clear" (#848).
+        // Clears the deferred wrap (#848; `docs/map/territory/cursor-position.md`).
         self.cursor.pending_wrap = false;
         self.scroll_region_lines(cur, self.scroll_bottom, n, true);
     }
@@ -2852,8 +2826,7 @@ impl Term {
         if cur < self.scroll_top || cur > self.scroll_bottom {
             return;
         }
-        // Same 3-1 as `Term::insert_lines`; xterm `util.c:1388`, ghostty
-        // `Terminal.zig:2856`, xterm.js `InputHandler.ts:1380` via `_restrictCursor`.
+        // As `insert_lines`.
         self.cursor.pending_wrap = false;
         self.scroll_region_lines(cur, self.scroll_bottom, n, false);
     }
@@ -2870,21 +2843,8 @@ impl Term {
                 1 => pen.flags.insert(CellFlags::BOLD),
                 2 => pen.flags.insert(CellFlags::DIM),
                 3 => pen.flags.insert(CellFlags::ITALIC),
-                // SGR 4 and its colon sub-parameter form (#829). The sub-parameter is already
-                // here — `params.iter()` yields the whole `&[u16]` and every other arm reads only
-                // `first()` — so `4:3` has been arriving as `[4, 3]` and being truncated to a
-                // plain underline. `4:0` is an explicit off in every reference that implements
-                // the form. An unrecognised sub-style stays a single underline: three of the four
-                // references degrade that way (xterm is the outlier and swallows the whole
-                // parameter), and losing an underline entirely is a worse failure than drawing the
-                // wrong kind — the application asked for emphasis and would get nothing, with no way
-                // to tell. #830 confirmed that rule against the corpus rather than changing it.
-                //
-                // Every value is stored **and every value is now drawn** (#830). #829 stored all six
-                // while the shader branched on `Curly` alone, because storing and drawing are not
-                // symmetric in cost: storing 2/4/5 was three arms and no pixel, while NOT storing
-                // them was a loss #830 could not have repaired — a cell written `4:5m` and scrolled
-                // into history would have recorded `Single` forever.
+                // SGR 4 and its colon sub-parameter form (#829): `4:0` is off, an unrecognised
+                // sub-style degrades to a single underline, and every style is stored and drawn (#830).
                 4 => {
                     let style = match param.get(1) {
                         None | Some(1) => UnderlineStyle::Single,
@@ -2901,25 +2861,10 @@ impl Term {
                 7 => pen.flags.insert(CellFlags::INVERSE),
                 8 => pen.flags.insert(CellFlags::HIDDEN),
                 9 => pen.flags.insert(CellFlags::STRIKETHROUGH),
-                // The legacy double underline (#830), which predates the sub-parameter form above.
-                // It lands on the same field, so `24` clears both spellings — ghostty gets that by
-                // construction (4, 4:x, 21 and 24 all reduce to one variant on one arm,
-                // `Screen.zig:2269-2271`) where xterm leaves two independent bits set and lets each
-                // consumer resolve them (`html.c:208-216` against `svg.c:271`).
-                //
-                // **Decided by the spec, not by a head count**, because the corpus is not
-                // unanimous: `vte` — the crate this engine's own parser is built on — reads `[21]`
-                // as `CancelBold` (`vte-0.15.0/src/ansi.rs:1849`), so alacritty produces no double
-                // underline from it at all. `ctlseqs.txt:1200` reads *"Doubly-underlined, ECMA-48
-                // 3rd"*, and the VT tie-breaker puts the spec above any implementation including
-                // ours; xterm (`charproc.c:4407-4409`), ghostty (`sgr.zig:301`) and xterm.js
-                // (`InputHandler.ts:2653-2655`) all agree. A reference that *contradicts* rather
-                // than omits is the third case ADR-0004's text does not classify — #824 settled
-                // that routing for DA2 and it applies unchanged here.
-                //
-                // The consequence, pinned rather than left to a bug report: an application sending
-                // `CSI 1m` then `CSI 21m` **meaning "stop bold"** gets a double underline and keeps
-                // its bold. That is what `22` is for, and this arm deliberately does not touch it.
+                // The legacy double underline (#830), on the same field so `24` clears both spellings.
+                // Decided by the spec (`ctlseqs.txt:1200`) over `vte`'s `CancelBold` reading; `CSI 21m`
+                // meaning "stop bold" gets a double underline and keeps its bold. Reference rows in
+                // `docs/agents/reference-facts.md`.
                 21 => pen.flags.set_underline_style(UnderlineStyle::Double),
                 22 => pen.flags.remove(CellFlags::BOLD | CellFlags::DIM),
                 23 => pen.flags.remove(CellFlags::ITALIC),
@@ -2963,16 +2908,9 @@ impl Term {
     }
 }
 
-/// Cap a recorded scroll to what a consumer can act on **and** what the wire can
-/// carry (#661) — two bounds for two different reasons, see [`Term::scroll_delta`].
-///
-/// A free function so the second bound is provable without building the grid that
-/// reaches it: a region taller than `i16::MAX` means a screen taller than 32 767
-/// rows, and every scroll of it rotates a `line_damage` of that length, so driving
-/// the engine to that corner costs ~10⁹ element moves (measured: 16 s in a debug
-/// build, for one assertion). The engine-level tests in `tests/damage.rs` prove
-/// `scroll_delta` applies this at ordinary sizes; the wire-level one in
-/// `tests/serialize.rs` proves a count at the bound survives `encode`.
+/// Cap a recorded scroll to what a consumer can act on and what the wire can carry (#661);
+/// see [`Term::scroll_delta`]. A free function so the wire bound is testable without
+/// building a screen taller than 32 767 rows.
 fn cap_scroll(op: ScrollOp) -> ScrollOp {
     let height = op.bottom.saturating_sub(op.top).saturating_add(1) as isize;
     let bound = height.min(MAX_SCROLL_COUNT);
@@ -2982,25 +2920,11 @@ fn cap_scroll(op: ScrollOp) -> ScrollOp {
     }
 }
 
-/// Parse `38`/`48`/`58` extended colour (foreground / background / underline colour, #520), in
-/// either form:
-/// - sub-parameter (colon) form inline in `param`: `38:5:n`, `38:2:r:g:b`
-///   (optionally `38:2:cs:r:g:b` with a colorspace id), or
-/// - legacy (semicolon) form: pull the following top-level params from `iter`.
-///
-/// The colon RGB form is **count-based** (`off = if param.len() >= 6 { 3 } else { 2 }`): a 5-param
-/// `38:2:r:g:b` (no colorspace slot) reads RGB(r,g,b) directly, while a 6-param `38:2:cs:r:g:b` — or
-/// `38:2::r:g:b` with an *empty* cs, the form kitty/nvim actually emit — skips the colorspace slot.
-/// The short 5-param form is **non-conformant to T.416 / ISO-8613-6** (the de-jure standard always
-/// carries a colorspace field), but tolerating it is the **ecosystem-dominant** behaviour, verified
-/// against real source (2026-07, #520): VTE (`src/sgr.hh`, branches on `n > 4`), foot (`csi.c`,
-/// `sub.idx >= 5`) and alacritty (`ansi.rs`, `params.len() > 4`) all count the sub-parameters and
-/// decode the short form as RGB(r,g,b), exactly as here. VTE's own comment calls it a "common
-/// misinterpretation of the standard" (foot: "bastard version") that it supports anyway; **only
-/// xterm.js is strict** (always consumes a colorspace slot, so it misreads the short form). So a
-/// difference from xterm here is deliberate leniency shared with the non-xterm ecosystem, not a
-/// defect — the ADR-0004 spec-faithfulness is about not *omitting* behaviour, not about rejecting a
-/// widely-emitted non-standard input.
+/// Parse `38`/`48`/`58` extended colour (foreground / background / underline, #520), in
+/// either form: the colon sub-parameter form inline in `param` (`38:5:n`, `38:2:r:g:b`, or
+/// `38:2:cs:r:g:b` with a colorspace slot, counted by length), or the legacy semicolon form
+/// pulled from `iter`. The short colon form is tolerated on purpose:
+/// `docs/map/territory/pen.md`.
 fn parse_extended_color<'a, I>(param: &[u16], iter: &mut I) -> Option<Color>
 where
     I: Iterator<Item = &'a [u16]>,
@@ -3034,10 +2958,6 @@ where
     }
 }
 
-/// Reflow one screen (joined with its `scrollback`) to `cols` x `rows`, tracking
-/// `point` (a cursor in screen coordinates). Returns the new screen rows, the new
-/// scrollback (capped to `limit`), and the new point. The alt screen passes an
-/// empty scrollback and discards the returned one.
 /// The fixed dimensions a resize reflows toward.
 #[derive(Clone, Copy)]
 struct ReflowDims {
@@ -3045,19 +2965,8 @@ struct ReflowDims {
     cols: usize,
     rows: usize,
     limit: usize,
-    /// Whether a column change may **re-split** this pane's content, or only re-fit its rows.
-    ///
-    /// False for the alt screen (#567). Reflow re-splits a long line so history stays readable at
-    /// the new width — it assumes the content is text that *flows*. The alt screen has no history,
-    /// its content is a **layout** rather than a paragraph (re-wrapping htop's columns means
-    /// nothing), and the application already knows the new size and repaints. All three references
-    /// take the same position with the same shape — one flag on the same resize function:
-    /// ghostty `alt.resize(.{ .reflow = false })`, alacritty `grid.resize(!is_alt, …)`, xterm.js
-    /// gating on `_hasScrollback` with the alt buffer built as `new Buffer(false, …)`.
-    ///
-    /// It is not merely wasted work: measured on a real `htop` recording taken across a live
-    /// `SIGWINCH`, re-splitting leaves debris in the cells htop does not overwrite, because htop
-    /// repaints **without** clearing. `vim` hides it by erasing first.
+    /// Whether a column change may re-split this pane's content, or only re-fit its rows —
+    /// false for the alt screen (#567, `docs/map/territory/reflow.md`).
     reflow: bool,
 }
 
@@ -3067,15 +2976,9 @@ struct PaneReflow {
     scrollback: VecDeque<Row>,
     /// The cursor's new screen-relative position.
     cursor: (usize, usize),
-    /// Each tracked extra point's new position **in this pane's own `[history ++ screen]` frame**,
-    /// index-aligned with the `extra_abs` argument — *before* any history the caller discards.
-    ///
-    /// Reported raw, with `evicted` beside it, because the two callers translate differently and
-    /// doing it here silently picked the primary's answer for both: the primary keeps its history,
-    /// so an extra's absolute line only moves by what the cap threw away, while the alt pane has no
-    /// history at all and everything above the screen is *gone*. Adding the alt result to the
-    /// primary's scrollback length then produced a line the buffer does not have — reachable
-    /// without any reflow, on a rows-only resize.
+    /// Each tracked extra point's new position in this pane's own `[history ++ screen]` frame,
+    /// index-aligned with `extra_abs`, before any history the caller discards. Raw, with
+    /// `evicted` beside it, because the primary and alt callers translate differently.
     extras: Vec<(usize, usize)>,
     /// Rows that left the buffer entirely off the front of this pane's history. For the primary
     /// that is the scrollback cap's eviction; for the alt pane, whose limit is `0` because it has
@@ -3084,9 +2987,10 @@ struct PaneReflow {
     evicted: usize,
 }
 
-/// Reflow one pane (its `scrollback` joined with `screen`) to `dims`, tracking
-/// the screen-relative cursor `point` plus any `extra_abs` points given in
-/// **absolute** `[scrollback ++ screen]` coordinates (selection anchors).
+/// Reflow one pane (its `scrollback` joined with `screen`) to `dims`, tracking the
+/// screen-relative cursor `point` plus any `extra_abs` points in absolute
+/// `[scrollback ++ screen]` coordinates. Returns the new screen rows, the scrollback capped
+/// to `dims.limit`, and where each point landed.
 fn reflow_pane(
     screen: Vec<Row>,
     scrollback: VecDeque<Row>,
@@ -3112,28 +3016,8 @@ fn reflow_pane(
         pts
     };
 
-    // The cursor can land one row past everything the reflow emitted — "just after the content"
-    // when the content ends on a full row (#562). That row is real, and while the pane is shorter
-    // than the screen the caller's fit supplies it for free. When the content already fills the
-    // pane it has to be bought, and the price is one row of history: the pane **scrolls**, which is
-    // what a terminal does when content grows past the bottom. Without it the cursor was pulled
-    // back onto the last glyph and the next byte destroyed a character — the ordinary shell shape,
-    // a prompt at the bottom of a full screen.
-    //
-    // Five earlier designs made `reflow` itself materialise the row and were rejected on
-    // measurements (a cursor at column 59 resized to width 4 emptied the buffer; a blank-line
-    // exemption turned 22 alt lines into 21). `reflow` cannot see this pane's budget, so it spent
-    // what it did not have. Here the budget is in scope, and it is the gate: a pane with no history
-    // cannot pay — the displaced row would be destroyed rather than archived — so it keeps clamping.
-    //
-    // `limit > 0`, deliberately, and not "is this the alt screen": since #567 the alt panes pass
-    // `limit: 0` because that is what an alt screen's history is, so they are excluded by the budget
-    // rather than by a branch. That branch is what the design carrying this rule was rejected for
-    // needing.
-    //
-    // This **amends** ADR-0025 rather than reading it narrowly: `reflow` does not create rows; the
-    // seam may, when the pane can pay. What that record measured is that materialising
-    // *unconditionally* destroys content.
+    // A cursor one row past the content (#562) buys that row from history when the pane can
+    // pay (`limit > 0`): `docs/map/territory/reflow.md`.
     let cursor_abs = pts[0].0 + usize::from(pts[0].1 == dims.cols);
     if dims.limit > 0 {
         while all.len() <= cursor_abs {
@@ -3162,13 +3046,8 @@ fn reflow_pane(
         (cursor_row, pts[0].1)
     };
 
-    // The bound on a tracked line belongs **here**, not inside `reflow`: this is where the final
-    // geometry is known. The screen is padded to `dims.rows` whatever `reflow` emitted, so this
-    // pane's last addressable line is `split + dims.rows - 1`. Bounding against `reflow`'s own row
-    // count instead clamped away rows the fit was about to create (#562), while still being the
-    // only thing standing between an out-of-range anchor and a panic in the consumer's process —
-    // selection anchors and marks are written back raw, unlike the cursor (`Cursor::set_point`).
-    // Expressed in this pane's own frame, so it is the same frame `extras` and `evicted` are in.
+    // Bound tracked lines to this pane's last addressable line, here where the final
+    // geometry is known (#562).
     let max_line = split + dims.rows - 1;
 
     // The cursor returns to screen-relative (its absolute index minus the history split). The
@@ -3209,54 +3088,10 @@ fn param_or(params: &Params, idx: usize, default: u16) -> u16 {
     }
 }
 
-/// The `Pv` field of the secondary device-attributes report (#824), derived
-/// from the crate version so a release cannot ship a report that disagrees
-/// with what was published.
-///
-/// Semver components are padded base-100, so a higher version always reports a
-/// higher number. That is alacritty's scheme, and it is a *reinterpretation* of
-/// the spec rather than a divergence from it: `ctlseqs.txt` calls `Pv` "the
-/// firmware version" and fixes no encoding for it.
-///
-/// **The encoding has a functional floor, and it is not cosmetic.** Measured on
-/// a real pty by sweeping this field alone (RHEL 9.2, vim 8.2), vim picks its
-/// mouse protocol off `Pv`:
-///
-/// ```text
-/// Pv < 95     ->  ttymouse=xterm    (no upgrade at all)
-/// Pv = 95     ->  ttymouse=sgr      (vim special-cases the exact >1;95;0c
-///                                    signature that macOS Terminal sends)
-/// 95..276     ->  ttymouse=xterm2
-/// Pv >= 277   ->  ttymouse=sgr
-/// ```
-///
-/// The mouse rows above reproduced across two independent runs, 11 arms each,
-/// with no-reply controls bracketing both.
-///
-/// A further gate sits on the same field: vim's XTGETTCAP key-code
-/// interrogation, which its `term.txt` (*xterm-codes*) documents as needing a
-/// response indicating "patchlevel 141 or higher". Measured here only to the
-/// extent of bracketing — present at 276 and 1500, absent at 1, 94 and 95 — so
-/// the doc's 141 is consistent but not independently pinned. The number
-/// therefore gates upgrades at three separate thresholds rather than one, and
-/// 1500 clears all three.
-///
-/// justerm at 0.15.0 maps to 1500 and clears it comfortably. A `0.2.x` would map
-/// to 200 and silently cost every consumer the SGR mouse encoding — so the
-/// base-100 scheme is load-bearing for a reason that has nothing to do with
-/// monotonicity, and lowering the base would be a behavioural change.
-///
-/// Three edges, all deliberate. A component of 100 or more carries into the
-/// next place — justerm is far from that, and widening the base would change
-/// every number already reported for no measured gain. The pre-release suffix
-/// is cut at the **first** hyphen, which is where semver says it begins;
-/// alacritty cuts at the last, which mis-parses a two-part suffix like
-/// `-rc.1-dev`. And the monotonicity above holds only below `u16::MAX`: a CSI
-/// parameter is a `u16` in `vte` (saturating), and ghostty types the field
-/// `firmware_version: u16`, so a `Pv` past 65535 — major version 7 — reaches a
-/// receiver saturated. alacritty carries the same latent property; the corpus
-/// prescribes no wider encoding, so this is recorded rather than designed
-/// around.
+/// The `Pv` field of the secondary device-attributes report (#824): the crate version,
+/// padded base-100 (`1.2.3` → `10203`), the pre-release suffix cut at the first hyphen.
+/// The base is load-bearing — vim gates its mouse protocol and XTGETTCAP on this number:
+/// `docs/map/territory/vt-interpretation.md`.
 const fn version_number(version: &str) -> u32 {
     let bytes = version.as_bytes();
     let mut parts = [0u32; 3];

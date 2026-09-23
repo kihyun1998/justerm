@@ -109,6 +109,11 @@ ADR-0025 is authoritative; this is routing. **If they disagree, the ADR is right
   placement (VS16 promotion under mode 2027, or IRM's insert-then-write) satisfies only at the end;
   both were measured disagreeing with the rule. The erase and intra-row-shift sites are ported from
   ghostty's `Screen.splitCellBoundary`; only justerm's `ICH` site has no counterpart there.
+- **ICH needs no repair to its own row's artefact marker**: a right shift always pushes the last
+  column off the edge, so it discards a marker rather than carrying one inward — measured, and
+  pinned by `ich_discards_the_marker_off_the_edge`. DCH is the opposite: it carries the marker
+  inward with every other cell, so it ends the wrap **before** the shift (#534), or the marker is
+  stranded mid-row describing nothing and swallows the blank between two runs in copy and search.
 
 ## Code
 

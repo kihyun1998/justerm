@@ -67,6 +67,22 @@ sits inside `term.rs` and `grid.rs`, and no public method is named for it — yo
   covers the axis, so the call is the maintainer's, recorded on #849. RIS still restores the default
   ladder, since `full_reset` takes the table from the constructor.
   The three were decided one at a time and separately; see *Known holes*.
+- **A cursor that reflows to "just after the content" on a full pane buys its row from history**
+  (#562). `reflow` may answer `col == cols`; the cursor reads it as the start of the next row, which
+  the caller's fit supplies while the pane is shorter than the screen. When the content already fills
+  the pane, the pane scrolls one row into history — without it the cursor was pulled back onto the
+  last glyph and the next byte destroyed a character (a prompt at the bottom of a full screen). Five
+  earlier designs made `reflow` itself materialise the row and were rejected on measurements (a
+  cursor at column 59 resized to width 4 emptied the buffer; a blank-line exemption turned 22 alt
+  lines into 21): `reflow` cannot see the pane's budget. The gate is `limit > 0`, not "is this the
+  alt screen" — since #567 alt panes pass `limit: 0` — which **amends** ADR-0025: `reflow` does not
+  create rows, the seam may when the pane can pay. A tracked line is bounded at
+  `split + dims.rows - 1` here, where the final geometry is known; bounding against `reflow`'s own
+  row count clamped away rows the fit was about to create.
+- **The alt pane re-fits without re-splitting** (`reflow: false`, #567): its content is a layout,
+  and all three references take the same position with one flag on the same resize function. Measured
+  on an `htop` recording across a live `SIGWINCH`, re-splitting left debris in cells htop does not
+  overwrite, because it repaints without clearing.
 
 ## Code
 

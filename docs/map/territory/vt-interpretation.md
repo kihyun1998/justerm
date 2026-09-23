@@ -256,7 +256,26 @@ for a terminal engine, that list is half the specification.
   each capability once where every other sent it twice. **justerm answers none of them** — they fall
   to the same intermediate catch-all — so the capability is unlocked and then unanswered, which is
   #47 tail. modifyOtherKeys is *not* gated on any of it: vim emits `CSI > 4 ; 2 m` about 180 bytes
-  before it asks. Why `Pp = 1` and `Pc = 0` is `architecture.md` § Hidden VT state; the reference
+  before it asks. **`Pv` is the crate version, padded base-100** (`version_number`, alacritty's
+  scheme; `ctlseqs.txt` calls `Pv` "the firmware version" and fixes no encoding), and the encoding has
+  a functional floor. Sweeping this field alone on the same pty, vim picks its mouse protocol off it
+  — reproduced across two runs of 11 arms each, bracketed by no-reply controls:
+
+  | `Pv` | vim's `ttymouse` |
+  |---|---|
+  | < 95 | `xterm` (no upgrade) |
+  | = 95 | `sgr` — vim special-cases the exact `>1;95;0c` macOS Terminal sends |
+  | 95..276 | `xterm2` |
+  | ≥ 277 | `sgr` |
+
+  With the XTGETTCAP gate above that is three thresholds on one field, and 1500 (0.15.0) clears all
+  three; a `0.2.x` would map to 200 and silently cost every consumer the SGR mouse encoding, so the
+  base is load-bearing for a reason that has nothing to do with monotonicity. Three edges, all
+  deliberate: a component of 100 or more carries into the next place; the pre-release suffix is cut
+  at the **first** hyphen, where semver says it begins (alacritty cuts at the last and mis-parses
+  `-rc.1-dev`); and monotonicity holds only below `u16::MAX`, since `vte` saturates a CSI parameter
+  and ghostty types the field `firmware_version: u16` — a `Pv` past 65535 (major version 7) arrives
+  saturated. Why `Pp = 1` and `Pc = 0` is `architecture.md` § Hidden VT state; the reference
   rows are [`reference-facts.md` § Secondary device attributes](../../agents/reference-facts.md#secondary-device-attributes--report-yourself-do-not-impersonate).
 - **One capture is closed-loop** (#891) — `vim_closed_loop.raw` holds all ten. How it was recorded,
   why the replies had to be the engine's, and why its bytes encode a consumer policy are
