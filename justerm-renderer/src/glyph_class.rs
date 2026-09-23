@@ -114,7 +114,7 @@ mod tests {
 
     /// #507: Symbols for Legacy Computing tile because **this crate draws them to the cell**
     /// ([`crate::builtin`]) — the same premise that makes `U+2588` tile. One per sub-family, since
-    /// `builtin` reaches them through four different drawing paths.
+    /// `builtin` reaches them through five different drawing paths.
     #[test]
     fn legacy_computing_tiles_because_the_crate_draws_it_to_the_cell() {
         assert!(treat_glyph_as_background_color(0x1FB00)); // sextant

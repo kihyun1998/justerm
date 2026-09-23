@@ -1,26 +1,14 @@
-//! Built-in block-element glyphs, drawn to the CELL rather than to an ink box (#359).
+//! Built-in block-element glyphs, drawn to the CELL rather than to an ink box (#359): box drawing,
+//! the block elements, and Symbols for Legacy Computing `1FB00`-`1FB9F` bar the reserved `1FB93`.
 //!
-//! `U+2580`–`U+259F` are meant to tile. A region of `█` is one solid fill; `▀▄▌▐` halve the cell
-//! exactly; `▖▗▘▝` quarter it. The browser's text engine draws them as glyphs, and #338 masks every
-//! glyph to its ink box — so as soon as `letterSpacing` or `lineHeight` moves the cell away from the
-//! ink box, the fills stop meeting. Worse, the renderer *measures* its cell's height by ink-scanning `█`
-//! ([`rasterizer`](crate::rasterizer)), so at `lineHeight = 1.5` the very glyph that defines the
-//! cell no longer fills it.
-//!
-//! Both references intercept the range ahead of the font and draw it at cell size: xterm.js's
-//! `CustomGlyphRasterizer` at `deviceCellWidth × deviceCellHeight`, alacritty's
-//! `builtin_font::builtin_glyph` at `average_advance + offset.x` × `line_height + offset.y`. The
-//! geometry below mirrors alacritty's (`builtin_font.rs:394-499`) rather than inventing its own — the
-//! eighth fractions, the `round().max(1)` on every extent, and the four-quadrant decomposition.
+//! Deliberate: these ranges never reach the font — see ADR-0018 and
+//! docs/map/territory/builtin-block-glyphs.md.
 //!
 //! Coverage only. The bitmap is white with the coverage in the alpha channel, exactly what
 //! [`Rasterizer::rasterize`](crate::rasterizer::Rasterizer::rasterize) returns, so the atlas upload
-//! path does not care where a glyph came from. The shades are a flat alpha, as alacritty draws them
-//! (`COLOR_FILL_ALPHA_STEP_*`), not a dither pattern.
+//! path does not care where a glyph came from. The shades are a flat alpha, not a dither pattern.
 
-/// The block-element codepoint range. Box drawing (`U+2500`–`U+257F`) is a sibling family, fully
-/// owned by [`box_glyph`]: the [`BOX_ARMS`] table for straight lines and junctions, plus dashes,
-/// doubles, diagonals and rounded corners (#365 complete).
+/// The block-element codepoint range.
 pub const FIRST: u32 = 0x2580;
 pub const LAST: u32 = 0x259F;
 
@@ -35,12 +23,6 @@ pub const EIGHTH_LAST: u32 = 0x1FB8B;
 
 /// The six-bit mosaic mask for a sextant, or `None` outside the range.
 ///
-/// Unicode enumerates 60 of the 64 combinations: `000000` is a space, `111111` is `█`, and `010101` /
-/// `101010` would duplicate `▌` / `▐`. So the codepoint is a plain index into that filtered list, and
-/// the six lists of thirty literals alacritty spells out (`builtin_font.rs:509-572`) are DERIVABLE.
-/// Cross-checked against all 180 of them: zero mismatches. VTE (`minifont.cc:1682`) and kitty
-/// (`decorations.c:2171`) derive it the same way, skipping at the same two masks.
-///
 /// Bit `i` lights cell `i+1` of `BLOCK SEXTANT-n`, left-to-right then top-to-bottom — the order
 /// xterm's `sextant(0b000001)` helper uses for `BLOCK SEXTANT-1` (`CustomGlyphDefinitions.ts:465`).
 pub fn sextant_mask(cp: u32) -> Option<u8> {
@@ -53,8 +35,7 @@ pub fn sextant_mask(cp: u32) -> Option<u8> {
         .nth((cp - SEXTANT_FIRST) as usize)
 }
 
-/// Alpha for the three shade characters, and for a solid fill. alacritty's `COLOR_FILL_ALPHA_STEP_3`
-/// / `_2` / `_1` / `COLOR_FILL` (`builtin_font.rs:10-15`).
+/// Alpha for the three shade characters, and for a solid fill.
 const SHADE_LIGHT: u8 = 64; // ░
 const SHADE_MEDIUM: u8 = 128; // ▒
 const SHADE_DARK: u8 = 192; // ▓
@@ -64,20 +45,15 @@ const SOLID: u8 = 255; // █
 /// range test**, safe to call per cell per frame.
 ///
 /// This is the module's own answer to "is this glyph background-shaped ink?", and
-/// [`glyph_class`](crate::glyph_class) unions it into `treat_glyph_as_background_color` (#507). The
-/// dependency runs this way round on purpose: the drawer is the thing that *knows*, so a codepoint
-/// added here is classified correctly the day it is added, with no second list to remember. Copying
-/// ranges by hand is not hypothetical — `emoji.rs` already carries `1FB00..=1FBFF` against this
-/// module's `1FB00..=1FB9F`, a 96-codepoint drift inside one crate.
+/// [`glyph_class`](crate::glyph_class) unions it into `treat_glyph_as_background_color` (#507).
 ///
-/// Deliberately **not** `block_glyph(cp, 1, 1).is_some()`: that allocates and rasterises a bitmap
-/// (~190 ns measured), and the call site runs once per cell per frame — ~1.9 ms/frame at 10 000
-/// cells. The equivalence with `block_glyph` is instead pinned by a test over the whole plane
-/// (`owns_is_exactly_what_block_glyph_draws`), which is where that cost belongs.
+/// Deliberate: a hand range rather than `block_glyph(cp, 1, 1).is_some()`, pinned to it by
+/// `owns_is_exactly_what_block_glyph_draws` — see docs/map/territory/builtin-block-glyphs.md.
 pub fn owns(cp: u32) -> bool {
     // `2500`-`259F` is contiguous: box drawing (`box_glyph`) then block elements. `1FB00`-`1FB9F`
-    // is contiguous except the reserved `1FB93`, reached through four drawing paths (sextant,
-    // wedge, octant, shade) that the test below proves this range covers exactly.
+    // is contiguous except the reserved `1FB93`, reached through five drawing paths (sextant,
+    // wedge with the hatch under it, octant, shade, and the extra-eighth rectangles) that the test
+    // below proves this range covers exactly.
     (0x2500..=0x259F).contains(&cp) || ((0x1FB00..=0x1FB9F).contains(&cp) && cp != 0x1FB93)
 }
 
@@ -89,26 +65,16 @@ pub fn owns(cp: u32) -> bool {
 ///
 /// The origin is the cell's TOP-left, matching the rasteriser's canvas and the shader's texcoord.
 pub fn block_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
-    // Box drawing (its straight-line core, #365) is a sibling family drawn from strokes, not block
-    // fractions; it owns its own codepoints and returns early.
+    // Box drawing (`2500`-`257F`) is a sibling family drawn from strokes, not block fractions.
     if let Some(g) = box_glyph(cp, w, h) {
         return Some(g);
     }
-    // Symbols for Legacy Computing that are polygons rather than block fractions: the smooth-mosaic
-    // wedges and triangular quarter/three-quarter blocks (`1FB3C`-`1FB6F`), the diagonal hatch fills
-    // (`1FB98`-`1FB99`) and the triangular half blocks (`1FB9A`-`1FB9B`) — all on #364's polygon fill.
-    // Each owns its codepoints and returns early. (#366)
     if let Some(g) = wedge_glyph(cp, w, h) {
         return Some(g);
     }
-    // The eighth-grid solid fills: one-eighth blocks (`1FB70`-`1FB81`, #366) and the checker /
-    // heavy-horizontal pattern fills (`1FB95`-`1FB97`, #367) — coarse SOLID cell-fraction squares, not
-    // a device-pixel dither, so no moiré through the atlas (ADR-0018).
     if let Some(g) = octant_block(cp, w, h) {
         return Some(g);
     }
-    // The rectangular / triangular MEDIUM shades (`1FB8C`-`1FB92`, `1FB94`, `1FB9C`-`1FB9F`): the flat
-    // medium alpha of `▒` (#359 rule) clipped to a region, never xterm's dither. (#367)
     if let Some(g) = shade_glyph(cp, w, h) {
         return Some(g);
     }
@@ -121,24 +87,10 @@ pub fn block_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     let mut buf = vec![0u8; (w * h * 4) as usize];
 
     if let Some(mask) = sextant_mask(cp) {
-        // A 2x3 mosaic. The rows are EQUAL THIRDS, as alacritty divides them
-        // (`builtin_font.rs:505-507`): the first two take `round(h/3)` and the last takes the
-        // remainder, so the six cells tile the glyph exactly for any `h >= 3`. Below that a 2x3
-        // mosaic cannot show three rows at all — the lower bands come out empty, and no pixel is ever
-        // lit twice. Real cells are 16-33 device px.
+        // A 2x3 mosaic in equal-third rows, the last row taking the remainder.
         //
-        // xterm divides them `3/8, 2/8, 3/8` (`CustomGlyphDefinitions.ts:888-889`), which lands the row
-        // boundaries on the eighth-block grid at the cost of a thinner middle row. It is **alone** in
-        // that: alacritty (`:506`), VTE (`minifont.cc:678`), wezterm (`customglyph.rs:5368`) and kitty
-        // (`decorations.c:1591`) all divide into equal thirds. xterm's source states the fractions and
-        // never says why; we do not guess. These are Teletext 2x3 mosaic glyphs, so a uniform mosaic
-        // pixel matters more than agreeing with `▄`.
-        //
-        // `saturating_sub` is a deliberate hardening, not a transcription slip: alacritty computes
-        // `height - 2*y_third` in `f32` with no floor, which is `-1` at `h = 1` and wraps when it
-        // casts to `usize`. Do not "fix" it back.
-        // `.max(1)` is the live clamp; `round(w/2) <= w` and `round(h/3) <= h` for every `w,h >= 1`,
-        // so no upper clamp is needed. `fill` clips the far edge regardless.
+        // Deliberate: `saturating_sub`, not alacritty's unfloored `height - 2*y_third` — see
+        // docs/map/territory/builtin-block-glyphs.md.
         let xc = ((w as f32 / 2.0).round() as u32).max(1);
         let third = ((h as f32 / 3.0).round() as u32).max(1);
         let last = h.saturating_sub(2 * third);
@@ -248,12 +200,10 @@ pub fn block_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
 /// cross, in light and heavy weights, plus the mixed-weight terminals. Ranges `2500`-`2503`,
 /// `250C`-`254B`, `2574`-`257F`. Each is up to four strokes — left, right, up, down — meeting at the
 /// cell centre; a stroke is absent, light, or heavy. Dashes, doubles, diagonals and rounded corners
-/// are the tail (still tracked on #365) and are NOT owned here.
+/// are drawn by their own functions and are not in this table.
 ///
-/// `[left, right, up, down]` weight per codepoint: `0` no arm, `1` light, `2` heavy. Generated
-/// mechanically from alacritty's four stroke-arm match arms (`builtin_font.rs:162-216`) rather than
-/// hand-transcribed — copying ~200 literals invites a plausible-forever typo (#363's lesson) — and
-/// re-checked against the character meaning by the tests. Ordered by codepoint for binary search.
+/// `[left, right, up, down]` weight per codepoint: `0` no arm, `1` light, `2` heavy. Ordered by
+/// codepoint for binary search.
 #[rustfmt::skip]
 const BOX_ARMS: [(u32, [u8; 4]); 80] = [
     (0x2500, [1, 1, 0, 0]), (0x2501, [2, 2, 0, 0]), (0x2502, [0, 0, 1, 1]), (0x2503, [0, 0, 2, 2]),
@@ -278,14 +228,11 @@ const BOX_ARMS: [(u32, [u8; 4]); 80] = [
     (0x257C, [1, 2, 0, 0]), (0x257D, [0, 0, 1, 2]), (0x257E, [2, 1, 0, 0]), (0x257F, [0, 0, 2, 1]),
 ];
 
-/// A white RGBA bitmap of the box-drawing glyph for `cp`, or `None` for a codepoint outside the
-/// straight-line core [`BOX_ARMS`] owns (or a degenerate cell).
+/// A white RGBA bitmap of the box-drawing glyph for `cp` (`2500`-`257F`), or `None` for a codepoint
+/// outside that range (or a degenerate cell).
 ///
-/// The stroke width is alacritty's: `max(round(cell_w / 8), 1)` device px, heavy = twice that
-/// (`builtin_font.rs:53,977`). Each arm is drawn as a rectangle centred on the cell midline, its
-/// thickness snapped to whole pixels — a fractional-midline 1px line would blur under the atlas's
-/// texture filtering. A horizontal arm's length runs to the far edge of the vertical strokes (and
-/// vice-versa), so a corner's two arms meet and a run of `─` is unbroken across the cell seam.
+/// Each arm is drawn as a rectangle centred on the cell midline, its thickness snapped to whole
+/// pixels.
 fn box_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     if (0x2571..=0x2573).contains(&cp) {
         return box_diagonal(cp, w, h);
@@ -317,8 +264,7 @@ fn box_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     let x_center = w as f32 / 2.0;
     let y_center = h as f32 / 2.0;
     // The whole-pixel span of a horizontal stroke of thickness `s` centred on the vertical midline,
-    // and of a vertical stroke centred on the horizontal midline. Snapping to `u32` here is what keeps
-    // a 1px line off a fractional midline, where texture filtering would blur it.
+    // and of a vertical stroke centred on the horizontal midline.
     let h_bounds = |s: u32| -> (u32, u32) {
         let s = s as f32;
         (
@@ -343,11 +289,8 @@ fn box_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     // Each arm runs from the cell edge to the FAR side of the perpendicular strokes, so a corner's
     // two arms overlap at the centre and adjacent cells join (alacritty `builtin_font.rs:226-242`).
     //
-    // The left/up arm length is the far edge of the perpendicular strokes, which collapses to
-    // `floor(centre) = 0` on a 1px cell that has no perpendicular arm — leaving a left/up terminal
-    // (`╴ ╸ ╵ ╹`) invisible where its right/down mirror (`╶ ╷`, sized from `w - x` / `h - y`) shows.
-    // A present arm lights at least one pixel, matching the block glyphs' `.max(1)` and the sibling
-    // invariant that a glyph is never blank on a 1px cell. Only w/h = 1 is affected.
+    // Deliberate: the left/up arm lengths' `.max(1)` keeps a terminal lit on a 1px cell — see
+    // docs/map/territory/builtin-block-glyphs.md.
     if sh_l > 0 {
         fill(
             &mut buf,
@@ -376,17 +319,11 @@ fn box_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
 }
 
 /// The box-drawing diagonals `╱ ╲ ╳` (`2571`-`2573`), drawn as anti-aliased bands over
-/// [`fill_polygon`] — its first consumer. alacritty draws them as Xiaolin Wu *lines* on a canvas
-/// grown into the neighbouring cells for a seamless join (`builtin_font.rs:60-106`); an atlas glyph
-/// cannot spill past its cell, so each band instead OVERSHOOTS its corners by half a stroke and is
-/// clipped back — meeting the diagonally-adjacent cell's band at the shared corner. `╳` is the two
-/// bands max-combined into one buffer, so the crossing is not double-counted.
+/// [`fill_polygon`]. Each band OVERSHOOTS its corners by half a stroke and is clipped back to the
+/// cell; `╳` is the two bands in one buffer.
 ///
-/// The band is a **true perpendicular** stroke of width `stroke` at any cell aspect — a deliberate
-/// divergence from alacritty, whose Wu-line loop offsets the line *vertically*, so its diagonals thin
-/// to `stroke·cosθ` and read lighter than the straight box lines on a tall cell. A constant
-/// perpendicular width keeps a `╱` the same visual weight as a `─` or `│`, which matters more for a
-/// line-drawing family than reproducing that reference artefact.
+/// The band is a **true perpendicular** stroke of width `stroke` at any cell aspect — see
+/// docs/map/territory/builtin-block-glyphs.md for how that diverges from alacritty.
 fn box_diagonal(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     if w == 0 || h == 0 {
         return None;
@@ -425,10 +362,7 @@ fn box_diagonal(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
 }
 
 /// The dashed box lines — double/triple/quadruple dash, horizontal and vertical, light and heavy
-/// (`2504`-`250B`, `254C`-`254F`), or `None` for a codepoint outside that set. A line of `num_gaps+1`
-/// dashes with `span/8`-px gaps, centred on the midline and clipped to the cell — alacritty's
-/// `builtin_font.rs:111-152`. The dash *count* is the character's, read straight off its name
-/// (DOUBLE/TRIPLE/QUADRUPLE dash), and the weight is light or heavy (2x stroke).
+/// (`2504`-`250B`, `254C`-`254F`), or `None` for a codepoint outside that set.
 fn box_dash(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     // (horizontal?, num_gaps, heavy?). num_gaps+1 dashes: 1 gap = double, 2 = triple, 3 = quadruple.
     let (horizontal, num_gaps, heavy) = match cp {
@@ -571,10 +505,8 @@ fn box_rounded(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     if cp == 0x256D || cp == 0x2570 {
         let center = (w / 2) as usize;
         let extra = usize::from(stroke % 2 != w % 2);
-        // `1..=h` (not alacritty's `1..h`): a horizontal flip must reach the LAST row too, or a `╰`/`╭`
-        // on a wide-short cell keeps the base `╯`'s left-pointing ink on its bottom row. alacritty's
-        // cells are always tall enough that the last row is blank, so its off-by-one never shows; a
-        // widened (letterSpacing) cell here can reach it. The Y-mirror below already covers all rows.
+        // Deliberate: `1..=h`, not alacritty's `1..h`, so the flip reaches the last row — see
+        // docs/map/territory/builtin-block-glyphs.md.
         for y in 1..=h as usize {
             let left = (y - 1) * w as usize;
             let right = y * w as usize - 1;
@@ -729,17 +661,9 @@ fn box_double(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
 /// The smooth-mosaic wedges and triangular quarter / three-quarter blocks (`1FB3C`-`1FB6F`) and the
 /// triangular half blocks (`1FB9A`-`1FB9B`), as polygon rings in cell-fraction coordinates — origin
 /// TOP-left, y down, so a plain scale by `(w, h)` lands them in device px (confirmed against xterm's
-/// `CustomGlyphRasterizer.ts` vertex transform). Transcribed from xterm's `CustomGlyphDefinitions.ts`
-/// `PATH` / `VECTOR_SHAPE` entries — xterm is the ONLY reference that draws them; alacritty draws none.
-/// Read as vertex LISTS, not as a coverage spec: the fill rule is #364's, not xterm's Canvas2D. Unlike
-/// the sextant masks (#361) or box arms (#365) there is no bit-rule to derive these from — they are a
-/// genuine lookup table — so the guard is an independent, name-derived oracle test, not a derivation.
+/// `CustomGlyphRasterizer.ts` vertex transform).
 ///
 /// `A` / `B` are the smooth-mosaic thirds (`1/3`, `2/3`) and `M` the centre; corners are `0.0` / `1.0`.
-/// `1FB9A` / `1FB9B` are single-ring bowties (two triangles meeting at the centre) — passed as ONE
-/// ring, which #364's even-odd fill handles; do NOT split, or a fractional-edge seam remains (see
-/// [`fill_polygon`]). The three-quarter blocks `1FB68`-`1FB6B` are concave (a reflex vertex at the
-/// centre); even-odd covers that too.
 const WEDGES: &[(u32, &[(f32, f32)])] = {
     const A: f32 = 1.0 / 3.0; // upper-middle grid line
     const B: f32 = 2.0 / 3.0; // lower-middle grid line
@@ -865,16 +789,13 @@ type EighthRect = (u8, u8, u8, u8);
 type OctantBlock = (u32, &'static [EighthRect]);
 
 /// The eighth-grid SOLID fills: the one-eighth blocks (`1FB70`-`1FB81`) and the pattern fills
-/// (`1FB95`-`1FB97`), as rectangles on the eighth grid. Transcribed from xterm's
-/// `SOLID_OCTANT_BLOCK_VECTOR` entries; alacritty draws none of these.
+/// (`1FB95`-`1FB97`), as rectangles on the eighth grid.
 ///
 /// Vertical blocks-2..7 are the interior columns `▏`/`█` skip; horizontal blocks-2..7 the interior
 /// rows; `1FB7C`-`1FB80` are edge L-pairs and `1FB81` (window title bar) is four horizontal rows at
 /// eighths 0, 2, 4, 7. `1FB95`/`1FB96` (checker board fill / its inverse) are a 4×4 checkerboard of
-/// **quarter-cell** (2×2-eighth) squares — xterm draws them as coarse SOLID squares, NOT the
-/// device-pixel dither the `BLOCK_PATTERN` shades use, so they are eighth-grid rectangles like the
-/// rest and carry no moiré through the atlas (#367 decision, ADR-0018). `1FB97` (heavy horizontal
-/// fill) is two solid quarter-cell bands.
+/// **quarter-cell** (2×2-eighth) solid squares. `1FB97` (heavy horizontal fill) is two solid
+/// quarter-cell bands.
 const OCTANT_BLOCKS: &[OctantBlock] = &[
     (0x1FB70, &[(1, 0, 1, 8)]),
     (0x1FB71, &[(2, 0, 1, 8)]),
@@ -952,11 +873,9 @@ fn wedge_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-/// A white RGBA bitmap for a one-eighth block (`1FB70`-`1FB81`), or `None` outside that range. Each
-/// rectangle's edges are placed on the eighth grid from the two BOUNDARIES (`edge * w / 8`), not from a
-/// width, so adjacent eighths tile with no cumulative rounding gap — the reason the sextant rows are
-/// sized from boundaries too. On a cell narrower than 8 px an interior eighth can round to zero width
-/// and vanish; real cells are 16-33 px.
+/// A white RGBA bitmap for a one-eighth block (`1FB70`-`1FB81`) or a pattern fill (`1FB95`-`1FB97`),
+/// or `None` outside those. Each rectangle's edges are placed on the eighth grid from its two
+/// BOUNDARIES (`edge * w / 8`), not from a width.
 fn octant_block(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     let rects = OCTANT_BLOCKS
         .binary_search_by_key(&cp, |&(c, _)| c)
@@ -977,14 +896,8 @@ fn octant_block(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
 }
 
 /// A white RGBA bitmap for a rectangular or triangular MEDIUM-SHADE glyph (`1FB8C`-`1FB92`, `1FB94`,
-/// `1FB9C`-`1FB9F`), or `None` outside those. xterm draws every one of these as the `▒` MEDIUM SHADE
-/// `BLOCK_PATTERN` — a 2×2 device-pixel dither — clipped to a region. Per the #359 rule we render `▒`
-/// as **flat alpha** (`SHADE_MEDIUM`), not a dither (a device-pixel dither moirés through the atlas),
-/// so these are the flat medium shade restricted to that region: the halves and `1FB90` via [`fill`],
-/// the block+shade combos (`1FB91`/`1FB92`/`1FB94`) as a SOLID half plus a medium half, and the
-/// triangular shades (`1FB9C`-`1FB9F`) as the flat medium clipped to a corner triangle by #364's
-/// [`fill_polygon`]. `1FB90` INVERSE MEDIUM is the `▒` dither phase-flipped — still 50% coverage — so a
-/// flat medium over the whole cell, visually identical to `▒`. (#367 decision, ADR-0018.)
+/// `1FB9C`-`1FB9F`), or `None` outside those: the flat medium alpha of `▒` (`SHADE_MEDIUM`) over each
+/// glyph's region (ADR-0018).
 fn shade_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     if !matches!(cp, 0x1FB8C..=0x1FB92 | 0x1FB94 | 0x1FB9C..=0x1FB9F) || w == 0 || h == 0 {
         return None;
@@ -1032,21 +945,15 @@ fn shade_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
 }
 
 /// The diagonal hatch fills `1FB98` (upper-left to lower-right) and `1FB99` (upper-right to lower-left)
-/// — a cell filled with parallel diagonal lines — or `None` outside that pair. xterm draws them as
-/// `strokeWidth: 1` `PATH_FUNCTION`s (nine parallel segments overshooting the cell); a width-1 stroke
-/// is a thin parallelogram, so each line is a perpendicular band over #364's [`fill_polygon`] rather
-/// than a new stroke primitive — the choice recorded on #366 (a Wu stroke would only sharpen endpoint
-/// AA, invisible at cell scale). Lines step a quarter cell in intercept (xterm's hatch density) and
-/// [`fill_polygon`] clips each band. `1FB99` is `1FB98` mirrored in x, and this generates it as exactly
-/// that.
+/// — a cell filled with parallel diagonal lines — or `None` outside that pair. Each line is a
+/// perpendicular band over [`fill_polygon`].
 fn diagonal_hatch(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     if !(0x1FB98..=0x1FB99).contains(&cp) || w == 0 || h == 0 {
         return None;
     }
     let (wf, hf) = (w as f32, h as f32);
-    // A one-device-pixel hairline (xterm's `strokeWidth: 1`), NOT the box-line stroke the solid
-    // diagonals `╱ ╲` use: this is a fill TEXTURE, and a heavier line at the quarter-cell spacing below
-    // would merge into a solid block instead of a hatch.
+    // Deliberate: a one-device-pixel hairline, not the box-line stroke — see
+    // docs/map/territory/builtin-block-glyphs.md.
     let half = 0.5;
     let mut buf = vec![0u8; (w * h * 4) as usize];
     let mut band = |ax: f32, ay: f32, bx: f32, by: f32| {
@@ -1079,38 +986,18 @@ fn diagonal_hatch(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-/// Vertical sub-scanlines per output row for the polygon fill's coverage anti-aliasing. Horizontal
-/// coverage is computed analytically (exact span overlap per sub-row), so only the vertical axis is
-/// sampled; four sub-rows suffice at cell scale (16-33 device px) and the glyph rasterises once into
-/// the atlas, so the cost never reaches a hot path.
+/// Vertical sub-scanlines per output row for the polygon fill's coverage anti-aliasing.
 const POLY_SS: u32 = 4;
 
 /// Fill a simple polygon — a single closed ring of cell-local vertices, in device px with the cell's
 /// TOP-left as origin — with coverage-based anti-aliasing, clipped to the cell, `alpha` in the
 /// interior and scaled by coverage at the edges.
 ///
-/// Neither reference hands us this as a primitive: alacritty anti-aliases its *diagonals* with
-/// Xiaolin Wu's *line* algorithm (`builtin_font.rs:818`) and fills only rectangles, and xterm.js
-/// fills polygons through Canvas2D `ctx.fill()` (`CustomGlyphRasterizer.ts:287`), which delegates the
-/// coverage rule to the browser. So the area-coverage rule is ours: a scanline fill, exact in x and
-/// supersampled in y (`POLY_SS` sub-rows). Vertices are `f32` so a slope need not land on a pixel
-/// boundary.
+/// A scanline fill, exact in x and supersampled in y (`POLY_SS` sub-rows). The interior/exterior test
+/// is **even-odd**, and coverage is **max-combined** into the alpha channel.
 ///
-/// The interior/exterior test is **even-odd**. It is correct for every shape this backs not because
-/// those shapes avoid self-intersection — xterm draws `1FB9A`/`1FB9B` as single-ring *bowties* that
-/// touch at the cell centre — but because none has two *overlapping loops of equal winding* (a
-/// pentagram), the one topology where even-odd and non-zero diverge. Pass a seamless shape as ONE
-/// ring (concave or self-touching is fine, as the `1FB9A` bowties are); do not split it across calls.
-///
-/// Coverage is **max-combined** into the alpha channel, matching alacritty's brighter-wins
-/// `put_pixel` (`builtin_font.rs:807`). Max bounds overlap to 255 and is right for genuinely
-/// overlapping parts (two crossing strokes), but it does **not** merge two polygons that *abut* at a
-/// fractional edge in one buffer — each paints ~half of the boundary pixel and `max` keeps only one
-/// half, so a seam remains. Complementary halves reassemble only across *separate* cells, where their
-/// coverage sums optically over the cell boundary (the tiling #365/#366 rely on — proven by
-/// `complementary_triangles_partition_the_cell_with_no_gap_or_overlap`). [`fill`], the rectangle fast
-/// path, *overwrites* rather than max-combining, so mixing the two in one buffer is draw-order
-/// dependent; keep them to disjoint regions.
+/// Deliberate: a seamless shape is passed as ONE ring, and [`fill`] is kept to regions disjoint from
+/// it — see docs/map/territory/builtin-block-glyphs.md.
 ///
 /// A degenerate ring (fewer than three vertices, zero area, or entirely outside the cell) lights
 /// nothing rather than panicking.
@@ -1127,13 +1014,11 @@ fn fill_polygon(buf: &mut [u8], size: (u32, u32), verts: &[(f32, f32)], alpha: u
     for py in 0..h {
         cov.iter_mut().for_each(|c| *c = 0.0);
         for s in 0..POLY_SS {
-            // The sub-scanline's y, at the sub-row centre — a midpoint rule, which integrates a
-            // linear span length exactly, so a triangle's coverage is unbiased.
+            // The sub-scanline's y, at the sub-row centre.
             let yline = py as f32 + (s as f32 + 0.5) / ss;
 
-            // x where each edge crosses this scanline. The half-open `<=` test counts an edge iff the
-            // scanline separates its endpoints, so a vertex shared by two edges is crossed once, never
-            // twice; a horizontal edge (both endpoints on the same side) is skipped.
+            // x where each edge crosses this scanline. Deliberate: the half-open `<=` test, so a
+            // shared vertex is crossed once — see docs/map/territory/builtin-block-glyphs.md.
             let mut xs: Vec<f32> = Vec::with_capacity(verts.len());
             for (i, &(x0, y0)) in verts.iter().enumerate() {
                 let (x1, y1) = verts[(i + 1) % verts.len()];
@@ -1185,8 +1070,7 @@ fn fill_polygon(buf: &mut [u8], size: (u32, u32), verts: &[(f32, f32)], alpha: u
     }
 }
 
-/// Paint an axis-aligned rectangle of coverage, clipped to the bitmap (alacritty's `draw_rect`
-/// clamps the far edge the same way, so a rounded-up extent never wraps onto the next row).
+/// Paint an axis-aligned rectangle of coverage, clipped to the bitmap.
 fn fill(buf: &mut [u8], size: (u32, u32), rect: (u32, u32, u32, u32), alpha: u8) {
     let ((w, h), (x, y, rw, rh)) = (size, rect);
     let x_end = (x + rw).min(w);
@@ -1210,7 +1094,7 @@ mod tests {
     /// whole plane the drawer could possibly reach — a codepoint added to any sub-family without
     /// widening `owns` fails here, which is the failure mode a hand-copied range list cannot detect.
     ///
-    /// Ownership is size-independent, so a small cell is enough; this runs in well under a second.
+    /// Ownership is size-independent, so a small cell is enough.
     #[test]
     fn owns_is_exactly_what_block_glyph_draws() {
         for cp in 0..0x20000u32 {
@@ -1223,8 +1107,7 @@ mod tests {
     }
     use super::*;
 
-    /// Render into a picture: `#` = full coverage, `+` = partial, `.` = none. Read by eye against
-    /// what the CHARACTER means, never recomputed the way `block_glyph` computes it.
+    /// Render into a picture: `#` = full coverage, `+` = partial, `.` = none.
     fn picture(cp: u32, w: u32, h: u32) -> Vec<String> {
         let buf = block_glyph(cp, w, h).expect("owned codepoint");
         (0..h)
@@ -1243,7 +1126,7 @@ mod tests {
     #[test]
     fn the_sextant_mask_is_derived_not_transcribed() {
         // 60 codepoints, 64 combinations, four omitted: `000000` (space), `111111` (`█`), and the two
-        // that would duplicate `▌` / `▐`. Cross-checked against every one of alacritty's 180 literals.
+        // that would duplicate `▌` / `▐`.
         assert_eq!(sextant_mask(0x1FB00), Some(0b000001)); // BLOCK SEXTANT-1  (top-left)
         assert_eq!(sextant_mask(0x1FB01), Some(0b000010)); // BLOCK SEXTANT-2  (top-right)
         assert_eq!(sextant_mask(0x1FB02), Some(0b000011)); // BLOCK SEXTANT-12 (upper third)
@@ -1281,13 +1164,13 @@ mod tests {
         assert!(block_glyph(0x2580, 8, 8).is_some());
         assert!(block_glyph(0x259F, 8, 8).is_some());
         assert!(block_glyph(0x25A0, 8, 8).is_none());
-        // Box-drawing straight-line core is now owned (#365) — the terminals at the top of the range.
+        // Box drawing: the two ends of its range.
         assert!(block_glyph(0x2500, 8, 8).is_some(), "─ light horizontal");
         assert!(
             block_glyph(0x257F, 8, 8).is_some(),
             "╿ mixed-weight terminal"
         );
-        // Diagonals, dashes and doubles are now owned (#365 tail).
+        // Diagonals, dashes and doubles.
         assert!(block_glyph(0x2571, 8, 8).is_some(), "╱ diagonal");
         assert!(block_glyph(0x2573, 8, 8).is_some(), "╳ cross diagonal");
         assert!(block_glyph(0x2504, 8, 8).is_some(), "┄ triple dash");
@@ -1297,7 +1180,7 @@ mod tests {
         );
         assert!(block_glyph(0x2550, 8, 8).is_some(), "═ double horizontal");
         assert!(block_glyph(0x256C, 8, 8).is_some(), "╬ double cross");
-        // Rounded corners complete the box range: all of 2500-257F is now owned.
+        // Rounded corners, and then all of 2500-257F.
         assert!(block_glyph(0x256D, 8, 8).is_some(), "╭ rounded corner");
         assert!(block_glyph(0x2570, 8, 8).is_some(), "╰ rounded corner");
         assert!(
@@ -1315,8 +1198,7 @@ mod tests {
 
     #[test]
     fn the_full_block_fills_every_pixel_of_the_cell() {
-        // This is the whole point of #359: `█` defines the cell, so it must cover it. At
-        // `lineHeight = 1.5` the font's `█` covers only its ink box and leaves a seam.
+        // `█` covers every pixel of the cell (#359).
         assert_eq!(picture(0x2588, 4, 6), ["####"; 6]);
         // ...at any cell the spacing policy produces, including a very tall one.
         assert_eq!(picture(0x2588, 2, 3), ["##", "##", "##"]);
@@ -1403,8 +1285,7 @@ mod tests {
         // single-cell sextants (masks 1, 2, 4, 8, 16, 32) must cover every pixel exactly once. Sizes
         // where `h/3` and `w/2` both round, and where they do not.
         // Masks 1, 2, 4, 8, 16, 32 sit at indices 0, 1, 3, 7, 15, 30 of the filtered enumeration —
-        // 30, not 31, because mask 21 (`▌`) is skipped before it. The `count_ones` guard below is
-        // what caught me writing `1FB06` (mask 7, three cells) for mask 8.
+        // 30, not 31, because mask 21 (`▌`) is skipped before it.
         const SINGLE: [u32; 6] = [0x1FB00, 0x1FB01, 0x1FB03, 0x1FB07, 0x1FB0F, 0x1FB1E];
         for cp in SINGLE {
             assert_eq!(
@@ -1452,8 +1333,7 @@ mod tests {
         }
     }
 
-    /// The alpha at the pixel containing cell-fraction `(fx, fy)`. Sampling a polygon glyph at a point
-    /// the CHARACTER NAME implies is an oracle independent of how `fill_polygon` computes it.
+    /// The alpha at the pixel containing cell-fraction `(fx, fy)`.
     fn sample_frac(cp: u32, w: u32, h: u32, fx: f32, fy: f32) -> u8 {
         let buf = block_glyph(cp, w, h).expect("owned codepoint");
         let x = ((fx * w as f32) as u32).min(w - 1);
@@ -1588,7 +1468,7 @@ mod tests {
         // the whole family: it catches a wrong-corner or mirrored transcription in ANY of the 44
         // entries — the liveness sweep alone would pass such a bug. (An A/B grid-line swap that keeps
         // the same corner is pinned by `smooth_mosaic_wedges_pin_the_third_grid_line_their_name_gives`
-        // below and, exhaustively across all 44, by the review-time ring diff against xterm's source.)
+        // below.)
         let (w, h) = (20, 20);
         let (ll, lr, ul, ur) = ((0.1, 0.9), (0.9, 0.9), (0.1, 0.1), (0.9, 0.1));
         for cp in 0x1FB3Cu32..=0x1FB67 {
@@ -1614,7 +1494,7 @@ mod tests {
     #[test]
     fn smooth_mosaic_wedges_pin_the_third_grid_line_their_name_gives() {
         // The corner oracle above cannot tell a `1/3` (UPPER MIDDLE) from a `2/3` (LOWER MIDDLE) grid
-        // line — the A/B swap the sibling review flagged — because both keep the same corner. Sampling
+        // line, because both keep the same corner. Sampling
         // the left edge at mid-height distinguishes them: a wedge whose diagonal starts at LOWER MIDDLE
         // LEFT (`2/3`) leaves the edge clear at `y = 0.5`, one starting at UPPER MIDDLE LEFT (`1/3`)
         // inks it. One contrasting pair per side is enough to guard the axis at the family level.
@@ -1663,8 +1543,8 @@ mod tests {
             .chain(0x1FB70..=0x1FB81)
             .chain(0x1FB98..=0x1FB9B);
         for cp in cps {
-            // Realistic cell sizes: at a sub-8px cell a hatch legitimately becomes near-solid (it can
-            // no longer resolve its lines), so the partial-fill upper bound is only meaningful here.
+            // Realistic cell sizes only: below 8 px a hatch goes near-solid (see
+            // docs/map/territory/builtin-block-glyphs.md).
             for (w, h) in [(16u32, 16u32), (33, 17)] {
                 let buf = block_glyph(cp, w, h)
                     .unwrap_or_else(|| panic!("{cp:x} at {w}x{h} must be owned"));
@@ -1684,7 +1564,7 @@ mod tests {
 
     #[test]
     fn the_whole_legacy_block_is_owned_except_the_reserved_hole() {
-        // With #367 the Symbols-for-Legacy-Computing range this module draws, `1FB00`-`1FB9F`, is
+        // The Symbols-for-Legacy-Computing range this module draws, `1FB00`-`1FB9F`, is
         // complete: sextants, wedges, one-eighth blocks, extra eighths, shades, pattern fills, hatches,
         // triangular halves and triangular shades. The ONLY gap is `1FB93`, which Unicode reserves.
         for cp in 0x1FB00..=0x1FB9F {
@@ -1799,8 +1679,7 @@ mod tests {
     #[test]
     fn the_checker_board_fill_is_a_coarse_solid_checker_not_a_dither() {
         // `1FB95`/`1FB96`: a 4×4 checkerboard of SOLID quarter-cell squares (`#`, not partial). On an
-        // 8×8 bitmap each square is 2×2 px. This is the #367 decision — coarse cell-fraction squares,
-        // not a device-pixel dither — so the squares are 255, never a shade alpha.
+        // 8×8 bitmap each square is 2×2 px, and 255, never a shade alpha (ADR-0018, #367).
         assert_eq!(
             picture(0x1FB95, 8, 8),
             [
@@ -1846,9 +1725,7 @@ mod tests {
 
     #[test]
     fn the_shades_are_a_flat_coverage_not_a_dither() {
-        // alacritty fills the cell with a constant alpha (`COLOR_FILL_ALPHA_STEP_*`); the terminal's
-        // foreground colour then shows through at that strength. A dither would moire against the
-        // pixel grid at fractional DPRs.
+        // A constant alpha over the cell, not a dither (ADR-0018).
         let alpha = |cp: u32| block_glyph(cp, 3, 3).unwrap()[3];
         assert_eq!(alpha(0x2591), 64); // ░
         assert_eq!(alpha(0x2592), 128); // ▒
@@ -1904,7 +1781,7 @@ mod tests {
 
     #[test]
     fn a_right_triangle_covers_half_the_cell_within_tolerance() {
-        // #364's named acceptance: coverage read from GEOMETRY, not from how the code computes it. The
+        // Coverage read from GEOMETRY, not from how the code computes it. The
         // upper-left right triangle has area w*h/2, so its total alpha is w*h/2*255 up to the
         // per-pixel rounding of the diagonal boundary (well under 1% of a full cell).
         let (w, h) = (16u32, 16u32);
@@ -1920,8 +1797,7 @@ mod tests {
 
     #[test]
     fn the_diagonal_edge_carries_partial_coverage_rather_than_a_hard_step() {
-        // The whole reason for the primitive over a rect table: a diagonal at cell scale must be
-        // anti-aliased. At least one pixel on the hypotenuse is partially covered (0 < a < 255).
+        // At least one pixel on the hypotenuse is partially covered (0 < a < 255).
         let g = poly(16, 16, &[(0., 0.), (16., 0.), (0., 16.)], 255);
         assert!(
             g.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255),
@@ -2074,7 +1950,7 @@ mod tests {
 
     #[test]
     fn the_fill_matches_an_independent_area_oracle() {
-        // Real round-trip for a consumer-less pure primitive: the actual `fill_polygon` output is
+        // The actual `fill_polygon` output is
         // cross-checked against a point-sampling oracle over several shapes — a rotated triangle, the
         // concave slot, a convex pentagon, and one straddling the edge (so clipping is exercised too).
         type PolyCase = (u32, u32, Vec<(f32, f32)>);
@@ -2242,7 +2118,7 @@ mod tests {
         assert_eq!(total_alpha(&none), 0, "an empty ring has no area");
     }
 
-    // --- box drawing straight-line core (#365) ---
+    // --- box drawing ---
 
     fn box_g(cp: u32, w: u32, h: u32) -> Vec<u8> {
         block_glyph(cp, w, h).expect("owned box codepoint")
@@ -2498,15 +2374,11 @@ mod tests {
             assert!(alpha_at(&g, w, x, y) > 0, "corner ({x},{y}) lit");
         }
         assert!(alpha_at(&g, w, w / 2, h / 2) > 0, "the crossing is lit");
-        // The two bands are max-combined into one buffer (fill_polygon's rule, proven not to
-        // double-count by `overlapping_polygons_are_max_combined_not_summed`); here the crossing is
-        // simply lit, drawn by both.
     }
 
     #[test]
     fn a_diagonal_is_anti_aliased() {
-        // The whole reason it rides fill_polygon rather than a stair-stepped rect run: its edges carry
-        // partial coverage.
+        // Its edges carry partial coverage.
         let g = box_g(0x2571, 16, 16);
         assert!(
             g.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255),
