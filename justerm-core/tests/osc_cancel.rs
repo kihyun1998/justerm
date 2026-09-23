@@ -70,6 +70,17 @@ fn a_cancel_after_a_complete_osc_cancels_nothing() {
     }
 }
 
+/// Every cancel byte in one feed is handled, not only the first: a stray cancel
+/// and then an OSC the second cancel ends.
+#[test]
+fn a_second_cancel_in_the_same_feed_still_cancels() {
+    for (label, cancel) in CANCELS {
+        let mut e = Engine::new(80, 24);
+        e.feed(&[vec![cancel], osc(b"2;x", &[cancel])].concat());
+        assert_eq!(e.drain_events(), vec![], "{label}");
+    }
+}
+
 /// A cancel byte outside any OSC cancels nothing, and an OSC after it in the same
 /// feed applies.
 #[test]
