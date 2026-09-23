@@ -504,7 +504,6 @@ impl Engine {
     /// text plus a per-char map to its viewport `(row, col)`. The buffer-wide
     /// mechanism for consumer-side URL detection — the consumer runs its own
     /// regex / `new URL()` over the text and maps matches back through `cells`.
-    /// Also serves the a11y mirror.
     pub fn viewport_logical_lines(&self) -> Vec<LogicalLine> {
         self.term.viewport_logical_lines()
     }

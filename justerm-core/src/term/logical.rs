@@ -6,18 +6,10 @@
 //! assembly, which needs the whole buffer and so cannot live in a frame-mode consumer
 //! ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
 //!
-//! Two things are local to this site. It is the **first of the three alt-screen floor
-//! misses** (#113): the up-walk into scrollback stops at `abs_floor()`, because on the alt
-//! screen that scrollback belongs to the *primary* buffer — see
-//! `docs/map/invariant/alt-screen-buffer-floor.md`, where this is site one of the discovery
-//! history. And the walk deliberately reaches **past the viewport in both directions**, so a
-//! line wrapping in from above the top or out past the bottom still joins whole; the
-//! off-screen rows surface as an out-of-range `row` in `LogicalLine::cells` for the consumer
-//! to clip.
-//!
-//! Nothing here is `pub(super)`. The one entry point is public API, and every helper it
-//! walks with was already in `walk.rs` before this module existed — which is what made this
-//! the cheapest of #584's five slices rather than a measure of its importance.
+//! The up-walk into scrollback stops at `abs_floor()` (on the alt screen that scrollback is
+//! the primary buffer's — `docs/map/invariant/alt-screen-buffer-floor.md`), and the walk
+//! deliberately reaches **past the viewport in both directions**, so an edge-spanning line
+//! joins whole; the off-screen rows surface as an out-of-range `row` in `LogicalLine::cells`.
 
 use crate::logical::LogicalLine;
 
@@ -29,21 +21,9 @@ impl Term {
     /// and trailing blanks trimmed (so the text is 1:1 with `cells`). Empty rows
     /// are dropped. The cell-aware assembly the consumer can't do in frame mode.
     ///
-    /// **The run walk is unbounded on purpose** ([`docs/architecture.md`](https://github.com/kihyun1998/justerm/blob/master/docs/architecture.md)), and this is the
-    /// one of the three walks where that costs anything: normally `O(viewport)`, but on a
-    /// buffer whose whole scrollback is one soft-wrapped run it is `O(scrollback)` —
-    /// measured at 7.3 ms against 17 µs for the same bytes as short lines. If a bound is
-    /// ever wanted, two things are already decided and neither is obvious from here:
-    ///
-    /// - **It is a sibling, not a parameter.** Adding `max_run: Option<usize>` to this
-    ///   signature is a breaking change; the crate's idiom for exactly this is
-    ///   [`Term::search`] / [`Term::search_with`], and [#844](https://github.com/kihyun1998/justerm/issues/844) pinned the growth rule on the
-    ///   options struct (*"a new option lands through `..Default::default()`"*). So a
-    ///   `viewport_logical_lines_with` is additive — meaning 1.0.0 does not gate it.
-    /// - **The hard part is the trim, not the counter** — see the trim below.
-    ///
-    /// The reach was measured at zero: nothing outside this crate's tests
-    /// and benches calls this today. `benches/wrap_run.rs` re-measures on demand.
+    /// **The run walk is unbounded on purpose** ([`docs/architecture.md`](https://github.com/kihyun1998/justerm/blob/master/docs/architecture.md)): normally
+    /// `O(viewport)`, but `O(scrollback)` on a buffer whose whole scrollback is one
+    /// soft-wrapped run (7.3 ms against 17 µs for the same bytes as short lines).
     pub fn viewport_logical_lines(&self) -> Vec<LogicalLine> {
         let rows = self.grid.rows();
         let total = self.scrollback.len() + rows;
@@ -94,14 +74,8 @@ impl Term {
                 }
             }
             // Trim trailing blanks (only the last row can have them), keeping
-            // `text` and `cells` in lockstep.
-            //
-            // "Only the last row can have them" is a premise about where the loop above
-            // stopped, and it is what a run-length bound (#206) would break: a window that
-            // cuts mid-run ends the text at a row that is *not* the logical end, where the
-            // padding this trims is not padding. The rule it would then be applying to
-            // written content is `only-U+0020-can-be-padding` (#685), so a bound has to
-            // re-answer that at the cut point rather than reuse this line.
+            // `text` and `cells` in lockstep. That premise is what a run-length bound (#206)
+            // would break — `docs/map/territory/logical-lines.md`.
             let trimmed = text.trim_end_matches(' ');
             map.truncate(trimmed.chars().count());
             text.truncate(trimmed.len());

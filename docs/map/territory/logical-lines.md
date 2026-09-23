@@ -94,8 +94,9 @@ recorded SHA; a paraphrase drops the pin).
   spacers, so both rules land here directly
 - [selection](selection.md) — `selection_text` performs the same join for copy, by a different path.
   Two implementations of "join a wrapped line" exist; a change to the joining rule must reach both
-- [accessibility](accessibility.md) — the screen-reader mirror consumes this shape; a change to trimming or
-  off-screen context changes what is announced
+- [link detection](hyperlinks.md) — the one consumer: plain-text URL detection over `LinkPort` (#934).
+  (The screen-reader mirror does **not** consume this shape — it reads rows from its own
+  `CellMirror`; `Engine::viewport_logical_lines`'s published doc said otherwise until 2026-09-23.)
 
 ## Known holes / open
 
@@ -116,11 +117,17 @@ recorded SHA; a paraphrase drops the pin).
   `term/search.rs`, and the `word_start`/`word_end` pair. And search is not a cap site at all: it
   measures ~1.0× between a one-run and a many-lines buffer of the same size, because it scans
   everything either way. **Closed as #206** (2026-09-11) with the reach measured at zero — nothing
-  outside this crate's tests and benches calls any of the three. What a bound would cost now lives at
-  the three sites themselves rather than in the ticket: the sibling-not-a-parameter API shape and the
-  `O(scrollback)` figure on `viewport_logical_lines`, the trim premise a mid-run cut breaks at that
-  function's trim, the ~1.0× measurement on `search`, and the field-not-an-argument note on
-  `set_word_separators`. `benches/wrap_run.rs` re-measures on demand. **The zero is dated:** #934's
+  outside this crate's tests and benches calls any of the three. `benches/wrap_run.rs` re-measures on
+  demand: `viewport_logical_lines` is normally `O(viewport)` and `O(scrollback)` on a buffer whose
+  whole scrollback is one run — 7.3 ms against 17 µs for the same bytes as short lines. If a bound is
+  ever wanted here, two things are already decided: it is a **sibling, not a parameter** — adding
+  `max_run: Option<usize>` is a breaking change, and the crate's idiom is `Term::search` /
+  `Term::search_with` with #844's growth rule on the options struct, so a
+  `viewport_logical_lines_with` is additive and 1.0.0 does not gate it; and **the hard part is the
+  trim, not the counter** — the trim assumes only the run's last row can carry padding, which a
+  mid-run cut breaks, so a bound must re-answer `only-U+0020-can-be-padding` at the cut. (The other
+  two sites keep their notes where they are: the ~1.0× measurement on `search`, the
+  field-not-an-argument note on `set_word_separators`.) **The zero is dated:** #934's
   `LinkPort` tells a backend to answer from `viewport_logical_lines`, one call per question the
   pointer's motion asks, so a consumer that wires links makes the unbounded walk reachable again —
   bounded in count by motion, not in cost.

@@ -741,8 +741,9 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
 - **The soft-wrap run walk is intentionally unbounded (scrollback-bounded), not capped.** `search`,
   `viewport_logical_lines`, and word-selection assemble a `WRAPLINE` run into one logical line with **no
   per-run length cap** — bounded only physically by the scrollback cap (`O(scrollback)` per call, never
-  infinite). This is a deliberate completeness/a11y choice: an edge-spanning URL wrapped across many rows
-  still matches (link detection), and the a11y view reads the whole logical line (#119). This *matches*
+  infinite). This is a deliberate completeness choice: an edge-spanning URL wrapped across many rows
+  still matches (link detection). (None of the three walks feeds the screen-reader mirror (#119), which
+  reads rows from its own `CellMirror`; the accessible view's `accessible_text` is a separate path.) This *matches*
   xterm's structure (verified against real source): its **search** wrap-assembly
   (`SearchLineCache.ts::translateBufferLineToStringWithWrap`, a `while (isWrapped)` walk) is **uncapped**
   too — its only cap is a 1000-*result* count (`SearchAddon.ts`), and search does a *literal* match (no
