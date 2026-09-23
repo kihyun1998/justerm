@@ -9,42 +9,10 @@
 //! GB9 Extend/ZWJ, GB9a SpacingMark, GB9b Prepend, GB11 emoji-ZWJ, GB12/GB13 regional-indicator
 //! pairing) rather than hand-rolled — the rules need large Unicode property tables that would rot.
 //!
-//! ## No break state is persisted, and the cluster is not rebuilt either (#867)
-//!
-//! Persisting a break state across `print` calls would have to be repaired at every cursor-moving
-//! verb. xterm.js does persist one — a packed integer on the parser, cleared at every C0 execute
-//! and every CSI/ESC/OSC dispatch (`src/common/parser/EscapeSequenceParser.ts:676` @ `699f553`) —
-//! and that granularity is **not** behaviour-preserving here: `grapheme_cluster.rs`'s
-//! `mode_2027_promotion_repairs_an_orphaned_wide_half_at_col_plus_one` feeds CUP and then requires
-//! the next scalar to join the cluster the cursor landed on. So the state stays in the cell.
-//!
-//! What #867 removed is the *reconstruction*. [`joins_cluster`] asks `unicode-segmentation` about a
-//! bounded **tail** of the stored cluster and widens that tail only when the rules themselves ask
-//! for more context (`GraphemeIncomplete::PreContext`), so a cluster that keeps growing no longer
-//! costs O(L) per scalar. ghostty pays that O(L) — `src/terminal/Terminal.zig:1150-1168` @
-//! `e6e26e1` builds a fresh `BreakState` per print and re-walks every stored codepoint — with a
-//! per-step cost small enough to hide it. Ours was two full segmentation passes plus two
-//! allocations per scalar, and 90 KB of open ZWJ output cost 26 s inside one `feed()`.
-//!
-//! ## A variation selector on a non-emoji base is KEPT (#317 §1, decided 2026-08-18)
-//!
-//! `x` + VS16 is not an emoji sequence — the selector changes nothing about how `x` is drawn or how
-//! wide it is. justerm still joins it into the side-table, because UAX #29 puts it there: VS16/VS15
-//! are `Extend`, so the segmenter says yes and the scalar rides along. The only place it is
-//! observable is **text extraction** — a copy of that cell yields the extra scalar.
-//!
-//! ghostty drops it: *"the terminal does not store those selectors in the cell, so callers must also
-//! restore their grapheme break state and leave prev unchanged"* (`src/unicode/grapheme.zig:56` @
-//! `e6e26e16`). Recorded here because the divergence is **narrower than it looks, and #317's body
-//! described it wrongly** as a disagreement about UAX #29. It is not one: ghostty's own
-//! `graphemeWidth('x', 0xFE0F)` returns `len = 2` (`:315`), so both implementations agree the
-//! selector is *in the cluster*. They differ one layer down, on whether the cell **stores** what the
-//! cluster contains — and ghostty's own comment states the cost of its answer, which is that every
-//! caller now has to repair a break state the storage layer discarded.
-//!
-//! justerm keeps it, on the tie-breaker for this layer: VT semantics answer to **the spec**, above
-//! any implementation including ours (ADR-0004). Widths are identical either way, so nothing on
-//! screen distinguishes them; what a cell hands back is the cluster the spec says it is.
+//! No break state is persisted between prints — a cursor move would have to repair it — and the
+//! cluster is not rebuilt either: [`joins_cluster`] asks about a bounded **tail** (#867). A
+//! variation selector on a non-emoji base is **kept** in the cluster (#317 §1). Why each:
+//! `docs/map/territory/grapheme-clusters.md`.
 
 use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 

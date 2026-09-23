@@ -3,9 +3,9 @@
 
 /// Unpack a `0xRRGGBB` colour into WebGL's normalised `[r, g, b]` floats (`0.0..=1.0`).
 ///
-/// The renderer clears the canvas to the injected default background with this. Full
-/// palette resolution (`Default`/`Indexed`/`Rgb` references → RGB) lands in #261 — this
-/// is only the final byte-unpack once a colour is already a concrete `0xRRGGBB`.
+/// The renderer clears the canvas to the injected default background with this. It is only
+/// the final byte-unpack once a colour is a concrete `0xRRGGBB`; resolving a colour reference
+/// is `palette`'s.
 pub fn gl_rgb(packed: u32) -> [f32; 3] {
     let r = ((packed >> 16) & 0xFF) as f32 / 255.0;
     let g = ((packed >> 8) & 0xFF) as f32 / 255.0;

@@ -191,6 +191,13 @@ sites, the outlier, or demoted — so a difference from it is not by itself a de
 
 ## Known holes / open
 
+- **`preedit::caret_col`'s right-edge step-back has lost its stated reason.** At the edge it puts the
+  caret on the last glyph's *lead* rather than its spacer, because "a block caret spans one column on
+  a spacer and inverts the right half of the glyph being composed" — measured then on a 106-column
+  grid, where asking for column 104 or 105 returned the spacer, 105. Since `cursor_span` applies the
+  pair rule (#454, [caret drawing](caret-drawing.md)), a caret on either half covers the whole glyph,
+  so the step-back is now redundant rather than necessary. The behaviour is unchanged and harmless;
+  whether to keep it is undecided.
 - **The policy setters have no records.** `set_bg_alpha`, `set_minimum_contrast_ratio`,
   `set_bold_to_bright`, `set_selection_foreground` each change what a cell resolves to, and ADR-0019
   governs the *model* rather than the individual knobs.

@@ -30,8 +30,12 @@ the decision has to be made per scalar, with no lookahead, against a cluster tha
 - **The break decision is delegated to `unicode-segmentation`**, the full UAX #29 rule set, rather
   than reimplemented. What is bespoke is the *incremental* framing around it.
 - **Nothing on the join path may be O(the cluster's length)** (#867). The engine holds no break
-  state between prints — a cursor move would corrupt it — so the question is asked against the cell
-  every time, and asking it against the *whole* cluster made a growing cluster quadratic: 90 KB of
+  state between prints — a cursor move would corrupt it. xterm.js does persist one and zeroes it at
+  every C0 execute and every dispatch, a granularity that is not behaviour-preserving here:
+  `mode_2027_promotion_repairs_an_orphaned_wide_half_at_col_plus_one` feeds CUP and requires the
+  next scalar to join the cluster the cursor landed on. So the question is asked against the cell
+  every time (ghostty pays O(L) per print for the same choice, rebuilding a `BreakState` over every
+  stored codepoint — `src/terminal/Terminal.zig:1150-1168` @ `e6e26e1`), and asking it against the *whole* cluster made a growing cluster quadratic: 90 KB of
   open ZWJ output cost 26 s inside one `feed()`, on the consumer's thread. Two rules keep it
   constant, and both are easy to undo by accident. The segmenter is handed a bounded **tail** and
   widens it only when the UAX #29 rules return `PreContext`; and `UnicodeWidthStr`, which is still
@@ -39,6 +43,16 @@ the decision has to be made per scalar, with no lookahead, against a cluster tha
   have moved. **Answering the width outright instead of gating an exact oracle is the trap here** —
   a four-line shortcut got eight ordinary inputs wrong (`x` + VS16 became a wide cell) and every
   test in the crate still passed.
+- **A variation selector on a non-emoji base is kept in the cluster** (#317 §1, decided 2026-08-18).
+  `x` + VS16 changes nothing about how `x` looks or how wide it is, but UAX #29 makes VS15/VS16
+  `Extend`, so the selector rides the side-table; the only place it shows is text extraction, where
+  a copy yields the extra scalar. ghostty drops it (`src/unicode/grapheme.zig:56` @ `e6e26e16`),
+  and the divergence is narrower than #317 described: ghostty's own `graphemeWidth('x', 0xFE0F)`
+  returns `len = 2` (`:315`), so both agree the selector is *in the cluster* and differ only on
+  whether the cell **stores** it — ghostty's comment states its cost, that every caller must repair
+  a break state the storage discarded. Kept on ADR-0004's tie-breaker: VT semantics answer to the
+  spec. A repeated selector never moves the width (0 of 196 base/selector combinations at depths
+  2..8), which is what lets `width_may_change` consult the oracle on the first join only.
 - **Storage is the row's combining map, gated by `COMBINED_PRESENT`.** The primary code point stays
   inline in the cell and the overflow sits beside it — the cell never grows.
 - **Width is still per character** (see [wide glyph](wide-glyph.md)), which is why VS16 and keycap

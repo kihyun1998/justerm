@@ -38,14 +38,8 @@ pub struct Range {
 /// known defect, deliberately (ADR-0028): a VS16 or ZWJ sequence measures its parts, so an emoji
 /// presentation selector reads width-1 here just as it does in the engine (#295/#297/#300). Both
 /// references have it too, per codepoint (ghostty) or per char (alacritty). A third answer at this
-/// one site would be the divergence.
-///
-/// **The "it self-corrects at commit" half of that argument died with #911** and is removed rather
-/// than softened. `caret_col`'s answer no longer ends at commit: `justerm-web` carries it across
-/// `compositionend` as the next composition's origin, so a one-cell width error there displaces
-/// every following syllable of a burst instead of one frame of one run. What still holds is the
-/// part that was doing the work — this and the engine answer from the same crate, so a width the
-/// widget hands back agrees with the width core will echo.
+/// one site would be the divergence. This and the engine answer from the same crate, so a width
+/// the widget carries across `compositionend` (#911) agrees with the width core will echo.
 pub fn is_wide(cp: u32) -> bool {
     char::from_u32(cp)
         .and_then(UnicodeWidthChar::width)
@@ -96,14 +90,8 @@ pub fn range(run: &[Codepoint], start: u32, max: u32) -> Range {
 
 /// Where the caret belongs while `run` is composing at `start`, with `max` the last usable column.
 ///
-/// One past the run — except at the right edge, where there IS no cell past it. Clamping to `max`
-/// there would drop the caret onto the run's own last cell, and for a wide tail that cell is the
-/// **spacer**: a block caret spans one column there (`is_wide_lead` is false on a spacer), so it
-/// inverts the right half of the glyph the user is composing. Measured before fixing: on a
-/// 106-column grid, asking for column 104 *or* 105 returned caret 105, the spacer of the run's own
-/// last pair.
-///
-/// So at the edge the caret goes to the last glyph's **lead** instead. It is inside the run, which
+/// One past the run — except at the right edge, where there IS no cell past it, so the caret goes
+/// to the last glyph's **lead** instead (for a wide tail, not its spacer). It is inside the run, which
 /// D5's "one past the end" does not describe — but a caret covering a whole composed glyph is the
 /// nearest thing to the rule that a full row can express, and it is the only option that never
 /// shows half a glyph. ghostty avoids the question by drawing no caret at all during a preedit.
