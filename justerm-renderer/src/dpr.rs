@@ -7,41 +7,16 @@
 //! `cols * cssCellWidth()` box scales back to `cols * cell` device px, which is how it sizes a
 //! surface and places a rect since the buffer stopped being any one grid's cells (#773).
 //!
-//! "Scales back" is arithmetic, not physics (#337). A CSS length snaps to the browser's layout grid
-//! before it reaches the compositor — 1/64 px in Blink (`layout_unit.h`, `FixedPoint<6, int32_t>`);
-//! other engines differ and we have not read their source — so at a fractional DPR the used box
-//! misses the buffer by up to `dpr/128` device px, measured 0.0016 to 0.0156 in headed Chromium at
-//! dpr 1.1. **No CSS length can do better**: `L * 1.1` is a whole device pixel only when `10 | L`,
-//! and `cols * cell` is not generally a multiple of 11. (Worse: browsers report the ratio as
-//! 1.100000023841858, so nothing lands exactly.) There is no exact answer here, only a nearest one.
-//!
-//! The bug this closes (#331) was not "rounding". It was computing the grid and the buffer from
-//! *different quantities*: the buffer from `round(cssBox * dpr)`, the layout from `cols * cell`.
-//! Two sound cures exist — derive the buffer from the grid (xterm.js:
-//! `device.canvas.width = cols * device.cell.width`) or derive the grid from the buffer and letterbox
-//! the remainder (beamterm: `cols = canvas_width / cell_width`, leftover painted with
-//! `canvas_padding_color`). We take xterm's, which makes the overhang unrepresentable rather than
-//! merely absorbed.
+//! "Scales back" is arithmetic, not physics (#337): at a fractional DPR a CSS box lands within a
+//! fraction of a device pixel, never exactly. Why, and why the grid rather than the buffer is the
+//! truth (#331): ADR-0018 and `docs/map/territory/cell-geometry.md`.
 //!
 //! The browser wiring (reading `devicePixelRatio`, canvas sizing) lives in `webgl` (wasm32).
 
 /// The CSS-pixel view of a device-pixel length at `dpr`. **Not rounded**: the device length is the
-/// measured quantity, and a whole-CSS-pixel view of it cannot be converted back (#331). xterm.js
-/// keeps its `dimensions.css.cell` a float for the same reason, and never sizes anything from it.
-///
-/// #337 asked whether the *canvas box* (as opposed to the cell) should round, as xterm.js's
-/// `dimensions.css.canvas` does. It should not, and the tests below say why: rounding's error is
-/// absolute (`<= dpr/2` device px) where the layout grid's is not, so it dominates on a small canvas
-/// and can make the box *larger* than the buffer it displays.
-///
-/// Both references leave a *derived* CSS length fractional, and neither contradicts this:
-/// xterm's `css.cell` is `device.cell / dpr` (`WebglRenderer.ts:694`) and beamterm's
-/// `css_cell_size()` is `cell / pixel_ratio` (`terminal_grid.rs:405`). xterm's rounded `css.canvas`
-/// is not a derived-length exception so much as a value it *also* feeds to DOM layers
-/// (`screenElement`, mouse coords, selection, a11y, the overview ruler), where an integer costs it
-/// nothing — the reason its own comment gives is avoiding `ceil`'s overshoot, which we dodge by not
-/// rounding at all. beamterm's integer CSS box is an *input* (`resize(width, height)` in logical px)
-/// from which it derives the device buffer — a route #331 closed by making the grid the truth.
+/// measured quantity, and a whole-CSS-pixel view of it cannot be converted back (#331). Deliberately
+/// unrounded for the canvas box too (#337), unlike xterm.js's `css.canvas` — ADR-0018, and the
+/// tests below.
 pub fn css_px(device: u32, dpr: f32) -> f32 {
     device as f32 / dpr
 }

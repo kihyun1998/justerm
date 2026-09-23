@@ -7,12 +7,11 @@ device pixels and CSS pixels. Everything geometric derives from **one measuremen
 advance, floored, for the width (#962), and an ink scan of its `█` for the height and the baseline.
 
 One measurement *per font configuration*, since #772 — the renderer keys the ink scan, the cell and
-the glyph box by (family, size, weight, bold weight, letter-spacing, line-height) and refcounts them, so two terminals in
-two fonts have two cell geometries on one canvas. Nothing in the derivation changed; what changed is
-that "the renderer's cell" is no longer a phrase with one referent. Every export here still reports
-the **implicit default grid's** — `cellWidth`, `cellHeight`, `cssCellWidth`, `cssCellHeight`, `cols`,
-`rows` — and no export reports another grid's, so a single-grid consumer sees exactly what it did.
-See [multi-viewport](multi-viewport.md) for the tier and its lifetime.
+the glyph box by the grid's font selectors and refcounts them, so two terminals in two fonts have two
+cell geometries on one canvas. Nothing in the derivation changed; what changed is that "the
+renderer's cell" is no longer a phrase with one referent, so since #773 every cell reader names its
+grid — `cellWidth(grid)`, `cssCellWidth(grid)`, `cols(grid)`. See [multi-viewport](multi-viewport.md)
+for the tier and its lifetime.
 
 ## Governing decisions
 
@@ -94,6 +93,32 @@ See [multi-viewport](multi-viewport.md) for the tier and its lifetime.
   move the cell rather than just lose the weight. `css_font::FontWeight` takes xterm.js's set
   (`normal`, `bold`, `100`..`900`, a number in `[1, 1000]`); a setter ignores anything else and
   `addGrid` falls back to the default. `bolder`/`lighter` are refused like xterm.js refuses them.
+- **The cell is bounded twice, both times by asking and then adopting.** `MAX_CELL_PX` exists
+  because `setLetterSpacing(1e9)` is finite, so no setter check stops it, and a `u32::MAX` cell makes
+  the adopt-what-fits loop unsatisfiable (#339) — the bound sits far above any real cell and below the
+  smallest `MAX_TEXTURE_SIZE` measured (8192, headless SwiftShader). `fit_cell_to_atlas` then shrinks
+  a cell until the atlas holding it fits the texture limit (#359): `glTexStorage3D` over the limit
+  raises `GL_INVALID_VALUE` without throwing, glow does not look, and the storage-less texture samples
+  `(0,0,0,1)` — coverage 1 for every cell, the terminal solid with foreground, invisible to a proof
+  drawn with `█`. Measured: `lineHeight = 16` on a 16-px glyph asked for a `258 × 8256` texture and an
+  `M` came back with every pixel lit. The adopted cell is what `cell_height()` reports.
+- **The glyph is centred in a grown cell, as xterm does and alacritty does not.** alacritty
+  baseline-anchors (`glyph_cache.rs:256`) and leaves vertical placement to the user's
+  `glyph_offset`; xterm is the closer analogue — a browser rasteriser feeding a GPU atlas — and a
+  grown line height wants the room split. The halves split as xterm splits them, `floor`
+  horizontally and `round` vertically, so an odd remainder lands right and top — arbitrary, and
+  mirrored so as not to invent a different arbitrary. A `line_height` below 1 is clamped, where xterm
+  rejects it: a setter that throws is a worse contract than one that reports what it adopted.
+- **Underline and strikethrough thickness is xterm.js's rule**, `max(1, round(font_px / 15))` (#517),
+  because a Canvas renderer has no font file and so no `underline_thickness` metric; `TextMetrics`
+  exposes only box and baseline. It replaced beamterm's `0.05 × glyph_box`, measured at 11.3% of the
+  cell against xterm's 6.2% and distorted by `lineHeight` and family. `round`, not `floor`, so a
+  15-px em is 1 rather than 0.
+- **No CSS length lands exactly on the device grid at a fractional DPR** (#337). Beyond the layout
+  grain ADR-0018 records (a used box misses by up to `dpr/128` device px; measured 0.0016–0.0156 in
+  headed Chromium at dpr 1.1), no CSS length *can* do better: `L × 1.1` is a whole device pixel only
+  when `10 | L`, and `cols × cell` is not generally a multiple of 11 — and browsers report the ratio
+  as `1.100000023841858`, so nothing lands exactly. There is only a nearest answer.
 - **The cell is per font configuration, so a surface can hold several at once** (#772/#773). Every
   cell reader takes a grid: `cellWidth(grid)`, `cssCellWidth(grid)`. See the cross-cutting invariant
   below for what a *reader* of one owes.
@@ -123,8 +148,8 @@ recorded SHA; a paraphrase drops the pin).
 - [Renderer ink channels](../../agents/reference-facts.md#renderer-ink-channels)
 - [Font weight — what it reaches, and what the cell is measured at](../../agents/reference-facts.md#font-weight--what-it-reaches-and-what-the-cell-is-measured-at-928-verified-2026-09-17)
 
-The cell/glyph box split is quoted directly in `metrics.rs`'s module doc from both references, and so
-is the width since #962 (`metrics::advance_width`). **The ink-scan measurement that still sizes the
+The cell/glyph box split and the floored-advance width (#962, `metrics::advance_width`) are both
+backed by both references, cited in ADR-0022. **The ink-scan measurement that still sizes the
 height has no such backing** — ADR-0022 records it as inherited and grades its grounds as unverified,
 which is unusual enough to be worth knowing before building on it.
 

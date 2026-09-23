@@ -3,54 +3,23 @@
 //! One link in the chain ADR-0022 records: the cell comes from the face's advance (width, #962) and
 //! an ink scan of its `█` (height) ([`rasterizer`](crate::rasterizer)), this module nests the glyph box inside it, and that nesting is
 //! why tiling glyphs must be drawn to the *cell* ([`builtin`](crate::builtin)) instead of to their ink
-//! box. Unlike the measurement itself, this split IS the prior-art consensus — both references carry a
-//! char box beside a cell box, as the paragraphs below quote.
+//! box. `letterSpacing` and `lineHeight` grow the cell and not the glyph, so this says where inside
+//! the cell the glyph sits. Both references keep the same split (ADR-0022).
 //!
-//! Until now they were the same rectangle. The rasteriser ink-scans `█` at `FONT_SIZE * dpr` and
-//! that box *was* the cell, so the shader could stretch one glyph quad across one cell and be right
-//! by construction. `letterSpacing` and `lineHeight` break the identity: the cell grows, the glyph
-//! does not, and something has to say where inside the cell the glyph sits.
-//!
-//! Both references keep exactly this split. xterm.js carries `device.char.{width,height}` beside
-//! `device.cell.{width,height}` and centres with `device.char.{top,left}`
-//! (`WebglRenderer.ts:654-675`). Alacritty sizes the cell from the font's advance plus a user
-//! `offset` and positions the glyph with a separate `glyph_offset`
-//! (`display/mod.rs:1608-1615`, `config/font.rs:20-23`).
-//!
-//! **We take `letter_spacing` in CSS pixels; both references take device pixels.** That is a
-//! deliberate divergence, adjudicated in **ADR-0023** — the rule being that a setting expressed in the
-//! same space as an existing logical setting must use that space, and `font_size` is CSS px. Note
-//! alacritty is not consistent with itself here: it scales `window.padding` by the scale factor
-//! (`config/window.rs:123-127`) while adding `font.offset` to device-px metrics raw
-//! (`display/mod.rs:1608-1615`), so its own two pixel settings speak different units. xterm adds `Math.round(letterSpacing)` straight onto a device-px char
-//! width (`WebglRenderer.ts:671`, and `DomRenderer.ts:140` agrees), so the same setting is a
-//! 2-CSS-px gap on a dpr-1 display and a 1-CSS-px gap on a Retina one — the text looks different
-//! when you move the window. Our own `FONT_SIZE` is CSS px scaled by the DPR at rasterisation time;
-//! taking spacing in device px would make the two halves of the same font description speak
-//! different units. `line_height` is a multiplier, so the question does not arise.
+//! Deliberately, `letter_spacing` is taken in **CSS** pixels where both references take device
+//! pixels — ADR-0023. `line_height` is a multiplier.
 
-/// The largest a single cell may become, device px (#338).
-///
-/// `setLetterSpacing(1e9)` is finite, so neither setter's `is_finite` check stops it, and a cell of
-/// `u32::MAX` makes `resize`'s adopt-what-fits loop unsatisfiable: no allocatable buffer holds one
-/// such cell, so it exhausts its passes and adopts a `size` describing a buffer WebGL never granted
-/// (#339). Far above any real cell — a 16 px font measures roughly 10x16 device px at dpr 1 —
-/// and below the smallest `MAX_TEXTURE_SIZE` we have measured (8192, headless SwiftShader).
+/// The largest a single cell may become, device px (#338) — far above any real cell, below the
+/// smallest measured `MAX_TEXTURE_SIZE`. Why a finite setter value needs it:
+/// `docs/map/territory/cell-geometry.md`.
 pub const MAX_CELL_PX: u32 = 4096;
 
 /// Shrink a cell until the atlas that must hold it fits the implementation's texture limit (#359).
 ///
-/// The atlas is a 2D array texture: one padded cell wide, `glyphs_per_layer` cells tall. #338 let the
-/// consumer grow the cell, and #359 tied the atlas slot to it — so `lineHeight = 16` on a 16-px glyph
-/// asks for a `258 x 8256` texture, and `MAX_TEXTURE_SIZE` is 8192 under headless SwiftShader.
-///
-/// `glTexStorage3D` does not throw on that. It raises `GL_INVALID_VALUE`, glow does not look, and the
-/// texture is left storage-less: sampling it returns `(0,0,0,1)`, i.e. **coverage 1 for every cell**.
-/// The terminal fills solid with the foreground colour, and a proof drawn with `█` cannot see it.
-/// Measured: at `lineHeight = 16` an `M` came back with every pixel lit.
-///
-/// So ask, then adopt — as `resize_surface` does with the drawing buffer (#339). The caller reports the cell
-/// it actually got through `cell_height()`.
+/// The atlas is a 2D array texture: one padded cell wide, `glyphs_per_layer` cells tall. Over the
+/// limit, `glTexStorage3D` fails silently and the terminal fills solid — so ask, then adopt, as
+/// `resize_surface` does (#339; `docs/map/territory/cell-geometry.md`). The caller reports the cell it
+/// actually got through `cell_height()`.
 /// `bleed` is the band a slot reserves on each side of the cell for ink that leaves it, `(x, y)`
 /// (ADR-0019 R1.2; vertical #791, horizontal #966). The x band is spent out of the texture's width
 /// and the y band out of the per-layer height, each beside the guard band — two arguments rather
@@ -93,9 +62,8 @@ pub fn advance_width(advance_px: f32) -> u32 {
 /// cell never reaches zero — alacritty floors its own at 1 (`compute_cell_size`, `.max(1.)`), and a
 /// zero-width cell would make the whole grid degenerate.
 ///
-/// `line_height` below 1 would put the cell *inside* the glyph. xterm rejects the option outright
-/// (`OptionsService.ts:182-186`, "cannot be less than 1"); we clamp, because a renderer that throws
-/// from a setter is a worse contract than one that reports the metrics it adopted.
+/// `line_height` below 1 would put the cell *inside* the glyph, so it is clamped to 1 — deliberately
+/// not rejected as xterm rejects it.
 pub fn device_cell(
     char_px: (u32, u32),
     letter_spacing_css: f32,
@@ -112,27 +80,14 @@ pub fn device_cell(
 
 /// Where the glyph box sits inside the cell, in device px from the cell's top-left.
 ///
-/// **Centring is xterm's choice, not both references'.** alacritty baseline-anchors instead
-/// (`glyph_cache.rs:256`, `glyph.top -= metrics.descent`, no halving) and leaves the vertical
-/// placement to the user's `glyph_offset`. We follow xterm because it is the closer analogue — a
-/// browser rasteriser feeding a GPU cell atlas — and because a terminal that grows its line height
-/// wants the extra room split, not all of it above the text.
-///
-/// The halves are split the way xterm splits them: horizontally `floor` (`char.left =
-/// Math.floor(letterSpacing / 2)`), vertically `round` (`char.top = Math.round((cell.height -
-/// char.height) / 2)`). With an odd remainder the extra pixel lands on the right and on the top.
-/// Arbitrary-looking, and mirrored on purpose — the alternative is to invent a different arbitrary.
+/// Centred, as xterm centres: `floor` horizontally and `round` vertically, so an odd remainder lands
+/// on the right and on the top — mirrored on purpose (`docs/map/territory/cell-geometry.md`).
 ///
 /// A cell narrower than the glyph (negative spacing) offsets by zero: the glyph starts at the cell's
 /// edge and reaches into its neighbour on the far side, as far as the horizontal band (#966).
 /// Underline / strikethrough thickness in device pixels, from the font SIZE — `max(1, round(font_px
-/// / 15))`, where `font_px = font_size * dpr` is the em in device px. This is xterm.js's rule
-/// (`addon-webgl/src/TextureAtlas.ts`, `Math.max(1, Math.floor(fontSize * dpr / 15))`), used because a
-/// Canvas renderer has no font file and therefore no `underline_thickness` metric the native
-/// terminals read (#517; `TextMetrics` exposes only box + baseline, measured). It replaces beamterm's
-/// `0.05 * glyph_box` (#267), which was ~2x too heavy — measured 11.3% of the cell against xterm's
-/// 6.2%, and box-relative so `lineHeight`/font-family could distort it. `round`, not `floor`, so a
-/// 15px em rounds to 1 rather than truncating to 0 before the `max`.
+/// / 15))`, where `font_px = font_size * dpr` is the em in device px — xterm.js's rule (#517), with
+/// `round` rather than `floor` so a 15px em is 1. Why this rule: `docs/map/territory/cell-geometry.md`.
 pub fn line_thickness(font_px: f32) -> u32 {
     ((font_px / 15.0).round() as u32).max(1)
 }
@@ -140,25 +95,9 @@ pub fn line_thickness(font_px: f32) -> u32 {
 /// How many dots a **dotted** underline puts in one cell (#830) — `max(1, round(cell_w / (2 *
 /// thickness)))`, a **whole** number so the pattern survives a cell boundary.
 ///
-/// The target is xterm.js's dotted rule, `setLineDash([lineWidth, lineWidth])` — a 1:1 duty at a
-/// period of twice the line thickness — and where the cell divides evenly the two agree exactly.
-/// What is added is the quantisation, and it is the whole reason this is a function rather than a
-/// division in the shader.
-///
-/// **Why quantise instead of carrying a phase.** The fragment shader's `x` is cell-local, so a period
-/// that is not a whole number of cells restarts the dots at every boundary — an uneven gap the eye
-/// reads as a defect, and one that no pixel assertion *inside* a single cell can observe. Both
-/// references that draw dotted with a non-cell period pay for it with cross-cell state: xterm.js
-/// threads a per-column `variantOffset` through its cell-colour resolver, and alacritty inverts the
-/// pattern every two cells off `gl_FragCoord.x`, its comment naming the case — *"if the cellWidth is
-/// odd, the cell will start and end with a dot, creating a dash"*. ghostty takes the third route and
-/// quantises (`src/font/sprite/draw/special.zig:107-121`, a three-way clamp — `max(min(ceil(w/(4r)),
-/// floor(w/(3r)), floor(w/(2r+1))), 1)`, where the `ceil` term asks for the most dots and the two
-/// `floor` terms cut it back on a narrow cell), which is
-/// the one taken here: with a whole count the period is cell-periodic **by construction**, so the
-/// per-column phase term #829 deleted as mathematically inert stays deleted instead of being
-/// resurrected for one mark. `webgl.rs` used to point the next reader at `variantOffset` as though it
-/// were the only answer; it is one of two.
+/// xterm.js's 1:1 duty at twice the line thickness, **quantised** to a whole count per cell so the
+/// cell-local shader needs no cross-cell phase — ghostty's route rather than xterm's or alacritty's
+/// (`docs/map/territory/cell-compositing.md`).
 ///
 /// The `max(1)` floor is `line_thickness`'s, for the same reason one rung up: zero dots is an
 /// underline that vanished, and losing the mark entirely is a worse failure than drawing a coarse
