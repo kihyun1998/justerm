@@ -1,15 +1,11 @@
 //! Decoder→renderer frame adapter (#277) — pure, host-testable.
 //!
-//! `JustermRenderer::apply_frame` (#261) consumes a **dense row-major** grid, but a decoded
-//! **Partial** frame (the common case after the first, `justerm-core` term.rs) ships only the
-//! damaged cells in *span order*, with a directory saying where each span sits. Feeding that
-//! straight to the renderer misaligns `bg[row*cols+col]` and silently repaints undamaged cells
-//! as Default. [`FrameGrid`] keeps a persistent dense grid and scatters each frame's damage
-//! into it, so the renderer always packs a coherent full viewport.
-//!
-//! Ports the shipped, tested logic of justerm-web `cell-mirror.ts` (ADR-0011) to Rust: a Full
-//! frame wipes the grid first, a scroll op shifts the region before spans, then each span's
-//! span-ordered cells scatter into their `(line, left+i)` slots.
+//! `JustermRenderer::apply_frame` (#261) consumes a **dense row-major** grid; a decoded
+//! **Partial** frame ships only the damaged cells in *span order*, with a directory saying where
+//! each span sits. [`FrameGrid`] keeps a persistent dense grid and scatters each frame's damage
+//! into it: a Full frame wipes the grid first, a scroll op shifts the region before spans, then
+//! each span's cells scatter into their `(line, left+i)` slots — the algorithm of justerm-web's
+//! `cell-mirror.ts`. Design: docs/map/territory/frame-adapter.md.
 
 /// `u32`s per span in the flat span directory: `line, left, right, cell_offset, cell_count`
 /// (mirrors `justerm-wasm-decode` `SPAN_STRIDE`).
@@ -39,14 +35,8 @@ pub struct DamageFrame<'a> {
     pub flags: &'a [u16],
     /// Span-ordered combining-cluster index per cell (#285): `0` = none (use the base
     /// codepoint), else a 1-based index into `side_table` for this cell's trailing combining
-    /// marks. Frame-local — resolved to text at scatter time so a later frame's differing
-    /// `side_table` can't invalidate a stored index.
-    ///
-    /// `u32`, matching what justerm-core emits (#621/#627). It was `u16`, and the web seam
-    /// bridged the gap by truncating: the table holds one entry per combining cell of the
-    /// viewport, and the frame header admits a viewport far wider than `u16::MAX` cells, so
-    /// index 65536 read back as "no cluster" and 65537 as the *wrong* one — silently, and
-    /// with an unconditional per-frame copy where the column used to pass through untouched.
+    /// marks. Frame-local, so resolved to text at scatter time. `u32`, as justerm-core emits it
+    /// (#627) — deliberately not `u16`; see docs/map/territory/frame-adapter.md.
     pub extra: &'a [u32],
     /// This frame's combining-mark clusters, referenced by a cell's `extra - 1`. Each entry is
     /// only the trailing width-0 **marks** (e.g. `"\u{0301}"`) — justerm-core stores the base
@@ -75,11 +65,7 @@ pub struct FrameGrid {
 }
 
 /// How many cells a `cols`×`rows` grid holds, or `None` if that does not fit a `u32` (#355).
-///
-/// The wire caps both at `u16` (`justerm-core`'s `serialize.rs`), so 65535×65535 — 4_294_836_225,
-/// just under `u32::MAX` — is the largest a frame from core can name, and it never overflows. But
-/// `apply_damage` reads `cols`/`rows` out of a JS-supplied header, and `apply_frame` takes them as
-/// bare `u32` arguments, so nothing binds a caller that does not come through core.
+/// A frame from core never overflows it; a JS caller can.
 pub fn cell_count(cols: u32, rows: u32) -> Option<usize> {
     cols.checked_mul(rows).map(|n| n as usize)
 }
@@ -87,7 +73,7 @@ pub fn cell_count(cols: u32, rows: u32) -> Option<usize> {
 /// Why a damage frame was refused (#355). Every variant is a *caller* error: the span directory or
 /// the scroll region names cells outside the grid, or the frame does not carry the cells its spans
 /// claim. `apply_damage` is wasm-exported, so these arrive from JS and are surfaced as thrown
-/// errors — never as a wasm trap, which used to poison the renderer for good.
+/// errors, never as a wasm trap.
 #[derive(Debug, PartialEq, Eq)]
 pub enum DamageError {
     SpanOutsideGrid {
@@ -112,7 +98,7 @@ pub enum DamageError {
 impl FrameGrid {
     /// A blank `cols`×`rows` grid (every cell codepoint `0` / colour ref `0` / no flags — the
     /// renderer resolves these as space / Default), or `None` if the grid has more cells than a
-    /// `u32` can count — checked *before* any of the five per-cell vectors is reserved (#355).
+    /// `u32` can count — checked *before* any per-cell vector is reserved (#355).
     pub fn try_new(cols: u32, rows: u32) -> Option<Self> {
         let n = cell_count(cols, rows)?;
         Some(Self {
@@ -152,17 +138,9 @@ impl FrameGrid {
         &self.clusters
     }
 
-    /// Check every index a scatter would produce, before it produces any of them (#355).
-    ///
-    /// `apply_damage` is wasm-exported: the span directory and the scroll region arrive as raw
-    /// `u32`s from a JS caller, bound by nothing. They used to index `self.codepoints` directly, so
-    /// a `line == rows` — an off-by-one, not an exotic value — trapped the module (`RuntimeError:
-    /// unreachable`) and left it poisoned: every later call failed with "recursive use of an
-    /// object". Reachable in a way the cell-count overflow never was.
-    ///
-    /// Validating up front, rather than checking as we go, is what makes a refusal *total*: the
-    /// scatter wrote cells until it hit the bad index, so a rejected frame half-overwrote the grid.
-    /// Same discipline as `resolve_frame`, which rasterises before it commits.
+    /// Check every index a scatter would produce, before it produces any of them (#355), so a
+    /// refused frame leaves the grid untouched. Deliberately up front rather than as the scatter
+    /// goes — see docs/map/territory/frame-adapter.md.
     fn validate(&self, frame: &DamageFrame) -> Result<(), DamageError> {
         let (cols, rows) = (self.cols as usize, self.rows as usize);
 
@@ -226,11 +204,8 @@ impl FrameGrid {
 
         if frame.kind == 0 {
             // A Full frame is the whole viewport — wipe stale cells first, or content outside
-            // the new spans resurrects as ghosts (cell-mirror.ts step 0). A Full is
-            // authoritative (core ships every row as a span), so any `scroll` op is ignored: an
-            // alt-screen switch can leave a stale scroll set on a Full frame (justerm-core
-            // term.rs marks full-damage without clearing it), and shifting here would be
-            // meaningless against a full repaint.
+            // the new spans resurrects as ghosts. Its `scroll` op is deliberately ignored (see
+            // docs/map/territory/frame-adapter.md).
             self.codepoints.fill(0);
             self.fg.fill(0);
             self.bg.fill(0);
@@ -242,13 +217,8 @@ impl FrameGrid {
         } else if let Some((top, bottom, count)) = frame.scroll {
             // A Partial's scroll op precedes its spans: shift the stored region so retained
             // cells move with it; the spans then repaint the exposed line (core ships it as a
-            // full-width span, with the BCE background — the shift's transient blank is
-            // overwritten). An over-height `count` lands every row's source outside
-            // `[top, bottom]`, so `shift_region` blanks the whole region — the spans repaint it
-            // (cell-mirror.ts step 1). justerm-core stopped *producing* those in #661
-            // (`Term::scroll_delta` caps at the region height), but this stays load-bearing:
-            // the frame arrives from JS, `decode` does not reject an over-height count, and the
-            // tolerance is what keeps a foreign frame from over-reading.
+            // full-width span with the BCE background). An over-height `count` blanks the whole
+            // region — deliberately tolerated (see docs/map/territory/frame-adapter.md).
             self.shift_region(top as usize, bottom as usize, count as isize);
         }
 
@@ -268,12 +238,9 @@ impl FrameGrid {
                 // Tolerant like `extra` below: a consumer that omits the column scatters Default.
                 self.underline_colors[dst] = frame.underline_colors.get(src).copied().unwrap_or(0);
                 self.flags[dst] = frame.flags[src];
-                // Resolve the frame-local grapheme index to its cluster text NOW (while this
-                // frame's side_table is current) and store the text — a `0` index (or an empty
-                // side_table) clears any stale cluster on the cell. justerm-core's side_table
-                // holds ONLY the trailing width-0 combining marks (grid.rs `Combining`), not the
-                // base glyph — that stays in `codepoints`. Assemble the full grapheme = base +
-                // marks so the resolver rasterises e.g. "e\u{301}", not a lone floating accent.
+                // Resolve the frame-local grapheme index to its cluster text now, as base + marks
+                // (the side table holds only the marks), so the resolver rasterises "e\u{301}",
+                // not a lone accent. A `0` index clears any stale cluster on the cell.
                 let ex = frame.extra.get(src).copied().unwrap_or(0) as usize;
                 let cluster = &mut self.clusters[dst];
                 match ex.checked_sub(1).and_then(|i| frame.side_table.get(i)) {
@@ -292,8 +259,7 @@ impl FrameGrid {
 
     /// Shift rows `[top, bottom]` by `count` (`> 0` up, exposing blanks at the bottom; `< 0`
     /// down, exposing at the top). Iterates so the copy never reads an already-overwritten
-    /// source: ascending for an up-shift (dst below its source), descending for a down-shift
-    /// (cell-mirror.ts `shiftRegion`).
+    /// source: ascending for an up-shift (dst below its source), descending for a down-shift.
     fn shift_region(&mut self, top: usize, bottom: usize, count: isize) {
         if count > 0 {
             for y in top..=bottom {
@@ -306,7 +272,7 @@ impl FrameGrid {
         }
     }
 
-    /// Move row `src = y + count` into row `y` (all four columns), or blank `y` when the source
+    /// Move row `src = y + count` into row `y` (every column), or blank `y` when the source
     /// is outside `[top, bottom]` (a newly-exposed line).
     fn shift_row(&mut self, y: usize, top: usize, bottom: usize, count: isize) {
         let cols = self.cols as usize;
@@ -360,13 +326,8 @@ mod tests {
 
     #[test]
     fn a_span_pointing_outside_the_grid_is_refused_and_changes_nothing() {
-        // #355 (found by the sibling lens, reproduced in Chromium): `dst = line * cols + left + i`
-        // indexed `self.codepoints` raw. `line = rows` walked off the end -> `RuntimeError:
-        // unreachable`, and the wasm instance stayed poisoned ("recursive use of an object") for
-        // every later call. `apply_frame`'s guards return a JsValue; this one killed the renderer.
-        //
-        // Refusal must also be TOTAL: the scatter used to write cells before reaching the bad
-        // index, so a rejected frame half-overwrote the grid.
+        // #355: `line = rows` must be refused as an error, and the refusal must be TOTAL — no cell
+        // of the rejected frame written.
         let mut g = FrameGrid::try_new(4, 2).unwrap();
         g.codepoints[0] = 0x41;
 
@@ -813,18 +774,9 @@ mod tests {
         );
     }
 
-    /// #627 — a cluster index above `u16::MAX` resolves to its own cluster, not another's.
-    ///
-    /// The column is a **frame-local index into `side_table`**, and that table holds one entry
-    /// per combining cell of the viewport. justerm-core widened it to `u32` in #621 because the
-    /// frame header stores `cols` and `rows` as `u16` *each*, so a legal viewport holds far more
-    /// cells than a `u16` can number. This crate stayed narrow, and the web seam bridged the two
-    /// by truncating — measured on the JS side, index 65536 became `0` ("no cluster", the marks
-    /// silently dropped) and 65537 became `1`, i.e. **the wrong cluster**, with no error anywhere.
-    ///
-    /// Reachability is low — it needs more than 65 535 combining cells in one viewport — but the
-    /// failure is silent, and the truncation was also an unconditional per-frame copy where the
-    /// column used to pass through untouched. The numbering itself is unchanged.
+    /// #627 — a cluster index above `u16::MAX` resolves to its own cluster, not another's (a
+    /// truncating `u16` column read 65537 as 1). Reachable only past 65 535 combining cells in one
+    /// viewport, but silent when it happens.
     #[test]
     fn a_cluster_index_above_u16_resolves_to_its_own_cluster() {
         let big = u16::MAX as u32 + 2; // 65537 — truncates to 1, i.e. the *first* entry
