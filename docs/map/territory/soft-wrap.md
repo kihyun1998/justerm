@@ -30,9 +30,34 @@ ADR-0025 is authoritative; this is routing. **If they disagree, the ADR is right
 - **D2 — one property, one lifecycle, spelled out per verb.** One SET site-class, one CLEAR/REPAIR
   discipline, read sites gating uniformly. The alternative — a rule re-applied by hand at each new
   site — is **rejected on measured evidence**: it failed three times in this area (#521, #528, #538).
-- **Which verbs end a wrap is a named per-verb table**, and it lives in `Term::end_wrap`'s doc
-  comment. It is not derivable from the erased range, which is precisely why it has to be written
-  down.
+- **Which verbs end a wrap is a named per-verb table**, not derivable from the erased range, and
+  both references spell it out call site by call site. The verbs that end it each destroy content
+  *from the cursor rightward*, so "this row continues past its last column" can no longer be
+  asserted; erasing leftward or inserting blanks leaves the tail intact.
+
+  | verb | ends the wrap? | xterm | ghostty |
+  |---|---|---|---|
+  | `EL 0` (erase right) | **yes**, at any column | `ClearRight` → `LineClrWrapped` unconditionally (`util.c:1871`) | `cursorResetWrap()` in `eraseLine(.right)` |
+  | `ECH` | **yes**, at any column | same `ClearRight` (`util.c:1961`) | `cursorResetWrap()` in `eraseChars` |
+  | `DCH` | **yes** | `screen.c` | `cursorResetWrap()` — *"Our row's soft-wrap is always reset"* |
+  | `EL 2` | **yes** — deliberate divergence, below | `ClearLine` has no `LineClrWrapped` (`util.c:1905`) | no, with a comment naming xterm |
+  | `EL 1` (erase left) | no | `ClearLeft`, no clear | no |
+  | `ICH` | no | no | no |
+  | a reverse-wrap walk (`BS` / `CSI D` under `?45`) | **no** (#873) | `CursorBack` writes no wrap flag | only *reads* `prev_row.wrap` (`Terminal.zig:1842-1843`) |
+
+  The walk row was the wrong one: it cleared the flag, copied from xterm.js's
+  `line.isWrapped = false` (`InputHandler.ts:823`), which neither other reference does, and by
+  writing the row directly it escaped this table and its damage obligation. Measured: two buffers
+  with identical cells read as different logical lines depending on how the cursor arrived, a
+  reflow kept them apart, and the clear's damage was `Partial([])` where `EL 0` through `end_wrap`
+  reports `Partial([LineDamage { line: 0, left: 0, right: 2 }])`. Undoing the cursor's trip across
+  the boundary does not undo the boundary.
+- **`begin_wrap` damages the cell the bit rides on, the mirror of `end_wrap` (#540, #557).** A
+  `Partial` frame ships the bit only on a damaged last cell; without it a frame-mode consumer keeps
+  the rows *split* forever, the dual of `end_wrap`'s "joined forever". It stayed invisible because a
+  wrap normally moves the cursor and `frame_damage` tops up the old cursor cell; a scroll that
+  serves the wrap keeps the cursor's row index, which is how #557 surfaced it. Damaging in the helper
+  rather than at each caller keeps it true for set sites added later.
 - **`pending_wrap` is the entry condition.** The wrap does not happen when the last column fills; it
   happens on the *next* print — see [cursor position](cursor-position.md).
 
@@ -40,8 +65,7 @@ ADR-0025 is authoritative; this is routing. **If they disagree, the ADR is right
 
 - `justerm-core/src/grid.rs` — `Row::is_wrapped`, the row's `wrapped` field
 - `justerm-core/src/cell.rs` — `WRAPLINE` (wire-only; the live flag is on the row)
-- `justerm-core/src/term.rs` — `Term::end_wrap` (**the per-verb table is this function's doc
-  comment**), `Term::begin_wrap`, `Term::shift_region`
+- `justerm-core/src/term.rs` — `Term::end_wrap`, `Term::begin_wrap`, `Term::shift_region`
 - `justerm-core/src/term/walk.rs` — `prev_pos` / `next_pos`, the stepping that joins wrapped rows
 
 ## Reference behaviour
@@ -77,7 +101,7 @@ blanked-but-still-wrapped row would visibly merge two lines. A cost the referenc
 
 ## Known holes / open
 
-- **D2's per-verb table lives only in a code comment.** The ADR says a table exists; the table itself
-  is authoritative and sits outside the record.
+- **D2's per-verb table lives in this note, not in the ADR.** The ADR says a table exists; the table
+  itself is authoritative and sits outside the record.
 - **Two joiners implement the same rule** — `viewport_logical_lines` and `selection_text` — and
   nothing states they must agree or tests that they do.

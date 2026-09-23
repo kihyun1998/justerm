@@ -55,6 +55,9 @@ Read out of the source; there is no record to read instead.
   (#873)**, the second applying it once per unit of its count; it was `BS` only until then, on a
   comment that recorded an observation about xterm.js rather than a decision. The decision is the maintainer's (2026-09-08, theirs to reverse); the tally and the reach
   measurement behind it are on `justerm-core/tests/reverse_wrap.rs::cursor_left_spends_a_park`.
+  `CSI n D` under `?45` is `n` applications of that step — xterm's shape literally, one
+  `CursorBack` looping one unit per step (`cursor.c:160-190`) — so `CSI 3 D` from a park moves two
+  and a walk at column 0 costs one of the three. Off the mode it is one saturating subtraction.
   **Both halves are gated on `?45` *and* `?7h`**, which the spend had and the walk did not until
   #873's follow-up: xterm reaches both arms through one `rev`, so `:165` is as dead under `?7l`
   as `:153` is. And **the walk leaves the wrap link alone** — it used to clear it, by writing the

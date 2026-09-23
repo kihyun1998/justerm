@@ -114,7 +114,7 @@ pub struct Term {
     /// Reverse wraparound (DEC ?45): default off. When on (and with `?7h`), a step back at
     /// column 0 of a soft-wrapped row moves to the end of the previous row, and a step back
     /// from a parked cursor spends the deferred wrap instead of moving — `BS` and `CSI D`
-    /// alike, through `Term::step_back` (#80, #873). See the per-verb table on [`Term::end_wrap`].
+    /// alike, through `Term::step_back` (#80, #873). The walk leaves the wrap link alone ([`Term::end_wrap`]).
     reverse_wraparound: bool,
     /// Bracketed-paste mode (DEC ?2004). The engine owns the flag; the input
     /// encoder (#11) reads it to decide whether to wrap pasted text in markers.
@@ -2159,27 +2159,17 @@ impl Term {
             // wide cell (the row soft-wraps), mirroring write_glyph's wide-at-boundary wrap (#303).
             return self.relocate_cluster_wide(row, col);
         }
-        // Overwriting col+1 with the spacer can orphan the far half of a WIDE glyph standing there
-        // (the cursor may have been repositioned before the joining scalar arrived). Reset that
-        // orphan, exactly as write_glyph does (2462-2470), so no dangling spacer survives.
+        // A spacer written over a wide glyph's lead orphans its far half; free it, as
+        // `write_glyph` does.
         if self.grid.cell(row, col + 1).is_wide() && col + 2 < cols {
             self.free_cell(row, col + 2);
         }
         self.grid
             .cell_mut(row, col)
             .insert_flags(CellFlags::WIDE_CHAR);
-        // The spacer is the lead's second half, so it takes the LEAD's extended attrs — the
-        // hyperlink and underline colour riding the row's side maps — exactly as write_glyph
-        // stamps both halves of a wide write. `pen.cell(' ')` carries neither (and the pen may
-        // have moved on since the base was printed), so they are re-attached here; a base with
-        // none clears whatever the overwritten column held (#521).
+        // The spacer takes the lead's extended attributes, not the pen's (#521, ADR-0025 D4).
         let ext = self.grid.row_ref(row).ext_attrs_at(col);
-        // The underline STYLE needs the same treatment as those extended attrs and for the same
-        // reason this comment already gives (#829): it is the LEAD's, and the pen may have moved
-        // on. It rides the packed cell rather than a side map, so it is carried across directly
-        // instead of through `set_ext_attrs`. ADR-0025 D4 — a path that *synthesises* one half of
-        // a pair carries the whole pair; taking this from the pen curls the left half and leaves
-        // the right half bare.
+        // …and the lead's underline style, carried on the packed cell (#829).
         let lead_style = self.grid.cell(row, col).underline_style();
         let mut spacer = self.cursor.pen.cell(' ');
         spacer.insert_flags(CellFlags::WIDE_CHAR_SPACER);
@@ -2200,96 +2190,33 @@ impl Term {
         (row, col)
     }
 
-    /// Relocate a last-column narrow cluster to the next line as a wide cell (#303): its base +
-    /// side-table marks move to `(next_row, 0..=1)` and the vacated last column becomes a soft-wrap
-    /// (WRAPLINE + leading spacer), exactly as `write_glyph` wraps a wide glyph that can't fit. With
-    /// autowrap off it stays narrow.
-    ///
-    /// The destination is an **overwrite**, so it owes the no-orphan repair every other overwrite
-    /// site owes (#529, ADR-0025 D4) — see the comment at that site for why justerm restates it
-    /// once per wide-writing path where the references get it structurally.
-    ///
-    /// The `cols < 2` arm is **unreachable since #547** —
-    /// `MIN_COLUMNS = 2` is the floor on every path that sets a width — and is kept only as a
-    /// bounds guard for the `col + 1` writes below, not as a described behaviour.
+    /// Relocate a last-column narrow cluster to the next line as a wide cell (#303): its base
+    /// and marks move to `(next_row, 0..=1)` and the vacated column becomes the soft-wrap
+    /// artefact, as `write_glyph` wraps a wide glyph that cannot fit. With autowrap off, or no
+    /// next row, it stays narrow. The destination owes the no-orphan repair:
+    /// `docs/map/territory/wide-glyph.md`.
     fn relocate_cluster_wide(&mut self, row: usize, col: usize) -> (usize, usize) {
         let cols = self.grid.cols();
         if cols < 2 || !self.autowrap || !self.wrapline_advances() {
-            // Nowhere to place a wide cell — leave it narrow. `!wrapline_advances()` joins the
-            // other two for the same reason: with no next row, the relocation would write the
-            // cluster over columns 0-1 of the *current* row and destroy whatever is there.
+            // Nowhere to place a wide cell; with no next row it would overwrite this row's 0-1.
             return (row, col);
         }
-        // Capture the base cell (glyph + attrs), its marks, and its extended attrs before
-        // vacating. The extended attrs (hyperlink, underline colour) must be read HERE and not
-        // after the move: they live in the *source row's* side maps, and `wrapline()` below may
-        // scroll — after which that row is a different (or recycled) `Row` (#521).
+        // Capture the base, its marks and its extended attributes before vacating: `wrapline()`
+        // may scroll, after which the source row is a different `Row` (#521).
         let base = *self.grid.cell(row, col);
         let marks: Vec<char> = self
             .combining_at(row, col)
             .map(<[char]>::to_vec)
             .unwrap_or_default();
         let ext = self.grid.row_ref(row).ext_attrs_at(col);
-        // Vacate the last column as a soft-wrap artefact — the same step `write_glyph` takes for a
-        // wide glyph that cannot fit, and now literally the same code, so the two cannot drift
-        // apart again (#528; they held opposite behaviours until then).
+        // The same vacate `write_glyph` takes (#528).
         self.vacate_for_wrap(row, col);
         // Advance to the next line (scrolls if at the bottom); cursor lands at col 0.
         self.wrapline();
         let nr = self.cursor.row;
-        // The destination is an overwrite like any other, so it owes the same no-orphan repair
-        // `write_glyph` performs for its own trailing column (#529, D4): the spacer about to land
-        // on `(nr, 1)` half-destroys a wide glyph standing there, stranding its far half at
-        // `(nr, 2)` — a `WIDE_CHAR_SPACER` with no lead to its left, still carrying the destroyed
-        // glyph's hyperlink and underline colour. Asked *before* the writes, on the pre-write
-        // state, exactly as `write_glyph`'s `last + 1` check is.
-        //
-        // Two of the three references have this exact site, and both repair it without a rule of
-        // their own, because they write a pair as two *separate* cell writes and the repair lives
-        // in the write:
-        //   - xterm.js names the case outright — *"Combining character widens 1 column to 2. Move
-        //     old character to next line."* (`InputHandler.ts:583-611` @ 699f553,
-        //     `copyCellsFrom(oldRow, oldCol, 0, oldWidth, false)` at `:605-607`). The relocation
-        //     leaves `x == 2`, so its once-per-run right-edge repair (`:668-669`) lands on exactly
-        //     the orphaned column.
-        //   - ghostty relocates in `Terminal.zig:1188-1252` @ e6e26e1 and reaches the repair
-        //     through `cursorRight(1); printCell(0, .spacer_tail)` (`:1251-1252`) — that second
-        //     `printCell` runs the `cell.wide != wide` switch (`:1484`) whose `.wide` arm clears
-        //     the neighbouring lead's tail (`:1489-1499`).
-        //   - alacritty has **no** counterpart: a width-0 codepoint returns early through
-        //     `push_zerowidth` (`term/mod.rs:1069-1085` @ 852e971), so a cluster never changes
-        //     width and nothing is ever relocated. Its orphan repair (`:994-1008`) is still the
-        //     mechanism reference, reached the same way — one repair per `write_at_cursor`.
-        // justerm writes both halves in one step, so the repair is not structural here and each
-        // wide-writing path restates it — this is the third (`write_glyph`,
-        // `promote_cluster_to_wide`, and now the relocation).
-        //
-        // What justerm does **not** copy is ghostty's reach-back at this site: its `.wide` arm
-        // also clears the previous row's `.spacer_head` (`:1504-1506`, gated `cursor.y > 0 and
-        // cursor.x <= 1`) — the very marker this relocation set seven statements earlier
-        // (`:1200`). Derived from source, not executed. Suppressing it here is #534's rule
-        // verbatim: a repair keyed on a state predicate must not fire while that state is
-        // mid-construction.
-        //
-        // The other two obligations `write_glyph` carries are N/A here, recorded because an
-        // unexplained omission is what gets re-litigated:
-        //   - the *left*-orphan repair asks `col > 0`, and the lead lands at column 0.
-        //   - `void_wrap_artefact_above(nr)` would clear a record that `vacate_for_wrap` **just
-        //     set**, in both the advance case (`nr == row + 1`, so its target `nr - 1` is `row`)
-        //     and the scroll case (`nr == row`, the source rotated up to `row - 1`). Firing it
-        //     would be self-clobbering, not merely redundant — the same shape as #534's
-        //     mid-construction rule. Measured after a repairing relocation: `is_row_wrapped(0)`
-        //     and `(0, cols-1).is_leading_spacer()` both hold.
-        //
-        // `2 < cols` is a live bound, not defence in depth. The print paths cannot leave a
-        // `WIDE_CHAR` lead in the last column — `write_glyph` wraps rather than write one there
-        // and `promote_cluster_to_wide` relocates rather than promote in place — but `Row::resize`
-        // can: the alt screen resizes without reflowing (#567), so truncating a row through a pair
-        // strands its lead in the final column. The relocation then meets `is_wide() == true` at
-        // `cols == 2`, and without the bound reads `(nr, 2)` on a two-column grid — an
-        // out-of-bounds panic in a library, inside a consumer's process, reachable by shrinking a
-        // window over a CJK glyph. Pinned by `min_columns.rs::
-        // a_relocation_beside_a_truncated_wide_lead_does_not_index_past_the_row`.
+        // The destination is an overwrite: free the far half of a wide glyph the spacer lands
+        // on (#529, D4). `2 < cols` is a live bound after an alt-screen truncation (#567).
+        // Why this site and not ghostty's reach-back: `docs/map/territory/wide-glyph.md`.
         if 2 < cols && self.grid.cell(nr, 1).is_wide() {
             self.free_cell(nr, 2);
         }
@@ -2302,10 +2229,8 @@ impl Term {
         for m in marks {
             self.grid.row_mut(nr).push_combining(0, m);
         }
-        // Re-attach the extended attrs to BOTH halves at the new row. `lead` copied the base's
-        // presence bits but not its map entries, so without this the bit is set with nothing
-        // behind it — the read is gated and silently returns the default, and the frame stops
-        // round-tripping (the cell encodes as linked with no index).
+        // Re-attach the extended attributes to both halves: `lead` copied the presence bits but
+        // not the map entries.
         self.grid.row_mut(nr).set_ext_attrs(0, ext.clone());
         // …and the underline style from the relocated LEAD, for the reason the sibling site above
         // states (#829, ADR-0025 D4).
@@ -2360,12 +2285,8 @@ impl Term {
     }
 
     fn move_back(&mut self, n: usize) {
-        // Under `?45` this is n applications of the step `BS` takes — xterm's shape
-        // literally, where one `CursorBack` serves both verbs and its loop spends one unit
-        // of the count per step (`cursor.c:160-190`), so `CSI 3 D` from a park moves two
-        // and a walk at column 0 costs one of the three (#873). Off the mode there is
-        // neither a walk nor a spend to distribute, so the whole move is one saturating
-        // subtraction — the same landing without the loop.
+        // Under `?45`, `n` applications of the step `BS` takes (#873,
+        // `docs/map/territory/cursor-position.md`); off it, one saturating subtraction.
         if self.reverse_wraparound {
             for _ in 0..n {
                 self.step_back();
@@ -2373,11 +2294,7 @@ impl Term {
         } else {
             self.cursor.col = self.cursor.col.saturating_sub(n);
         }
-        // Both call sites pass at least 1 — `param_or` maps an explicit `CSI 0 D` to the
-        // default — so the loop always runs and always puts the flag down. Cleared here
-        // anyway rather than relied upon: a zero count must still clear, as every other
-        // positioning verb does, and the loop is the only shape in this file where that
-        // obligation can be skipped by arithmetic.
+        // Cleared here too, so a zero count still clears, as every positioning verb does.
         self.cursor.pending_wrap = false;
     }
 
@@ -2419,28 +2336,13 @@ impl Term {
 
     // ---- erase (CSI J / K) ---------------------------------------------------
 
-    /// Clear cells `from..to` on `row`.
-    ///
-    /// Background Color Erase (BCE): erased cells carry the current SGR
-    /// background only — fg and text attributes reset to default (matches
-    /// xterm/alacritty, where the fill is `cursor.template.bg.into()`).
-    ///
-    /// **Cleared concern, with its validity condition — an empty range would break the pair
-    /// invariant.** With `from == to` the first guard below still frees the lead at `from - 1`
-    /// while the second is skipped (`to > from` is false) and the fill loop does nothing, so the
-    /// spacer at `from` would survive its lead — an ADR-0025 D4 break, and the exact lead-less
-    /// orphan the word walk must then treat as opaque. This is unreachable **as long as every
-    /// caller passes a non-empty range**, which holds today: `ECH` clamps to
-    /// `(col + n).min(cols)` with `n >= 1` (both `CSI X` and `CSI 0 X` erase one cell), and every
-    /// `EL`/`ED` site passes `0..cols` or `0..=cursor`. A future caller that can pass an empty
-    /// range must guard here first.
+    /// Clear cells `from..to` on `row` with Background Color Erase: erased cells carry the
+    /// current SGR background only (xterm, alacritty). Callers pass a non-empty range — with
+    /// `from == to` the lead at `from - 1` would be freed and its spacer left standing.
     fn clear_cells(&mut self, row: usize, from: usize, to: usize) {
         let cols = self.grid.cols();
-        // Erasing either half of a pair that wrapped from the row above ends it, so that row's
-        // artefact record is void (#534). `from <= 1` rather than `from == 0` because erasing from
-        // column 1 destroys the spacer and the no-orphan repair below then frees the lead. ghostty
-        // reaches the same row from its erase path — `Screen.splitCellBoundary`'s `x == 0 or x ==
-        // 1` branch (`Screen.zig:1873` @ `e6e26e1`), called from `eraseChars` (`Terminal.zig:3159`).
+        // Erasing either half of a pair that wrapped from the row above voids that row's artefact
+        // record (#534); `from <= 1` because erasing column 1 frees the lead too.
         if from <= 1 && to > from && self.wrapped_pair_at_row_start(row) {
             self.void_wrap_artefact_above(row);
         }
@@ -2465,65 +2367,25 @@ impl Term {
         }
     }
 
-    /// End `row`'s soft wrap, because something just destroyed the content that was continuing
-    /// onto the next row.
+    /// Mark `row` as soft-wrapping into the next one, and damage the cell the bit rides on.
     ///
-    /// Which verbs owe this is **not** derivable from the erased range — it is a per-verb rule,
-    /// and both references spell it out call site by call site rather than inferring it:
-    ///
-    /// | verb | ends the wrap? | xterm | ghostty |
-    /// |---|---|---|---|
-    /// | `EL 0` (erase right) | **yes**, at any column | `ClearRight` → `LineClrWrapped` unconditionally (`util.c:1871`) | `cursorResetWrap()` in `eraseLine(.right)` |
-    /// | `ECH` | **yes**, at any column | same `ClearRight` (`util.c:1961`) | `cursorResetWrap()` in `eraseChars` |
-    /// | `DCH` | **yes** | `screen.c` | `cursorResetWrap()` — *"Our row's soft-wrap is always reset"* |
-    /// | `EL 1` (erase left) | no | `ClearLeft`, no clear | no |
-    /// | `ICH` | no | no | no |
-    /// | a reverse-wrap walk (`BS` / `CSI D` under `?45`) | **no** (#873) | `CursorBack` writes no wrap flag | only *reads* `prev_row.wrap` (`Terminal.zig:1842-1843`) |
-    ///
-    /// The last row is the one that was wrong. The walk **did** clear the flag — copied from
-    /// xterm.js's `line.isWrapped = false` (`InputHandler.ts:823`), which neither other
-    /// reference does — and it did so by writing the row directly, so it never appeared in
-    /// this table and never took the damage obligation below. Three consequences, all
-    /// measured: two buffers with identical cells read as different logical lines depending
-    /// on how the cursor arrived, a reflow kept them apart instead of healing it, and the
-    /// clear's whole damage was `Partial([])` where `EL 0` through this function reports
-    /// `Partial([LineDamage { line: 0, left: 0, right: 2 }])`, so a frame-mode consumer was
-    /// left joined where the engine had split.
-    /// Undoing the *cursor's* trip across the boundary does not undo the boundary.
-    ///
-    /// The shape behind the three that do: each destroys content **from the cursor rightward**, so
-    /// "this row continues past its last column" can no longer be asserted. Erasing leftward or
-    /// inserting blanks leaves the tail — and whatever it flowed into — intact.
-    ///
-    /// **`EL 2` is a deliberate divergence.** justerm ends the wrap; xterm does not (`ClearLine`,
-    /// `util.c:1905`, has no `LineClrWrapped`) and ghostty copies that with a comment naming it —
-    /// *"it seems like complete should reset the soft-wrap state of the line but in xterm it does
-    /// not."* justerm differs because it *joins* logical lines for `accessible_text` / `search` /
-    /// selection text, so a blanked-but-still-wrapped row visibly merges two lines in copy — a
-    /// consequence xterm does not carry. Recorded rather than silently matched or silently
-    /// Mark `row` as soft-wrapping into the next one — and damage the cell the bit rides on.
-    ///
-    /// The exact mirror of [`Term::end_wrap`], and it exists for the mirror of that function's
-    /// reason. The flag lives on the `Row` (#538) and reaches a consumer only as the last cell's
-    /// `WRAPLINE`, derived at encode time. Every other cell-carried fact changes when that cell is
-    /// written, so damage covers it for free; this one does not, and a `Partial` frame would never
-    /// ship the bit — a frame-mode consumer rebuilding logical lines from cells then keeps the two
-    /// rows *split* forever, the exact dual of the "joined forever" that `end_wrap` guards.
-    ///
-    /// `end_wrap` took that obligation in #540; the set side never did. It stayed invisible because
-    /// a wrap normally moves the cursor to the next row, and `frame_damage` tops the frame up with
-    /// the old cursor cell. When a **scroll serves the wrap** the cursor keeps its row index, so
-    /// nothing tops it up — which is how #557 surfaced it.
-    ///
-    /// Damaging here rather than at each caller is what keeps this true for set sites added later,
-    /// the same argument `end_wrap`'s comment makes.
+    /// The mirror of [`Term::end_wrap`]: the flag lives on the `Row` (#538) and reaches a
+    /// consumer only as the last cell's `WRAPLINE`, derived at encode time, so no cell write
+    /// carries it and a `Partial` frame would never ship it without this damage (#557).
     fn begin_wrap(&mut self, row: usize) {
         self.grid.row_mut(row).set_wrapped(true);
         let last = self.grid.cols() - 1;
         self.damage_span(row, last, last);
     }
 
-    /// diverged; see #538.
+    /// End `row`'s soft wrap, because something just destroyed the content that continued onto
+    /// the next row — and damage the cell the bit rides on (#540).
+    ///
+    /// Which verbs owe this is a per-verb rule, not derivable from the erased range. Each that
+    /// does destroys content from the cursor rightward: `EL 0`, `ECH` and `DCH`, plus `EL 2`,
+    /// a deliberate divergence from xterm and ghostty. `EL 1`, `ICH` and a reverse-wrap walk
+    /// (#873) do not. The table with its reference sites, and why `EL 2` diverges:
+    /// `docs/map/territory/soft-wrap.md`.
     fn end_wrap(&mut self, row: usize) {
         self.grid.row_mut(row).set_wrapped(false);
         // The flag is stored on the `Row` but rides the wire on the row's **last cell**, derived

@@ -178,8 +178,8 @@ pub struct Cursor {
     /// the mode-gated arm carried invisibly for two releases.
     ///
     /// The rule is stated at the property because that is where it is true, the
-    /// same reason [ADR-0025](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0025-row-and-wide-pair-cell-state-ownership.md) D2 gives for the wrap link's per-verb table living in
-    /// `Term::end_wrap`'s doc-comment.
+    /// same reason [ADR-0025](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0025-row-and-wide-pair-cell-state-ownership.md) D2 gives for writing the wrap link's rule down
+    /// per verb.
     pub pending_wrap: bool,
     pub pen: Pen,
     /// Whether the cursor is shown (DEC ?25). The engine only reports it.

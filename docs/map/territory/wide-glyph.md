@@ -70,6 +70,25 @@ ADR-0025 is authoritative; this is routing. **If they disagree, the ADR is right
   followed by columns no flag distinguished from blanks. All three references bound it — ghostty
   says why (`unicode/props.zig:11-13`, *"3-em dash becomes a 2-em dash"*). The clamp is at the
   intake (`place_grapheme`), the invariant asserted where it is relied on (`write_glyph`).
+- **A cluster relocated to the next row owes the destination's no-orphan repair** (#303, #529, D4):
+  its spacer lands on `(nr, 1)` and would half-destroy a wide glyph standing there. xterm.js and
+  ghostty repair it structurally, writing a pair as two cell writes with the repair in the write;
+  (ghostty through `cursorRight(1); printCell(0, .spacer_tail)`, whose `.wide` arm clears the
+  neighbouring tail at `Terminal.zig:1489-1499`; alacritty never relocates, a width-0 scalar returning
+  through `push_zerowidth`, but its one-repair-per-write at `term/mod.rs:994-1008` is the mechanism);
+  justerm writes both halves in one step, so each wide-writing path restates it (`write_glyph`,
+  `promote_cluster_to_wide`, `relocate_cluster_wide`). ghostty's reach-back to the previous row's
+  `.spacer_head` at this site is *not* copied — that is the marker the relocation just set (#534's
+  rule: a repair keyed on a state predicate must not fire mid-construction). `write_glyph`'s other
+  two obligations are N/A here: the left-orphan repair asks `col > 0` and the lead lands at 0, and
+  `void_wrap_artefact_above(nr)` would clear the record `vacate_for_wrap` just set, in both the
+  advance and the scroll case — self-clobbering, not merely redundant (measured after a repairing
+  relocation: `is_row_wrapped(0)` and `(0, cols-1).is_leading_spacer()` both hold). **`2 < cols` is a
+  live bound**: the print paths cannot leave a lead in the last column, but `Row::resize` can — the
+  alt screen resizes without reflowing (#567), so truncating a row through a pair strands its lead,
+  and at `cols == 2` the relocation would read `(nr, 2)`, an out-of-bounds panic reachable by
+  shrinking a window over a CJK glyph. Pinned by
+  `min_columns.rs::a_relocation_beside_a_truncated_wide_lead_does_not_index_past_the_row`.
 
 ## Code
 
