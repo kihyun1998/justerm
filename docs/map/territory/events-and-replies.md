@@ -235,7 +235,8 @@ nothing about it appears in the frame.
   `Term::report_*` methods that queue replies (`report_background`, `report_foreground`,
   `report_cursor_color`, `report_palette_color`, `report_color_scheme`, `report_clipboard`);
   `Term::clipboard` is the `OSC 52` half that queues onto both channels. **`report_*` is not the
-  whole producer set**: a query the engine can answer alone is written inline in `csi_dispatch` and
+  whole producer set**: a query the engine can answer alone is written inline in `csi_dispatch`
+  (`justerm-core/src/term/dispatch.rs`) and
   never becomes a method — DA1, DA2, DSR and DECRQM all queue that way. The split is *who holds the
   answer*: a colour is the consumer's, so it must call back in; a device identity is the engine's —
   and `OSC 52` is the sharpest case of the first, since the engine holds no clipboard *by design*

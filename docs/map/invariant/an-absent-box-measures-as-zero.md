@@ -168,7 +168,7 @@ because every value involved is finite and in range. The four measured shapes:
   content; on the **alt screen** a resize is a re-fit — *"rows dropped or added to reach the new size,
   nothing re-wrapped"* ([reflow](../territory/reflow.md), #567) — so a pane hidden while running a
   full-screen TUI loses rows with nothing to restore them from — and the same resize clears the
-  selection on **any** geometry change (`justerm-core/src/term.rs:1516`), whose comment had already
+  selection on **any** geometry change (`Term::resize` in `justerm-core/src/term.rs`), whose comment had already
   reasoned about *"a consumer that re-asserts its size every frame (a `fit()` loop)"* and required the
   exact no-op; a `2x1` floor is not one. Absence producing a *plausible* answer is the invariant's
   subject; this is the case where the plausible answer is also irreversible

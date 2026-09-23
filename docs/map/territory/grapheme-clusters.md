@@ -26,7 +26,7 @@ the decision has to be made per scalar, with no lookahead, against a cluster tha
   its default (#657, `examples/gen_engine_frame.rs`): feeding `e` + U+0301 to a fresh `Engine`
   produces `combining = {1: ['\u{301}']}` on the span. A zero-width mark does not change the cell's
   width, so it attaches to the base cell either way; what 2027 decides is whether a ZWJ / skin-tone /
-  flag / VS16 *sequence* collapses into one cell (`term.rs:91-94`).
+  flag / VS16 *sequence* collapses into one cell (`Term`'s `grapheme_clustering` field doc).
 - **The break decision is delegated to `unicode-segmentation`**, the full UAX #29 rule set, rather
   than reimplemented. What is bespoke is the *incremental* framing around it.
 - **Nothing on the join path may be O(the cluster's length)** (#867). The engine holds no break

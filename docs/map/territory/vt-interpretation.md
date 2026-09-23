@@ -264,11 +264,15 @@ for a terminal engine, that list is half the specification.
 
 ## Code
 
-- `justerm-core/src/term.rs` — the `Perform` implementation and every verb: `print`, `execute`,
-  `csi_dispatch`, `esc_dispatch`, `osc_dispatch`, `unhook`, `put_tab` / `put_back_tab` /
-  `put_forward_tabs`, and the
-  mode flags they read. `place_grapheme` is the print path below the charset translation, which
-  `repeat_last` re-enters; `repeat_anchor` carries the census that keeps the two in step
+- `justerm-core/src/term/dispatch.rs` — the `Perform` implementation: `print`, `execute`,
+  `csi_dispatch`, `esc_dispatch`, `osc_dispatch`, `unhook`; the DEC private modes
+  (`set_dec_private_mode`), the VT52 sub-parser (`vt52_dispatch`) and the OSC 8 id lookup
+  (`osc8_link_id`, `link_for_id`). A child of `term`, so it drives the write path's private methods
+  directly
+- `justerm-core/src/term.rs` — the verbs dispatch calls and the mode flags they read: `put_tab` /
+  `put_back_tab` / `put_forward_tabs`, and the write path, which #584 keeps in one file for
+  ADR-0025. `place_grapheme` is the print path below the charset translation, which `repeat_last`
+  re-enters; `repeat_anchor` carries the census that keeps the two in step
 - `justerm-core/src/lib.rs` — `Engine::feed`, which is only `parser.advance(&mut term, bytes)`; the
   `Parser` and `Term` are separate fields because `advance` borrows both mutably
 - `docs/architecture.md` §"Hidden VT state" — the catalogue of what is modelled, partly modelled and
