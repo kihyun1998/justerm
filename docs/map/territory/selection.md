@@ -257,6 +257,16 @@ Check these after changing this territory:
 
 ## Known holes / open
 
+- **`resolve`'s five `+ 1`s stay unguarded, which is sound only while every stored anchor arrives
+  through `Term::viewport_to_abs`** ([viewport](viewport.md)), where both axes are clamped (#660,
+  #671). Bounding there rather than at each `+ 1` keeps one site answering "what does a viewport
+  coordinate mean" instead of five for one rule. The writers were enumerated when #671 landed: the
+  three coordinate fixups move `.line` or write columns in range by construction, `resize`'s primary
+  branch re-clamps the reflowed points (#562) and its alt branch drops the selection (#660), and
+  `Term::resize` is the only writer of `grid.cols()`. **A fourth writer of `self.selection`** — one
+  that builds an `Anchor` without that function — would put `resolve` back in reach of its own
+  arithmetic, and nothing checks for one. The clamp is deliberately not `debug_assert`ed: pointer
+  input past the grid is ordinary (ADR-0026 D1).
 - **`SelectionController` remembers a selection core has dropped.** `hasSelection` is set on `begin`,
   while core clears the selection on a screen swap — so a Shift+click after leaving an
   alt-screen application extends nothing and selects nothing. Seen while working #902, which sidesteps
