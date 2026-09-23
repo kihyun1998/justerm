@@ -21,8 +21,8 @@
 ///
 /// A consumer surfaces invalid-regex with this rather than JS `RegExp`: the `regex` crate's grammar
 /// differs (no lookaround/backreferences, Unicode-aware `\w \d \b`), so a JS-side check would
-/// misjudge patterns and reproduce the D2 gap. Pattern-only (no `SearchOptions`) — the case flag
-/// changes only compile size, covered here by validating the worst case.
+/// misjudge patterns and bring back the silent empty result. Pattern-only (no `SearchOptions`) —
+/// the case flag changes only compile size, covered here by validating the worst case.
 pub fn is_valid_regex(pattern: &str) -> bool {
     regex::RegexBuilder::new(pattern)
         .case_insensitive(true)
@@ -56,8 +56,8 @@ pub struct SearchOptions {
     ///
     /// Caveats vs a JS `RegExp` (xterm.js): the `regex` crate has **no lookaround/backreferences**
     /// and its `\w \d \b` are **Unicode-aware** by default. An **invalid or unsupported pattern
-    /// yields no matches** (an empty result) rather than an error — the current API has no error
-    /// channel, so a consumer cannot distinguish a bad pattern from a genuine no-match.
+    /// yields no matches** (an empty result) rather than an error; call [`is_valid_regex`] to tell a
+    /// bad pattern from a genuine no-match.
     /// Smart-case (see [`case_sensitive`](Self::case_sensitive)) infers case from the *raw* pattern,
     /// so an uppercase metacharacter (`\B`, `\D`, `\x1B`…) can flip case-sensitivity — set
     /// `case_sensitive` explicitly, or use an inline `(?i)`/`(?-i)`, to be sure.

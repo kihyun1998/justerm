@@ -124,7 +124,9 @@ above does not touch it.
 - **Zero governing records** for the match model, smart-case, or the dialect — all of which a
   consumer must know exactly and can currently learn only from doc comments.
 - **The invalidate-vs-re-anchor rule is unrecorded.** It decides the coordinate-drift question for
-  every future piece of pushed state and exists only as a comment inside `Term::resize`.
+  every future piece of pushed state and exists only in comments — `term/search.rs`'s module doc
+  states it (a held match is query-derived, so it is dropped; what decides is what the consumer can
+  reproduce), and the write-path sites in `term.rs` repeat it at each call.
 - **…and it leaves a gap on the way back in, which #678 measured.** Invalidation drops what the
   engine holds; it says nothing about what the consumer hands back *after*. A consumer that
   re-designates by **position** — the shape `set_active_search_match` exists for — can return a

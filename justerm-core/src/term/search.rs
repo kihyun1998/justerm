@@ -13,12 +13,6 @@
 //! alt swaps set `selection = None` on the line above the call, since neither buffer's
 //! coordinates mean anything in the other). So the rule is about what is
 //! **reproducible by the consumer**, not about re-anchoring always being available.
-//!
-//! Visibility: the seven entry points are public API and stay `pub fn` — an inherent
-//! impl's methods are reached through the type, not the module path, so a private child
-//! module does not hide them. `invalidate_search_highlights` takes `pub(super)` because
-//! its callers are the write path in `term.rs`; `word_bounded` stays private because its
-//! only caller came with it.
 
 use unicode_width::UnicodeWidthChar;
 
