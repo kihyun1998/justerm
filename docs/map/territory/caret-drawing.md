@@ -26,9 +26,18 @@ about *how the caret looks* is decided here.
   alacritty's rule, with its default fraction (`0.15`) as the starting value. The consumer may
   override per-renderer via `setCursorThickness` — **reachable through the widget since #580**, as a
   `JustermRendererOptions` field plus a runtime setter.
-- **Shapes are rectangles, and a wide lead changes them.** A block caret over a width-2 glyph covers
-  the pair, which is why the geometry module reaches for `is_wide_lead` — the caret is one of the few
-  renderer concerns that has to know about pair structure.
+- **Shapes are rectangles, and a wide pair changes them.** The caret is a span and obeys the same
+  pair rule as every other span this crate paints (`pair::partner_at`): resting on either half of a
+  width-2 glyph it covers the whole glyph, and on the trailing spacer it moves back onto the lead —
+  which is why `cursor_span` returns an origin as well as a width (a width alone once forced "one
+  cell", #454). The references split three ways on the spacer case, so this crate's own rule decides
+  it rather than a tally ([a span, a highlight and a caret over a wide pair](../../agents/reference-facts.md#a-span-a-highlight-and-a-caret-over-a-wide-pair-454-verified-2026-08-10)).
+  A `Block` draws no rect — both references recolour the cell instead — and a stroke with no area
+  is dropped rather than emitted degenerate: alacritty lets a too-short cell produce a negative
+  height in `f32`, which would wrap to `u32::MAX` here. The stroke tracks the device cell, unlike
+  xterm's `dpr * cursorWidth` in CSS px, which gives a 32-px font the same hairline as a 12-px one.
+  `cell_under` is `#[cfg(test)]` (#465): the real test runs in GLSL, and this is its executable
+  statement, where `col < c.col + span` would overflow at the far edge.
 - **Focus-in re-anchors the blink phase, because an unfocused caret is parked rather than stopped**
   (#912). The gate makes `isVisible` return solid while blurred, but the phase clock keeps running
   underneath it from the last cursor move — so a focus that does not re-anchor flips straight to

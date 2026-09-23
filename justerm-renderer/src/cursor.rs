@@ -19,17 +19,8 @@ pub fn cursor_thickness(frac: f32, cell_w: u32) -> u32 {
 /// **The caret is a span, and it obeys the same pair rule as every other span this crate paints**
 /// ([`pair::partner_at`](crate::pair::partner_at)) — a caret resting on either half of a wide glyph
 /// covers the whole glyph. It therefore returns an *origin* as well as a width: a cursor on the
-/// trailing spacer moves back onto the lead, which a span alone cannot express. That is why the
-/// answer used to be "one cell" here (#454) — not a judgement about what should be drawn, but the
-/// only thing the old signature could say.
-///
-/// The references split three ways on a caret resting on a trailing spacer, so none of them
-/// arbitrates this: ghostty moves back a cell and sets `cursor_wide`
-/// (`renderer/generic.zig:2505-2523` @ `e6e26e1`), alacritty widens on `WIDE_CHAR` only and so
-/// paints the right half alone (`display/content.rs:138-142` @ `852e971`), and xterm.js takes
-/// `cell.getWidth()` — `0` on a spacer — leaving `x >= cursorX && x <= cursorX - 1`, an empty range
-/// that draws **no caret at all** (`WebglRenderer.ts:538-549` @ `699f553`). What decides it is this
-/// crate's own rule rather than a tally.
+/// trailing spacer moves back onto the lead. The references split three ways on that case, so
+/// this crate's rule decides it (`docs/map/territory/caret-drawing.md`).
 ///
 /// An out-of-range cursor pairs with nothing and spans one cell; it is made inert by the callers,
 /// which only ever paint cells inside the grid.
@@ -132,11 +123,8 @@ pub fn guarded_cursor_colors(
 /// `col >= c.col && col < c.col + span`: the sum overflows `u32` at the far edge and only `&&`'s
 /// short-circuit kept that unreachable. Subtraction cannot wrap.
 ///
-/// **Test-only by design** (#465): nothing in the Rust path calls it — the real test runs in GLSL.
-/// It exists as an *executable* statement of what the shader must do, so the edge cases above are
-/// asserted in Rust instead of being eyeballed in a shader string. `#[cfg(test)]` states that
-/// honestly; before #465 narrowed the modules, `pub` hid it from dead-code analysis and the intent
-/// was documented only in this comment.
+/// **Test-only by design** (#465): the real test runs in GLSL, and this is its executable
+/// statement, so the edge cases above are asserted in Rust.
 #[cfg(test)]
 pub(crate) fn covers(cursor: &Cursor, span: u32, col: u32, row: u32) -> bool {
     row == cursor.row && col.checked_sub(cursor.col).is_some_and(|d| d < span)
