@@ -1,50 +1,13 @@
 //! The grid registry — which terminal grids this renderer holds, and which of them are **drawn**
 //! (#770, ADR-0021).
 //!
-//! Multi-viewport (#287) multiplies the per-grid tier and nothing else, so this module owns the
-//! *multiplication* and stays ignorant of what a grid is: the payload is a type parameter, which is
-//! what lets the whole registry be host-tested while `webgl.rs` — the only place that knows a grid
-//! carries GPU state — stays `wasm32`-only (the crate's standing pure/glue split, #280).
+//! Generic over the payload, so the registry is host-tested while `webgl.rs` — the only place that
+//! knows a grid carries GPU state — stays `wasm32`-only (#280).
 //!
-//! ## Registered is not drawn
-//!
-//! A registered grid that is not drawn is a **state**, not an absence. The consumer's adoption
-//! design requires a hidden workspace's grid to stay registered with its viewport cleared
-//! (penterm's `terminal-single-context-adoption` PRD, decision 3 — *"viewport-as-truth: a grid with
-//! a viewport is drawn; hidden = no viewport, resources persist"*), because dropping and re-adding
-//! it would reintroduce the re-attach cost Epic #287 exists to remove.
-//!
-//! So the drawn/not-drawn distinction is carried by `Option<Viewport>` and nothing else. Ghostty
-//! converges on the state and diverges on its representation: it keeps a surface registered while
-//! invisible and gates *both* the draw and the CPU cell rebuild on an explicit `flags.visible`
-//! boolean, retaining the rect (`src/renderer/Thread.zig:110`, `:528-529`, `:646-648`). It can
-//! retain the rect because a ghostty surface owns the OS window that produces it; here the rect's
-//! producer is the consumer's DOM box, which is **unmeasurable while hidden** (`display:none` reads
-//! back a zero rect), so a retained rect would be a copy that can be wrong on the way back. The
-//! consumer re-supplies it on show — which it must anyway, since the layout it is coming back into
-//! is why it was hidden.
-//!
-//! ## Identity
-//!
-//! A [`GridId`] is handed across the wasm boundary as a bare number, so the registry can never
-//! reuse one: a stale handle in JS must fail loudly rather than silently address whichever grid
-//! landed in the freed slot. Ghostty needs no ids at all — its registry is a list of pointers and
-//! removal is a `swapRemove` (`src/App.zig:172`, `:200-202`) — which is a shape that does not cross
-//! a language boundary, not a shape we chose against.
-//!
-//! ## The registry starts empty (#773)
-//!
-//! S2 (#770) built this around an implicit grid registered at construction, so that every export
-//! predating the per-grid setters had something to act on while the expand phase ran. S5 removes
-//! that grid rather than merely un-privileging it: a surface holding two terminals would otherwise
-//! hold *three* grids, and the third would paint the whole canvas underneath the two the consumer
-//! asked for. So a renderer holds no grid until [`register`](GridRegistry::register), every grid is
-//! removable, and every grid's rect has the same producer — the consumer's measured box.
-//!
-//! Ids therefore start at **1**, and `0` is permanently invalid. It costs nothing and it buys the
-//! module's own stated property one case more: a JS number that was never assigned reads as `0`,
-//! and a `0` that addresses the first-registered grid would be exactly the silent retarget ids are
-//! not reused to prevent.
+//! A registered grid with no viewport is a **state** — hidden, every byte resident — carried by
+//! `Option<Viewport>` alone; the rect is deliberately not retained. Ids are never reused and start
+//! at **1** (`0` is permanently invalid), so a stale or never-assigned JS number fails loudly. The
+//! registry starts empty (#773). Why each: `docs/map/territory/multi-viewport.md`.
 
 /// A handle to one registered grid. Opaque to the consumer, which holds it as a number.
 ///
@@ -82,20 +45,8 @@ impl Viewport {
     /// The same rect as `gl.viewport` / `gl.scissor` take it: y measured from the drawing buffer's
     /// **bottom** edge instead of its top (#771).
     ///
-    /// The flip lives here because the *space* does. This renderer's rect API is device px with a
-    /// top-left origin — the space a consumer measures a DOM box in, and the space `cell_width()`
-    /// already declares for anything addressing the drawing buffer — so converting to GL's is a
-    /// derivation on a value this crate produced, and a derivation belongs with its producer.
-    ///
-    /// **It is not because the consumer could not do it.** `resize_surface` re-sets `canvas.width`/`height`
-    /// down to the granted buffer (#337 couples the CSS box to them), so `canvas.height` and this
-    /// crate's `size.1` never disagree and a consumer-side flip would compute the same number. The
-    /// reason to keep it here is that a second site computing it is a second site to keep true.
-    ///
-    /// Note that three.js pushes it outward: `renderer.setViewport(x, y, w, h)` passes straight to
-    /// `gl.viewport` and its multiple-views example computes `bottom` itself
-    /// (`examples/webgl_multiple_views.html:264`). It can, because its caller supplies fractions of
-    /// a canvas the renderer itself scales; ours supplies a measured box.
+    /// Deliberately here rather than at the consumer: the top-origin space is this crate's own
+    /// (`docs/map/territory/multi-viewport.md`).
     pub fn gl_rect(&self, buffer_height: i32) -> (i32, i32, i32, i32) {
         (
             self.x,
@@ -135,18 +86,15 @@ struct Entry<T> {
 
 /// Every grid this renderer holds, in registration order.
 ///
-/// Order is stable across removal (`Vec::remove`, not `swap_remove`) so the draw loop #771 adds
-/// visits grids in a deterministic order — a proof that reads pixels cannot tell "grid B drew over
-/// grid A" from "the order changed" if the order is free to move. `N` is a terminal count, so the
-/// linear scan a stable order costs is not a scan worth indexing away.
+/// Order is deliberately stable across removal (`Vec::remove`, not `swap_remove`): the draw loop
+/// (#771) paints in it, and a pixel proof must be able to tell z-order from reordering.
 pub struct GridRegistry<T> {
     entries: Vec<Entry<T>>,
     next_id: u32,
 }
 
 impl<T> GridRegistry<T> {
-    /// Start an **empty** registry — see the module doc for why S5 removed the implicit grid
-    /// rather than merely un-privileging it.
+    /// Start an **empty** registry (#773).
     pub fn new() -> Self {
         GridRegistry {
             entries: Vec::new(),
@@ -185,12 +133,7 @@ impl<T> GridRegistry<T> {
     }
 
     /// Stop drawing a grid **without unregistering it**: every byte of its state stays resident, so
-    /// coming back is a placement rather than a rebuild.
-    ///
-    /// Every grid is hideable, and since #773 that includes the first one registered: a rect this
-    /// registry holds has exactly one producer — the consumer's measured box — so there is no
-    /// longer a grid whose placement someone else owns, and therefore no grid that would report
-    /// itself not drawn while still painting.
+    /// coming back is a placement rather than a rebuild. Every grid is hideable.
     pub fn clear_viewport(&mut self, id: GridId) -> Result<(), RegistryError> {
         let at = self.index_of(id)?;
         self.entries[at].viewport = None;
@@ -205,11 +148,9 @@ impl<T> GridRegistry<T> {
     /// Where a grid draws, or `None` if it is registered and not drawn (#771's draw loop reads
     /// this, once per slot per frame).
     ///
-    /// **Addressed by slot, not by id.** The loop visits `0..len()`, so an id lookup per grid per
-    /// frame would be a linear scan inside a linear walk for nothing; a slot is stable for as long
-    /// as the frame it is read in, because nothing removes a grid mid-frame. Every consumer-facing
-    /// method still takes an id — a slot is an internal address and is never handed across the wasm
-    /// boundary, where a stale one *would* silently retarget (which is why ids are not reused).
+    /// **Addressed by slot, not by id**: the loop visits `0..len()`, and a slot is stable within a
+    /// frame because nothing removes a grid mid-frame. A slot is internal and never crosses the wasm
+    /// boundary; every consumer-facing method takes an id.
     pub fn viewport_at(&self, at: usize) -> Option<Viewport> {
         self.entries[at].viewport
     }

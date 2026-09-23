@@ -62,6 +62,40 @@ warns about, so prefer `## Code` over it if the two ever disagree again.)
   > record says.** Two of the three differed, and the middle one differed in kind: the sharing axis is a
   > font *configuration*, not a surface. Corrected in #768 along with the two blast-radius entries
   > below — all three came from one overloaded noun (next bullet).
+- **The two registries' own rules** (`registry.rs`, `config_registry.rs`), each a choice with a reason:
+  - *Registered-not-drawn is a state carried by `Option<Viewport>` alone, and the rect is not
+    retained.* The consumer's adoption design keeps a hidden workspace's grid registered with its
+    viewport cleared (penterm's `terminal-single-context-adoption` PRD, decision 3: *"viewport-as-truth:
+    a grid with a viewport is drawn; hidden = no viewport, resources persist"*), since dropping and
+    re-adding it is the re-attach cost the epic removes. Ghostty keeps an explicit visible flag and
+    retains the rect because its surface owns the OS window that produces it; here the rect's
+    producer is a DOM box that reads back zero while hidden, so a retained rect would be a copy that
+    can be wrong on the way back — and the consumer must re-supply it on show anyway.
+  - *Grid ids are never reused and start at 1.* A `GridId` crosses the wasm boundary as a bare number,
+    so a stale handle must fail loudly rather than address whatever landed in a freed slot; `0` is
+    permanently invalid because a JS number never assigned reads as `0`. The draw loop addresses grids
+    by *slot*, which is stable within a frame and never handed across the boundary. A `ConfigId` is
+    never reused for the same reason, though it never crosses the boundary at all.
+  - *Registration order is stable across removal* (`Vec::remove`, not `swap_remove`), so a pixel
+    proof can tell "grid B drew over grid A" from "the order changed". `N` is a terminal count, so the
+    linear scan is not worth indexing away.
+  - *`Viewport::gl_rect` owns the y-flip* because the top-origin device-px space is this crate's own,
+    and a derivation belongs with its producer — not because the consumer could not compute it
+    (`resize_surface` re-sets `canvas.width`/`height` to the granted buffer, #337, so they agree); a
+    second site computing it is a second site to keep true. three.js's caller computes it instead,
+    because it supplies canvas fractions ([drawing N views](../../agents/reference-facts.md#drawing-n-views-on-one-canvas--the-mechanism-reference-and-the-two-places-it-does-not-reach-771-verified-2026-08-19)).
+  - *A config key stores the `f32` selectors as bit patterns, with `-0.0` normalised to `0.0`* —
+    equal as floats, they would otherwise key two byte-identical atlases. A non-finite selector
+    cannot arrive (`set_font_size` refuses it, `set_letter_spacing` maps it to `0.0`,
+    `set_line_height` clamps to `>= 1`), and one that did would key its own entry, not corrupt a
+    shared one.
+  - *A shared entry is never mutated to serve one grid* — ghostty's shared grid is immutable for the
+    same reason ([resource tiering](../../agents/reference-facts.md#multi-viewport-resource-tiering--how-the-one-reference-that-shares-font-machinery-splits-it-768-verified-2026-08-18)). A setting change
+    joins a different entry; in-place mutation is for changes true of every entry at once (a DPR
+    change, a context restore). An entry is destroyed the moment its refcount reaches zero, as
+    ghostty's `deref` does, rather than pooled — a closed terminal should not hold an atlas open
+    against the next font change — and the registry starts empty (#773), since a bake before any grid
+    asks is a bake charged to nobody.
 - **"Surface" means one thing here and the opposite in the references — the single most reliable way
   to get this territory wrong.** ADR-0021's `TerminalSurface` is **one per app**: the canvas, the
   context, the atlas registry and the single frame loop. Ghostty's `Surface` is **one per terminal**,

@@ -1,54 +1,21 @@
 //! The configuration registry — which font configurations this renderer holds an atlas for, and
 //! how many grids are standing on each (#772, ADR-0021 D2).
 //!
-//! Six terminals in the same font hold **one** glyph atlas rather than six. That is the recurring
-//! cost Epic #287 is justified on: it is paid at any terminal count, independent of the browser's
-//! context ceiling.
+//! Grids in the same font configuration share **one** glyph atlas. Generic over the payload, like
+//! the [grid registry](crate::registry), so it is host-tested off `wasm32` (#280).
 //!
-//! Like the [grid registry](crate::registry), this module owns the *multiplication* and stays
-//! ignorant of what it multiplies — the payload is a type parameter, so `webgl.rs` remains the only
-//! place that knows a configuration owns an atlas texture and a rasteriser, and the whole of this is
-//! host-testable off `wasm32` (the crate's standing pure/glue split, #280).
-//!
-//! ## What is in the key, and what is deliberately not
-//!
-//! ADR-0021 describes the key as *"(font family, size, spacing, DPR)"*. Three of those four are
-//! here; **DPR is not**, and the omission follows from the record's own sentences rather than
-//! disagreeing with them. One canvas means one drawing buffer and one `devicePixelRatio`, so the DPR
-//! is *globally constant across the registry at any instant* — no two live entries can differ in it.
-//! A component every key shares cannot separate two keys, so putting it in would buy nothing and
-//! cost something real: a DPR change would have to rewrite **every** key, and until it did, every
-//! entry's key would be a lie. What a DPR change actually needs is what ADR-0021 already says it is
-//! — *"re-keying one entry and rebuilding all of them are separate paths"* — so the DPR lives on the
-//! global tier and the registry is rebuilt in place against it.
-//!
-//! Ghostty **does** hash the DPI, in `DesiredSize.xdpi`/`ydpi` (`src/font/face.zig:45-52`, keyed at
-//! `SharedGridSet.zig:566`), and that does not transfer for a reason already recorded in
-//! `docs/map/territory/multi-viewport.md`: a ghostty `Surface` is an OS window that can be dragged
-//! onto a monitor of its own density, so its DPI genuinely *is* per-surface. N viewports on one
-//! canvas have one density between them.
-//!
-//! ## Immutability, and what it is actually protecting
-//!
-//! A shared entry is **never mutated in place** to serve one grid's changed setting — ghostty states
-//! the reason in one line: *"increasing the font size in one would increase it in all"*
-//! (`src/font/SharedGrid.zig:13-18`). A configuration change means *joining a different entry*, which
-//! is what [`ConfigRegistry::find`] + [`ConfigRegistry::insert`] + [`ConfigRegistry::release`] are
-//! for. In-place mutation is reserved for changes that are true of every entry at once — a DPR
-//! change, a context restore — where "it would change in all" is the correct outcome rather than the
-//! bug.
+//! Deliberately: the DPR is **not** in the key (one canvas has one density — it lives on the global
+//! tier, and a density change rebuilds every entry in place), and a shared entry is **never mutated
+//! in place** for one grid — a setting change joins a different entry via
+//! [`ConfigRegistry::find`] + [`ConfigRegistry::insert`] + [`ConfigRegistry::release`]. Why, and the
+//! ghostty comparison: `docs/map/territory/multi-viewport.md`.
 
 use crate::css_font::FontWeight;
 
 /// A font configuration: the seven per-grid selectors that decide which atlas serves a grid.
 ///
-/// The `f32` selectors are stored as **bit patterns** so the key can be compared and hashed.
-/// A `-0.0` is normalised to `0.0` first: the two compare equal as floats and would otherwise key
-/// two byte-identical atlases, which is exactly the duplication this registry exists to remove.
-///
-/// A non-finite selector cannot arrive — `set_font_size` refuses one, `set_letter_spacing` maps it
-/// to `0.0`, `set_line_height` clamps to `>= 1` — and if one ever did it would key an entry of its
-/// own rather than corrupt a shared one, since the bits are compared and never the floats.
+/// The `f32` selectors are stored as **bit patterns** so the key can be compared and hashed, with
+/// `-0.0` normalised to `0.0` first (`docs/map/territory/multi-viewport.md`).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ConfigKey {
     font_family: String,
@@ -125,18 +92,16 @@ impl ConfigKey {
 
 /// A handle to one configuration entry.
 ///
-/// Never reused, for the same reason a [`GridId`](crate::registry::GridId) is not: a stale handle
-/// must be unable to address whichever entry landed in a freed slot. Unlike a grid id this one never
-/// crosses the wasm boundary — a grid holds it, and a grid is the only thing that can.
+/// Never reused, like a [`GridId`](crate::registry::GridId). Held only by a grid; it never crosses
+/// the wasm boundary.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct ConfigId(u32);
 
 struct Entry<T> {
     id: ConfigId,
     key: ConfigKey,
-    /// How many grids select into this entry. Reaching zero destroys it — immediately, as ghostty's
-    /// `deref` does (`src/font/SharedGridSet.zig:393-413`), rather than parking it in a free pool: a
-    /// terminal that closes should not hold an atlas open against the next font change.
+    /// How many grids select into this entry. Reaching zero destroys it immediately — deliberately
+    /// not pooled.
     refs: u32,
     value: T,
 }
@@ -155,9 +120,7 @@ impl<T> Default for ConfigRegistry<T> {
 
 impl<T> ConfigRegistry<T> {
     /// Start an **empty** registry — a renderer holds no configuration until a grid asks for one
-    /// (#773). Until S5 this started with one entry, because construction registered an implicit
-    /// grid that had to be born somewhere; with no grid there is nothing to key an atlas by, and
-    /// baking one on the chance that a grid arrives would be a bake charged to nobody.
+    /// (#773).
     pub fn new() -> Self {
         ConfigRegistry {
             entries: Vec::new(),
@@ -222,9 +185,8 @@ impl<T> ConfigRegistry<T> {
         &self.entries[self.slot(id)].key
     }
 
-    /// How many distinct configurations are live — i.e. how many atlases exist. Ghostty exposes the
-    /// same number for the same reason (`SharedGridSet.count`, `src/font/SharedGridSet.zig:81-87`):
-    /// sharing is only a claim until something can count it.
+    /// How many distinct configurations are live — i.e. how many atlases exist. Sharing is only a
+    /// claim until something can count it.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
