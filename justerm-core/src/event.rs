@@ -78,11 +78,12 @@ pub enum Terminator {
     /// `ESC \` (ST), the terminator ECMA-48 documents and xterm prefers.
     ///
     /// The default, and what an OSC ended by **any other byte that ends one**
-    /// resolves to. Those streams are real rather than theoretical: `vte` ends a
+    /// resolves to. That stream is real rather than theoretical: `vte` ends a
     /// string on three byte classes — `BEL`, the cancel pair `CAN`/`SUB` (`0x18` /
     /// `0x1a`), and a bare `ESC` opening the next sequence — and only the first is
-    /// reported as bell-terminated. So a cancelled query is still relayed, and
-    /// answered ST.
+    /// reported as bell-terminated. A query ended by a bare `ESC` is relayed and
+    /// answered ST; one ended by `CAN`/`SUB` is cancelled, as in xterm, and never
+    /// reaches the consumer.
     ///
     /// **Read "any other byte that ends one" strictly: the 8-bit C1 `ST` (`0x9C`) is
     /// not a fourth class.** It does not end the string, so there is no event

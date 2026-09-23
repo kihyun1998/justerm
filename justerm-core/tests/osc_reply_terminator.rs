@@ -202,24 +202,23 @@ fn every_slot_of_one_stacked_query_carries_that_sequences_terminator() {
 /// byte class reaches needs this.
 #[test]
 fn a_query_ended_without_a_terminator_is_answered_st() {
-    for (label, stream) in [("bare ESC", b"\x1b]11;?\x1bc".as_slice())] {
-        let mut e = Engine::new(80, 24);
-        e.feed(stream);
-        let events = e.drain_events();
-        assert_eq!(
-            events,
-            vec![TermEvent::QueryBackground {
-                terminator: Terminator::St
-            }],
-            "{label}: the query is still relayed, carrying ST"
-        );
-        answer(&mut e, &events[0]);
-        assert_eq!(
-            e.drain_replies(),
-            b"\x1b]11;rgb:1e/1e/2e\x1b\\",
-            "{label}: answered ST"
-        );
-    }
+    // A bare `ESC` — here opening `ESC c` — ends the query without a terminator.
+    let mut e = Engine::new(80, 24);
+    e.feed(b"\x1b]11;?\x1bc");
+    let events = e.drain_events();
+    assert_eq!(
+        events,
+        vec![TermEvent::QueryBackground {
+            terminator: Terminator::St
+        }],
+        "the query is still relayed, carrying ST"
+    );
+    answer(&mut e, &events[0]);
+    assert_eq!(
+        e.drain_replies(),
+        b"\x1b]11;rgb:1e/1e/2e\x1b\\",
+        "answered ST"
+    );
 }
 
 /// `CAN` and `SUB` cancel the OSC they end, so a cancelled query is neither

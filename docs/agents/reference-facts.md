@@ -2194,6 +2194,8 @@ the grounds for a deliberate divergence rather than a convergence.
 | **ghostty states the malformed rule as a comment beside its test** — *"Read requests and malformed base64 must never reach the callback."* The strongest single citation for dropping rather than clearing | ghostty | `src/terminal/c/terminal.zig:2961` |
 | **`vte` deletes C0 bytes inside an OSC string**, which is the only reason a *strict* decoder can accept the ordinary shell idiom: `base64` wraps its output at 76 columns, and the `LF`/`CR` never reach the handler. A space is **not** in that range and does reach it | vte 0.15.0 (registry) | `src/lib.rs:408` |
 | **`vte` ends an OSC on CAN/SUB by *dispatching* it rather than cancelling**, where ECMA-48 makes CAN cancel — so an interrupted payload can arrive complete and truncated. Pre-existing at the parser boundary and shared with alacritty | vte 0.15.0 (registry) | `src/lib.rs:412` |
+| In the OSC string state `CAN` and `SUB` map to `CASE_CAN` / `CASE_SUB`, which `ResetState` without calling `do_osc` — the sequence is cancelled, citing DEC 070 (#970, verified 2026-09-23) | xterm | `VTPrsTbl.c:7652`; `charproc.c:3612`, `:3640` |
+| The OSC handler's `end(success)` is false for `0x18`/`0x1a`, so a cancelled OSC is not applied | xterm.js | `src/common/parser/EscapeSequenceParser.ts:894` |
 
 **Reach of the multi-character target, measured on the RHEL 9 VM (2026-09-02), because the rows above
 leave it open.** `Ms` is present under `xterm-256color` and `tmux-256color` and absent under
@@ -2404,8 +2406,9 @@ application only sends once it is being answered could have arrived differently:
 `vim_closed_loop.raw` contributes 2 BEL and 0 ST like every other vim recording. And `vte` ends an OSC on **three**
 byte classes, not two: `BEL`, the cancel pair `CAN`/`SUB`, and a bare `ESC` opening the next sequence
 (`vte-0.15.0/src/lib.rs:411`, `:415`, `:420`; the BEL test is `:587`). Only the first is reported as
-bell-terminated, so a cancelled query still reaches the consumer and is answered ST — which is what
-xterm hardcodes for that shape (`charproc.c:8964`).
+bell-terminated. A query ended by a bare `ESC` is answered ST — which is what xterm hardcodes for that
+shape (`charproc.c:8964`). One ended by `CAN`/`SUB` reached the consumer too until #970, which cancels
+it as xterm does (the rows below the `vte` dispatch row in the `OSC 52` table).
 
 #### `OSC 4`'s empty *spec* splits 2–2, and xterm's trigger **is** available to justerm
 

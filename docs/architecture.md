@@ -984,7 +984,8 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   relayed** (#836): every `Query…` event carries a `Terminator`, and the matching `report_*` takes it
   back, so a reply ends with the byte its query ended with. The engine stores nothing — the fact
   rides the event, because `drain_events` is a batch and two queries can be outstanding at once.
-  An OSC ended by `CAN`/`SUB` or by a bare `ESC` is not bell-terminated and resolves to ST.
+  An OSC ended by a bare `ESC` is not bell-terminated and resolves to ST; one ended by `CAN`/`SUB` is
+  cancelled and has no effect at all (#970), as in xterm.
 - **A title is not just an event — XTWINOPS 22/23 make it retained state with a stack.** The engine
   parses OSC 0/1/2 and *forwards* the string; that is enough until an application asks for the
   previous title back. `CSI 22 t` pushes and `CSI 23 t` pops, so the engine must **retain** the
