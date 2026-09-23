@@ -37,7 +37,12 @@ four, then five, because a count is a status claim with nothing gating it (the s
   the only limit anyone can name**, which is the argument `MAX_COLUMNS` is already written from
   (`serialize.rs`, `MAX_COLUMNS = u16::MAX` "for exactly that representational reason"). Reach for
   this one only when the producer is an untrusted entry point; against a trusted caller it is a
-  silent data loss with no defect behind it.
+  silent data loss with no defect behind it. `MAX_COLUMNS` / `MAX_ROWS` are the geometry case,
+  measured before the clamp existed: `Engine::new(70_000, 2)` built a 70 000-column grid whose frame
+  declared `cols = 4464` and decoded `Ok`, so a consumer laid out 4464 columns of a 70 000-column
+  screen with nothing reporting the difference. No reference bounds a grid this way, which is
+  expected rather than a divergence — none serializes a grid, so none has a header field to
+  overflow. A 4K display at a very small font is roughly 550 columns.
 
 ## Why it is cross-cutting
 

@@ -50,11 +50,30 @@ for a terminal engine, that list is half the specification.
   showed the `hook` half of it could never fail and it was removed. **The member that makes this a
   rule rather than a list of dispatch methods is `resize`**, which is not a parser callback at all
   and still invalidates the retention. Anything new that moves the cursor or reflows owes a clear,
-  and nothing enforces it; the census lives on `Term::repeat_anchor`.
+  and nothing enforces it. **The census** (the anchor is `Term::repeat_anchor`, the `(row, col)`
+  of the last printed cluster's lead cell): *set* by the three sites that give a cell content, all
+  reached through `place_grapheme`, each returning where it wrote; *cleared* by `execute`,
+  `esc_dispatch`, `osc_dispatch`, `unhook`, by `csi_dispatch` (which takes it up front and lets
+  `REP` disarm itself) and by `resize`, whose reflow moves the cell out from under it. `print` clears
+  only on its zero-cell path; `hook` and `put` do not, because nothing that could read it arrives
+  before `unhook` does.
+  **The anchor must name a cell that holds the cluster.** A promotion at the last column relocates
+  the cluster to the next row (#303), so the join anchors on where it landed, not where it was
+  joined — anchored on the vacated column, `REP` repeats the blanks `vacate_for_wrap` left (pinned by
+  `rep_after_a_promotion_relocated_the_cluster_repeats_the_cluster`). For a while
+  `Term::cursor_cluster_col` read the anchor too, because the deferred-wrap flag could not express a
+  pin under `?7l` (#865); #869 fixed the flag and that reader went back to it. The constraint is
+  `REP`'s own, so the second reader leaving is no permission to undo it. The grapheme is read back
+  from the cell rather than stored, which keeps the repeated unit in step with the cell model; the
+  *position* is recorded because it cannot be re-derived — with autowrap off the cursor reaches the
+  last column both by filling it and by advancing onto it, and an earlier guess
+  (`pending_wrap || (!autowrap && col + 1 == cols)`) repeated an unrelated `Z` on
+  `?7l` + `ZZZZZ` + `CUP` + `abcd` + `CSI 1 b`.
   **And the enumeration cannot be completed against `vte` 0.15 at all**: `State::CsiIgnore`
   returns to ground at `src/lib.rs:222` without dispatching, and `State::DcsIgnore` never
   calls `hook`/`unhook`, so a malformed `CSI 1 ? b` or `DCS 1 ? q … ST` ends with no
-  callback for the engine to hang a clear on. Measured, not derived. What bounds the
+  callback for the engine to hang a clear on (`CSI 1 ? b`, `CSI SP 1 p` and `CSI ? ? m` all reach
+  `CsiIgnore`; each gives 4 dashes after `-` where xterm gives 1). Measured, not derived. What bounds the
   consequence is the *shape* of what is retained: a recorded **position** degrades to
   repeating the genuinely last-printed grapheme, where the cursor-derived guess this
   started with repeated whatever happened to sit in the last column.
@@ -78,6 +97,8 @@ for a terminal engine, that list is half the specification.
   [`reference-facts.md`](../../agents/reference-facts.md). **This is the rare entry that is
   *deliberately absent* rather than not-reached-yet** — the distinction "Known holes" below says
   nothing preserves except prose, which is why it is prose here.
+- **DEC Special Graphics maps `` ` ``..`~` and leaves `_` (0x5F) a literal underscore** (#62),
+  matching xterm.js and alacritty rather than the strict-DEC reading of 0x5F as blank.
 - **Modes are hidden state the engine owns and reports nowhere.** Origin (DECOM), autowrap (DECAWM),
   insert (IRM), newline (LNM), reverse wraparound, bracketed paste, synchronized output,
   colour-scheme updates, grapheme clustering — each changes what a later byte *means*.
@@ -333,7 +354,7 @@ for a terminal engine, that list is half the specification.
 - `justerm-core/src/term.rs` — the verbs dispatch calls and the mode flags they read: `put_tab` /
   `put_back_tab` / `put_forward_tabs`, and the write path, which #584 keeps in one file for
   ADR-0025. `place_grapheme` is the print path below the charset translation, which `repeat_last`
-  re-enters; `repeat_anchor` carries the census that keeps the two in step
+  re-enters; `repeat_anchor` is the anchor the census above keeps in step
 - `justerm-core/src/lib.rs` — `Engine::feed`, which is only `parser.advance(&mut term, bytes)`; the
   `Parser` and `Term` are separate fields because `advance` borrows both mutably
 - `docs/architecture.md` §"Hidden VT state" — the catalogue of what is modelled, partly modelled and

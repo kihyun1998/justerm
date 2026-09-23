@@ -143,6 +143,17 @@ status.
 - **Split of labour** — `src/selection.rs` holds types only (75 lines). The cell-aware logic (text
   extraction, range clipping) lives in `src/term/selection.rs`, where the cells are reachable —
   moved out of `term.rs` in #587.
+- **`DEFAULT_WORD_SEPARATORS` is alacritty's `SEMANTIC_ESCAPE_CHARS` verbatim plus U+3000**
+  (`alacritty_terminal/src/term/mod.rs:45` @ `852e971`): space, tab and a punctuation set that
+  omits `.`, `/` and `-` so a path or URL stays one word. Two properties are load-bearing. **It is a
+  literal set, not the Unicode `White_Space` property** — a `char::is_whitespace()` predicate would
+  end a word at the four `Line_Break=GL` (glue) spaces U+00A0, U+2007, U+202F and U+205F, whose
+  purpose is "do not break here"; a locale-formatted `1<NNBSP>234` double-clicked as `1`. All three
+  references are literal sets for the same reason. **U+3000 is justerm's one divergence from every
+  reference default**: it is the only East-Asian-Wide codepoint `White_Space` accepts (measured over
+  U+0000–U+10FFFF), so on alacritty and xterm.js `　abc` is one word. It was once kept on the ground
+  that core had no injection point; that ground is gone, so it survives as a default a consumer
+  wanting reference-exact behaviour removes.
 
 ## Code
 

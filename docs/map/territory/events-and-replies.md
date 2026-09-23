@@ -258,6 +258,18 @@ nothing about it appears in the frame.
   `justerm-wasm-decode` is their proper home; `TermEvent` crosses no decoder lane — it arrives on a
   side channel the embedder implements, whose only type declaration is this package's — so a string
   union here is the right home.
+- **`MAX_CLIPBOARD_BASE64` (16 MiB) drops an over-long `OSC 52` whole, where `MAX_COMMAND_TEXT`
+  truncates** (#828) — a prefix of a command is a usable answer, while a prefix of a clipboard is
+  text the user pastes believing it is what they copied; an ignored copy is visible the moment they
+  paste, a truncated one is not. It refuses the *second* allocation (the rejoin) and everything
+  downstream; the decoded `Vec` is a third, and the `String` is not a fourth, since
+  `String::from_utf8` reuses the buffer it is given. **It does not bound the queue** — a consumer
+  that does not drain accumulates stores at up to this size each, enlarging the unbounded-queue hole
+  below by roughly three orders of magnitude over the next-largest payload. It is sized so no real
+  copy reaches it: 16 MiB of base64 is ~12 MiB of text, past a whole scrollback of
+  `tmux set-buffer`. Neither reference has a cap to import — alacritty has none, and ghostty's
+  `MAX_BUF = 2048` is an inline-buffer threshold with an allocator path past it
+  (`src/terminal/osc.zig:298`) — so the number is justerm's own.
 
 ## Code
 

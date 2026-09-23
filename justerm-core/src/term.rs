@@ -79,72 +79,21 @@ pub struct Term {
     /// One flag per column: is there a tab stop here? Explicit per-column state
     /// (HTS sets, TBC clears), not a fixed modulo. Default = every 8th column.
     tabs: Vec<bool>,
-    /// Which characters end a word for Word (semantic) selection — **consumer policy**,
-    /// not engine state (ADR-0017). Defaults to [`DEFAULT_WORD_SEPARATORS`]; replaced
-    /// through `set_word_separators`, which is also where the `' '` floor is enforced.
-    ///
-    /// Being *policy* is what puts it on the short list `full_reset` carries across RIS,
-    /// beside `replies` and `events`: `ESC c` resets the terminal's state, and a
-    /// consumer's configuration is not that. All three references survive RIS here by
-    /// construction rather than by remembering to — alacritty's `reset_state` never
-    /// touches `self.config`, xterm.js holds it in `OptionsService`, and ghostty passes
-    /// the set in per call.
+    /// Which characters end a word for Word selection — consumer policy (ADR-0017), so it
+    /// survives RIS. Defaults to [`DEFAULT_WORD_SEPARATORS`]; replaced through
+    /// `set_word_separators`, which enforces the `' '` floor.
     word_separators: String,
-    /// The window title the application last set (OSC 0/2), retained so that a
-    /// title *pop* has something to restore (#823). Until XTWINOPS 22/23 landed
-    /// the engine forwarded the string and forgot it, which is exactly why a pop
-    /// could not be answered: a party that does not know what it is stacking
-    /// cannot maintain a stack, and the consumer cannot do it either — it holds
-    /// a frame and an event queue and never sees that a pop was requested.
-    ///
-    /// This is **terminal state the application owns**, so it dies on RIS. It
-    /// needs no entry in `full_reset`'s copy-back list — the wholesale rebuild
-    /// drops it, which is the behaviour alacritty spells out (`title_stack =
-    /// Vec::new()` in its `reset_state`). Note it is a *fifth* kind for the RIS
-    /// invariant note's table, which sorts fields into configuration / buffer
-    /// coordinate / pending obligation / id counter: a retained title is none of
-    /// those, and it dies because the application wrote it, not the embedder.
+    /// The window title the application last set (OSC 0/2), retained so a title pop has
+    /// something to restore (#823). Application state, so it dies on RIS:
+    /// `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md`.
     window_title: String,
-    /// The icon name, the second axis XTWINOPS addresses (#823). Narrower than
-    /// it looks: **OSC 1 is not parsed**, so the only thing that ever writes
-    /// this is OSC 0, which sets both axes at once. It is retained and stacked
-    /// anyway so that mixed push/pop sequences keep the two axes aligned — the
-    /// engine has no icon-name event, so restoring one has no observable output
-    /// today. That asymmetry is deliberate and stated rather than an oversight;
-    /// xterm.js takes the same route (`setIconName` fires nothing).
-    ///
-    /// **The obligation that outlives this comment: no test can observe this
-    /// field, so a fourth writer would disagree with the other three in
-    /// silence.** There are exactly three today, all in this file — `OSC 0` in
-    /// `osc_dispatch`, and the push and pop in [`Term::window_ops`] — and the
-    /// window axis funnels through [`Term::set_window_title`] precisely so its
-    /// retained string and its event cannot drift apart. This axis has no such
-    /// funnel because it has no event to keep in step with. **Adding `OSC 1` is
-    /// the foreseeable fourth writer** (it is the natural neighbour of the OSC
-    /// work in #47's tail), and whoever adds it should route every write through
-    /// one owner the way the window axis does — not because a test will fail,
-    /// but because none can.
+    /// The icon name, the second axis XTWINOPS addresses (#823). Written only by OSC 0 and the
+    /// title stack's push and pop; OSC 1 is not parsed and there is no icon-name event, so no
+    /// test observes it (`docs/architecture.md` § Hidden VT state).
     icon_name: String,
     /// The window-title stack (XTWINOPS `CSI 22 t` / `CSI 23 t`), bounded at
-    /// [`TITLE_STACK_DEPTH`]. Separate from `icon_name_stack` because the
-    /// sequence's second parameter selects an axis and real applications use it:
-    /// `vim` emits a fully nested `22;0;0t · 22;2t · 22;1t … 23;2t · 23;1t ·
-    /// 23;0;0t`.
-    ///
-    /// **This is a choice among three models, not two, and the spec does not
-    /// make it** — `ctlseqs.txt:1688-1693` names the two axes and never says how
-    /// many stacks there are. (a) One stack with the axis ignored: alacritty,
-    /// and it restores the wrong string on the sequence above. (b) Two
-    /// independent stacks: xterm.js, and this. (c) One stack of `{icon, window}`
-    /// **pairs**, where an axis-limited push leaves the other member empty and a
-    /// pop that finds an empty member walks *back* through older slots for one:
-    /// xterm (`ptyx.h:2361`, `misc.c:8011`). (c) handles the axis correctly by a
-    /// different mechanism, so the argument against (a) is not an argument
-    /// against it; what separates (b) from (c) is that they do not share a depth
-    /// budget — ten each here, ten *total* there — and that a repeated same-axis
-    /// pop goes silent under (b) while (c) re-emits from an older slot. Neither
-    /// shape is reachable by anything measured, and (b) is the one whose depth
-    /// accounting a reader can predict without simulating a ring.
+    /// [`TITLE_STACK_DEPTH`]; one of two independent stacks, one per axis. Why two:
+    /// `docs/map/territory/vt-interpretation.md`.
     window_title_stack: Vec<String>,
     /// The icon-name stack — the other half of the pair above.
     icon_name_stack: Vec<String>,
@@ -162,13 +111,10 @@ pub struct Term {
     /// a line feed also carriage-returns (`convertEol`). Output-only — the Enter
     /// key still encodes CR, matching xterm.js (#71).
     newline_mode: bool,
-    /// Reverse wraparound (DEC ?45): default off. When on, a step back at column 0
-    /// of a soft-wrapped row moves to the end of the previous row, and a step back
-    /// from a parked cursor spends the deferred wrap instead of moving. Both verbs
-    /// take that step — `BS` and `CSI D` alike, through `Term::step_back` (#80, #873).
-    /// Soft wraps only, and **both halves need `?7h` as well as this flag**: xterm reaches
-    /// them through one `rev`, which is `?45 AND ?7h` (`cursor.c:123-127`). The walk leaves
-    /// the wrap link alone — see the per-verb table on [`Term::end_wrap`].
+    /// Reverse wraparound (DEC ?45): default off. When on (and with `?7h`), a step back at
+    /// column 0 of a soft-wrapped row moves to the end of the previous row, and a step back
+    /// from a parked cursor spends the deferred wrap instead of moving — `BS` and `CSI D`
+    /// alike, through `Term::step_back` (#80, #873). See the per-verb table on [`Term::end_wrap`].
     reverse_wraparound: bool,
     /// Bracketed-paste mode (DEC ?2004). The engine owns the flag; the input
     /// encoder (#11) reads it to decide whether to wrap pasted text in markers.
@@ -187,68 +133,10 @@ pub struct Term {
     /// one cell per scalar (#295). OFF keeps the per-char (wcwidth-compatible) behaviour so the
     /// cursor stays in sync with wcwidth apps — clustering is opt-in for exactly that reason (#301).
     grapheme_clustering: bool,
-    /// Where the last content-producing print landed — `(row, col)` of that cluster's
-    /// lead cell — or `None` when nothing has been printed since the last thing that
-    /// cleared it.
-    ///
-    /// **One reader again — but the constraint the second one imposed is still binding.**
-    /// `REP` (CSI b) reads the grapheme back off this cell, and for a while
-    /// `Term::cursor_cluster_col` also asked *is the cursor standing on the cell the
-    /// print wrote*, because the deferred-wrap flag could not express a pin under `?7l`
-    /// (#865). #869 fixed the flag and that reader went back to it.
-    ///
-    /// **The anchor must still name a cell that holds the cluster, and the reason is
-    /// `REP`'s own, not the departed reader's.** A promotion at the last column
-    /// relocates the cluster to the next row (#303), so the join anchors on where it
-    /// landed rather than where it was joined; anchored on the vacated column, `REP`
-    /// repeats the blanks `vacate_for_wrap` left. Pinned by
-    /// `rep_after_a_promotion_relocated_the_cluster_repeats_the_cluster`. Stated here
-    /// because the rationale that arrived with it named the other reader, and removing
-    /// that reader must not read as permission to undo this.
-    ///
-    /// The grapheme itself is not stored: it is read back from this cell, which is what
-    /// keeps the repeated unit in step with what the cell model actually holds. The
-    /// **position** is recorded rather than re-derived, because re-deriving it from the
-    /// cursor cannot be done: with autowrap off the cursor reaches the last column both
-    /// by *filling* it (pinned, the cluster is under the cursor) and by *advancing onto*
-    /// it (the cluster is one to the left), and no cursor state distinguishes them. An
-    /// earlier version of this guessed with `pending_wrap || (!autowrap && col + 1 ==
-    /// cols)` and repeated whatever happened to sit in the last column — including, on
-    /// `?7l` + `ZZZZZ` + `CUP` + `abcd` + `CSI 1 b`, a `Z` from an unrelated earlier part
-    /// of the stream. Recording the site cannot be wrong about it.
-    ///
-    /// **Set** by the three sites that give a cell content, all reached through
-    /// `place_grapheme`, each returning where it wrote; **cleared** by every other
-    /// `Perform` callback and by [`Term::resize`], whose reflow moves the cell out from
-    /// under the anchor.
-    ///
-    /// That enumeration is xterm's rule (`charproc.c:6478` — assign the retained char
-    /// only when the parser is back in the ground state, and it is unset unless a
-    /// graphic character was printed) expressed the only way this crate can express it.
-    /// `vte`'s `Parser` publishes `new` / `new_with_size` / `advance` /
-    /// `advance_until_terminated` and **nothing about its state**, so the structural
-    /// formulation is unavailable and an enumeration is what is left.
-    ///
-    /// **The enumeration is incomplete, and cannot be completed against `vte` 0.15.**
-    /// Two parser states return to ground with no callback at all, so nothing here can
-    /// observe the sequence ending (measured by feeding `-`, the sequence, then
-    /// `CSI 3 b`; xterm gives one dash for every row):
-    ///
-    /// | input | reaches | dashes |
-    /// |---|---|---|
-    /// | `CSI 1 ? b`, `CSI SP 1 p`, `CSI ? ? m` | `State::CsiIgnore`, exiting at `vte-0.15.0/src/lib.rs:222` (`0x40..=0x7E => self.state = Ground`) | 4 |
-    /// | `DCS 1 ? q … ST` | `State::DcsIgnore`, which routes to `anywhere` and never calls `hook`/`unhook` | 4 |
-    ///
-    /// All of these are malformed sequences. The divergence is bounded by the anchor's
-    /// shape: with a *position* rather than a heuristic, a missed clear repeats the
-    /// genuinely last-printed grapheme where xterm repeats nothing — which is ghostty's
-    /// behaviour (`Terminal.zig:4467` clears only on full reset), not a wrong glyph.
-    ///
-    /// `Perform` methods that clear: `execute`, `esc_dispatch`, `osc_dispatch`, `unhook`,
-    /// and `csi_dispatch` (which takes it up-front and lets `REP` disarm itself —
-    /// xterm's behaviour, and not ghostty's, whose `printRepeat` re-arms through
-    /// `print`). `print` clears only on its zero-cell path; `hook` and `put` do not,
-    /// because nothing that could read this can arrive before `unhook` does.
+    /// Where the last content-producing print landed — `(row, col)` of that cluster's lead
+    /// cell — or `None` once anything but a print has run. `REP` reads the grapheme back off
+    /// this cell (#825). Who sets and clears it, and why a position:
+    /// `docs/map/territory/vt-interpretation.md`.
     repeat_anchor: Option<(usize, usize)>,
     /// Set while [`crate::Engine::feed`] advances the parser over a single `CAN`
     /// (`0x18`) or `SUB` (`0x1a`) byte. An `osc_dispatch` inside that advance is the
@@ -295,16 +183,9 @@ pub struct Term {
     /// [`Self::swap_kitty_keyboard`] exchanges them when the screen changes.
     kitty_flags_inactive: u8,
     kitty_stack_inactive: Vec<u8>,
-    /// xterm's `modifyOtherKeys` at level 2 or above, asked for with
-    /// `CSI > 4 ; Pv m` (XTMODKEYS) and what `vim` turns on at startup (#890).
-    /// `encode_key` consults it *after* `kitty_flags`, because it belongs to the
-    /// legacy encoding rather than competing with the newer protocol.
-    ///
-    /// **Both resets clear it**, RIS by the wholesale rebuild in [`Self::full_reset`] and
-    /// DECSTR by a line of its own in [`Self::soft_reset`]. Which it is, and why the answer
-    /// is the reference's rather than a convenience, is in
-    /// `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md`, whose table this
-    /// field is the fifth row of.
+    /// xterm's `modifyOtherKeys` at level 2 or above, set by `CSI > 4 ; Pv m` (XTMODKEYS,
+    /// #890). `encode_key` consults it after `kitty_flags`. Both resets clear it:
+    /// `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md`.
     modify_other_keys_2: bool,
     /// Consumer events (title / bell / cwd) accumulated since the last
     /// `drain_events` (#12). Pull, not push — see `event.rs`.
@@ -313,33 +194,15 @@ pub struct Term {
     /// during `feed` for the consumer to write back to the PTY. Raw bytes →
     /// PTY, kept separate from typed `events` → UI.
     replies: Vec<u8>,
-    /// The hyperlink currently open (OSC 8 with a URI), stamped onto every glyph
-    /// written until closed (OSC 8 with empty URI). Ambient pen-like state — not
-    /// part of the pen/SGR, and *not* cleared by an SGR reset.
-    ///
-    /// The URI itself, not a pool index — there is no pool (#628). The lead paragraph
-    /// here used to describe one (*"Hyperlink side-table … referenced by `Cell.link`
-    /// (1-based). Append-only (#26)"*), left behind when its field was deleted.
+    /// The hyperlink currently open (OSC 8 with a URI), stamped onto every glyph written until
+    /// closed (OSC 8 with empty URI). Ambient pen-like state — not part of the pen/SGR, and
+    /// not cleared by an SGR reset.
     current_link: Option<std::sync::Arc<str>>,
-    /// Live OSC 8 `id=` groups: `"id;;uri"` → the allocation that key already named,
-    /// held **weakly**.
-    ///
-    /// `Weak`, not `Arc`, is the whole lifetime story. A strong entry here would make
-    /// every id'd link immortal for the life of the `Term` — precisely the leak #628
-    /// deleted, re-entering through the door grouping opens. A dangling key is the
-    /// correct answer rather than a hole: the link it named has left the buffer, so a
-    /// later open of the same id is genuinely a new link. xterm.js expresses the same
-    /// lifetime by *deleting* its `_entriesWithId` entry when the last line marker
-    /// referencing it is disposed (`OscLinkService.ts:98-100`); justerm has no disposal
-    /// hook by design, and `Weak` is that lifetime without one.
+    /// Live OSC 8 `id=` groups: `"id;;uri"` → the allocation that key already named, held
+    /// weakly so a group never outlives its cells (#635, `docs/map/territory/hyperlinks.md`).
     link_ids: std::collections::HashMap<String, std::sync::Weak<str>>,
-    /// Map length at which [`Self::link_ids`] is swept for dangling keys, doubling each
-    /// time so the sweep is amortised O(1) per open and dead keys stay O(live).
-    ///
-    /// A sweep is affordable here for the reason #628's rejected option (c) was not:
-    /// staleness is observable in O(1) (`Weak::strong_count`), where (c) had to decide
-    /// "is the pool oversized" by counting live references — the O(buffer) walk it was
-    /// trying to avoid.
+    /// Map length at which [`Self::link_ids`] is swept for dangling keys, doubling each time
+    /// so the sweep is amortised O(1) per open and dead keys stay O(live).
     link_ids_sweep_at: usize,
     /// Scroll region top/bottom margins (DECSTBM), 0-based inclusive. A
     /// line-feed at `scroll_bottom` scrolls only rows `[scroll_top..=scroll_bottom]`.
@@ -379,56 +242,23 @@ pub struct Term {
     /// the set handed back via `set_search_highlights`, and `frame()` projects it
     /// onto the viewport — the same anchoring path as the selection.
     search_highlights: Vec<Match>,
-    /// The *active* (current) search match (#428), stored as its absolute span
-    /// (#436) — designated by the consumer (next/prev is its policy) either as
-    /// an index into `search_highlights` (resolved to the span at call time) or
-    /// directly by span, which a capping backend uses for a past-cap match
-    /// (xterm creates its active decoration from the found result, OUTSIDE the
-    /// capped highlight list). A span is NOT structurally tied to the set, so
-    /// every path that voids the set must void this too: `set_search_highlights`
-    /// (hand-over reset, #428) and `invalidate_search_highlights` (the single
-    /// funnel for eviction / every region scroll incl. the accrual sub-region
-    /// branch (#449) / reflow / both alt swaps) — a stale span would otherwise
-    /// keep painting coordinates that now hold other text.
-    ///
-    /// **That list is the *motion* funnel, and it is complete only for motion.** An
-    /// in-place erase or overwrite stales this set too, and deliberately does not
-    /// funnel — read `invalidate_search_highlights`, which owns that decision and its
-    /// grounds. Stated here because this comment enumerating the callers reads as the
-    /// whole rule, and a reader who stops at it concludes the erase verbs were
-    /// forgotten.
+    /// The active (current) search match (#428), stored as its absolute span (#436) and
+    /// designated by the consumer by index or by span. Voided with the set by
+    /// `set_search_highlights` and `invalidate_search_highlights`:
+    /// `docs/map/territory/search.md`.
     active_search_highlight: Option<Match>,
-    /// Engine-owned decoration markers (#118), split per buffer like xterm's
-    /// `BufferSet` (#177 S0): each a stable id bound to an absolute buffer line
-    /// that re-anchors through eviction/scroll/reflow like a selection anchor. The
-    /// active buffer's list is selected by `on_alt` — `markers`/`markers_mut`.
-    /// `alt_markers` holds the plain anchors `add_marker` makes on the alt screen
-    /// (#187); OSC 133 command marks never land there, because `add_command_mark`
-    /// returns on the alt screen (#192). It is disposed on alt-leave (xterm
-    /// `clearAllMarkers`). `next_marker_id` hands
-    /// out monotonic ids across both buffers so ids never alias.
+    /// Engine-owned decoration markers (#118), split per buffer (#177). The active list is
+    /// selected by `on_alt` through `markers`/`markers_mut`; `alt_markers` holds plain anchors
+    /// only (#187, #192) and is disposed on alt-leave. `next_marker_id` is shared by both
+    /// buffers so ids never alias.
     normal_markers: VecDeque<Marker>,
     alt_markers: VecDeque<Marker>,
     next_marker_id: u32,
-    /// The basis that keeps a *pulled* marker index valid without re-pulling
-    /// (#490). Both are reported by [`Term::marker_index`] and — from the wire
-    /// slice on — by the frame header, so a consumer can compare what it holds
-    /// against what is current.
-    ///
-    /// `evicted_total` counts lines popped off the front of scrollback since
-    /// startup or RIS — one at a time by the scrollback cap, all of history at once
-    /// by `ED 3` and [`Term::clear`] (#936). Eviction shifts **every** live marker
-    /// by the same amount, so
-    /// that whole class of movement is one number rather than M facts, and a
-    /// consumer rebases a held line by the delta.
-    ///
-    /// `marker_epoch` covers everything the delta cannot express: a mutation
-    /// after which a held line is wrong for a reason no single offset repairs.
-    /// It says *"what you pulled no longer describes this buffer"* — not *"a verb
-    /// ran"*, which is why the movers bump it only when a surviving marker's line
-    /// actually moved. Disposal is deliberately **not** a bump: a consumer learns
-    /// of that through `TermEvent::MarkerDisposed` and can drop the entry without
-    /// asking for the rest again.
+    /// The basis that keeps a pulled marker index valid without re-pulling (#490), reported by
+    /// [`Term::marker_index`] and the frame header. `evicted_total` counts lines popped off the
+    /// front of scrollback since startup or RIS (by the cap, `ED 3` and [`Term::clear`], #936);
+    /// `marker_epoch` moves when a surviving marker's line moved for a reason no single offset
+    /// repairs. Disposal is not a bump. See `docs/map/territory/marker.md`.
     evicted_total: u64,
     marker_epoch: u32,
     /// Positions the engine keeps on their content for a holder that lives
@@ -472,13 +302,10 @@ impl Charset {
     }
 }
 
-/// The VT100 DEC Special Graphics set: bytes `_`..`~` (0x5F..0x7E) map to the
-/// box-drawing and symbol glyphs. Matches xterm/alacritty; anything outside the
-/// range passes through unchanged.
+/// The VT100 DEC Special Graphics set: `` ` ``..`~` (0x60..0x7E) map to the box-drawing
+/// and symbol glyphs; anything else, `_` included, passes through unchanged.
 fn dec_special_graphics(c: char) -> char {
-    // Keys ``..`~` only — `_` (0x5F) is deliberately absent, matching xterm.js /
-    // alacritty (it passes through as a literal underscore), not the strict-DEC
-    // "0x5F = blank" reading.
+    // `_` (0x5F) is absent on purpose: `docs/map/territory/vt-interpretation.md`.
     match c {
         '`' => '◆',
         'a' => '▒',
@@ -518,85 +345,33 @@ fn dec_special_graphics(c: char) -> char {
 /// Default scrollback retention when not specified.
 const DEFAULT_SCROLLBACK: usize = 10_000;
 
-/// The narrowest screen the engine represents: **two columns**.
+/// The narrowest screen the engine represents: **two columns**, because a width-2 glyph
+/// needs a lead cell and a spacer ([ADR-0025](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0025-row-and-wide-pair-cell-state-ownership.md) D4).
+/// `Term::with_scrollback` and [`Term::resize`] clamp `cols` up to this.
 ///
-/// A width-2 glyph occupies a `WIDE_CHAR` lead *and* the `WIDE_CHAR_SPACER` that
-/// stands for its second half, so one column cannot hold one — and a pair with only
-/// one half written is the malformed state every repair path in this crate keys off
-/// ([ADR-0025](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0025-row-and-wide-pair-cell-state-ownership.md) D4). `Term::with_scrollback` and [`Term::resize`] clamp `cols` up to
-/// this, which is what makes D4 (*both halves of a pair move together*)
-/// unconditionally satisfiable rather than true only above some unstated width.
-///
-/// Both references that a terminal *engine* can be compared to forbid one column for
-/// exactly this reason — alacritty's `MIN_COLUMNS = 2` and xterm.js's
-/// `MINIMUM_COLS = 2` — and the third (ghostty) permits it only by destroying the
-/// glyph.
-///
-/// The clamp is **silent and pull-only**: a `resize(1, rows)` during a pane drag is
-/// widened rather than rejected, and no event reports it. Both references instead
-/// make the clamped size the one that travels outward — alacritty derives its
-/// `WindowSize` from the clamped `SizeInfo`, xterm.js fires `onResize` with the
-/// clamped pair — so a justerm consumer must do that correlation itself: read the
-/// width back from [`Term::grid`] / the frame header and size the PTY from *that*,
-/// never from the value it requested. Sizing a PTY to one column leaves the
-/// application rendering for a width the buffer does not have.
+/// The clamp is **silent and pull-only**: a `resize(1, rows)` is widened, not rejected, and
+/// no event reports it. Read the width back from [`Term::grid`] / the frame header and size
+/// the PTY from that, never from the value you requested.
 pub const MIN_COLUMNS: usize = 2;
 
 /// The built-in word-boundary set for Word (semantic) selection — the default value of
-/// [`Term::set_word_separators`], and **policy the consumer may replace** ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md):
-/// mechanism in core, policy injected).
+/// [`Term::set_word_separators`], and policy the consumer may replace ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
 ///
-/// It is alacritty's `SEMANTIC_ESCAPE_CHARS` (`alacritty_terminal/src/term/mod.rs:45`
-/// @ `852e971`) verbatim — space, tab and a punctuation set that deliberately omits
-/// `.`, `/` and `-` so a path or URL stays one word — **plus U+3000 IDEOGRAPHIC
-/// SPACE**, which is justerm's one divergence from every reference default.
-///
-/// Two properties of this list are load-bearing and neither is obvious:
-///
-/// - **It is a literal set, not the Unicode `White_Space` property.** A
-///   `char::is_whitespace()` predicate would end a word at every space-like codepoint —
-///   including the four `Line_Break=GL` (glue) ones U+00A0, U+2007, U+202F and U+205F,
-///   whose whole purpose is "do not break here". A locale-formatted `1<NNBSP>234`
-///   double-clicked as `1`. All three references are literal sets for the same reason.
-/// - **U+3000 is in it, and no reference's default has it.** It is the only
-///   East-Asian-Wide codepoint `White_Space` accepts (measured over U+0000–U+10FFFF),
-///   so on alacritty and xterm.js `　abc` is one word while justerm gives the useful
-///   answer. Keeping it was once argued *on the grounds that core had no injection
-///   point*; that ground is gone, so it survives here as a **default**, and a consumer
-///   who wants reference-exact behaviour removes it.
-///
-/// [`Term::set_word_separators`] additionally forces `' '` into whatever it is given —
-/// see there for why that floor is not optional.
+/// Space, tab, U+3000 IDEOGRAPHIC SPACE and a punctuation set without `.`, `/` or `-`, so a
+/// path or URL stays one word. A literal set rather than the Unicode `White_Space`
+/// property, so a no-break space does not end a word. [`Term::set_word_separators`]
+/// additionally forces `' '` into whatever it is given.
 pub const DEFAULT_WORD_SEPARATORS: &str = ",│`|:\"' ()[]{}<>\t\u{3000}";
 
 /// A declared OSC 8 hyperlink, as handed to a consumer.
 ///
-/// **Owned, not borrowed**, and that is the point: the URI lives in a row's side map, so
-/// a `&str` into it would be tied to `&Engine` and a caller could not hold the link
-/// across the next `feed()` — which is precisely what a hover handler does. Measured on
-/// the alternative: reading a borrow costs 0.75 ns, but keeping it *does not compile*, so
-/// the caller copies the string instead at 62.6 ns. Handing back this handle is 17.9 ns
-/// — cheaper than the workaround it removes, on a call made once per hover.
+/// Owned rather than borrowed, so a caller can hold it across the next `feed()`. Cloning is a
+/// refcount bump; the allocation is shared with every cell of the same OSC 8 open and
+/// released when the last row holding it dies. Two opens of an identical URI are two links,
+/// and no accessor answers link identity yet.
 ///
-/// Cloning is a refcount bump; the allocation is shared with every cell of the same OSC 8
-/// open and released when the last row holding it dies.
-///
-/// **A struct rather than a bare `Arc<str>`** for two reasons: it keeps `Arc` out of the
-/// published signature, and OSC 8's `id=` parameter lands here as a field without
-/// changing the return type again. Same shape as alacritty's `Hyperlink`, for the same
-/// reasons (`alacritty_terminal/src/term/cell.rs`).
-///
-/// **Link *identity* is deliberately not exposed yet.** Two OSC 8 opens of an identical
-/// URI are two links here, so `uri() == uri()` cannot answer "is this cell part of the
-/// same link as that one?" — an `Arc::ptr_eq` accessor would. It is left out because no
-/// consumer asks it today (nothing outside this crate's tests calls `link_at` at all),
-/// and unlike this type's *shape*, adding a method later is not a breaking change. The
-/// asymmetry decides it: shipping an accessor nobody uses is hard to undo, adding one
-/// when a caller appears is free.
-///
-/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
-/// public function accepts it — the engine hands it out — and there are zero out-of-crate literal
-/// sites, so the attribute would bind nothing it does not already bind.
+/// No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): no public
+/// function accepts one, so the attribute would bind nothing.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Hyperlink {
     uri: std::sync::Arc<str>,
@@ -624,137 +399,43 @@ impl Hyperlink {
 /// large enough that the sweep is not the common path.
 const LINK_IDS_FIRST_SWEEP: usize = 16;
 
-/// How deep an XTWINOPS title stack goes before a push starts dropping the
-/// oldest entry.
-///
-/// Ten is **two implementations plus a spec inference**, not a clean sweep, and
-/// the difference is worth stating so nobody reads it as more than it is:
-/// xterm's `MAX_SAVED_TITLES` (`ptyx.h:2357`) and xterm.js's
-/// `Constants.STACK_LIMIT` both say ten, and the spec describes the
-/// direct-access parameter as taking a value *"in the range 1 through 10"*
-/// (`ctlseqs.txt:1698`), which only makes sense against a ten-slot stack.
-/// **alacritty is 4096** (`TITLE_STACK_MAX_DEPTH`), so the corpus is 2–1 on the
-/// number. Nothing observed nests deeper than three, so the bound is a
-/// robustness cap rather than a compatibility one, and ten is the value two
-/// references chose for exactly that job.
-///
-/// The **overflow rule**, unlike the number, is 4-for-4: drop the oldest and let
-/// the push succeed. xterm.js `shift()`s, alacritty `remove(0)`s, and xterm gets
-/// there by arithmetic rather than by saying so — `which = used++ %
-/// MAX_SAVED_TITLES` writes an eleventh push over slot 0, which is the oldest.
-/// Refusing the push instead would break the pairing for the *innermost*
-/// nesting levels — the ones a user unwinds first — and nobody does it.
+/// How deep an XTWINOPS title stack goes before a push starts dropping the oldest entry.
+/// Why ten, and why the oldest: `docs/architecture.md` § Hidden VT state (#823).
 const TITLE_STACK_DEPTH: usize = 10;
 
-/// The widest grid the engine will hold, and the mirror of [`MIN_COLUMNS`] — but derived
-/// from a different kind of constraint, which is why the two are not symmetric.
-///
-/// The floor is **semantic**: a width-2 glyph needs two cells, so one column is a screen
-/// no correct grid can be. The ceiling is **representational**: the frame header stores
-/// `cols` and `rows` as `u16` each, so a grid wider than `u16::MAX` cannot be *described*
-/// to a consumer even though the engine could hold it. Without the clamp that mismatch was
-/// silent — measured, `Engine::new(70_000, 2)` built a 70 000-column grid whose frame
-/// declared `cols = 4464` and decoded `Ok`, so a consumer laid out 4464 columns of a
-/// 70 000-column screen with nothing reporting the difference.
-///
-/// No reference bounds a grid this way, and that is expected rather than a divergence:
-/// none of them serializes a grid, so none has a header field to overflow. This is the
-/// one axis where justerm's own wire is the only authority.
-///
-/// **A backstop, not a policy.** A 4K display at a very small font is roughly 550 columns;
-/// this is two orders of magnitude past any real terminal, so it should never be reached
-/// by a consumer that is not already doing something wrong. The clamp is silent and
-/// pull-only on the same terms as [`MIN_COLUMNS`] — read the size back from
-/// [`Term::grid`] rather than trusting the value you passed in.
+/// The widest grid the engine will hold: the frame header stores `cols` as `u16`, so a
+/// wider grid could not be described to a consumer. Far past any real terminal, so a
+/// backstop rather than a policy. The clamp is silent and pull-only on the same terms as
+/// [`MIN_COLUMNS`] — read the size back from [`Term::grid`] rather than trusting the value
+/// you passed in.
 pub const MAX_COLUMNS: usize = u16::MAX as usize;
 
 /// The tallest grid the engine will hold. The row half of [`MAX_COLUMNS`] — same
 /// `u16` header field, same reasoning, same silent-clamp contract.
 pub const MAX_ROWS: usize = u16::MAX as usize;
 
-/// The most live markers one buffer will hold.
-///
-/// Derived from the wire the same way [`MAX_COLUMNS`] is: the marker group's count
-/// are `u16`, so a population past `u16::MAX` encodes a wrapped count while writing
-/// every record, and `decode` then reads the next group's count out of the middle of
-/// a marker record and returns `Ok`. The field bounds the value; this constant only
-/// writes that bound down where the value is produced, because `encode` returns
-/// `Vec<u8>` and has no channel to refuse.
-///
-/// **Why a bound is needed at all**, rather than a wider field: markers are allocated
-/// by the *stream*. `add_command_mark` appends per OSC 133 sequence, several marks can
-/// share one line, and scrollback eviction only drops a marker when its line reaches
-/// absolute 0 — so a stream that never emits a newline accumulates marks in a 24-row
-/// buffer without bound (measured: 70 000). [`crate::Engine::feed`] is an untrusted
-/// entry point ([ADR-0007](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0007-robustness-testing-property-and-fuzz.md)), and unbounded allocation behind it is a defect class that
-/// record exists to catch.
-///
-/// **A backstop, not a policy**, on the same terms as [`MAX_COLUMNS`]. Ordinary shell
-/// integration emits at most four marks per command and a command occupies at least one
-/// line, so a default-scrollback session tops out near 40 000 — this is not reached by a
-/// consumer that is not already being fed something hostile. Overflow disposes the
-/// *oldest* marker and announces it through `TermEvent::MarkerDisposed`, which is the
-/// channel scrollback eviction already uses for the same event.
+/// The most live markers one buffer will hold: the marker group's counts are `u16` on the
+/// wire, and markers are allocated by the untrusted stream (OSC 133), so a line-less stream
+/// could otherwise accumulate them without bound. A backstop, not a policy: ordinary shell
+/// integration tops out near 40 000 in a default-scrollback session. Overflow disposes the
+/// oldest marker and announces it through `TermEvent::MarkerDisposed`.
 pub const MAX_MARKERS: usize = u16::MAX as usize;
 
-/// The longest command text an OSC-133 `OutputStart` mark will freeze, in `char`s.
-/// A longer command is captured truncated to this many characters.
+/// The longest command text an OSC-133 `OutputStart` mark will freeze, in `char`s. A longer
+/// command is captured truncated to this many characters, at a `char` boundary.
 ///
-/// **Why a bound at all** is [`MAX_MARKERS`]'s argument one field over: the *stream*
-/// decides the size. The text spans `[B, C)`, and nothing bounds how far apart those
-/// two sequences are — a stream that emits `B`, dumps a full screen and then `C` names
-/// a command as long as the buffer. Re-extracting on demand made that a transient
-/// allocation; freezing it at `C` makes it resident, for as long as the mark lives, and
-/// [`crate::Engine::feed`] is an untrusted entry point ([ADR-0007](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0007-robustness-testing-property-and-fuzz.md)).
-///
-/// **A display bound, not a semantic one.** [`CommandLine::command`]'s consumer
-/// announces it and lists it; a prefix is a usable answer and an absent one is not, so
-/// overflow truncates rather than declining to capture. The truncation is at a `char`
-/// boundary, so the answer is always valid text. No ordinary command reaches it — this
-/// is not a limit a shell user can type into.
+/// The text spans `[B, C)` and the stream decides how far apart those are, so the frozen
+/// copy needs a bound; a prefix is a usable answer where an absent one is not. No ordinary
+/// command reaches it.
 pub const MAX_COMMAND_TEXT: usize = 4096;
 
-/// The longest `OSC 52` base64 payload the engine will decode, in bytes (#828).
-/// A longer one is **dropped whole**, never truncated.
+/// The longest `OSC 52` base64 payload the engine will decode, in bytes. A longer one is
+/// **dropped whole**, never truncated: a truncated clipboard is text the user would paste
+/// believing it complete.
 ///
-/// **What this bounds is ours, not the parser's, and the difference was
-/// measured.** `vte` is built with its default features, so its OSC accumulator
-/// is a `Vec<u8>` rather than the `ArrayVec<_, 1024>` of its `no_std` path: a
-/// 4 MB payload arrives at `osc_dispatch` complete, 4 000 003 bytes across three
-/// fields. Anyone reading this bound as "the engine cannot be made to allocate"
-/// has the wrong model; `vte` already did, before the handler ran.
-///
-/// What it does refuse is the **second** allocation — the rejoin, which copies
-/// every field again — and everything downstream of it. That is why the check
-/// sums the field lengths rather than measuring the joined payload: a bound
-/// applied *after* the join would let a hostile stream buy the copy it was
-/// meant to prevent, which is what the first draft did. The decoded `Vec` is a
-/// third; the `String` is not a fourth, since `String::from_utf8` reuses the
-/// buffer it is given. The property all of it buys is the one worth naming: no
-/// unbounded string crosses the boundary into a consumer that then has to hold
-/// it.
-///
-/// **It does not bound the queue, and the queue is unbounded.** `drain_events`
-/// is pull-style with no back-pressure, so a consumer that does not drain
-/// accumulates stores at up to this size each — the pre-existing hole
-/// `docs/map/territory/events-and-replies.md` records, which this sequence
-/// enlarges by roughly three orders of magnitude over the next-largest payload
-/// (`MAX_COMMAND_TEXT`, 4096). Bounding a queue nobody drains is a different
-/// decision from bounding a payload, and it is not taken here.
-///
-/// **Dropped rather than truncated**, which is the opposite of
-/// [`MAX_COMMAND_TEXT`] one field up, and the asymmetry is the point: a prefix of
-/// a command is a usable answer, while a prefix of a clipboard is text the user
-/// pastes somewhere believing it is what they copied. An ignored copy is visible
-/// the moment they paste; a truncated one is not.
-///
-/// **A backstop, not a policy**, and sized so that no real copy reaches it: 16
-/// MiB of base64 is ~12 MiB of text, well past a whole scrollback buffer's worth
-/// of `tmux set-buffer`. Neither reference has a hard cap to import — alacritty
-/// has none at all and ghostty's `MAX_BUF = 2048` is an inline-buffer threshold
-/// with an allocator path past it (`src/terminal/osc.zig:298`) — so this number
-/// is justerm's own and is chosen by what it must not break rather than by what
-/// it permits.
+/// It bounds the engine's own copies, not the parser's: `vte` has already buffered the
+/// payload before the handler runs. It does not bound the event queue. Sized so that no
+/// real copy reaches it.
 pub const MAX_CLIPBOARD_BASE64: usize = 16 * 1024 * 1024;
 
 /// The state DECSC (ESC 7) saves and DECRC (ESC 8) restores: position, pen/SGR,
@@ -782,32 +463,16 @@ struct SavedCursor {
 struct Marker {
     id: MarkerId,
     line: usize,
-    /// The cursor column at emit time (#166). Meaningful for OSC-133 command
-    /// marks — CommandStart(B)/OutputStart(C) columns bound the *typed command*
-    /// (excluding the prompt), like VSCode's `commandStartX`/`commandExecutedX`.
-    /// Plain `add_marker` decorations are row-granular and carry `col = 0`.
-    ///
-    /// **Domain is `[0, cols]`, not `[0, cols - 1]` (#562)** — a bound, not a cell.
-    /// A command that exactly fills its row ends *one past* the last column, and
-    /// that value is what `extract_lines` wants: it clips `[b_col, c_col)`, so the
-    /// exclusive end absorbs it through `.min(cells.len())`. Storing `cursor.col`
-    /// alone (the cursor is held at `cols - 1` with `pending_wrap`) cost such a
-    /// command its last character with no resize involved. The **inclusive** side
-    /// cannot absorb it, so `extract_lines` steps a `from` of `cells.len()` to the
-    /// next line rather than selecting an empty run and flushing a `\n`.
+    /// The cursor column at emit time (#166): bounds the typed command for OSC-133
+    /// `CommandStart`/`OutputStart` marks; `0` for plain `add_marker` decorations. Domain
+    /// `[0, cols]`, a bound rather than a cell (#562, `docs/map/territory/marker.md`).
     col: usize,
     /// Plain for a `add_marker` decoration; a command-boundary role for an
     /// OSC 133 mark (#158). All kinds share the anchor/eviction machinery.
     kind: MarkerKind,
-    /// What an `OutputStart` mark froze about the command it closes (#750) —
-    /// `None` on every other kind, and the reason this is one boxed pointer rather
-    /// than two inline fields: three marks in four never carry it, and the
-    /// population is bounded at [`MAX_MARKERS`].
-    ///
-    /// It dies with the marker, which is the point: a side table keyed by
-    /// [`MarkerId`] would need its own purge at every disposal site, i.e. exactly
-    /// the missing-destruction-funnel defect this issue is about (ADR-0025 D1 —
-    /// a fact lives with its owner).
+    /// What an `OutputStart` mark froze about the command it closes (#750); `None` on every
+    /// other kind. Boxed, and on the marker rather than in a side table:
+    /// `docs/map/territory/marker.md`.
     command: Option<Box<CommandRecord>>,
 }
 

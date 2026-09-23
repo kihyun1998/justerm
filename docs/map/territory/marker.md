@@ -140,6 +140,16 @@ the shell emits.
   occupies the same absolute-line range.
 - **Command marks are primary-only by definition** (#192), which is why the command walks
   deliberately carry **no** alt-screen floor — see the cross-cutting note below.
+- **A marker's `col` domain is `[0, cols]`, a bound rather than a cell (#562).** A command that
+  exactly fills its row ends one past the last column, which is what `extract_lines` wants: it clips
+  `[b_col, c_col)`, so the exclusive end absorbs it through `.min(cells.len())`. Storing
+  `cursor.col` alone (held at `cols - 1` with `pending_wrap`) cost such a command its last character
+  with no resize involved. The inclusive side cannot absorb it, so `extract_lines` steps a `from` of
+  `cells.len()` to the next line rather than selecting an empty run and flushing a `\n`.
+- **`CommandRecord` is one boxed pointer on the marker, not a side table (#750).** Three marks in
+  four never carry it and the population is bounded at `MAX_MARKERS`; living on the marker, it dies
+  with it — a side table keyed by `MarkerId` would need its own purge at every disposal site, the
+  missing-destruction-funnel defect #750 is about (ADR-0025 D1: a fact lives with its owner).
 
 ## Code
 

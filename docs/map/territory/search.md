@@ -144,6 +144,10 @@ above does not touch it.
   `SearchPort.anchoredIndex` is the only path carrying an emphasis across a hand-over; a backend
   that instead replays a remembered `Match` into `set_active_search_match` (the past-cap path, #436)
   is squarely the case above.
+  The active match is stored as its absolute span (#436), which is **not structurally tied to the
+  set** — a capping backend designates a past-cap match directly, as xterm creates its active
+  decoration from the found result outside the capped highlight list — so every path that voids the
+  set voids it too: `set_search_highlights` (#428) and `invalidate_search_highlights`.
   **Re-read against #687, which added a second verb to that lifetime.** `SearchPort.clearHighlights`
   drops the paint while *sparing* the anchor, so the anchor now survives strictly longer — across a
   regex-mode query the engine refused. The condition still holds: `clearHighlights` carries no
