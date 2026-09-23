@@ -795,7 +795,10 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   than re-litigated: **a reference that contradicts is a third case, and the tie-breaker's authority
   row rather than ADR-0004's text is what covers it.** `Pp` is `1` (VT220) for the coherence reason
   one field over: DA1 already advertises level 62, and justerm implements neither DECTID nor DECSCL,
-  so it has nothing that could decouple the level from the device type. [#824]
+  so it has nothing that could decouple the level from the device type — one terminal identity is the
+  only coherent answer, not because disagreeing would be malformed. alacritty (`?6c`, VT102) and
+  xterm.js (`?1;2c`, VT100) both send `Pp = 0`, which is what the same rule produces at their levels,
+  so neither is a counterexample. [#824]
 - **A combining mark (width-0 code point) attaches to the previous base cell, not its own cell.**
   `print` must not drop a width-0 char (the current #2 behaviour). It appends to the cell the cursor
   just left: back up one column, and if that cell is a `WIDE_CHAR_SPACER` back up once more to the
@@ -926,7 +929,9 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   the raw modifier bits, or a chord holding one of the four modifiers `csi_param` cannot express
   (Super / Hyper / CapsLock / NumLock) is admitted and then described as Shift alone. Only
   `Pp = 4` of xterm's **eight** modify-resources is routed; the rest occur zero times in the
-  capture corpus and stay with #47. **A named key whose bare form is a C0 control is in it too**:
+  capture corpus and stay with #47. `CSI > m` with no `Pp` is deliberately not honoured, because an
+  omitted `Pp` is measurably indistinguishable from one aimed at another resource; and the level test
+  is `Pv >= 2`, not `== 2` — 3 asks for more than 2, not for nothing. **A named key whose bare form is a C0 control is in it too**:
   `Ctrl+Tab` — `CSI 27;5;9~`, `Ctrl+Enter` — `27;5;13~`, `Ctrl+Escape` — `27;5;27~`, and
   Backspace on a modifier that is **not** Control — `27;3;127~`. Two exceptions are the
   reference's own and both are load-bearing: plain `Shift+Tab` keeps `CSI Z` (a shifted Tab is a

@@ -26,12 +26,24 @@ for a terminal engine, that list is half the specification.
 - **`Perform` is the whole entry surface.** `print` · `execute` · `csi_dispatch` · `esc_dispatch` ·
   `osc_dispatch` · `unhook` — six methods since #825, and everything the engine does to state hangs
   off them. `unhook` is the odd one: it handles no DCS and exists only to clear the `REP` retention
-  bit, which is the shape the next entry is about.
+  bit, which is the shape the next entry is about. It is reachable in ordinary use — with DA2
+  answered, `vim` follows up with XTGETTCAP `DCS + q` queries this engine does not answer, pinned on
+  recorded bytes in `justerm-core/tests/closed_loop_capture.rs`. It disarms at the *end* of the DCS
+  because no CSI can arrive between `hook` and `unhook`, so a disarm in `hook` is a guard no mutation
+  can redden. Which terminator decides whether it is load-bearing is measured in
+  [`reference-facts.md`](../../agents/reference-facts.md#unhook-is-the-only-disarm-on-two-of-three-dcs-terminators-825-measured-2026-09-07)
+  — a test feeding only `ESC \` proves nothing here, which is what the first version of
+  `rep_after_a_dcs_repeats_nothing` did. The **unterminated** row is a deliberate divergence from
+  xterm in the safe direction: an unterminated DCS never returns xterm's parser to the ground state,
+  so xterm would still repeat, while `vte` calls `unhook` on the abort and this engine does not.
+  Disarming too eagerly can only turn `REP` into a no-op.
 - **A rule that xterm derives from its parser, this engine has to enumerate — and `vte` gives it no
   way not to (#825).** `REP` needs *"what was last printed"*, and xterm gets its lifecycle for free:
   it assigns the retained character only when the parser is back in the ground state, so a completed
   escape sequence disarms the repeat as a consequence of the parser's shape rather than by an
-  explicit clear (`charproc.c:6478`). `vte`'s `Parser` publishes `new` / `new_with_size` / `advance`
+  explicit clear (`charproc.c:6478`). ghostty is the outlier and re-arms (`printRepeat` calls
+  `print`); `REP`'s own arm puts back what the dispatch took, repeats, then clears what the repeats
+  re-armed, pinned by `rep_does_not_rearm_itself`. `vte`'s `Parser` publishes `new` / `new_with_size` / `advance`
   / `advance_until_terminated` and **nothing about its state**, so that formulation is unavailable
   and the rule becomes a list: every `Perform` callback but `print` clears the bit. The list is what
   xterm's shape exists to avoid, and it has already cost once — `unhook` was added, then a mutation
@@ -108,6 +120,26 @@ for a terminal engine, that list is half the specification.
   side. The references are **2–2**, cached in
   [`reference-facts.md`](../../agents/reference-facts.md).
 
+  **`OSC 4`'s guard tests emptiness only**, deliberately (#834 Out of Scope): a space-only spec is
+  relayed verbatim, while TAB and NUL are C0 bytes `vte` drops inside an OSC string, so those fields
+  arrive genuinely empty and are dropped — both pinned by tests, so a later widening to whitespace
+  reddens. One event per pair, xterm's `while slots > 1`; the walk advances two fields whether or not
+  a pair produces an event, so a dropped pair
+  cannot misalign the ones after it. ghostty relays nothing on the blank-spec input by a third
+  mechanism: `tokenizeScalar` drops the empty token (`color.zig:130`), the pairing re-aligns, and
+  `RGB.parse("2")` fails into `catch return result` (`:210`) — a re-alignment visible only where the
+  re-aligned pair parses: `OSC 4 ; 1 ; ; #fff` sets index 1 there and nothing anywhere else.
+
+  **`OSC 104`'s empty payload is both `OSC 104` and `OSC 104 ;` (#832).** `vte` hands them over as
+  `["104"]` and `["104", ""]`, and testing only the first let the second fall into the index loop,
+  where `"".parse::<u8>()` fails and the reset evaporated silently. xterm tests the payload string,
+  not the field count (`if (*buf != '\0')`, `misc.c:3057`, whose else-branch is *"resetting all
+  colors"* at `:3077`), and xterm.js gates on the same emptiness (`InputHandler.ts:3223-3224`, a
+  slot-less RESTORE). So `OSC 104 ; ;` — xterm's buf is `";"` — takes the index path; ghostty's
+  `tokenizeScalar` drops both separators and resets everything, and ADR-0004 puts the spec proxy on
+  top. `OSC 110` / `111` / `112` reset one slot each and never stack: xterm's reset path resolves a
+  single index from the code itself and walks nothing (`misc.c:3729`).
+
   **And `OSC 7` is a seventh, in the opposite direction**: an empty payload is relayed *as itself*,
   `OSC 7 ;` → `Cwd("")` (`term.rs`), because there the blank carries information the consumer can
   act on. One reference pins exactly that shape under a named test (ghostty
@@ -152,7 +184,11 @@ for a terminal engine, that list is half the specification.
   *above* the catch-all, keyed on the pair rather than on the prefix alone (a `.first()` match makes
   `CSI > $ c` DA2, which is what alacritty does and the other three references do not); and the
   remaining members are silent by construction, so their count is a measurement rather than a
-  reading — across this repo's captures `CSI > m` (XTMODKEYS) occurs 10 times and `CSI > q`
+  reading — the routed pairs are three of the ten `>` finals xterm routes, chosen by reach rather
+  than completeness. Across this repo's captures `CSI > m` (XTMODKEYS) occurs 10 times against
+  DA2's 5 — all `Pp = 4`, vim setting it at startup and clearing it on exit, the clear the more
+  frequent (re-measured 2026-09-11 after #891's twentieth fixture; 4 and 7 when #890 chose on them,
+  same order) — and `CSI > q`
   (XTVERSION) **once**, which still inverts the order the reference trees suggest. Rows in
   [`reference-facts.md`](../../agents/reference-facts.md). That count is what decided the order
   they were taken in: XTMODKEYS was the next one routed (#890) precisely because it was the
@@ -166,9 +202,26 @@ for a terminal engine, that list is half the specification.
   because all but one capture is *open-loop*: recorded under `script(1)` or a bare `expect`
   (`less_softwrap` and both `alt_resize_*` are the second kind), both of which copy bytes and
   answer nothing, so nothing an application sends only *after* a reply can appear in it. That is
-  visible in the corpus rather than assumed — answering DA2 is measured (`term.rs`, the DA2 block) to
+  visible in the corpus rather than assumed — answering DA2 is measured (the entry below) to
   make vim ask ten `DCS + q` XTGETTCAP questions, and `DCS + q` occurs **zero** times across every
   open-loop fixture, four of which ask DA2.
+- **What answering DA2 buys, measured as a control pair on a real pty (#824).** DA2 is the query vim
+  uses to fill `v:termresponse` and identify what it is talking to. RHEL 9.2, vim 8.2,
+  `TERM=xterm-256color`, 24x80, every other query answered identically in both arms, controls run
+  before and after: no reply gives `ttymouse=xterm`, `ESC[>1;1500;0c` gives `ttymouse=sgr`. That
+  is what the version number buys *directly*: legacy `xterm` mouse encoding cannot report a column
+  past 223 or a release, and `sgr` has neither limit. **The larger effect is the second one**:
+  answering makes vim ask ten more questions — XTGETTCAP (`DCS + q <hex> ST`) for `Co`, `ku`, `kd`,
+  `kl`, `kr`, `k1`, `#2`, `#4`, `%i`, `*7`, the colour count and the arrow / function / shifted key
+  codes, because a terminal produces different key codes in different modes. vim's `term.txt` gates
+  that on "patchlevel 141 or higher"; measured rather than taken from the doc, the requests appear at
+  `Pv` 276 and 1500 and not at 1, 94 or 95, which brackets the gate to (95, 276] — consistent with
+  141 without pinning it. Stable across runs is *whether* they appear, not how many: one arm sent
+  each capability once where every other sent it twice. **justerm answers none of them** — they fall
+  to the same intermediate catch-all — so the capability is unlocked and then unanswered, which is
+  #47 tail. modifyOtherKeys is *not* gated on any of it: vim emits `CSI > 4 ; 2 m` about 180 bytes
+  before it asks. Why `Pp = 1` and `Pc = 0` is `architecture.md` § Hidden VT state; the reference
+  rows are [`reference-facts.md` § Secondary device attributes](../../agents/reference-facts.md#secondary-device-attributes--report-yourself-do-not-impersonate).
 - **One capture is closed-loop** (#891) — `vim_closed_loop.raw` holds all ten. How it was recorded,
   why the replies had to be the engine's, and why its bytes encode a consumer policy are
   [the capture corpus](capture-corpus.md)'s, not this territory's: this one only needs to know that

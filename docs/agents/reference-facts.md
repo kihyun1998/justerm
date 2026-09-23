@@ -2299,8 +2299,7 @@ from it on all three *fields* (#824).** Impersonation is self-defeating for an e
 implement what it would be claiming, and it contradicts the existing DA1, written to advertise only
 the levels the Engine genuinely has. But "follow alacritty" carried no field values when it was
 written, and taken literally it produces `Pp = 0`, `Pc = 1` and a `.first()` match — each wrong here
-for its own reason, recorded at `justerm-core/src/term.rs` beside the two constants and in
-`docs/architecture.md` § Hidden VT state. The row above that mattered most is the `Pc` one: the
+for its own reason, recorded in `docs/architecture.md` § Hidden VT state. The row above that mattered most is the `Pc` one: the
 justification is **not** a spec mandate (`ctlseqs.txt:839` describes DEC hardware, not emulators) and
 **not** ADR-0004 (whose spec branch covers *omission*, not contradiction) — it is that this engine
 has no ROM cartridge to register.
