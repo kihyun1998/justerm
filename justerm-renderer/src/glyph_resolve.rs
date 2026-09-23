@@ -39,19 +39,9 @@ pub struct Cells<'a> {
 /// region can hold (so pinning the working set is impossible — surfaced, never silently
 /// corrupting an earlier cell, #280 P0).
 ///
-/// The other two guard the frame's *shape* (#355). `apply_frame` is wasm-exported and takes its
-/// `cols`/`rows` as `u32` straight from a JS caller; the wire caps both at `u16`
-/// (`justerm-core`'s `serialize.rs`), so nothing core produces can trip either, and nothing binds
-/// a caller that does not go through core.
-///
-/// **Refusing a malformed frame is a divergence, not prior art.** beamterm tolerates: its
-/// `update_cells` `zip`s the cell buffer against the caller's iterator and silently truncates to
-/// the shorter (`terminal_grid.rs:547`), and `update_cells_by_index` drops out-of-range writes with
-/// a `filter` (`:613`). Chromium clamps an oversized drawing buffer rather than refusing it. We
-/// refuse because `apply_frame` is a *dense* contract consumed by a program: a frame missing cells
-/// is a caller defect, and rendering fabricated ones hides it. The sparse path (`apply_damage` ->
-/// `FrameGrid`) is persistent and therefore tolerant of partial input, exactly like beamterm's —
-/// but it validates its span directory first, because there the fabrication was a wasm trap.
+/// The other two guard the frame's *shape* (#355): `apply_frame` takes `cols`/`rows` straight from
+/// a JS caller, so nothing binds one that does not go through core. Refusing is deliberate —
+/// `docs/map/territory/glyph-atlas.md`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ResolveError<E> {
     Rasterize(E),
@@ -62,9 +52,8 @@ pub enum ResolveError<E> {
         cols: u32,
         rows: u32,
     },
-    /// The frame carries fewer cells than its grid claims. Resolving it would invent the
-    /// difference (`.get(idx).unwrap_or(0x20)`) *after* allocating for all of them: a 1000x1000
-    /// grid backed by two codepoints used to resolve a million cells.
+    /// The frame carries fewer cells than its grid claims; resolving it would invent the
+    /// difference after allocating for all of them.
     FrameShorterThanGrid {
         cells: usize,
         got: usize,
@@ -86,17 +75,10 @@ fn sanitize_codepoint(cp: u32) -> char {
 /// The glyphs a pack must not evict — what makes a slot handed out early still mean the same thing
 /// when the frame is drawn.
 ///
-/// **Owned by the caller, so its scope is the caller's choice, and that is the whole of the
-/// cross-grid guarantee (#772).** A single `resolve_frame` protects its own cells by refusing a
-/// frame that needs more distinct glyphs than a region holds — but once a glyph cache is shared by
-/// every grid on one font configuration, the grids drawn in the *same* frame are packed by separate
-/// calls, and the second one can evict a slot the first has already committed to. Its instances are
-/// packed and will not be re-diffed, so nothing downstream can notice.
-///
-/// So the render loop makes **one** of these and passes it to every grid it packs: a pack that
-/// cannot fit alongside its siblings is surfaced rather than drawn wrong, exactly as an
-/// over-capacity single frame already was. A pack outside a render loop (the direct `apply_frame`
-/// path) makes its own, which is the scope it actually has.
+/// **Owned by the caller, so its scope is the caller's choice (#772).** The render loop makes one
+/// and passes it to every grid it packs, so a pack that cannot fit beside its siblings is refused
+/// rather than drawn wrong; the direct `apply_frame` path makes its own
+/// (`docs/map/territory/multi-viewport.md`, the slot pin).
 ///
 /// Two sets rather than one because the normal and wide LRUs are independent (`glyph_cache`) — a key
 /// referenced in one region must not spuriously protect an identical key in the other.
@@ -155,20 +137,8 @@ pub fn resolve_frame<B, E>(
     let mut pending_right: Option<u16> = None;
     for idx in 0..count {
         // A wide glyph never spans rows, so a pending right-half must not leak across a row
-        // boundary — reset at col 0.
-        //
-        // This reset is **load-bearing, not defensive**, and the reason first written here — *"core
-        // wraps a lead off the last column"* — covers only the print paths. Since justerm-core #529
-        // (ADR-0025, "D4's scope") a `WIDE_CHAR` lead in the final column is a **declared legal
-        // state**: `Row::resize` truncates through a pair without repair, and the alt screen resizes
-        // without reflowing, so narrowing a window over a CJK glyph strands one. Such a lead sets
-        // `pending_right` that no spacer ever consumes, and without this reset the next row's first
-        // cell would inherit it. Handling the state here is contract conformance, not a workaround:
-        // whether a lead has its spacer is decidable from the viewport alone, so it is the
-        // consumer's by ADR-0017 and core owes no helper for it.
-        //
-        // The rendered result is a lead drawn as its left half only — clipped, never overflowing
-        // into a neighbour and never mismatched against another row's glyph.
+        // boundary — reset at col 0. Load-bearing, not defensive: a stranded lead in the final
+        // column is legal core state (`docs/map/territory/glyph-atlas.md`).
         if (idx as u32).is_multiple_of(cols) {
             pending_right = None;
         }

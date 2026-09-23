@@ -38,8 +38,23 @@ it.
   host-testable with no GL at all.
 - **The hot loop was lifted out of the browser-only layer on purpose** (#280) so `cargo test` can
   reach it. Three correctness gaps the #264 adversarial pass found were unreachable from the host
-  before that: within-frame LRU eviction corrupting earlier cells, a rasterise failure stranding a
-  committed-but-unuploaded slot, and one more the module doc enumerates.
+  before that: within-frame LRU eviction corrupting earlier cells (P0), a rasterise failure stranding
+  a committed-but-unuploaded slot (P1), and control and combining codepoints burning a normal-region
+  slot (S — C0, DEL and C1 now fold to space).
+- **A malformed dense frame is refused, deliberately unlike beamterm** (#355). beamterm tolerates:
+  `update_cells` zips against the caller's iterator and silently truncates, `update_cells_by_index`
+  filters out-of-range writes, and Chromium clamps an oversized drawing buffer. `apply_frame` is a
+  *dense* contract consumed by a program, so a frame missing cells is a caller defect and rendering
+  invented ones hides it — the frame is bounded by the data it carries, where trusting `cols × rows`
+  once resolved a million cells for a 1000×1000 grid backed by two codepoints. The sparse path
+  (`apply_damage` → `FrameGrid`) is tolerant like beamterm's, but validates its span directory first
+  ([frame adapter](frame-adapter.md)).
+- **The resolver resets a pending wide right-half at every row start, and that is load-bearing.**
+  Since justerm-core #529 (ADR-0025, D4's scope) a wide lead in the final column is a declared legal
+  state — `Row::resize` truncates through a pair and the alt screen resizes without reflowing — so a
+  lead can set a right-half no spacer consumes, and without the reset the next row's first cell
+  inherits it. The lead is drawn as its left half only. Handling it here is contract conformance: a
+  lead's spacer is decidable from the viewport, so it is the consumer's under ADR-0017.
 - **A within-frame eviction can corrupt cells already packed in the same frame** — the atlas is
   mutable during a pass over the grid, so a slot handed out early can be reused before the frame is
   drawn. This is the hazard the split exists to make testable. Within one frame it is *refused*
