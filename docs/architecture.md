@@ -354,7 +354,8 @@ under it.
   cost of a join. The cap would not have caught it: at the default 10 000-line
   scrollback a buffer's worth of cells exceeds what a `u16` parameter can carry, so it never binds
   there. Both are divergences from all three references, which loop uncapped because each *is* the
-  terminal and owns the thread it burns. [#825]
+  terminal and owns the thread it burns (xterm `charproc.c:6156`, xterm.js `InputHandler.ts:1655`,
+  ghostty `Terminal.zig:452-456`; alacritty does not implement the sequence). [#825]
 - **Wide-char spacer is a distinct marker, not a blank.** The trailing column of a width-2 char must
   carry a "wide-char spacer" marker (flag/variant), not a plain blank — else overwrite, erase,
   selection, and cursor positioning go wrong. [#2]

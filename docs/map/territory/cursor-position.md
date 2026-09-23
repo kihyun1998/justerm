@@ -72,6 +72,18 @@ Read out of the source; there is no record to read instead.
   where ghostty puts it for its reflowed saved cursor (`terminal/Screen.zig:2094`). Measured before
   the fix: 4 columns, `abcd`, `DECSC`, `resize(8, 3)`, `DECRC` left the flag armed at column 3 of an
   8-column grid, and the next print wrapped instead of landing at column 4.
+- **Under `?7l` the print path is the only place DECAWM is tested** (#869). The park is armed
+  unconditionally, and `write_glyph`'s consume guard spends it in place instead of wrapping —
+  deleting that guard does not regress an edge case, it wraps with autowrap disabled
+  (`decawm.rs::autowrap_off_overwrites_the_last_column` guards the guard). All four references print
+  in place there; the reference rows are in `docs/agents/reference-facts.md`. #848 widened a
+  pre-existing gap here: until then `put_tab` cleared the flag, so `abc` + `?7l` + `HT` + `X` printed
+  in place by accident.
+- **A wrap is claimed only if a next row exists** — parked below a DECSTBM region on the last row,
+  `wrapline` advances nothing, so a soft-wrap flag set there would be permanently false and survive
+  into reverse wraparound, reflow and every text reader. The narrow print path was the one caller
+  that committed without asking `wrapline_advances` (found by #540's completeness pass, where a
+  row-shift verb inherited the bogus flag and merged two logical lines).
 
 ## Code
 

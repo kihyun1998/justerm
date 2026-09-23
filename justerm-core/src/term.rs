@@ -1887,12 +1887,7 @@ impl Term {
     /// with autowrap off is dropped. [`Term::repeat_anchor`] is set from this, so a
     /// print that placed no cell must not arm the repeat.
     fn write_glyph(&mut self, c: char, width: usize) -> Option<(usize, usize)> {
-        // Every wide branch below is gated on `width == 2`, and the four unguarded uses
-        // (`insert_chars`, `col + width - 1` twice, the cursor advance) assume the same bound.
-        // The caller coerces (#595); this states the assumption at the site that holds it, so a
-        // future second caller fails a test rather than writing an unmarked run of blanks.
-        // Ghostty pairs its own source-side clamp with the same assertion for the same reason
-        // (`Terminal.zig`, *"it is possible to have a width of 3 … assert(width <= 2)"*).
+        // The caller coerces widths past 2 (#595); asserted where every wide branch assumes it.
         debug_assert!(
             width <= 2,
             "write_glyph({c:?}, {width}) — the cell model represents at most a pair"
@@ -1903,41 +1898,13 @@ impl Term {
         // The row being left soft-wrapped: mark its last cell so reflow (#7) can
         // tell it from a hard CR/LF line-end.
         if self.cursor.pending_wrap && !self.autowrap {
-            // **This is where DECAWM is tested, and since #869 it is the only place.**
-            // The arm is unconditional, so under `?7l` every row-filling print leaves a
-            // park and this guard is what spends it in place instead of wrapping — not
-            // the narrow "the mode was turned off after the flag was armed" repair it
-            // began as. Deleting it does not merely regress an edge case; it wraps with
-            // autowrap disabled. `decawm.rs::autowrap_off_overwrites_the_last_column` is
-            // the guard on the guard.
-            //
-            // **All four references print in place here**: xterm clears `do_wrap` and
-            // only then asks `WRAPAROUND` (`charproc.c:7059-7061`), xterm.js un-parks
-            // with `x = cols - 1` in the else arm of its `wraparoundMode` branch
-            // (`InputHandler.ts:612`), ghostty gates the whole consume
-            // (`Terminal.zig:1368`) and alacritty's `wrapline` early-returns on
-            // `!LINE_WRAP` (`term/mod.rs:962`). What they differ on is whether the flag
-            // is left standing afterwards, and that is a separate axis — see
-            // `docs/agents/reference-facts.md`, where #848's "2-2" is corrected as a
-            // sampling artefact rather than a real split.
-            //
-            // Pre-existing, and #848 widened it: until that change `put_tab` cleared
-            // the flag, so `abc` + `?7l` + `HT` + `X` printed in place by accident.
+            // Under `?7l` the park is spent in place rather than wrapping — the only place DECAWM is
+            // tested (#869, `docs/map/territory/cursor-position.md`).
             self.cursor.pending_wrap = false;
         }
         if self.cursor.pending_wrap {
             let row = self.cursor.row;
-            // Claim the wrap only if there will *be* a next row to continue into. Parked below a
-            // DECSTBM region on the last row, `wrapline` → `linefeed` advances nothing and the
-            // glyph overwrites this same row from column 0 — so the wrap never happened, and a
-            // flag set here is permanently false: the cursor never leaves, nothing clears it, and
-            // it survives into `backspace`'s reverse-wraparound, reflow, and every text reader.
-            //
-            // The predicate is not new and neither is its rationale: `wrapline_advances` was
-            // written for exactly this state and is already asked by both wide-at-boundary paths.
-            // This narrow path was the one caller that committed without asking. (Surfaced by the
-            // #540 completeness pass, which found a row-shift verb inheriting the bogus flag and
-            // merging two unrelated logical lines.)
+            // Claim the wrap only if there will be a next row to continue into (#540).
             if self.wrapline_advances() {
                 self.begin_wrap(row);
             }
@@ -1968,12 +1935,9 @@ impl Term {
 
         let (row, col) = (self.cursor.row, self.cursor.col);
 
-        // Overwriting either half of a pair that wrapped from the row above ends that pair, so the
-        // row above's artefact record is void (#534). The one exception is the in-place same-width
-        // overwrite — a wide lead replaced by another wide lead at the same column — which is
-        // ghostty's `if (cell.wide != wide)` escape and the reason this is asked *before* the
-        // write rather than after it. Note IRM has already run its own check inside `insert_chars`
-        // by the time this would fire, on the pre-shift state, which is the correct one.
+        // Overwriting either half of a pair that wrapped from the row above voids the row above's
+        // artefact record (#534) — except an in-place same-width overwrite, ghostty's
+        // `if (cell.wide != wide)` escape, which is why this is asked before the write.
         if col <= 1 && self.wrapped_pair_at_row_start(row) && !(col == 0 && width == 2) {
             self.void_wrap_artefact_above(row);
         }
@@ -1996,9 +1960,7 @@ impl Term {
         // Stamp the pen's extended attrs — the open hyperlink (#26/#46) and a non-default
         // underline colour (#520) — into the row's side maps.
         let ext = self.pen_ext_attrs();
-        // `.clone()`: `ExtAttrs` stopped being `Copy` at #628 (the link rider is a shared
-        // `Arc<str>`), and the spacer below stamps the same value — a refcount bump, not
-        // a second string.
+        // `.clone()` is a refcount bump on the link rider (#628); the spacer stamps the same value.
         self.grid.row_mut(row).set_ext_attrs(col, ext.clone());
 
         // The trailing column of a wide glyph carries a distinct spacer marker —
@@ -2019,12 +1981,9 @@ impl Term {
         let new_col = col + width;
         if new_col >= cols {
             self.cursor.col = cols - 1;
-            // The park is taken whatever the mode says (#869): the cursor is logically
-            // one past this column either way, and that is the whole of what this flag
-            // means. With `?7l` the *consume* site above spends the park in place, so
-            // the next glyph still overwrites the last column (#63) — but if the mode
-            // is re-enabled before that print, the park is still there and it wraps,
-            // which is what all four references do.
+            // The park is taken whatever the mode says (#869); under `?7l` the consume site above
+            // spends it in place (#63), and re-enabling the mode first makes it wrap, as all four
+            // references do.
             self.cursor.pending_wrap = true;
         } else {
             self.cursor.col = new_col;
@@ -2032,46 +1991,16 @@ impl Term {
         Some((row, col))
     }
 
-    /// The column, on the cursor's row, of the cluster the cursor last printed into —
-    /// or `None` when nothing precedes it on this row. Shared by the combining-mark
-    /// attach point and the mode-2027 join point, which each used to carry their own
-    /// copy of it.
+    /// The column, on the cursor's row, of the cluster the cursor last printed into, or `None`
+    /// when nothing precedes it on this row — shared by the combining-mark attach point and the
+    /// mode-2027 join point.
     ///
-    /// # Two cases, and why the first one is trustworthy again (#865, #869)
-    ///
-    /// **Parked.** [`Cursor::pending_wrap`] says the cursor is logically one past the
-    /// column it sits on, so the cluster is *at* the cursor — and once left over a
-    /// `WIDE_CHAR_SPACER` to reach its lead.
-    ///
-    /// **This reading was wrong for a whole mode until #869, and the repair is not
-    /// here.** The flag used to be armed as `pending_wrap = self.autowrap`, so with
-    /// `?7l` a print that filled the last column pinned the cursor and armed nothing:
-    /// a pin and a bare *advance onto* that column shared every cursor field, and a
-    /// mark landed one column too far left. #865 worked around it here by consulting
-    /// [`Term::repeat_anchor`]; #869 removed the cause instead — the arm is now
-    /// unconditional and the mode is tested where it is consumed, which is what
-    /// alacritty (`term/mod.rs:1136`), ghostty (`Terminal.zig:1434`) and xterm
-    /// (`charproc.c:7152`) all do — that line is the *exact-fill* arm and is
-    /// unconditional; xterm's *overflow* arm two branches up (`:7145`) is gated on
-    /// `WRAPAROUND`, and the arm site here is only ever reached by the former. The
-    /// workaround was then measured dead across the
-    /// whole core suite, against a positive control that reproduced it under the old
-    /// arming, and removed.
-    ///
-    /// **Not parked.** The cursor is merely *at* a cell, so the cluster is one column
-    /// left, and once more left over a spacer. This is also the answer after a bare
-    /// cursor move to the last column, which the four references answer four different
-    /// ways: xterm attaches under the cursor (`char_was_written` is false after
-    /// `ResetWrap`, so it falls back to `cur_col`), alacritty and ghostty attach one
-    /// column left, and xterm.js attaches nowhere — its `precedingJoinState` is zeroed
-    /// on every escape transition (`EscapeSequenceParser.ts:676`), so `shouldJoin` is
-    /// false (`UnicodeV6.ts:134`) and the mark becomes its own zero-width cell. This
-    /// engine keeps the answer it had, which is the plurality's; #865 deliberately did
-    /// not reopen it, since nothing measured reaches the case.
-    ///
-    /// **`REP` still does not use this**, and the reason is on [`Term::repeat_anchor`]:
-    /// it needs the position a print wrote even where the cursor has since moved, which
-    /// is a different question from the one asked here.
+    /// Parked ([`Cursor::pending_wrap`]), the cluster is at the cursor; otherwise one column
+    /// left. Either way, once more left over a `WIDE_CHAR_SPACER` to reach its lead. The parked
+    /// reading holds under `?7l` too since #869 armed the park unconditionally (#865 had worked
+    /// around the old arming here). After a bare cursor move the references give four answers
+    /// and this keeps the plurality's (reference rows in `docs/agents/reference-facts.md`). `REP`
+    /// does not use this: it needs where a print wrote, even after the cursor moved.
     fn cursor_cluster_col(&self) -> Option<usize> {
         let row = self.cursor.row;
         // The pinned case. The wide arm is the same cell reached from its spacer: a
@@ -2091,19 +2020,9 @@ impl Term {
         })
     }
 
-    /// The text the cell at `(row, col)` holds, in print order: its base glyph followed
-    /// by any combining marks the row's side table carries for it. One grapheme cluster
-    /// by construction — it is what a single print produced.
-    ///
-    /// A `String` and not a `Vec<char>`, because both callers want text: returning scalars
-    /// and collecting cost a second allocation and measured 2.06x on the join path
-    /// (11.66 ms -> 24.06 ms over 20k joins, release, best of 7). `REP` iterates
-    /// `.chars()` instead, which costs it nothing.
-    ///
-    /// **It is no longer on the per-scalar path.** Until #867 the mode-2027 join called this for
-    /// every printed scalar, which is what made a growing cluster quadratic; the join now consults
-    /// it only when a width can actually change, so this is O(L) once per cluster rather than once
-    /// per join.
+    /// The text the cell at `(row, col)` holds, in print order: its base glyph followed by any
+    /// combining marks — one grapheme cluster, what a single print produced. A `String`
+    /// because both callers want text. Off the per-scalar path since #867.
     fn cluster_text(&self, row: usize, col: usize) -> String {
         let mut out = String::new();
         out.push(self.grid.cell(row, col).c());
@@ -2113,69 +2032,15 @@ impl Term {
         out
     }
 
-    /// REP (CSI Ps b): repeat the preceding grapheme `count` times (#825). The caller
-    /// owns the armed check — see the `'b'` arm of `csi_dispatch`, which holds both
-    /// halves of the ordering this sequence needs.
+    /// REP (CSI Ps b): repeat the preceding grapheme `count` times (#825). The caller owns the
+    /// armed check (the `'b'` arm of `csi_dispatch`).
     ///
-    /// **The repeat re-enters the print path**, which is the load-bearing decision:
-    /// printing already owns pending-wrap, autowrap, wide-character pairing, cluster
-    /// promotion under mode 2027, the pen, insert mode and the scroll region, so a
-    /// cell-fill would have to re-derive every one of them and would drift from typed
-    /// text the first time any of them changed. ghostty does the same
-    /// (`src/terminal/Terminal.zig:452-456`), and so does xterm.js.
-    ///
-    /// **What is repeated is the cluster at [`Term::repeat_anchor`], read off the cell.**
-    /// A retained copy would have to be kept in step with the cell by hand at three
-    /// arming sites and nothing would catch it drifting; the anchor keeps the *position*
-    /// exact, which is the half a read-back can get wrong.
-    ///
-    /// **That the unit is the cluster is a product judgement, not a derivation**, and
-    /// the three references give three answers. xterm repeats *nothing* after a
-    /// combining mark — its retained value is a single `IChar`, so the mark replaces
-    /// the base and the positive-width guard (`charproc.c:6154`) then rejects it.
-    /// ghostty repeats the base *without* its marks: its cluster-append branch returns
-    /// before `previous_char = c` (`Terminal.zig:1355-1365`). xterm.js repeats the
-    /// whole cluster, reading it off the cell (`InputHandler.ts:1649-1671`). ADR-0004
-    /// makes xterm the tie-breaker for *the spec*, and xterm's answer here follows from
-    /// a scalar `lastchar` rather than from a reading of it — while a cell in this
-    /// engine holds a cluster. Decided by the maintainer on 2026-09-07 and theirs to
-    /// reverse; a better derivation does not settle it.
-    ///
-    /// # Two bounds, and only one of them is the load-bearing one
-    ///
-    /// The count is untrusted and the repeat is the only place in this engine where one
-    /// wire parameter buys unbounded work, so it is bounded twice — for different
-    /// reasons, and the *order of importance is the reverse of the order they read in*.
-    ///
-    /// **The progress guard is what actually bounds the pathological case.** An
-    /// iteration that places no new cell has not repeated anything: under mode 2027 a
-    /// cluster ending in `ZWJ` re-joins the cluster it was read from, so each replay
-    /// grows one cell's cluster instead of writing a second one, and `try_grapheme_join`
-    /// **was** O(L) in that cluster's length. Measured before the guard: `?2027h`,
-    /// `U+1F468`, `U+200D`, then the eight bytes `CSI 65535 b` cost **593 seconds** —
-    /// nine minutes and fifty-three seconds of one consumer thread, for eight bytes of
-    /// PTY output. The guard ends the loop the first time an iteration leaves the anchor
-    /// where it found it, which is exactly the condition "nothing was repeated".
-    ///
-    /// **#867 removed that O(L), and it did not retire this guard.** The join is now
-    /// constant in the cluster's length, so the amplification that produced 593 seconds
-    /// no longer exists — but a no-progress iteration is still a no-progress iteration,
-    /// and without the guard `CSI 65535 b` would still run 65 535 of them to place
-    /// nothing. The guard bounds pointless work; it never bounded the cost of a join.
-    ///
-    /// **The count cap is defence in depth and would not have caught that case**, which
-    /// is why it is stated second. The cap is a whole buffer's worth of
-    /// cells, and at the default 10 000-line scrollback that is 801 920 on an 80x24
-    /// grid — larger than the 65535 a `u16` parameter can carry, so it never binds
-    /// there. It binds on a small buffer, where a count far past what the buffer can
-    /// hold only rewrites what the repeat already wrote. Shipping the cap alone would
-    /// have looked like a fix for the measurement above and been none.
-    ///
-    /// Both are divergences from every reference: xterm (`charproc.c:6156`), xterm.js
-    /// (`InputHandler.ts:1655`) and ghostty (`Terminal.zig:452-456`) all loop uncapped,
-    /// and alacritty does not implement the sequence. The asymmetry that justifies them
-    /// is that all three *are* the terminal and own the thread they burn, while this is
-    /// a library running on a consumer's.
+    /// The repeat re-enters the print path, so wrap, wide pairing, mode 2027, the pen, insert
+    /// mode and the scroll region apply as for typed text. What is repeated is the cluster at
+    /// [`Term::repeat_anchor`], read off the cell — a product judgement where the references
+    /// give three answers, the maintainer's (2026-09-07). The count is bounded twice: a progress
+    /// guard that stops once an iteration places no new cell (the load-bearing one), and a cap
+    /// of a buffer's worth of cells. Why each: `docs/architecture.md` § Hidden VT state.
     fn repeat_last(&mut self, count: usize) {
         let Some((row, col)) = self.repeat_anchor else {
             return;
@@ -2195,16 +2060,11 @@ impl Term {
         }
     }
 
-    /// Attach a combining mark (width-0 code point) to the grapheme it modifies —
-    /// the cell the cursor just left. With pending-wrap the cursor still sits on
-    /// the just-written last-column glyph, so attach in place (no back-up, no
-    /// deferred wrap); otherwise step back one column, and once more over a
-    /// wide-char spacer to reach its lead. Stored in the grapheme side-table.
+    /// Attach a combining mark (width-0 code point) to the cluster the cursor last printed
+    /// into ([`Term::cursor_cluster_col`]), in the row's combining map.
     fn push_combining(&mut self, c: char) -> (usize, usize) {
         let row = self.cursor.row;
-        // `unwrap_or(0)`: a mark that opens the stream has no base and attaches to
-        // column 0, which is what the `saturating_sub` here did before #825. The join
-        // path declines that case instead; the two differ deliberately.
+        // A mark with no base attaches to column 0; the join path declines that case instead.
         let col = self.cursor_cluster_col().unwrap_or(0);
         // Append the mark to the row's combining map at this column (setting the
         // cell's combining bit). No global pool — the cluster rides the row.
@@ -2213,16 +2073,11 @@ impl Term {
         (row, col)
     }
 
-    /// Mode 2027 (#295): if `c` **extends** the previous cell's grapheme cluster (UAX #29), append
-    /// it to that cell's side-table — no new cell, no cursor advance — and return where it joined.
-    /// Otherwise `None`, so `place_grapheme` takes the per-scalar path (a break starts a cell).
-    ///
-    /// The break state lives in the cell rather than being carried across calls, so cursor moves
-    /// and CR/LF cannot corrupt it — but the cluster is **not** reconstructed to ask the question
-    /// (#867): [`crate::grapheme::joins_cluster`] reads a bounded tail of the side table, and the
-    /// width oracle is consulted only when [`crate::grapheme::width_may_change`] says the answer
-    /// can have moved. Together those make the join O(1) in the cluster's length, where it used to
-    /// be O(L) three times over.
+    /// Mode 2027 (#295): if `c` extends the previous cell's grapheme cluster (UAX #29), append
+    /// it to that cell's side table — no new cell, no cursor advance — and return where the
+    /// cluster ended up; otherwise `None`. O(1) in the cluster's length (#867): the break
+    /// question reads a bounded tail of the side table, and the width oracle is asked only
+    /// when [`crate::grapheme::width_may_change`] says the answer can have moved.
     fn try_grapheme_join(&mut self, c: char) -> Option<(usize, usize)> {
         let row = self.cursor.row;
         // Locate the previous cluster's base cell; `None` means nothing precedes it on
