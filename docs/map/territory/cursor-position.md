@@ -53,7 +53,8 @@ Read out of the source; there is no record to read instead.
   **parked** cursor it spends the deferred wrap as the first unit of the move, so the cursor does not
   move at all (#80). **Both verbs take that step — `BS` and `CSI D`, through `Term::step_back`
   (#873)**, the second applying it once per unit of its count; it was `BS` only until then, on a
-  comment that recorded an observation about xterm.js rather than a decision.
+  comment that recorded an observation about xterm.js rather than a decision. The decision is the maintainer's (2026-09-08, theirs to reverse); the tally and the reach
+  measurement behind it are on `justerm-core/tests/reverse_wrap.rs::cursor_left_spends_a_park`.
   **Both halves are gated on `?45` *and* `?7h`**, which the spend had and the walk did not until
   #873's follow-up: xterm reaches both arms through one `rev`, so `:165` is as dead under `?7l`
   as `:153` is. And **the walk leaves the wrap link alone** — it used to clear it, by writing the
@@ -65,6 +66,12 @@ Read out of the source; there is no record to read instead.
   (`Terminal.zig:1756`). Under `?7l` all three references spend the park by *moving*, so the park
   #869 arms there is not this rule's to consume. Without the spend a parked and an unparked backspace
   land in the same place, which is the sharper statement of the defect than "one column off".
+- **A restored deferred wrap settles where it is not at the last column** (#848). `resize` applies
+  the translation to the live cursor; the two saved slots are not reflowed (`decsc` is untouched by
+  resize and clamped at DECRC, the alt slot is copied whole), so the repair runs at the restore —
+  where ghostty puts it for its reflowed saved cursor (`terminal/Screen.zig:2094`). Measured before
+  the fix: 4 columns, `abcd`, `DECSC`, `resize(8, 3)`, `DECRC` left the flag armed at column 3 of an
+  8-column grid, and the next print wrapped instead of landing at column 4.
 
 ## Code
 

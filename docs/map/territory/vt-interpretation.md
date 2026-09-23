@@ -376,7 +376,9 @@ the reference", and it is the one this territory operates under.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [RIS keeps configuration, drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
+  — `RIS` and `DECSTR` are verbs here, and `full_reset` rebuilds `Term` from the constructor, so
+  every field the rebuild must carry across is decided by that note's table
 
 ## Blast radius
 

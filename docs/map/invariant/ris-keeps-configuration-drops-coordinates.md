@@ -27,6 +27,14 @@ no compiler diagnostic, says which side of the line a field is on.
 | **The id counter behind a handle the consumer still holds** | **survives iff the handle's death is not announced** | the coordinate dies with the buffer (row above) — but the *id* naming it is out in the consumer's hands, and a rebuilt counter reissues it. Then a stale ask is answered with a **different** object's state, silently. An announced death makes the question moot, because the holder has already been told | `next_tracked_id` survives (#691, no disposal event — the holder learns by being told `None`); `next_marker_id` does **not**, and reissues freely, because every marker's disposal is announced before the rebuild |
 | **Terminal state the *application* wrote through the VT stream** — not a coordinate, not derived from any cell | **dies** | RIS resets the terminal, and this *is* the terminal's state; the party that set it is the party `ESC c` is resetting. The first row's exemption is for the **embedder**, and an application is not the embedder — which is the whole distinction, since both look like "a string somebody configured" at the definition site | `window_title`, `icon_name` and the two XTWINOPS title stacks (#823); both screens' kitty keyboard flags and stacks, `kitty_flags_inactive` / `kitty_stack_inactive` included (#941 — alacritty, ghostty and xterm.js all clear both). **Two references face this and answer it the same way**, which this cell used to give as one (corrected #835): alacritty by hand (`title_stack = Vec::new()` and `title = None` in `reset_state`), and ghostty by clearing `self.title` *and* `self.pwd` in `fullReset` (`Terminal.zig:4468-4469`). So the retained strings are a **2–2** tie, not the minority position the stacks are — ghostty holds no title stack in `Terminal`, so it cannot be counted on that half. Neither announces the clearing (2–0) |
 
+**The marker epoch rides across RIS and then moves** (#490). A consumer re-pulls its marker index
+when the epoch differs; resetting it to 0 would leave it equal to the value a quiet session already
+holds, so the one signal it watches would not fire for the mutation that invalidates everything.
+`evicted_total` legitimately restarts — the buffer it counted is gone — and the epoch change is what
+stops the consumer rebasing against the old basis. Marker ids ride across for the id-counter row's
+reason: a pulled handle outlives the announcement that killed it, so a reissued id would let a stale
+`MarkerDisposed(7)` drop the live post-RIS marker 7.
+
 Every reference keeps configuration across RIS by construction rather than by remembering to:
 alacritty's `reset_state` never touches `self.config`, xterm.js holds it in `OptionsService`, and
 ghostty passes the word-separator set in per call. The application-state row dies the way alacritty
@@ -44,7 +52,7 @@ been yes. For the palette it is **no**, decided on #835 — ADR-0004's tie-break
 table DEC never defined, terminfo appends the palette reset *after* `RIS` rather than assuming it
 (`xterm-256color`'s `rs1=\Ec\E]104\007`), and the one reference built in this shape (ghostty, which
 announces every other palette change across its consumer boundary) sends nothing from `fullReset`.
-The grounds are written out at `Term::full_reset`, and the tests are
+The grounds are written out in [VT interpretation](../territory/vt-interpretation.md), and the tests are
 `reset.rs::{ris,decstr}_announces_nothing_about_the_palette`.
 
 ## Why it is cross-cutting

@@ -1311,37 +1311,19 @@ impl Term {
 
     // ---- cursor / scroll primitives ------------------------------------------
 
-    /// Move down one line. At the bottom margin, scroll the region instead;
-    /// below the region, just descend (no scroll). Column is unchanged (raw LF;
-    /// CR is what returns to column 0).
-    /// An ordinary line feed — `LF`/`VT`/`FF`, `IND` and `NEL`. None of them serves a wrap.
-    ///
-    /// It clears the deferred wrap, as every acting positioner does — see
-    /// [`Cursor::pending_wrap`]. The clear sits here rather than in
-    /// [`Term::linefeed_inner`] because the wrap machinery drives that same
-    /// primitive and *consumes* the flag rather than clearing it; folding the two
-    /// together would put one property's arm and its clear in one statement.
-    /// Leaving it armed made the print after an `LF` wrap a second time, landing a
-    /// row further down and leaving the row the feed had reached blank (#848).
+    /// An ordinary line feed — `LF`/`VT`/`FF`, `IND` and `NEL`, none of which serves a wrap.
+    /// Clears the deferred wrap, as every acting positioner does (see
+    /// [`Cursor::pending_wrap`]); the wrap machinery drives [`Term::linefeed_inner`] directly
+    /// and consumes the flag instead (#848).
     fn linefeed(&mut self) {
         self.linefeed_inner(false);
         self.cursor.pending_wrap = false;
     }
 
-    /// A line feed, carrying the one fact the shift itself cannot see: whether the auto-wrap asked
-    /// for it.
-    ///
-    /// `serves_wrap` is the **bottom** seam's exemption in `shift_region`, the mirror of
-    /// `evicts_to_scrollback` for the top one. When `wrapline` drives this, the blank that lands at
-    /// the region's bottom *is* where the wrapped text is about to go — so the row that #540 would
-    /// call "the one that lost its continuation to the blank" is in fact the row whose continuation
-    /// that blank **is**.
-    ///
-    /// xterm.js threads the identical fact through the identical seam, in the opposite direction:
-    /// `BufferService.scroll(eraseAttr, isWrapped)` stamps the *destination* row
-    /// (`common/services/BufferService.ts:68`/`:77` @ `699f553`), and exactly one of its four
-    /// non-test callers passes `true` — the auto-wrap branch of `_print` (`InputHandler.ts:588`),
-    /// not `lineFeed`, `index` or the ED-2 loop.
+    /// Move down one line: at the bottom margin scroll the region instead, below the region
+    /// just descend. Column unchanged. `serves_wrap` says the auto-wrap asked for it, which
+    /// exempts the region's bottom seam in `shift_region` — the blank landing there is where
+    /// the wrapped text goes (xterm.js threads the same fact through `BufferService.scroll`).
     fn linefeed_inner(&mut self, serves_wrap: bool) {
         // New-line mode (LNM ?20): a line feed also returns to column 0 (#71).
         if self.newline_mode {
@@ -1351,12 +1333,8 @@ impl Term {
             // A top-anchored primary-screen scroll pushes the evicted top line
             // into scrollback history.
             if self.scroll_top == 0 && !self.on_alt {
-                // Scrollback accrues whenever the scroll is top-anchored on the
-                // primary screen (`scroll_top == 0`) — but the O(1) ring handshake
-                // only applies to a *full-screen* scroll (`scroll_bottom` at the
-                // last row). A top-anchored *sub-region* (`[0..k]`, k < rows-1)
-                // still accrues, yet must scroll only its region, so it keeps the
-                // copy + region scroll. These are distinct predicates (ADR-0009).
+                // A top-anchored primary scroll accrues scrollback; only a full-screen one takes the
+                // O(1) ring handshake, a sub-region copies and region-scrolls (ADR-0009).
                 let evicted = if self.scroll_bottom == self.grid.rows() - 1 {
                     // Full-screen hot path: move the evicted top row out, install
                     // a recycled blank as the new bottom (zero-alloc steady state).
@@ -1365,27 +1343,15 @@ impl Term {
                         .take()
                         .unwrap_or_else(|| Row::from_cells(Vec::with_capacity(self.grid.cols())));
                     let evicted = self.grid.scroll_up_recycle(blank);
-                    // The one row-shifting path that does not route through `shift_region` (it
-                    // needs the primitive that *returns* the evicted row), so it records its own
-                    // scroll op — and owes no seam clear, which is now an argument rather than a
-                    // coincidence: the top seam is exempt because this evicts into scrollback
-                    // (adjacency is preserved one row back), and the bottom seam is exempt because
-                    // this branch only runs at `scroll_bottom == rows - 1`, where a wrap on the
-                    // last row is the state the scroll exists to serve.
+                    // The one row-shift not routed through `shift_region`, so it records its own scroll op;
+                    // it owes no seam clear — the top row enters scrollback and the bottom is the wrap's.
                     self.record_scroll(self.scroll_top, self.scroll_bottom, 1);
                     evicted
                 } else {
-                    // Top-anchored sub-region: copy row 0, then region-scroll
-                    // `[0..=scroll_bottom]` (rows below stay fixed).
-                    //
-                    // #449: the fixed rows keep their GRID position while
-                    // scrollback grows, so their content's concatenated absolute
-                    // index shifts +1 — re-anchor the content-tracking anchors
-                    // (selection, markers; alacritty's swap-back of the fixed
-                    // bottom lines is the screen-relative equivalent of this)
-                    // and invalidate the query-derived highlights
-                    // (drop-not-re-anchor policy, #108). In-region and
-                    // scrollback content keeps stable indices — untouched.
+                    // Top-anchored sub-region: copy row 0, then region-scroll `[0..=scroll_bottom]`. The
+                    // fixed rows below keep their grid position while scrollback grows, so their absolute
+                    // index shifts +1: re-anchor the content-tracking anchors and invalidate the highlights
+                    // (#449, #108).
                     let below = self.scrollback.len() + self.scroll_bottom + 1;
                     self.selection_shift_below_margin(below);
                     self.markers_shift_below_margin(below);
@@ -1468,10 +1434,8 @@ impl Term {
 
     // ---- alt screen (DEC 1049) -----------------------------------------------
 
-    /// Enter the alternate screen: save the cursor, swap in the other grid, and
-    /// clear it.
-    /// Save the cursor into the alt-screen slot — `?1048` set, and the first
-    /// half of `?1049` enter (#72).
+    /// Save the cursor into the alt-screen slot — `?1048` set, and the first half of `?1049`
+    /// enter (#72).
     fn save_alt_cursor(&mut self) {
         self.saved_cursor = self.cursor;
     }
@@ -1515,21 +1479,14 @@ impl Term {
         if !self.on_alt {
             return;
         }
-        // Dispose the alt buffer's markers on leave — xterm `activateNormalBuffer`
-        // → `clearAllMarkers` (#177 S0). Empty while the alt guards stand, so this
-        // fires nothing today; it's the seam the alt-marker slices (#187) build on.
+        // Dispose the alt buffer's markers on leave, as xterm's `activateNormalBuffer` →
+        // `clearAllMarkers` does (#177, #187).
         for m in self.alt_markers.drain(..) {
             self.events.push(TermEvent::MarkerDisposed(m.id));
         }
-        // Same fate for alt-scoped tracked points, and for the same reason: the alt
-        // buffer is not archived, so leaving it destroys what they named (#691).
-        // No announcement — `tracked_point` answers `None` on the next ask.
-        // The pulled index reports the ACTIVE buffer, so a swap changes what the
-        // consumer's held answer even describes — with no line having moved (#490).
-        // Only `normal_markers` is asked: the drain above just emptied `alt_markers`, so
-        // an `|| !alt_markers.is_empty()` disjunct would be dead code carrying a comment
-        // that claims it reads "either side". What was alt-scoped left through
-        // `MarkerDisposed`; what can still be stale is the primary population.
+        // Alt-scoped tracked points die the same way, unannounced — `tracked_point` answers
+        // `None` (#691). The epoch bump asks only `normal_markers`: the drain above emptied the
+        // alt list, and what can still be stale is the primary population (#490).
         if !self.normal_markers.is_empty() {
             self.bump_marker_epoch();
         }
@@ -1549,6 +1506,8 @@ impl Term {
         std::mem::swap(&mut self.kitty_stack, &mut self.kitty_stack_inactive);
     }
 
+    /// Enter the alternate screen: save the cursor, swap in the other grid, and
+    /// clear it.
     fn enter_alt_screen(&mut self) {
         if self.on_alt {
             return;
@@ -1584,11 +1543,8 @@ impl Term {
         } else if self.cursor.row > 0 {
             self.cursor.row -= 1;
         }
-        // Cleared in both branches, because both are the verb acting: one moves the
-        // cursor, the other scrolls the content under it. Branching on which would
-        // reintroduce the per-verb special-casing [`Cursor::pending_wrap`] exists to
-        // remove, and xterm and ghostty both clear unconditionally here (`cursor.c:284`
-        // via `CursorUp`; `Terminal.zig:2174` in `index`, under a comment saying so).
+        // Cleared in both branches: both are the verb acting, and xterm and ghostty clear
+        // unconditionally here too (see [`Cursor::pending_wrap`]).
         self.cursor.pending_wrap = false;
     }
 
@@ -1623,21 +1579,9 @@ impl Term {
         self.settle_restored_wrap();
     }
 
-    /// A restored deferred wrap is only meaningful at the last column; anywhere
-    /// else the logical position is representable and the cursor takes it.
-    ///
-    /// The same translation `Term::resize` applies to the **live** cursor, applied
-    /// to the two saved slots — which is where ghostty puts it, on the saved cursor
-    /// it has just reflowed (`terminal/Screen.zig:2094`: *"If we had pending wrap
-    /// set and we're no longer at the end of the line, we unset the pending wrap and
-    /// move the cursor to reflect the correct next position"*).
-    ///
-    /// justerm's slots are not reflowed, so the repair belongs at the restore rather
-    /// than at the resize: `decsc` is untouched by `Term::resize` and clamped here,
-    /// and the alt slot is copied whole. Measured before the fix: 4 columns, `abcd`,
-    /// `DECSC`, `resize(8, 3)`, `DECRC` left the flag armed at column 3 of an
-    /// 8-column grid — five columns from the edge — and the next print wrapped
-    /// instead of landing at column 4 (#848).
+    /// A restored deferred wrap is only meaningful at the last column; anywhere else the
+    /// logical position is representable and the cursor takes it — `resize`'s translation,
+    /// applied to the saved slots at restore (#848, `docs/map/territory/cursor-position.md`).
     fn settle_restored_wrap(&mut self) {
         if self.cursor.pending_wrap && self.cursor.col + 1 < self.grid.cols() {
             self.cursor.pending_wrap = false;
@@ -1645,97 +1589,16 @@ impl Term {
         }
     }
 
-    /// RIS (ESC c) — full reset to the power-on state (#53). Reconstruct every
-    /// screen/mode field to its construction default (preserving only the
-    /// dimensions and the scrollback cap), but keep the consumer-bound output
-    /// queues (`replies`/`events`) that accrued earlier in this `feed`, and
-    /// signal a full repaint. The vte parser lives outside `Term`, so replacing
-    /// `self` does not disturb in-progress parsing. Mirrors xterm.js fullReset.
-    ///
-    /// The XTWINOPS title stacks and the retained title/icon strings (#823) are
-    /// **not** on the copy-back list and must not be: they are terminal state the
-    /// application wrote, so *justerm's own* RIS invariant drops them, and the
-    /// wholesale rebuild does that for free.
-    ///
-    /// Read "justerm's own" literally — this is a **minority position, 1–2**, and
-    /// no spec text settles it. Only alacritty agrees (`title_stack =
-    /// Vec::new()` in `reset_state`); xterm.js's `reset()` touches nothing but
-    /// attribute data, and xterm's only bulk free of `saved_titles` is inside
-    /// `VTDestroy`, i.e. widget teardown rather than `ESC c`. So the two
-    /// references whose *model* this slice copied — two stacks, the bound, the
-    /// drop-oldest rule — are the two that keep the stack across a reset. The
-    /// grounds are the invariant note next door, which already records that no
-    /// reference can be cited here because none of them holds the embedder's
-    /// configuration in the object its reset replaces.
-    ///
-    /// **That "1–2" is right for the stacks and wrong for the retained strings**, and
-    /// the sentence above ran the two together (corrected 2026-09-08, #835). Ghostty
-    /// drops the title on a reset exactly as this does — `self.title` and `self.pwd`
-    /// are both `clearRetainingCapacity()`d in `fullReset` (`Terminal.zig:4468-4469`)
-    /// — so on the **retained string** the tally is 2–2, not 1–2, and justerm is not
-    /// in a minority. It cannot be counted on the *stack* half at all, because it
-    /// holds no title stack in `Terminal` to have an opinion about; there the 1–2
-    /// stands. The correction matters because "minority position" is a standing
-    /// invitation to revisit, and half of what it was pointing at is a tie.
-    ///
-    /// **Dropping the title is also not announced, and that too matches both
-    /// references that drop it.** A consumer keeps the exited application's window
-    /// title after `ESC c` — the same shape as the palette below, and *worse* on its
-    /// face, since here the engine does hold the string and does discard it, so the
-    /// two sides actually diverge. It is nonetheless not a defect by any available
-    /// standard: alacritty clears `title`/`title_stack` in `reset_state` with no
-    /// event on its proxy, and ghostty's `StreamHandler.fullReset` sends a mouse
-    /// shape, a mode-2031 report and a progress clear — and nothing about the title.
-    /// 2–0 among the references that face the question. Measured on #835 rather than
-    /// assumed; if it is ever revisited, the first thing to re-measure is whether
-    /// dropping at all is right, since xterm and xterm.js simply keep the title.
-    ///
-    /// **The palette is deliberately *not* announced here, and the silence is a
-    /// decision rather than an omission (#835).** An application that redefined
-    /// entries with `OSC 4`, or the foreground/background/cursor with
-    /// `OSC 10`/`11`/`12`, keeps them across `ESC c`: the engine is theme-agnostic
-    /// and holds no palette, so the consumer's copy is the only one, and this path
-    /// pushes no `ResetPaletteColor` / `ResetForeground` / `ResetBackground` /
-    /// `ResetCursorColor` onto the queue above. xterm is the one reference that
-    /// resets its own palette on **both** strengths (`charproc.c:14366`, in the
-    /// `if_OPT_ISO_COLORS` block *above* the `if (full)` split); three things
-    /// decided against following it, none of them the head-count:
-    ///
-    /// * **The tie-breaker does not reach it.** ADR-0004 defers to xterm where
-    ///   *the spec* mandates something alacritty merely omits. `OSC 4`/`104` are
-    ///   xterm's own invention and DEC never defined a palette, so no spec text
-    ///   says what `RIS` does to one — a genuine ambiguity, which ADR-0004 routes
-    ///   to alacritty. ("The inventor owns the semantics", which settled
-    ///   `XTREVWRAP` on [`Self::step_back`], does not transfer: that was the
-    ///   invented sequence's *own* meaning, and this is what a **DEC** sequence
-    ///   does to state the invented one left behind.)
-    /// * **terminfo says the palette reset is not part of `RIS`.**
-    ///   `xterm-256color` spells its reset string `rs1=\Ec\E]104\007` and `linux`
-    ///   spells it `rs1=\Ec\E]R`: both append an explicit palette reset *after*
-    ///   `RIS`, which xterm's own entry would not need if `\Ec` implied one. So
-    ///   `tput reset` already emits `OSC 104` — measured, not read — and the
-    ///   engine already relays it. The reachable case is covered without adding
-    ///   anything, which is what `ris_then_osc104_is_the_reset_string_that_ships`
-    ///   pins.
-    /// * **The reference that shares this shape declines.** ghostty holds the
-    ///   palette *and* announces every change across a consumer boundary, and its
-    ///   override mask tells it exactly which entries are dirty — so a selective
-    ///   announcement would be free there, and its `fullReset` still sends none.
-    ///   justerm cannot even be selective: holding no palette, it would have to
-    ///   fire unconditionally on every `ESC c`.
-    ///
-    /// What xterm resets on both strengths is **two** things, and the engine
-    /// already does one: the pen is covered by this rebuild and by
-    /// [`Self::soft_reset`]. The *dynamic* colours are restored by nobody, xterm
-    /// included — `ReallyReset` never touches them. Rows in
-    /// `docs/agents/reference-facts.md`; reversal criterion on #835.
+    /// RIS (ESC c) — full reset to the power-on state (#53): rebuild `Term` from the
+    /// constructor at the current dimensions and scrollback cap, and signal a full repaint.
+    /// Carried across: the consumer-bound `replies`/`events`, the embedder's
+    /// `word_separators`, and the tracked-point and marker id counters and marker epoch. The
+    /// title stacks and retained strings are dropped and the palette is not announced (#823,
+    /// #835). Which survives and why: `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md`.
     fn full_reset(&mut self) {
         let replies = std::mem::take(&mut self.replies);
         let mut events = std::mem::take(&mut self.events);
-        // RIS wipes the buffer, so every marker's line is gone — announce each
-        // disposal so the consumer drops its decorations (and isn't confused when
-        // the reset id counter reissues the same ids). The events survive the
-        // reset below (#118).
+        // Announce every marker's disposal; the events survive the reset below (#118).
         events.extend(
             self.normal_markers
                 .iter()
@@ -1743,31 +1606,14 @@ impl Term {
                 .map(|m| TermEvent::MarkerDisposed(m.id)),
         );
         let (cols, rows) = (self.grid.cols(), self.grid.rows());
-        // The word-boundary set is consumer *policy* (ADR-0017), not terminal state, so
-        // RIS does not own it — an application printing `reset` must not silently revert
-        // a setting the embedder chose. It rides across with `replies`/`events` because
-        // this reset rebuilds `Term` wholesale; the references never face the question,
-        // holding the equivalent outside the object RIS clears (#545).
+        // Consumer policy, not terminal state (#545).
         let word_separators = std::mem::take(&mut self.word_separators);
-        // Tracked points die here with everything else, but their *id counter*
-        // rides across (#691). They have no disposal event — a holder learns its
-        // point is gone by being told `None` — so a reissued id would answer a
-        // stale ask with a *different* point's position, silently. The markers
-        // above take the other route and announce; the counter is what a pull-only
-        // handle has instead.
+        // Tracked points die, but their id counter rides across: they have no disposal event,
+        // so a reissued id would answer a stale ask with another point (#691).
         let next_tracked_id = self.next_tracked_id;
-        // The marker epoch rides across too, and then moves — for the reason one
-        // paragraph up, now that a marker index is *pulled* as well as announced (#490).
-        // A consumer re-pulls when the epoch differs; resetting it to 0 leaves it equal
-        // to the value a quiet session already holds, so the one signal it watches would
-        // not fire for the mutation that invalidates everything. `evicted_total`
-        // legitimately restarts — the buffer it counted is gone — and the epoch change is
-        // what stops the consumer rebasing against the old basis.
+        // The marker epoch rides across and then moves, so a consumer re-pulls (#490).
         let marker_epoch = self.marker_epoch;
-        // Marker ids ride across for the *same* reason as `next_tracked_id`, which this
-        // slice makes true of markers: a pulled handle outlives the announcement that
-        // killed it, so a reissued id lets a stale `MarkerDisposed(7)` drop the live
-        // post-RIS marker 7.
+        // Marker ids ride across so a stale `MarkerDisposed` cannot drop a reissued id.
         let next_marker_id = self.next_marker_id;
         *self = Term::with_scrollback(cols, rows, self.scrollback_limit);
         self.replies = replies;
@@ -1780,16 +1626,10 @@ impl Term {
         self.mark_fully_damaged();
     }
 
-    /// DECSTR (CSI ! p) — soft reset (#53). Resets a defined subset of modes to
-    /// their defaults *without* destroying screen content or scrollback, moving
-    /// the active cursor, or touching the mouse/focus reporting subsystem. Per
-    /// xterm.js softReset, autowrap returns to ON (the xterm default), not off.
-    ///
-    /// The pen returning to [`Pen::default`] is this path's half of xterm's
-    /// `reset_SGR_Colors`, which runs on **both** reset strengths. The other half
-    /// of that block — resetting the indexed palette — is deliberately not
-    /// mirrored, here or in [`Self::full_reset`], where the grounds are written
-    /// out.
+    /// DECSTR (CSI ! p) — soft reset (#53): return a defined subset of modes to their
+    /// defaults without touching screen content, scrollback, the cursor position or mouse
+    /// and focus reporting. Autowrap returns to on, the xterm default. The pen resets; the
+    /// palette is not announced, as for RIS.
     fn soft_reset(&mut self) {
         self.cursor.visible = true;
         self.cursor.pen = Pen::default();
@@ -1839,45 +1679,13 @@ impl Term {
         self.step_back();
     }
 
-    /// One step back, shared by `BS` and by `CSI D` (#873).
-    ///
-    /// **Both verbs take this step, and that is the decision rather than a convenience.**
-    /// xterm reaches one `CursorBack` from `CASE_BS` (`charproc.c:3703`) and `CASE_CUB`
-    /// (`:3933`) alike; ghostty's `backspace` is `cursorLeft(1)` (`Terminal.zig:1696`).
-    /// xterm.js is the one reference that separates them, and does so **on purpose** —
-    /// *"Our implementation deviates from xterm on purpose"*, one of whose four bullets is
-    /// *"any cursor movement sequence keeps working as expected"* (`InputHandler.ts:810-818`).
-    /// The tie was broken for xterm by ADR-0004 and by `XTREVWRAP` being xterm's own
-    /// invention (`ctlseqs.txt:952`), with no DEC text above it to appeal to. Maintainer's
-    /// call, 2026-09-08, and theirs to reverse; the tally and the reach measurement behind
-    /// it are on `tests/reverse_wrap.rs::cursor_left_spends_a_park`.
-    ///
-    /// With reverse wraparound (?45) a step at column 0 of a *soft-wrapped* row moves back
-    /// to the last column of the previous row — undoing one autowrap. Only soft wraps
-    /// reverse (the previous row carries `WRAPLINE`), and that is xterm's rule too rather
-    /// than an xterm.js import: its walk gives up on `!LineTstWrapped(ld)` (`cursor.c:178`).
-    /// A hard CR/LF line does not reverse.
+    /// One step back, shared by `BS` and `CSI D` (#873; maintainer's call, 2026-09-08). With
+    /// reverse wraparound (`?45` and `?7h`) a step at column 0 of a soft-wrapped row moves to
+    /// the last column of the previous row; a hard line does not reverse. The references:
+    /// `docs/agents/reference-facts.md`, reverse wraparound.
     fn step_back(&mut self) {
-        // A parked cursor is logically one past the column it sits on, so under `?45`
-        // the first step back lands *on* that column — which is where it already is.
-        // The park is therefore **spent** as the first unit of the move rather than
-        // cleared alongside it: clearing and decrementing discards the logical `+1` and
-        // collapses the parked and unparked states onto the same landing (#80).
-        //
-        // **The gate needs autowrap as well as the mode**, and reading only the
-        // conditional at xterm's spend site says otherwise — which is how a first
-        // version of this got it backwards. `cursor.c:153` reads
-        // `if ((rev || rev2) && screen->do_wrap) { --count; } else { --col; }`, but
-        // `rev` is not the mode flag: `:123-127` define
-        // `WRAP_MASK (REVERSEWRAP | WRAPAROUND)` and `rev = ((flags & WRAP_MASK) ==
-        // WRAP_MASK)`, so `rev` means *`?45` **and** `?7h`* and the whole branch is dead
-        // under `?7l`. ghostty gates the same way and earlier —
-        // `if (!self.modes.get(.wraparound)) break :wrap_mode .none;`
-        // (`Terminal.zig:1756`), returning through the plain decrement at `:1766-1769`
-        // before it can reach the spend at `:1774`. xterm.js never reaches the state at
-        // all, since its `?7l` print pins `x = cols - 1` (`InputHandler.ts:612`). So a
-        // park taken under `?7l` is **spent by moving**, 3-0, and the park #869 arms
-        // there is not this rule's to consume.
+        // A parked cursor is logically one past its column, so under `?45` + `?7h` the park is
+        // spent as the first unit of the move (#80). Under `?7l` it is spent by moving, 3-0.
         if self.reverse_wraparound && self.autowrap && self.cursor.pending_wrap {
             self.cursor.pending_wrap = false;
             return;
@@ -1887,11 +1695,7 @@ impl Term {
             self.cursor.col -= 1;
             return;
         }
-        // **The walk needs autowrap too, and for the same reason the spend does.** xterm
-        // reaches both arms through one `rev`, so `:165` is as dead under `?7l` as `:153`
-        // is, and ghostty returns through the plain decrement at `:1766-1769` before it
-        // can reach either. This engine gated only the spend, so `?45h` + `?7l` walked a
-        // row where both references clamp — found while sharing this step with `CSI D`.
+        // The walk needs autowrap too, for the same reason as the spend.
         if self.reverse_wraparound
             && self.autowrap
             && self.cursor.row > self.scroll_top
@@ -1900,14 +1704,8 @@ impl Term {
             let prev = self.cursor.row - 1;
             let last = self.grid.cols() - 1;
             if self.grid.row_ref(prev).is_wrapped() {
-                // **The wrap link survives the walk.** Undoing the *cursor's* trip across
-                // the boundary does not undo the boundary: the rows still hold one logical
-                // line, and every public reader of that — logical lines, link detection,
-                // command extraction, reflow — asks this flag. Clearing it (xterm.js's
-                // `line.isWrapped = false`) made two buffers with identical visible content
-                // answer differently depending on how the cursor got there, and a resize
-                // kept them apart. xterm writes no wrap flag anywhere in `CursorBack`;
-                // ghostty only *reads* `prev_row.wrap` (`Terminal.zig:1842-1843`).
+                // The wrap link survives the walk: the rows still hold one logical line, and every
+                // reader asks this flag. xterm.js clears it; xterm and ghostty do not.
                 self.cursor.row = prev;
                 self.cursor.col = last;
             }
@@ -1923,24 +1721,10 @@ impl Term {
 
     // ---- tab stops (HT / HTS / TBC) ------------------------------------------
 
-    /// HT: advance to the next set tab stop, or the last column if none remain
-    /// (no wrap).
-    ///
-    /// **The deferred wrap is cleared only when the walk actually moves** — see
-    /// [`Cursor::pending_wrap`], which owns the rule. At the last column there is
-    /// no stop to the right, so this verb changes nothing and must leave the flag
-    /// armed; clearing it there discarded the parked position and let the next
-    /// print overwrite the character already in that column (#848).
-    ///
-    /// Three of the four references keep it here, by three different mechanisms:
-    /// xterm's `TabToNextStop` clamps to `LineMaxCol` and never touches `do_wrap`
-    /// (`tabs.c:142-158`; the one `ResetWrap` on this path is in `TabNext`, gated
-    /// on the `curses` resource at `tabs.c:113`, off by default), ghostty's loop
-    /// condition `cursor.x < scrolling_region.right` is already false
-    /// (`Terminal.zig:2111`), and xterm.js returns early on `x >= cols` because
-    /// that *is* its parked state (`InputHandler.ts:850`). alacritty is the
-    /// outlier and consumes the wrap instead (`term/mod.rs:1366`); it preserves
-    /// the character too, and differs only on which row the next one lands in.
+    /// HT: advance to the next set tab stop, or the last column if none remain (no wrap).
+    /// The deferred wrap is cleared only when the walk moves: at the last column this verb
+    /// changes nothing and leaves the flag armed (#848; the reference rows are in
+    /// `docs/agents/reference-facts.md`).
     fn put_tab(&mut self) {
         let cols = self.grid.cols();
         let mut col = self.cursor.col;
