@@ -49,8 +49,8 @@ context contract is.
 - `justerm-core/src/logical.rs` — `LogicalLine` (the shape only)
 - `justerm-core/src/term/logical.rs` — `Term::viewport_logical_lines` (extracted from `term.rs` in
   #601, the last read surface to leave it under #584)
-- `justerm-core/src/term/viewport.rs` — `Term::viewport_line`. Not a logical-lines surface: it
-  returns one viewport row's cells and walks nothing. Worth knowing anyway — it open-codes the scrollback-vs-grid branch that
+- `Term::viewport_line` ([viewport](viewport.md)) is not a logical-lines surface: it returns one
+  viewport row's cells and walks nothing. Worth knowing anyway — it open-codes the scrollback-vs-grid branch that
   `walk.rs`'s `line_in` already owns, after doing its own viewport-to-absolute conversion (which
   `line_in` does not do — it takes an absolute index)
 - `justerm-core/src/term/selection.rs` — `Term::accessible_text` (the whole buffer as one document,
