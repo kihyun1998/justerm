@@ -74,8 +74,11 @@ directly.
 
 ## Code
 
-- `justerm-core/src/term.rs` — `Term::scroll_up`, `scroll_down`, `scroll_delta`, `scroll_to_bottom`,
-  `Term::set_display_offset` (private), `Term::scrollback_len`, `Term::viewport_line`
+- `justerm-core/src/term/viewport.rs` — `Term::scroll_up`, `scroll_down`, `scroll_to_bottom`,
+  `Term::set_display_offset` (`pub(super)`: `search` scrolls to a match through it),
+  `Term::viewport_line`, `Term::viewport_to_abs`, and the per-cell queries `screen_link_at` /
+  `screen_underline_color_at` / `viewport_link_at`
+- `justerm-core/src/term.rs` — `Term::scroll_delta`, `Term::scrollback_len`
 - `justerm-core/src/serialize.rs` — `Frame`'s `display_offset` / `scrollback_len`
 - `justerm-web/src/terminal.ts` — `scrollsToBottomOnInput` (the input→bottom predicate),
   `InputScrollSignal`, and `Terminal`'s `scrollOnUserInput` / `requestBottom` wiring;

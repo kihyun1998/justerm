@@ -224,7 +224,7 @@ fix mentions a shared rule.
   (the #672 signal, shared the same way the clamp is)
 - `justerm-web/src/a11y-selection.ts` — `clamp`, the DOM-offset form of the same obligation
 - `justerm-web/src/fit.ts` — `proposeDimensions`, which floors the grid and so creates the strip
-- `justerm-core/src/term.rs` — `viewport_to_abs`, the engine-side backstop (both axes since #671)
+- `justerm-core/src/term/viewport.rs` — `viewport_to_abs`, the engine-side backstop (both axes since #671)
   that is explicitly not a substitute
 
 ## Reference behaviour
