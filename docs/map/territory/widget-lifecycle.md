@@ -33,6 +33,23 @@ obligation. The rest depend on a consumer remembering, and the measurement below
   handle *first* (the reference's shape, `RenderDebouncer._innerRefresh`) makes the loop restartable
   without catching anything, so the error still reaches the browser. For this widget "restartable"
   means "restarted by the next frame": `updateCursor` calls `start()` on every decoded frame.
+  Catching instead would force a choice between swallowing the error and re-raising it sixty times a
+  second. The corollary: a loop body must not call `start()` on its own loop — during the body no
+  frame is scheduled, so the guard would let a second loop begin and double the blink rate.
+- **The context-loss notification goes through a relay, not the consumer's function** (#579), because
+  of two asymmetries in the renderer's published surface this layer may not reach across.
+  `setOnContextLoss(callback: Function)` has **no unset**, so detaching or replacing a handler has
+  nothing to pass — registering `notify` once and swapping behind it is what makes `set(undefined)`
+  expressible. And `dispose()` **cannot reach the renderer's callback slot**: the renderer clears it
+  in `Drop`, which runs at the binding's `free()`, which `Terminal.dispose()` deliberately never
+  calls (#606) — so without the relay's `end()` a deadline armed before disposal still delivers to an
+  ended widget. That is parity, not invention: xterm.js's disposable clears its restore timeout
+  (`addons/addon-webgl/src/WebglRenderer.ts:161-163`). **The post-`end` gate sits in `set`, not in
+  `notify`**, and a mutation test is what chose it: with a gate in both plus `end`'s clear, neither
+  gate can be made to fail because each masks the other; the two placements deliver identically but
+  differ on what `end` promises — gate the delivery and a post-`end` `set(handler)` still parks the
+  consumer's closure on an object the renderer holds until `free()`, for the life of the page. Gate
+  the installation and the promise holds by construction, and every mechanism stays falsifiable.
 
 - **What the widget is handed, the widget ends.** `Terminal` receives exactly three things
   (`source`, `renderer`, `options`), and `dispose()` now releases all of them: both `FrameSource`
@@ -121,8 +138,8 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
 - `justerm-web/src/frame-loop.ts` — `FrameLoop`, which owns the rAF handle for that tick. Host-tested
   with an injected `raf`/`caf` pair, because the widget around it has no instantiation seam (#696)
 - `justerm-web/src/context-loss.ts` — `ContextLossRelay`, the channel `dispose` closes. Extracted for
-  the same reason `FrameLoop` was, and its doc carries the two published-surface asymmetries that
-  make the indirection necessary rather than stylistic (#579)
+  the same reason `FrameLoop` was; the two published-surface asymmetries that make the indirection
+  necessary are in the design model above (#579)
 - `justerm-web/src/scrollbar.ts` · `fit.ts` — collaborators with their own disposers
 - `justerm-web/src/accessibility-dom.ts` — the a11y timers and their teardown
 
