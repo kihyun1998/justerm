@@ -11,7 +11,7 @@ use crate::cell::{Cell, CellFlags, UnderlineStyle};
 use crate::color::Color;
 use crate::cursor::{Cursor, CursorShape, Pen};
 use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
-use crate::event::{ClipboardTarget, TermEvent, Terminator};
+use crate::event::{ClipboardTarget, NotificationSequence, TermEvent, Terminator};
 use crate::grid::{ExtAttrs, Grid, Row};
 use crate::input::{
     KeyEvent, MouseEncoding, MouseEvent, MouseProtocol, encode_focus, encode_key, encode_mouse,
@@ -237,6 +237,10 @@ pub struct Term {
     /// `print`). `print` clears only on its zero-cell path; `hook` and `put` do not,
     /// because nothing that could read this can arrive before `unhook` does.
     repeat_anchor: Option<(usize, usize)>,
+    /// Set while [`crate::Engine::feed`] advances the parser over a single `CAN`
+    /// (`0x18`) or `SUB` (`0x1a`) byte. An `osc_dispatch` inside that advance is the
+    /// OSC the byte cancels, and it has no effect (#970).
+    pub(crate) cancel_byte_in_flight: bool,
     /// win32-input-mode (DEC ?9001): the app asked for keys as raw Windows
     /// key-records. The engine only *tracks* the flag — the raw record encoding
     /// (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`) is a non-goal (raw passthrough, no semantic
@@ -763,6 +767,10 @@ pub const MAX_COMMAND_TEXT: usize = 4096;
 /// it permits.
 pub const MAX_CLIPBOARD_BASE64: usize = 16 * 1024 * 1024;
 
+/// The most OSC fields `vte` hands to `osc_dispatch` (its private `MAX_OSC_PARAMS`,
+/// 0.15.0); fields past it are dropped before dispatch.
+const VTE_OSC_FIELD_CAP: usize = 16;
+
 /// The state DECSC (ESC 7) saves and DECRC (ESC 8) restores: position, pen/SGR,
 /// pending-wrap, and origin mode (per ADR-0004 — DECRC restores origin mode,
 /// which Alacritty omits). Cursor *visibility* is deliberately not part of this
@@ -1012,6 +1020,7 @@ impl Term {
             color_scheme_updates: false,
             grapheme_clustering: false,
             repeat_anchor: None,
+            cancel_byte_in_flight: false,
             win32_input_mode: false,
             app_cursor_keys: false,
             application_keypad: false,
@@ -6093,6 +6102,11 @@ impl Perform for Term {
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
         // Not a print: the repeat is disarmed (#825, [`Term::repeat_anchor`]).
         self.repeat_anchor = None;
+        // Ended by `CAN` / `SUB`, which cancel the sequence rather than end it
+        // (#970, [`Term::cancel_byte_in_flight`]).
+        if self.cancel_byte_in_flight {
+            return;
+        }
         // Which byte ended the sequence decides which byte ends its reply, and
         // this is the only place it is observable — vte hands it over per
         // dispatch and keeps nothing (#836). It rides outward on the query
@@ -6144,6 +6158,23 @@ impl Perform for Term {
                 if let Some(fields) = params.get(1..).filter(|f| !f.is_empty()) {
                     let cwd = String::from_utf8_lossy(&fields.join(&b';')).into_owned();
                     self.events.push(TermEvent::Cwd(cwd));
+                }
+            }
+            // OSC 9 / OSC 777 = a notification. The payload is relayed rejoined and
+            // uninterpreted, with the same no-field guard as the arms above; reaching
+            // the field cap marks it as possibly cut rather than dropping it.
+            b"9" | b"777" => {
+                if let Some(fields) = params.get(1..).filter(|f| !f.is_empty()) {
+                    let sequence = if number == b"9" {
+                        NotificationSequence::Osc9
+                    } else {
+                        NotificationSequence::Osc777
+                    };
+                    self.events.push(TermEvent::Notification {
+                        sequence,
+                        payload: String::from_utf8_lossy(&fields.join(&b';')).into_owned(),
+                        maybe_truncated: params.len() >= VTE_OSC_FIELD_CAP,
+                    });
                 }
             }
             // OSC 133 = FinalTerm/iTerm2 shell-integration command marks (#158):

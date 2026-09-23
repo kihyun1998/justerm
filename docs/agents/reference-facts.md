@@ -2193,7 +2193,9 @@ the grounds for a deliberate divergence rather than a convergence.
 | **xterm has no base64 *validator* to disagree with — it is a filter.** `AppendToSelectionBuffer` decodes one character at a time and `return`s on any byte outside the alphabet, so `Zm9v-Zm9v` yields `foofoo` rather than an error. The spec's *"the selection is cleared"* is what falls out when the filter finds nothing to keep, because the store path clears first. **This is the trap in the row above `:2174`**: reading the spec alone suggests a reject-then-clear rule, and there is no reject | xterm | `button.c:4679`, the skip at `:4698`, the clear at `misc.c:3410` |
 | **ghostty states the malformed rule as a comment beside its test** — *"Read requests and malformed base64 must never reach the callback."* The strongest single citation for dropping rather than clearing | ghostty | `src/terminal/c/terminal.zig:2961` |
 | **`vte` deletes C0 bytes inside an OSC string**, which is the only reason a *strict* decoder can accept the ordinary shell idiom: `base64` wraps its output at 76 columns, and the `LF`/`CR` never reach the handler. A space is **not** in that range and does reach it | vte 0.15.0 (registry) | `src/lib.rs:408` |
-| **`vte` ends an OSC on CAN/SUB by *dispatching* it rather than cancelling**, where ECMA-48 makes CAN cancel — so an interrupted payload can arrive complete and truncated. Pre-existing at the parser boundary and shared with alacritty | vte 0.15.0 (registry) | `src/lib.rs:412` |
+| **`vte` ends an OSC on CAN/SUB by *dispatching* it rather than cancelling**, where ECMA-48 makes CAN cancel — so an interrupted payload can arrive complete and truncated. True of `vte` alone and shared with alacritty; justerm's engine cancels it since #970 | vte 0.15.0 (registry) | `src/lib.rs:412` |
+| In the OSC string state `CAN` and `SUB` map to `CASE_CAN` / `CASE_SUB`, which `ResetState` without calling `do_osc` — the sequence is cancelled, citing DEC 070 (#970, verified 2026-09-23) | xterm | `VTPrsTbl.c:7652`; `charproc.c:3612`, `:3640` |
+| The OSC handler's `end(success)` is false for `0x18`/`0x1a`, so a cancelled OSC is not applied | xterm.js | `src/common/parser/EscapeSequenceParser.ts:894` |
 
 **Reach of the multi-character target, measured on the RHEL 9 VM (2026-09-02), because the rows above
 leave it open.** `Ms` is present under `xterm-256color` and `tmux-256color` and absent under
@@ -2404,8 +2406,9 @@ application only sends once it is being answered could have arrived differently:
 `vim_closed_loop.raw` contributes 2 BEL and 0 ST like every other vim recording. And `vte` ends an OSC on **three**
 byte classes, not two: `BEL`, the cancel pair `CAN`/`SUB`, and a bare `ESC` opening the next sequence
 (`vte-0.15.0/src/lib.rs:411`, `:415`, `:420`; the BEL test is `:587`). Only the first is reported as
-bell-terminated, so a cancelled query still reaches the consumer and is answered ST — which is what
-xterm hardcodes for that shape (`charproc.c:8964`).
+bell-terminated. A query ended by a bare `ESC` is answered ST — which is what xterm hardcodes for that
+shape (`charproc.c:8964`). One ended by `CAN`/`SUB` reached the consumer too until #970, which cancels
+it as xterm does (the rows below the `vte` dispatch row in the `OSC 52` table).
 
 #### `OSC 4`'s empty *spec* splits 2–2, and xterm's trigger **is** available to justerm
 
@@ -3594,3 +3597,22 @@ this — a gap, not an absence. What justerm took from them, and what it measure
 | The fragment shader emits the per-channel coverage as a second output (`ALPHA_MASK = vec4(textColor, textColor.r)`, `index = 1`) | alacritty | `alacritty/res/glsl3/text.f.glsl:69-70`, `:28` |
 | …which dual-source blending applies per channel (`BlendFunc(SRC1_COLOR, ONE_MINUS_SRC1_COLOR)`) | alacritty | `alacritty/src/renderer/text/glsl3.rs:52` |
 | Without dual-source blending (GLES2) the same result takes three subpixel passes | alacritty | `alacritty/src/renderer/text/gles2.rs:400`, `:410`, `:415` |
+
+## Notification sequences — `OSC 9` and `OSC 777` (#964, verified 2026-09-23)
+
+Where each tree reads the two notification codes, which decides whether the engine or its consumer
+tells iTerm2 free text from ConEmu progress and splits `notify;title;body`.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Neither `9` nor `777` is in xterm's OSC list, so the binding tree does not define them | xterm | `ctlseqs.txt:2005` (the section, scanned) |
+| `OSC 9;4;…` is parsed in the engine into a progress report | ghostty | `src/terminal/osc/parsers/osc9.zig:152` |
+| `OSC 9;9;path` is parsed in the engine into a working-directory report, one of ConEmu's numbered subcommands | ghostty | `src/terminal/osc/parsers/osc9.zig:252` |
+| Any `OSC 9` payload matching no ConEmu subcommand is a desktop notification with the payload as body | ghostty | `src/terminal/osc/parsers/osc9.zig:280` |
+| `OSC 777;notify;title;body` is parsed in the engine into a desktop notification | ghostty | `src/terminal/osc/parsers/rxvt_extension.zig:39` |
+| Any extension name other than `notify` on `OSC 777` is rejected | ghostty | `src/terminal/osc/parsers/rxvt_extension.zig:25` |
+| The core registers no handler for either code; progress is an addon registering `9` from outside and declining any payload not starting `4;` | xterm.js | `addons/addon-progress/src/ProgressAddon.ts:50` |
+| The parser path alacritty pins has no arm for either code, so both are dropped | vte 0.15.0 (alacritty's parser) | `src/ansi.rs:1329` (`osc_dispatch`) |
+
+**What justerm took.** The xterm.js split: the engine relays the payload raw and the consumer
+reads it, as ADR-0017 puts it. ghostty is the counterexample, doing the reading in the engine.

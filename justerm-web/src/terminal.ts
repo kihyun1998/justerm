@@ -428,7 +428,8 @@ export interface TerminalOptions {
   onScroll?(displayOffset: number): void;
   /** Wheel scroll tuning (xterm `scrollSensitivity`). */
   scroll?: ScrollOptions;
-  /** Fire-and-forget consumer notifications (#117) — title/bell/cwd. The widget
+  /** Fire-and-forget consumer notifications (#117) — title/bell/cwd and an
+   * application's `OSC 9` / `OSC 777` notification. The widget
    * subscribes the source's {@link import("./types").FrameSource.subscribeEvents}
    * channel and routes each event to these callbacks. Independent of the DOM group
    * above (works on an output-only widget). Link activation is {@link links}, not

@@ -78,11 +78,12 @@ pub enum Terminator {
     /// `ESC \` (ST), the terminator ECMA-48 documents and xterm prefers.
     ///
     /// The default, and what an OSC ended by **any other byte that ends one**
-    /// resolves to. Those streams are real rather than theoretical: `vte` ends a
+    /// resolves to. That stream is real rather than theoretical: `vte` ends a
     /// string on three byte classes — `BEL`, the cancel pair `CAN`/`SUB` (`0x18` /
     /// `0x1a`), and a bare `ESC` opening the next sequence — and only the first is
-    /// reported as bell-terminated. So a cancelled query is still relayed, and
-    /// answered ST.
+    /// reported as bell-terminated. A query ended by a bare `ESC` is relayed and
+    /// answered ST; one ended by `CAN`/`SUB` is cancelled, as in xterm, and never
+    /// reaches the consumer.
     ///
     /// **Read "any other byte that ends one" strictly: the 8-bit C1 `ST` (`0x9C`) is
     /// not a fourth class.** It does not end the string, so there is no event
@@ -199,6 +200,21 @@ pub enum ClipboardTarget {
     Selection,
 }
 
+/// Which notification sequence carried a [`TermEvent::Notification`].
+///
+/// `#[non_exhaustive]`: other notification protocols exist (kitty's `OSC 99`) and a
+/// later version may relay one.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NotificationSequence {
+    /// `OSC 9` — iTerm2's notification, and ConEmu's numbered subcommands (`4`
+    /// progress, `9` working directory, …).
+    Osc9,
+    /// `OSC 777` — rxvt-unicode's extension dispatch; `notify ; title ; body` is its
+    /// notification.
+    Osc777,
+}
+
 /// A consumer-facing event emitted while parsing the VT stream.
 ///
 /// **`#[non_exhaustive]`, so a consumer must carry a `_` arm and a new variant
@@ -226,7 +242,7 @@ pub enum ClipboardTarget {
 ///   `TermEvent`, and `justerm-web`'s `events.ts` mirrors this union by hand
 ///   rather than deriving it. **That mirror was narrower than this enum when the
 ///   measurement was taken and no longer is in the same way:** it now
-///   carries the `OSC 52` pair as well, and what stayed at title/bell/cwd is its
+///   carries the `OSC 52` pair as well, and what stays narrower is its
 ///   `EventHandlers` — the *notification* surface, not the channel. The cost
 ///   measured here is unaffected, since a hand-written mirror never had a
 ///   compiler relationship to this enum to break.
@@ -279,6 +295,33 @@ pub enum TermEvent {
     /// arrives cut short (the same 16-field parser bound as [`TermEvent::Title`]).
     /// An emitter that percent-encodes `;` never reaches it.
     Cwd(String),
+    /// The application sent a notification sequence (`OSC 9` or `OSC 777`).
+    ///
+    /// `payload` is everything between the code's `;` and the terminator: never split,
+    /// parsed or unescaped, though C0 controls inside it never reach it (the parser drops
+    /// them within an OSC string). Reading it is the consumer's, and **not every payload
+    /// on these codes is a notification**:
+    ///
+    /// - `OSC 9` is iTerm2's free-text notification, and also ConEmu's family of
+    ///   numbered subcommands — a leading `n ;` — among them `4` (progress) and `9`
+    ///   (the working directory, which a shell may send on every prompt and which does
+    ///   not arrive as [`TermEvent::Cwd`]). A payload starting with a known subcommand
+    ///   is that subcommand, not text to show.
+    /// - `OSC 777` is rxvt-unicode's extension dispatch. Only a first field of `notify`
+    ///   (`notify ; title ; body`, whose body may be JSON) is a notification; other
+    ///   extension names ride the same code.
+    ///
+    /// **`maybe_truncated` means "cannot be confirmed whole", not "was cut".** The
+    /// parser this engine builds on passes at most 16 OSC fields and drops the rest,
+    /// and a sequence cut there is indistinguishable from one with exactly 16 fields.
+    /// So the flag is set whenever all 16 arrived, which is a payload holding 14 or
+    /// more `;`: at exactly 14 it is complete, and from 15 it is a prefix of what was
+    /// sent. When the flag is clear, the payload is whole.
+    Notification {
+        sequence: NotificationSequence,
+        payload: String,
+        maybe_truncated: bool,
+    },
     /// The app requested 80/132-column mode (DECCOLM `?3`). justerm is
     /// dimension-free, so this is a *request* — the consumer may honor it by
     /// calling `resize(cols, rows)`, or ignore it. `cols` is 80 or 132.

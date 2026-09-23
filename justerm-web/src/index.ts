@@ -14,7 +14,7 @@ export type { Renderer } from "./renderer";
 export { StubFrameSource } from "./frame-source";
 // Consumer events (#117) from core's drain_events, delivered out-of-band via
 // FrameSource.subscribeEvents. The union carries everything on that channel; the
-// title/bell/cwd notifications route to EventHandlers and the OSC 52 pair routes to
+// title/bell/cwd/notification events route to EventHandlers and the OSC 52 pair routes to
 // the clipboard controller below (#841). Link activation is `TerminalOptions.links`
 // (#934), not this channel.
 export { dispatchTermEvent } from "./events";
@@ -23,6 +23,8 @@ export type {
   ClipboardStoreEvent,
   ClipboardTarget,
   EventHandlers,
+  NotificationEvent,
+  NotificationSequence,
   TermEvent,
   Terminator,
 } from "./events";

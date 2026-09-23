@@ -21,10 +21,28 @@ describe("dispatchTermEvent", () => {
     expect(onCwd).toHaveBeenCalledWith("file://host/home/ki");
   });
 
+  it("routes a notification event to onNotification with the payload and flag untouched", () => {
+    const onNotification = vi.fn();
+    const onTitle = vi.fn();
+    const event = {
+      type: "notification",
+      sequence: "osc777",
+      payload: 'notify;penterm;{"message":"a; b"}',
+      maybeTruncated: true,
+    } as const;
+    dispatchTermEvent(event, { onNotification, onTitle });
+    expect(onNotification).toHaveBeenCalledTimes(1);
+    expect(onNotification).toHaveBeenCalledWith(event);
+    expect(onTitle).not.toHaveBeenCalled();
+  });
+
   it("is a no-op when the matching handler is absent (all handlers optional)", () => {
     expect(() => dispatchTermEvent({ type: "title", title: "x" }, {})).not.toThrow();
     expect(() => dispatchTermEvent({ type: "bell" }, {})).not.toThrow();
     expect(() => dispatchTermEvent({ type: "cwd", cwd: "file://h/p" }, {})).not.toThrow();
+    expect(() =>
+      dispatchTermEvent({ type: "notification", sequence: "osc9", payload: "x", maybeTruncated: false }, {}),
+    ).not.toThrow();
   });
 
   it("ignores an unknown event type (a palette/query event on the same stream)", () => {

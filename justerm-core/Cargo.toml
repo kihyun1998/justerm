@@ -14,6 +14,8 @@ autobenches = false
 
 [dependencies]
 bitflags = "2"
+# `Engine::feed` finds the cancel bytes (`CAN`, `SUB`) with it; already in the tree via vte and regex.
+memchr = "2"
 unicode-segmentation = "1.13"
 regex = "1"
 unicode-width = "0.2"

@@ -235,7 +235,7 @@ export interface FrameSource {
    *
    * **One channel, two surfaces.** Everything core queues travels here,
    * because a backend has one stream to push. Most of it is fire-and-forget
-   * notification (title/bell/cwd) routed to
+   * notification (title/bell/cwd, `OSC 9` / `OSC 777`) routed to
    * {@link import("./events").EventHandlers}; the `OSC 52` clipboard pair is not —
    * the consumer *acts on* it and owes a query a reply — so it is routed to
    * {@link import("./clipboard").ClipboardController} instead, wired through
