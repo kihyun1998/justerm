@@ -136,7 +136,7 @@ how this repo *records* one.
   the corpus
 - `justerm-core/tests/ignored_inventory.rs` and `justerm-core/tests/fixtures/*.ignored.golden` — the
   per-kind differential replay, its surface controls and its scanner guard
-- `justerm-core/src/term.rs` — `drain_replies` and the `report_*` methods are the two halves a closed
+- `justerm-core/src/term/replies.rs` — `drain_replies` and the `report_*` methods are the two halves a closed
   loop has to drive
 
 ## Reference behaviour
