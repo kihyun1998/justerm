@@ -23,7 +23,7 @@
  *
  * In `regex` mode a consumer validates the query as-you-type with the wasm
  * `isValidRegex` (core's dialect, not JS `RegExp`) before searching, since an
- * invalid pattern otherwise yields a silent empty result (#316 D2).
+ * invalid pattern otherwise yields a silent empty result.
  */
 export interface SearchOptions {
   /** Treat the query as a regular expression (core's `regex` crate dialect: no
@@ -144,7 +144,7 @@ export interface SearchPort {
    * navigated to — and is carried instead. `clear()` ends the session and takes
    * both.
    *
-   * Its caller is the #316 D2 path: a regex-mode query that fails validation
+   * Its caller is the invalid-regex path: a regex-mode query that fails validation
    * must stop the screen painting the previous query's matches, but that is a
    * *new search* dropping its predecessor's paint, not a user leaving the
    * search. The distinction is not academic — in regex mode every group, class
@@ -165,8 +165,8 @@ export interface SearchPort {
    * boundary — the seam falls where xterm has a private call.
    *
    * One deliberate difference: alacritty's marker survives an invalid pattern,
-   * while this drops the designation with the highlights. #316 D2 requires the
-   * screen to stop showing a rejected query, and core voids the designation on
+   * while this drops the designation with the highlights: a rejected query must
+   * stop showing on screen, and core voids the designation on
    * every hand-over anyway — core, the backend and this port agree.
    *
    * Optional (additive): a backend without it falls back to {@link clear}, which
@@ -301,7 +301,7 @@ export class SearchController {
   /** The active query's modes, so an incremental re-search reuses them (#316). */
   private options: SearchOptions | undefined;
   /** The active regex-mode query failed validation — the box shows "invalid" and
-   * no search ran (#316 D2). Only ever true in regex mode with a validator. */
+   * no search ran. Only ever true in regex mode with a validator. */
   private invalid = false;
   /** Bumped by every {@link search}/{@link clear} — an in-flight backend
    * round-trip captures it and discards its own result if superseded, so a slow
@@ -317,7 +317,7 @@ export class SearchController {
   private readonly setTimer: (fn: () => void, ms: number) => number;
   private readonly clearTimer: (handle: number) => void;
   /** Validate a regex-mode query against core's dialect (the wasm `isValidRegex`)
-   * before searching — a JS `RegExp` check would misjudge (#316 D2). Absent =
+   * before searching — a JS `RegExp` check would misjudge. Absent =
    * best-effort skipped (a consumer without the wasm helper still searches). */
   private readonly validateRegex?: (pattern: string) => boolean;
 
@@ -350,7 +350,7 @@ export class SearchController {
     this.onResults = opts.onResults;
   }
 
-  /** Whether the active regex-mode query is invalid (#316 D2) — the box red-flags
+  /** Whether the active regex-mode query is invalid — the box red-flags
    * it and no search ran. Always `false` for literal queries or when no validator
    * is injected.
    *
@@ -383,7 +383,7 @@ export class SearchController {
     this.query = query;
     this.options = options;
     // Regex mode: reject an invalid pattern up front (core's dialect) so a bad
-    // pattern shows as "invalid", not a silent 0 matches (#316 D2). Drop the
+    // pattern shows as "invalid", not a silent 0 matches. Drop the
     // previous query's engine paint too — otherwise the box says "invalid"
     // while the screen keeps highlighting matches of a query that no longer
     // exists (with its active emphasis, post-#429).
@@ -395,7 +395,7 @@ export class SearchController {
     // — #441's symptom returning through a side door, on every group, class and
     // escape a regex contains (#687). A backend that predates the narrower verb
     // falls back to the session-ending one: the paint still goes, which is what
-    // #316 D2 is about, and only the anchor is lost.
+    // the invalid-regex rule is about, and only the anchor is lost.
     if (options?.regex && this.validateRegex && !this.validateRegex(query)) {
       this.invalid = true;
       this.total = 0;
