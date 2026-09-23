@@ -215,8 +215,12 @@ for a terminal engine, that list is half the specification.
   next callback. It works, but holding means copying the fields, which buys a hostile `OSC 52` exactly
   the second allocation `MAX_CLIPBOARD_BASE64` refuses. The split copies nothing and leaves `vte`'s run
   between cancel bytes untouched; the scan measured ~1 ms per 32 MB on the five bench inputs, against a
-  `feed` of ~500-700 ms for the same bytes. Not covered: `SUB`'s visible error character (xterm draws
-  one for VT100-class ids), and a DCS cancelled the same way, which reaches `unhook` rather than this.
+  `feed` of ~500-700 ms for the same bytes. The pathological stream is all cancel bytes, one `advance`
+  each: measured ~11x slower than before (≈60 vs ≈700 MB/s) and still faster per byte than ordinary
+  recorded output, so it buys an attacker nothing. An OSC ended by `ESC` and *then* a cancel stays
+  applied — xterm would cancel it, but a bare-`ESC` ending is relayed by the rule above. Not covered:
+  the visible error character (xterm draws one for `SUB` at every id from 100 and for `CAN` at
+  VT100-class ids), and a DCS cancelled the same way, which reaches `unhook` rather than this.
 - **Tab stops are explicit per-column state**, not a modulo: HTS sets, TBC clears, default every
   eighth column. A modulo would be wrong the moment an application moves one — and since #826 that
   is two verbs' problem rather than one, because `CBT` walks the same table backwards. The two walks
