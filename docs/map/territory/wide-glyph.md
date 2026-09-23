@@ -89,6 +89,26 @@ ADR-0025 is authoritative; this is routing. **If they disagree, the ADR is right
   and at `cols == 2` the relocation would read `(nr, 2)`, an out-of-bounds panic reachable by
   shrinking a window over a CJK glyph. Pinned by
   `min_columns.rs::a_relocation_beside_a_truncated_wide_lead_does_not_index_past_the_row`.
+- **The artefact marker goes with the wrap, in `end_wrap`** (ADR-0025 D3): its claim is "this blank
+  was vacated *because this row continues*", so a row that stops continuing cannot hold one. Coupling
+  the two there makes every wrap-ending path one rule; ghostty couples them the same way in
+  `Screen.cursorResetWrap` (`terminal/Screen.zig:1524`, spacer-head clear at `:1539-1545`), which
+  early-returns on an unwrapped row where justerm clears unconditionally. The clear is redundant for
+  callers that erase the column anyway; it matters for the row-shift seams and `delete_chars`. The
+  leftward erases (`EL 1`, `ED 1`) are the mirror — they keep the wrap but can blank the column — so
+  `drop_artefact_if_erased` drops only the marker. The one wrap-ending path that does not reach
+  `end_wrap` is `shift_region`'s `top == 0` seam, whose row is in scrollback; it couples the two
+  clears inline.
+- **`void_wrap_artefact_above` reaches into scrollback at grid row 0** on the primary screen: the
+  readers walk `[scrollback ++ grid]`, so the row above grid row 0 is the last scrollback row.
+  alacritty reaches the same row (`topmost_line()` is `Line(-history_size)`, `grid/mod.rs:504`);
+  ghostty stops at the viewport (`cursor.y > 0`). No damage is owed: the marker is a `content` bit
+  outside `CONTENT_MARKER_MASK`, so it never crosses the wire, and its `damage_span` is defensive.
+  **Asking after the mutation instead is not equivalent** — it answers "is some wide lead at
+  column 0", which a `DCH` pulling the next wide glyph left also satisfies, and which a two-step
+  placement (VS16 promotion under mode 2027, or IRM's insert-then-write) satisfies only at the end;
+  both were measured disagreeing with the rule. The erase and intra-row-shift sites are ported from
+  ghostty's `Screen.splitCellBoundary`; only justerm's `ICH` site has no counterpart there.
 
 ## Code
 

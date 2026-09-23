@@ -2388,80 +2388,18 @@ impl Term {
     /// `docs/map/territory/soft-wrap.md`.
     fn end_wrap(&mut self, row: usize) {
         self.grid.row_mut(row).set_wrapped(false);
-        // The flag is stored on the `Row` but rides the wire on the row's **last cell**, derived
-        // at encode time. Every other cell-carried fact changes only when that cell is written,
-        // so damage covers it for free; this one does not, and a `Partial` frame would never
-        // re-ship the bit — leaving a frame-mode consumer with two rows joined forever. Damaging
-        // here rather than at each caller is what keeps that true for call sites added later.
+        // The bit rides the wire on the last cell, so that cell is damaged (#540).
         let last = self.grid.cols() - 1;
         self.damage_span(row, last, last);
-        // The wrap artefact goes with the wrap. The marker's claim is "the last column is the
-        // blank a width-2 glyph vacated **because this row continues onto the next**", so a row
-        // that stops continuing cannot hold one (ADR-0025 D3 — position is part of the test, and
-        // so is the wrap it is positioned in). Coupling the two here is what makes the row-shift
-        // seams and every wrap-ending erase a single rule instead of a clear per verb: ghostty
-        // couples them in one function the same way — `Screen.cursorResetWrap`
-        // (`terminal/Screen.zig:1524` @ `e6e26e1`, spacer-head clear at `:1539-1545`), reached from
-        // `deleteChars` / `eraseChars` / `eraseLine`. It early-returns on `if (!page_row.wrap)`;
-        // this one clears unconditionally, which is strictly safer.
-        //
-        // Most callers erase through this column anyway, so the clear is redundant for them; the
-        // ones it is *not* redundant for are the row-shift seams (#540's `shift_region`, which
-        // ends a wrap without touching a cell) and `delete_chars`, whose marker rides the shift.
-        // The leftward erases are the mirror case — they blank this column while the wrap
-        // legitimately survives — and go through `drop_artefact_if_erased` instead.
-        //
-        // One wrap-ending path deliberately does *not* reach here: `shift_region`'s `top == 0`
-        // seam, whose row is in scrollback rather than the grid. It couples the same two clears
-        // inline; see the comment there.
+        // The wrap artefact goes with the wrap (ADR-0025 D3, `docs/map/territory/wide-glyph.md`).
         self.grid.cell_mut(row, last).clear_leading_spacer();
     }
 
     /// The pair that wrapped into `row` is about to be destroyed or moved, so the artefact record
-    /// on the row **above** it is void — drop it. **Call before the mutation.**
-    ///
-    /// The marker makes a claim with two clauses: this row soft-wraps (owned by `end_wrap`), and
-    /// its last column is the blank *that specific pair* vacated. This is the second clause, and
-    /// the rule behind every call site is one sentence: **the record survives only an in-place
-    /// same-width overwrite.** Anything else that reaches columns 0/1 of the continuation — a
-    /// narrow write, an erase, a shift in either direction — ends the pair the record was about,
-    /// and a wide lead that arrives afterwards by some other route did not *wrap* from anywhere.
-    ///
-    /// Both references gate on that, and both gate on the state **before** the write rather than
-    /// after it:
-    ///
-    /// - ghostty `Terminal.zig:1484` @ `e6e26e1` — the whole wide-repair `switch` sits under
-    ///   `if (cell.wide != wide)`, so a wide glyph overwritten by another wide glyph skips it; the
-    ///   reach-back stanza then appears in the `.wide` (`:1501-1506`) and `.spacer_tail`
-    ///   (`:1529-1532`) arms only.
-    /// - alacritty `term/mod.rs:994` @ `852e971` — the reach-back at `:1004-1008` is inside
-    ///   `if cursor_cell.flags.intersects(WIDE_CHAR | WIDE_CHAR_SPACER)`, but with no
-    ///   width-unchanged escape, so it drops a record that is still true. Alacritty is the outlier
-    ///   of the two and justerm follows ghostty.
-    ///
-    /// Asking *after* the mutation instead looks equivalent and is not: it answers "is some wide
-    /// lead standing at column 0", which a `DCH` that pulls the *next* wide glyph left also
-    /// satisfies, and which a two-step placement (a narrow base promoted to wide by VS16 under
-    /// mode 2027, or IRM's insert-then-write) satisfies only at the end. Both were measured
-    /// disagreeing with the rule above before this took its current form.
-    ///
-    /// The erase and intra-row-shift call sites are **ported, not derived**: ghostty's
-    /// `Screen.splitCellBoundary` (`Screen.zig:1831`, the `x == 0 or x == 1` branch at `:1873`)
-    /// reaches up one row and clears the previous row's spacer head, and it is called from
-    /// `deleteChars` (`Terminal.zig:3107-3109`) and `eraseChars` (`:3159-3160`). Only justerm's
-    /// `ICH` site has no counterpart — ghostty's `insertBlanks` (`:2988`) calls it nowhere.
-    ///
-    /// `row == 0` does not mean "no row above": on the primary screen the text readers walk
-    /// `[scrollback ++ grid]` as one buffer (`abs_floor() == 0`), so the row above grid row 0 is
-    /// the last **scrollback** row and it can carry the marker. Alacritty reaches the same row for
-    /// the same reason — its `topmost_line()` is `Line(-history_size)` (`grid/mod.rs:504`), so
-    /// `point.line - 1` indexes into history; ghostty is the one that stops at the viewport
-    /// (`cursor.y > 0`). On the alt screen `abs_floor()` is the screen top, so no join crosses the
-    /// boundary and there is nothing to repair.
-    ///
-    /// No damage is owed by either branch, and for a stronger reason than #540's: the marker is a
-    /// `content` bit outside `CONTENT_MARKER_MASK`, so `Cell::flags()` never sees it and it does
-    /// not cross the wire at all. The `damage_span` below is defensive, not load-bearing.
+    /// on the row above is void — drop it. **Call before the mutation.** The record survives only
+    /// an in-place same-width overwrite: ghostty gates the same way on the pre-write state, and
+    /// alacritty, with no width-unchanged escape, is the outlier (#534). At grid row 0 on the
+    /// primary the row above is the last scrollback row. See `docs/map/territory/wide-glyph.md`.
     fn void_wrap_artefact_above(&mut self, row: usize) {
         if row > 0 {
             let last = self.grid.cols() - 1;
@@ -2502,62 +2440,11 @@ impl Term {
     /// falsified. Every row-shifting verb (IL/DL/SU/SD and the region paths in LF/RI) goes
     /// through here so the repair cannot be forgotten at a call site (ADR-0025 D2).
     ///
-    /// The wrap flag claims "this row continues into the **next** row", so it is a statement about
-    /// *adjacency*, and rotating whole `Row`s keeps it true for free: both halves of a pair inside
-    /// the region move by the same line, so the claim still describes the same neighbour. Only the
-    /// two seams falsify it, where a row's next neighbour changed underneath it:
-    ///
-    /// - **`top - 1`**, just outside the region. Its continuation rotated away (up-shift) or was
-    ///   pushed down (down-shift), so whatever now sits at `top` is a stranger. This is the seam
-    ///   that merges two unrelated logical lines in copy/search/accessible text (#540's repro).
-    /// - **the row that lost its continuation to the blank** — `bottom - 1` after an up-shift (the
-    ///   blank lands at `bottom`), `bottom` after a down-shift (its continuation rotated up to
-    ///   `top` and was blanked there). The down-shift form is the one that reaches *outside* the
-    ///   region: the stale claim points at `bottom + 1`, a row the verb never touched.
-    ///
-    /// Damaging matters as much as clearing, and `end_wrap` does both: `top - 1` is outside the
-    /// region, so the scroll op the caller records does not cover it and a `Partial` frame would
-    /// never re-ship the derived `WRAPLINE` bit.
-    ///
-    /// **Each seam has exactly one exemption, and both are facts about the caller that this
-    /// function cannot see** — which is why they are parameters rather than tests:
-    ///
-    /// - `evicts_to_scrollback` exempts the **top** seam: a linefeed pushes row 0 into scrollback,
-    ///   so the readers' `[scrollback ++ grid]` walk finds the continuation one row further back
-    ///   and adjacency survives.
-    /// - `serves_wrap` exempts the **bottom** seam: the shift was asked for by `wrapline`, so the
-    ///   blank it exposes at `bottom` is not a stranger that displaced a continuation — it *is*
-    ///   the continuation, about to be written into (#557).
-    ///
-    /// Both are one-sided on purpose. A wrap-serving scroll still falsifies the top seam, and a
-    /// scrollback-evicting linefeed still falsifies the bottom one when no wrap asked for it.
-    ///
-    /// **No reference implements this rule**, so it is derived rather than ported — ADR-0004, the
-    /// spec is the authority for VT semantics, above any implementation:
-    ///
-    /// - **ghostty** clears the wrap on *every* row a full-width IL/DL touches
-    ///   (`terminal/Terminal.zig:2746-2752`, `:2906-2912` @ `e6e26e1`). The clear runs *before* the
-    ///   row swap at `:2936-2939`, so both ends stay false: an interior pair is split, not
-    ///   preserved. It still never reaches the row above the shifted range.
-    /// - **alacritty** has no `WRAPLINE` clear on any scroll path (@ `852e971`).
-    /// - **xterm.js** splices whole line objects and never touches `isWrapped`
-    ///   (`common/InputHandler.ts:1345-1402` @ `699f553`). Its opposite polarity — "I continue the
-    ///   *previous* row" (`common/buffer/Buffer.ts:566-570`) — moves the exposure to the mirrored
-    ///   seam rather than removing it: a spliced-in line keeps a continuation claim about a
-    ///   predecessor it never met.
-    ///
-    /// The seam row's wide-wrap *marker* is the same shift's other half, and it now rides along:
-    /// `end_wrap` clears both (#534), and the `top == 0` branch below — the one seam whose row is
-    /// not a grid row — couples them inline for the same reason.
-    ///
-    /// **Validity condition for clearing at the seams rather than everywhere.** ghostty clears the
-    /// wrap and the spacer head on *every* row a full-width IL/DL touches, and its own comment
-    /// gives two reasons: it splits interior pairs, **and** it supports left/right margins
-    /// (DECSLRM), where a partial-row shift can break an interior pair without moving its
-    /// neighbour. justerm rotates whole `Row`s and implements no DECSLRM, so an interior pair and
-    /// its continuation always move together and seam-only is sound. If left/right margins ever
-    /// land, this rule and #534's marker rule break at the same time — neither is safe under a
-    /// shift that moves part of a row.
+    /// Rotating whole rows keeps a wrap's adjacency claim true inside the region; only the two
+    /// seams falsify it — `top - 1`, and the row that lost its continuation to the blank.
+    /// `evicts_to_scrollback` exempts the top seam and `serves_wrap` the bottom one (#557);
+    /// both are caller facts. Derived, not ported — no reference implements this rule — and
+    /// sound only without DECSLRM. See ADR-0025.
     fn shift_region(
         &mut self,
         top: usize,
@@ -2571,39 +2458,15 @@ impl Term {
         } else {
             self.grid.scroll_up_region(top, bottom);
         }
-        // Recording the scroll op is part of shifting, not a step a caller adds after: damage is
-        // indexed by row position, so `record_scroll` rotates `line_damage` with the content. A
-        // seam clear damaged *before* that rotation is carried to the wrong row — and on a
-        // down-shift it lands on `top`, which `record_scroll` immediately overwrites with
-        // `fully_damaged`. The clear then never reaches the wire at all: the model splits the
-        // rows, a `Partial` frame does not say so, and the consumer keeps them joined forever.
-        // Ordering it here is what makes that unrepeatable at a sixth call site.
+        // Record the scroll op before any seam clear: `record_scroll` rotates `line_damage` with
+        // the content, so damage recorded earlier would land on the wrong row (ADR-0025).
         self.record_scroll(top, bottom, if down { -1 } else { 1 });
         if top > 0 {
             self.end_wrap(top - 1);
         } else if !evicts_to_scrollback && !self.on_alt {
-            // `top == 0` does not mean "no row above": on the primary the text readers walk
-            // `[scrollback ++ grid]` as one buffer (`abs_floor() == 0`), so the row above grid row
-            // 0 is the last *scrollback* row and it can wrap into the screen. A full-screen SU /
-            // DL / RI therefore leaves this issue's defect one row higher, outside the grid.
-            //
-            // `evicts_to_scrollback` is what keeps `linefeed` out: it pushes grid row 0 into
-            // scrollback, so the continuation is re-attached one row further back and the claim
-            // stays true — clearing there would split a line the scroll preserved. On the alt
-            // screen `abs_floor()` is the screen top, so no join crosses the boundary at all.
-            //
-            // No damage is owed with the clear, unlike `end_wrap`'s grid form: a scrollback row
-            // only reaches the wire while `display_offset > 0`, and there `damage()` returns an
-            // empty `Partial` (`term.rs`, the frozen-viewport short-circuit) while any scroll that
-            // *moves* the viewport marks full damage. Valid as long as that short-circuit holds.
-            //
-            // The artefact marker goes with the wrap here exactly as it does in `end_wrap`, and
-            // this branch is the reason that coupling cannot simply live in `end_wrap`: it is the
-            // one wrap-ending path whose row is not a grid row, so it does not call it. Leaving it
-            // out left #534's defect alive one row above the grid — reachable from every
-            // `scroll_region_lines` verb, since all of them pass `evicts_to_scrollback: false`,
-            // and visible as a word selection one cell too wide plus a reflow that bakes the
-            // stranded marker mid-row.
+            // At `top == 0` the row above is the last scrollback row on the primary; a linefeed
+            // (`evicts_to_scrollback`) keeps the adjacency, and the alt screen has none. Cleared with
+            // its artefact marker and without damage (`docs/map/territory/soft-wrap.md`).
             if let Some(row) = self.scrollback.back_mut() {
                 row.set_wrapped(false);
                 if let Some(cell) = row.last_mut() {
@@ -2611,37 +2474,11 @@ impl Term {
                 }
             }
         }
-        // The blank lands at `bottom` going up and at `top` going down, so the row that lost its
-        // continuation is the one just above it. Going down that is `top - 1`, already cleared
-        // above; going up it is `bottom - 1`, which for a one-row region is that same row.
-        //
-        // The up-shift form needs the `bottom + 1` guard, and it is not defensive — without it the
-        // clear destroys a **live** wrap. A row at the screen's bottom edge that wraps is the
-        // ordinary soft-wrap-at-the-last-row state: `wrapline` sets the flag and the linefeed
-        // scrolls precisely so the continuation has somewhere to land, which is the *next* row
-        // after this shift. Its claim is about a row that does not exist yet, so the shift makes it
-        // true rather than false.
-        //
-        // **The rest of that guard's original rationale was too narrow, and #557 is what it cost.**
-        // It read: *"the link is only broken when there is a stationary row below the region
-        // (`bottom + 1 < rows`): then the continuation stayed put while its lead moved up."* A
-        // stationary row below is **necessary but not sufficient**. At a *region's* bottom the same
-        // wrapline-asked-for scroll happens with `bottom + 1 < rows` perfectly true, and the clear
-        // then split the logical line the scroll existed to continue. The geometry was never the
-        // discriminator; **why the shift is happening** is — which is what `serves_wrap` carries.
-        //
-        // The guard stays anyway: it is the screen-bottom case of the same fact, and it also holds
-        // for a *non*-wrap-serving linefeed at the screen edge.
-        //
-        // One invariant is still worth naming, because it was not true when this guard was first
-        // written: **a row only claims a wrap if a next row will exist for it**. A row parked below
-        // a DECSTBM region kept a permanent false claim, and this guard preserved it — the #540
-        // completeness pass merged two unrelated logical lines through exactly that hole. The claim
-        // is now gated at its set site (`write_glyph` asks `wrapline_advances`), so the guard's
-        // premise holds. Valid as long as that gate stays.
+        // The row that lost its continuation: `bottom` going down, `bottom - 1` going up — but
+        // not at the screen's bottom edge, where the wrap is waiting for the row the shift makes,
+        // and never when the shift serves a wrap (#557, ADR-0025).
         let orphaned = if serves_wrap {
-            // The blank this shift just exposed is the continuation the wrap is waiting for, so
-            // there is nothing to falsify — see the `serves_wrap` note on `linefeed_inner` (#557).
+            // The exposed blank is the continuation the wrap is waiting for.
             None
         } else if down {
             Some(bottom)
@@ -2680,11 +2517,8 @@ impl Term {
                 }
                 self.clear_cells(cr, 0, cc + 1);
                 self.drop_artefact_if_erased(cr, 0, cc + 1);
-                // Covering the whole row means nothing continues from it. xterm.js has a
-                // dedicated arm for exactly this case, in its own words: *"Deleted entire
-                // previous line. This next line can no longer be wrapped."*
-                // (`InputHandler.ts:1248-1252` — under its continuation polarity that assignment
-                // is this engine's `end_wrap(cr)`.) `EL 1` has no such arm there, and none here.
+                // Covering the whole row means nothing continues from it, as xterm.js's `ED 1` arm says
+                // (`InputHandler.ts:1248-1252`); `EL 1` has no such arm there or here.
                 if cc + 1 == cols {
                     self.end_wrap(cr);
                 }
@@ -2722,23 +2556,11 @@ impl Term {
         self.mark_fully_damaged();
     }
 
-    /// Repair every holder of an absolute line after `n` lines left the front of the
-    /// buffer — the one funnel for the scrollback cap (one line per linefeed), `ED 3` and
-    /// [`Term::clear`]. Every absolute index shifted by exactly `n`, which is what makes
-    /// this class of movement expressible as a scalar (#490): `evicted_total` counts it
-    /// here, because the fact is about the *buffer*, not about any one holder.
-    ///
-    /// **Scope, because the name `evicted_total` over-promises.** Reflow also drops lines
-    /// off the front (`PaneReflow::evicted`, installed by replacing the deque) and does
-    /// not come through here: it moves the survivors non-uniformly, so no delta repairs
-    /// them and `marker_epoch` signals it instead. A holder rebasing off this number
-    /// *without* also watching the epoch gets a wrong answer across every resize.
-    ///
-    /// The holders, each with its own answer: the selection re-anchors (its ends keep
-    /// their content); query-derived search highlights cannot survive the shift and are
-    /// dropped; markers shift and those on a dropped line are disposed and announced
-    /// (#118); tracked points shift and those on a dropped line go (#691). The view is
-    /// the caller's, because the cap keeps it on the same content and `ED 3` returns it.
+    /// Repair every holder of an absolute line after `n` lines left the front of the buffer —
+    /// the one funnel for the scrollback cap, `ED 3` and [`Term::clear`] — and count them in
+    /// `evicted_total` (#490). Reflow is not counted here (`docs/map/territory/marker.md`). The
+    /// selection re-anchors, search highlights are dropped, markers and tracked points shift
+    /// and those on a dropped line go (#118, #691). The view is the caller's.
     fn lines_left_the_front(&mut self, n: usize) {
         self.evicted_total += n as u64;
         self.selection_evict_oldest(n);

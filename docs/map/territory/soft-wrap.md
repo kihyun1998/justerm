@@ -60,6 +60,15 @@ ADR-0025 is authoritative; this is routing. **If they disagree, the ADR is right
   rather than at each caller keeps it true for set sites added later.
 - **`pending_wrap` is the entry condition.** The wrap does not happen when the last column fills; it
   happens on the *next* print — see [cursor position](cursor-position.md).
+- **`shift_region`'s scrollback seam clears with no damage**, unlike `end_wrap`'s grid form: a
+  scrollback row reaches the wire only while `display_offset > 0`, where `damage()` returns an empty
+  `Partial` and any scroll that moves the viewport marks full damage. Valid as long as that
+  frozen-viewport short-circuit holds. Leaving the artefact marker out of that branch left #534's
+  defect alive one row above the grid, reachable from every `scroll_region_lines` verb — a word
+  selection one cell too wide, and a reflow that bakes the stranded marker mid-row. The seam model,
+  both exemptions and the #557 lesson (a stationary row below the region is necessary but not
+  sufficient; *why* the shift happens is the discriminator) are
+  [ADR-0025](../../adr/0025-row-and-wide-pair-cell-state-ownership.md)'s.
 
 ## Code
 

@@ -177,6 +177,11 @@ the shell emits.
   not a proof; the marker loop carries the same bound and parity keeps it.
 - **`CommandLine::line` is a document line, core's analog of VS Code's `bufferToEditorLineMapping`** —
   the frame-mode web side has no wrap information to map an absolute line itself.
+- **`evicted_total` counts only the uniform front-drops** — the scrollback cap, `ED 3` and
+  `Term::clear`, all through `lines_left_the_front`. Reflow also drops lines off the front
+  (`PaneReflow::evicted`, installed by replacing the deque) and does not come through there: it
+  moves survivors non-uniformly, so no delta repairs them and `marker_epoch` signals it instead. A
+  holder rebasing off `evicted_total` without also watching the epoch is wrong across every resize.
 
 ## Code
 
