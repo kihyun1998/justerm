@@ -31,12 +31,8 @@ export type Enablement = "on" | "off" | "auto";
  * Per-outcome policy: the aria-live `announce` and the earcon `signal` are
  * enabled independently, mirroring VSCode's per-`{sound, announcement}` config on
  * `terminalCommandSucceeded` / `terminalCommandFailed`
- * (`accessibilityConfiguration.ts`).
- *
- * Note VSCode restricts the announcement modality to `auto | off` (announcing
- * with no SR present reaches nobody); justerm keeps the uniform {@link Enablement}
- * for both so a consumer *can* opt into `announce: "on"` explicitly (e.g. it pipes
- * the live region somewhere else), at the cost of that one divergence.
+ * (`accessibilityConfiguration.ts`). Unlike VSCode, `announce` also admits `"on"`
+ * (`docs/map/territory/accessibility.md`).
  */
 export interface OutcomePolicy {
   /** Speak the outcome on the aria-live region (VSCode `announcement`). */
@@ -81,10 +77,8 @@ function enabled(state: Enablement, srActive: boolean): boolean {
 export type AnnounceText = (outcome: "succeeded" | "failed", exit: number | undefined) => string;
 
 /**
- * Default formatter = the pre-#179 verbose wording: a failure carries its exit
- * code. This is #167 F2 — an intentional enhancement over VSCode's exit-less
- * `"Command Failed"` (the code is useful to a non-sighted user who has no red
- * decoration to read) — so wiring the controller with no formatter is a no-op.
+ * Default formatter: a failure carries its exit code (#167 F2) — deliberately more than
+ * VSCode's exit-less `"Command Failed"`, which {@link TERSE_ANNOUNCE_TEXT} matches.
  */
 export const VERBOSE_ANNOUNCE_TEXT: AnnounceText = (outcome, exit) =>
   outcome === "failed" ? `Command failed, exit ${exit}` : "Command succeeded";

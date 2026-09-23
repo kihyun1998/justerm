@@ -26,15 +26,9 @@ const ANNOUNCE_DEBOUNCE_MS = 200;
 /** Max time output may accumulate before a forced flush, so an unbroken sub-debounce
  * stream (`yes`, a long build) still announces periodically instead of re-arming the
  * debounce forever and staying silent until it stops (xterm `TimeBasedDebouncer`'s 1s
- * throttle). #153.
- *
- * NB — deliberate divergence from xterm: this KEEPS the 200ms coalescing debounce and
- * only *caps* the flood, rather than xterm's pure 1s throttle. So at moderate cadence
- * (200ms–1s inter-output gaps) justerm may announce more often than xterm's strict
- * "at most once per second" ceiling — an intentional responsiveness trade. The cap is
- * the flood worst-case bound. A leading edge (#215) fires the first output after an
- * idle gap of ≥ this cap immediately (matching xterm's synchronous leading refresh),
- * so a fresh command's first line — or a flood's — isn't held for the debounce/cap. */
+ * throttle). #153. It also sets the leading edge (#215): the first output after an idle
+ * gap of at least this long is announced immediately. Deliberately a cap on the
+ * debounce rather than xterm's pure throttle (`docs/map/territory/accessibility.md`). */
 const ANNOUNCE_MAX_WAIT_MS = 1000;
 
 /** The viewport frame header fields the controller reads. A `DecodedFrame`
@@ -193,16 +187,11 @@ export class AccessibilityController {
    */
   reactivate(): void {
     this.cancelPending();
-    // #215: clear the leading-edge idle clock too, mirroring xterm recreating a FRESH
-    // TimeBasedDebouncer (`_lastRefreshMs = 0`) on SR re-activation — so the first line
-    // after the screen reader is re-enabled leads immediately, even if the off→on toggle
-    // happened < the cap after the last announce. (Same "fresh manager" rationale as the
-    // `consume` reset below.)
+    // #215: clear the leading-edge idle clock, as a fresh xterm manager would, so the first
+    // line after re-enabling leads immediately.
     this.lastFlushAt = undefined;
-    // #183: start echo-dedup fresh, matching xterm's freshly-created manager whose
-    // `_charsToConsume` is empty. Keys typed during the inactive span (or un-echoed
-    // before it began) must not swallow the first real output as a stale echo —
-    // announce work was gated off, so there was no output to dedup them against.
+    // #183: start echo-dedup fresh, so keys typed during the inactive span do not swallow
+    // the first real output as a stale echo.
     this.consume.length = 0;
     this.syncTree();
   }
@@ -214,15 +203,10 @@ export class AccessibilityController {
    * Skipped on the first frame (no baseline) so the initial paint stays silent.
    */
   private announceNewOutput(frame: A11yFrame, rows: string[]): void {
-    // #183: while the screen reader is inactive nobody hears an announce, so skip
-    // the WHOLE diff (shiftPrev + per-row compare + commonPrefixLen + dedup) and
-    // the debounce arm — not just the gated flush (#161 no-ops the sink, but the
-    // CPU is still wasted). `prevRows` is advanced by the caller *after* this, so
-    // the #161 no-replay anchor holds and the first active frame diffs correctly.
-    // The echo-dedup `consume` queue drains only here, so it is instead handled at
-    // its source: `onKey` enqueues only while active + `reactivate` clears it
-    // (mirrors xterm disposing/recreating its AccessibilityManager, whose
-    // `_charsToConsume` listener is unregistered while off and empty on recreate).
+    // #183: while the screen reader is inactive, skip the WHOLE diff and the debounce arm,
+    // not just the gated flush. `prevRows` is advanced by the caller *after* this, so the
+    // first active frame diffs correctly. The `consume` queue drains only here, so `onKey`
+    // enqueues only while active and `reactivate` clears it.
     if (!this.isActive()) return;
     if (this.prevRows === null) return;
     // The alternate screen (vim/htop) repaints wholesale — announcing it is
@@ -246,14 +230,9 @@ export class AccessibilityController {
     const fresh = this.dedupTyped(parts.join("\n"));
     if (fresh.length === 0) return;
     this.pending.push(fresh);
-    // Leading edge (#215): the first output after an idle window is announced
-    // immediately, zero-latency, instead of waiting the 200ms debounce (isolated
-    // output) or — during a flood — the full 1s cap. `firstPendingAt === undefined`
-    // marks the first push into an empty batch; `idleForLeadingEdge()` requires the
-    // batch to follow a quiet gap of at least the cap (or the very first output ever,
-    // when nothing has flushed yet — the `yes`-right-after-login flood). Matches
-    // xterm's TimeBasedDebouncer synchronous leading refresh; subsequent frames in the
-    // active window still coalesce via the debounce+cap below.
+    // Leading edge (#215): the first push into an empty batch (`firstPendingAt === undefined`)
+    // after a quiet gap of at least the cap — or the first output ever — is announced now.
+    // Later frames in the active window coalesce via the debounce + cap below.
     if (this.firstPendingAt === undefined && this.idleForLeadingEdge()) {
       this.flush();
       return;
@@ -321,15 +300,9 @@ export class AccessibilityController {
   onKey(char: string): void {
     this.cancelPending();
     this.live.clear();
-    // #183: enqueue for echo-dedup ONLY while active. While inactive the drain
-    // (dedupTyped, inside the gated announceNewOutput) never runs, so an ungated
-    // push would grow `consume` unbounded and swallow the first output after
-    // reactivation. This mirrors xterm's disposed manager registering no char
-    // listener at all. Control chars aren't echoed as text, so skip them.
-    // Push per code point (#153 G9): `char` may be multi-unit (IME commit, a pasted
-    // run, an emoji) but `dedupTyped` drains one code point per echoed output char, so
-    // a single multi-code-point entry would mismatch and wrongly announce. Splitting
-    // keeps `consume` code-point-granular. Control chars aren't echoed as text.
+    // #183: enqueue for echo-dedup ONLY while active — the drain runs only inside the gated
+    // diff. Per code point (#153 G9), because `dedupTyped` drains one code point per echoed
+    // char. Control chars aren't echoed as text, so skip them.
     if (this.isActive()) {
       for (const cp of char) {
         if (!/\p{Control}/u.test(cp)) this.consume.push(cp);

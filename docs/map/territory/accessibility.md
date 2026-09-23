@@ -49,6 +49,26 @@ programmer.
   half to earn a gate it gains nothing from.
 - **Announcing is gated on `alt_screen`.** A full-screen application repainting is not new content to
   read, which is why that flag rides the frame header at all.
+- **The announce cadence keeps a 200ms coalescing debounce and caps it at 1s, with a leading edge**
+  (#153, #215) — a deliberate divergence from xterm's pure one-per-second throttle
+  (`TimeBasedDebouncer`). At 200ms–1s inter-output gaps it may announce more often than xterm, a
+  responsiveness trade; the cap bounds a sub-debounce flood (`yes`, a long build) that would
+  otherwise re-arm forever and stay silent; the leading edge speaks the first output after ≥1s idle
+  at once, as xterm's synchronous leading refresh does. Only a real announce resets the idle clock.
+- **While the screen reader is inactive, the whole diff is skipped, not just the flush** (#183) —
+  the gated sink alone would still spend the CPU. Echo-dedup enqueues keystrokes only while active,
+  because its drain runs only inside the gated diff and an ungated push would grow unbounded and
+  swallow the first output after reactivation — xterm's disposed manager registers no key listener
+  at all. Keystrokes enqueue per code point (#153 G9), since an IME commit or paste arrives as one
+  multi-unit intent while the drain consumes one code point per echoed char.
+- **Command announce: `auto` is resolved in the controller, not by wrapping the sink**, as VSCode
+  resolves it inside `playSignal` — a blanket sink gate cannot express `on`. Two deliberate
+  divergences from VSCode: the announcement modality admits `on` (VSCode allows `auto | off` only,
+  since announcing with no screen reader reaches nobody; justerm keeps one `Enablement` so a
+  consumer piping the live region elsewhere can opt in), and the default wording carries the exit
+  code (#167 F2 — a non-sighted user has no red decoration to read it from);
+  `TERSE_ANNOUNCE_TEXT` is VSCode parity. A mark is marked seen *before* any enable check, so a
+  suppressed command never replays when a modality is later enabled.
 - **Re-activation must reset every announce-related piece of state.** `reactivate()` emulates a fresh
   manager; a new debounce or idle field that is not reset there leaks across activations — this has
   already happened once with a flush timestamp.
@@ -61,6 +81,10 @@ programmer.
 - `justerm-web/src/accessible-view.ts` — the on-demand whole-buffer view
 - `justerm-web/src/a11y-selection.ts` — the AT-selection ↔ grid-selection bridge
 - `justerm-web/src/command-announce.ts` — command outcome announce and signals
+- `justerm-web/src/command-nav.ts` — prompt-to-prompt command navigation in the accessible view,
+  reading the command list from core over `CommandNavPort`
+- `justerm-web/src/screen-reader.ts` — `ScreenReaderState`, the host-injected screen-reader-active
+  gate (#161); it defaults to active, since a browser cannot detect a screen reader
 - `justerm-web/src/cell-mirror.ts` — viewport row text (ADR-0011)
 - `justerm-core/src/term/selection.rs` — `Term::accessible_text`, the whole-buffer document the
   accessible view reads
