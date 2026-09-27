@@ -343,6 +343,97 @@ fn lines_answered_before_a_resize_are_reported_again_after_it() {
     );
 }
 
+/// Lines evicted between two answers shift the record of what changed with them, so nothing
+/// that changed before an eviction goes unreported.
+#[test]
+fn a_change_before_an_eviction_is_still_reported() {
+    let mut term = Engine::with_scrollback(10, 2, 1);
+    term.feed(b"x\r\ny\r\nz");
+    take(&mut term);
+
+    // ERROR is written, then one more line evicts a scrollback line under it.
+    term.feed(b"\r\nERROR\r\nq");
+    let texts: Vec<String> = take(&mut term).into_iter().map(|l| l.text).collect();
+    assert!(texts.contains(&"ERROR".to_string()), "{texts:?}");
+}
+
+/// An alt-screen paint is checked against the alt buffer's own start: a wrapped primary
+/// scrollback row above it does not make its first row read as a continuation.
+#[test]
+fn an_alt_line_under_a_wrapped_scrollback_row_can_be_painted() {
+    let mut term = Engine::new(5, 2);
+    term.feed(b"abcdefgh\r\nz"); // scrollback: "abcde", soft-wrapped into a row now on screen
+    term.feed(b"\x1b[?1049h\x1b[HERR");
+    let lines = take(&mut term);
+    let line = line_with(&lines, "ERR");
+    assert!(line.at.alt);
+    assert!(term.paint_logical_line(line.at, "ERR", &[fg_span(0, 3, RED)]));
+    assert_eq!(term.grid().cell(0, 0).fg(), RED);
+}
+
+/// A full-screen scroll on the alt screen moves every line on it with no text changed; the
+/// moved lines are reported again.
+#[test]
+fn lines_moved_by_an_alt_screen_scroll_are_reported_again() {
+    let mut term = Engine::new(10, 3);
+    term.feed(b"\x1b[?1049h\x1b[2;1HERROR\x1b[3;1H");
+    let lines = take(&mut term);
+    let error = line_with(&lines, "ERROR").at;
+
+    term.feed(b"\n");
+    assert_eq!(term.grid().cell(0, 0).c(), 'E');
+    assert!(!term.paint_logical_line(error, "ERROR", &[fg_span(0, 5, RED)]));
+    let moved = line_with(&take(&mut term), "ERROR").at;
+    assert!(term.paint_logical_line(moved, "ERROR", &[fg_span(0, 5, RED)]));
+}
+
+/// A primary line that changed before the alt screen opened, and that a resize on the alt screen
+/// reflowed into scrollback, is still reported once the primary screen is back.
+#[test]
+fn a_primary_change_reflowed_while_on_the_alt_screen_is_still_reported() {
+    let mut term = Engine::new(5, 3);
+    term.feed(b"1\r\n2\r\nabcdefghij\r\n");
+    take(&mut term);
+
+    term.feed(b"ERROR\r\nx\x1b[?1049h");
+    term.resize(10, 1); // the primary joins "abcdefghij" and keeps only "x" on screen
+    term.feed(b"\x1b[?1049l");
+    assert_eq!(term.grid().cell(0, 0).c(), 'x');
+
+    let texts: Vec<String> = take(&mut term).into_iter().map(|l| l.text).collect();
+    assert!(texts.contains(&"ERROR".to_string()), "{texts:?}");
+}
+
+/// A resize that re-fits the alt screen moves its lines; they are reported again, at a
+/// reference that paints them.
+#[test]
+fn lines_moved_by_an_alt_screen_resize_are_reported_again() {
+    let mut term = Engine::new(10, 3);
+    term.feed(b"\x1b[?1049h\x1b[3;1HERROR");
+    take(&mut term);
+
+    term.resize(10, 2);
+    assert_eq!(term.grid().cell(1, 0).c(), 'E');
+    let moved = line_with(&take(&mut term), "ERROR").at;
+    assert!(term.paint_logical_line(moved, "ERROR", &[fg_span(0, 5, RED)]));
+    assert_eq!(term.grid().cell(1, 0).fg(), RED);
+}
+
+/// A line inserted at the top of the screen cuts the soft wrap from scrollback into it; the
+/// scrollback line, now ending where it did not before, is reported again.
+#[test]
+fn a_scrollback_line_whose_wrap_was_cut_is_reported_again() {
+    let mut term = Engine::new(5, 3);
+    // Rows: 1, abcde (wraps), fgh, x, y — scrollback holds "1" and "abcde".
+    term.feed(b"1\r\nabcdefgh\r\nx\r\ny");
+    assert_eq!(term.scrollback_len(), 2);
+    take(&mut term);
+
+    term.feed(b"\x1b[H\x1b[L"); // IL at row 0
+    let texts: Vec<String> = take(&mut term).into_iter().map(|l| l.text).collect();
+    assert!(texts.contains(&"abcde".to_string()), "{texts:?}");
+}
+
 /// A region scroll that does not feed scrollback moves the lines inside it to other absolute
 /// lines, so a paint taken before it is refused — and the moved lines are reported again.
 #[test]

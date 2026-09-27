@@ -1386,7 +1386,6 @@ impl Term {
                     self.selection_shift_below_margin(below);
                     self.markers_shift_below_margin(below);
                     self.tracked_shift_below_margin(below);
-                    self.content_changed_at(below);
                     self.invalidate_search_highlights();
                     let evicted = self.grid.row_owned(0);
                     self.shift_region(
@@ -1496,7 +1495,6 @@ impl Term {
         }
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
         self.grid.clear();
-        self.alt_watch = ChangeWatch::default();
         self.swap_kitty_keyboard();
         self.on_alt = true;
         self.display_offset = 0; // the alt screen has no scrollback to view
@@ -2443,7 +2441,6 @@ impl Term {
             && let Some(cell) = self.scrollback.back_mut().and_then(|r| r.last_mut())
         {
             cell.clear_leading_spacer();
-            self.content_changed_at(self.scrollback.len() - 1);
         }
     }
 
