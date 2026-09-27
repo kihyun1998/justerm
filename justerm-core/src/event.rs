@@ -332,6 +332,11 @@ pub enum TermEvent {
     MarkerCreated {
         id: MarkerId,
         line: u32,
+        /// The column the mark was recorded at — [`crate::MarkerEntry::col`], dated by the same
+        /// `evicted_total` / `epoch` as `line`. On a [`MarkerKind::CommandStart`] it is where the
+        /// typed command begins, which a consumer cannot read off the cursor once the same
+        /// `feed` has echoed what was typed after it.
+        col: u32,
         kind: MarkerKind,
         /// Lines evicted since RIS at the moment of creation — the basis `line` is
         /// absolute at. Carried rather than inferred so that placement does not depend on

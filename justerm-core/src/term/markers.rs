@@ -110,6 +110,7 @@ impl Term {
         self.events.push(TermEvent::MarkerCreated {
             id,
             line: line as u32,
+            col: col as u32,
             kind,
             evicted_total: self.evicted_total,
             epoch: self.marker_epoch,
@@ -424,6 +425,7 @@ impl Term {
                 .map(|m| MarkerEntry {
                     id: m.id,
                     line: m.line as u32,
+                    col: m.col as u32,
                     kind: m.kind,
                 })
                 .collect(),
