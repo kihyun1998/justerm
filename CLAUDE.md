@@ -11,7 +11,9 @@ it (`README.md` gives each crate's role). The first consumer is **PenTerm** (a T
 ## Boundary invariant (this is the identity)
 
 justerm **does**: parse the VT stream with vte → hold cell grid + scrollback + cursor + selection state →
-expose a *viewport snapshot + damage (row + column range) + scroll op*. It provides text extraction (copy).
+expose a *viewport snapshot + damage (row + column range) + scroll op*. It provides text extraction (copy),
+and writes a colour *reference* the consumer hands it into settled cells — the rule that chose the span
+stays the consumer's (#967).
 
 justerm **does not** (and pulls none of these in as a dependency):
 - **No I/O** — reads no PTY/SSH/socket. The caller pushes bytes in with `feed()`.
