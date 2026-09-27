@@ -136,6 +136,14 @@ The asymmetry is the whole design: damage is defined against **what the consumer
 against the screen, and the screen is merely where it happens to be recorded. Anyone reaching for a
 translation layer here is re-solving a solved problem.
 
+**A second, independent channel: changed logical lines (#967).** `changed_logical_lines` reports the
+lines whose content changed since it last answered, and answering is its own reset — it neither
+reads nor clears the frame's damage, and `reset_damage` does not clear it. The two differ on
+purpose: damage is defined against what the consumer can *see*, this against the *buffer*
+(scrollback included, absolute coordinates, reported even while scrolled up), because what it feeds —
+a consumer's own rule colouring output — has to see every line once, not every frame. It is
+single-reader like damage. Design and hooks: [settled-cell paint](map/territory/settled-cell-paint.md).
+
 ## Selection
 
 Engine-owned. Type = char / word / line / **block**; anchor = point + **side (left/right)**.

@@ -78,6 +78,10 @@ all.
   and the clamp both reach it
 - [decoration](../territory/decoration.md) — a rect in consumer coordinates, resolved at the paint
   site
+- [settled-cell paint](../territory/settled-cell-paint.md) — `paint_logical_line` (#967) writes a
+  colour into a span's cells and takes the spacer with its lead. Its first version tested the lead
+  alone and indexed past the row on an alt re-fit that had cut the pair — the "legal buffer state"
+  above, met by a new writer rather than a reader
 - [cell compositing](../territory/cell-compositing.md) — the overlay and decoration lookups, and the
   caret's own span, all resolve through one helper here
 - [cursor position](../territory/cursor-position.md) — the caret is a span, and the application can

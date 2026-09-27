@@ -108,6 +108,7 @@ owns no detail of its own.
   [release](territory/release.md) ·
   [search](territory/search.md) ·
   [selection](territory/selection.md) ·
+  [settled-cell paint](territory/settled-cell-paint.md) ·
   [soft wrap](territory/soft-wrap.md) ·
   [viewport](territory/viewport.md) ·
   [wide glyph](territory/wide-glyph.md) ·

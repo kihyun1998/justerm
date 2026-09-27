@@ -42,6 +42,7 @@ const CORE_SOURCES: &[(&str, &str)] = &[
     ("grid.rs", include_str!("../src/grid.rs")),
     ("input.rs", include_str!("../src/input.rs")),
     ("logical.rs", include_str!("../src/logical.rs")),
+    ("paint.rs", include_str!("../src/paint.rs")),
     ("search.rs", include_str!("../src/search.rs")),
     ("selection.rs", include_str!("../src/selection.rs")),
     ("serialize.rs", include_str!("../src/serialize.rs")),

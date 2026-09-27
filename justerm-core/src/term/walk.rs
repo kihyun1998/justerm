@@ -74,6 +74,39 @@ impl Term {
         self.combining_in(&self.grid, line, col)
     }
 
+    /// Walk one logical line of `grid`'s buffer forward from absolute `start` — every row while
+    /// the row soft-wraps — calling `visit(ch, line, col)` for each char of its text: a cell's
+    /// base glyph, then its combining marks at the same cell. Wide-char spacers are skipped.
+    /// Returns the logical line's last row. The trailing-blank trim is the caller's.
+    pub(super) fn walk_logical_line(
+        &self,
+        grid: &Grid,
+        start: usize,
+        mut visit: impl FnMut(char, usize, usize),
+    ) -> usize {
+        let total = self.scrollback.len() + grid.rows();
+        let mut cur = start;
+        loop {
+            let row = self.row_in(grid, cur);
+            for (col, cell) in row.iter().enumerate() {
+                if cell.is_spacer() {
+                    continue;
+                }
+                visit(cell.c(), cur, col);
+                if let Some(marks) = row.combining_at(col) {
+                    for &m in marks {
+                        visit(m, cur, col);
+                    }
+                }
+            }
+            if row.is_wrapped() && cur + 1 < total {
+                cur += 1;
+            } else {
+                return cur;
+            }
+        }
+    }
+
     /// Append the text at absolute `(line, col)` — its base glyph plus any
     /// combining marks from the row's map — to `out`. Wide-char spacers
     /// contribute nothing.

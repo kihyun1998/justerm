@@ -15,6 +15,7 @@ mod grapheme;
 mod grid;
 mod input;
 mod logical;
+mod paint;
 mod search;
 mod selection;
 mod serialize;
@@ -31,6 +32,7 @@ pub use input::{
     MouseEvent, MouseEvents,
 };
 pub use logical::LogicalLine;
+pub use paint::{ChangedLine, LineRef, PaintSpan};
 pub use search::{Match, SearchOptions, is_valid_regex};
 pub use selection::{SelectionSpan, SelectionType, Side};
 pub use serialize::{
@@ -506,6 +508,35 @@ impl Engine {
     /// regex / `new URL()` over the text and maps matches back through `cells`.
     pub fn viewport_logical_lines(&self) -> Vec<LogicalLine> {
         self.term.viewport_logical_lines()
+    }
+
+    /// The active screen's soft-wrap-joined lines whose content changed since this last
+    /// answered — scrollback included — each with the [`LineRef`] that paints it
+    /// ([#967](https://github.com/kihyun1998/justerm/issues/967)). The matching half of
+    /// colouring output by a consumer's own rule: run the rule over each line's text and hand the
+    /// matched spans to [`paint_logical_line`](Self::paint_logical_line). A line still being
+    /// written is reported again each time it changes, so a match that completes in a later
+    /// chunk is still seen. See [`Term::changed_logical_lines`] for exactly what counts as a
+    /// change.
+    pub fn changed_logical_lines(&mut self) -> Vec<ChangedLine> {
+        self.term.changed_logical_lines()
+    }
+
+    /// Write colour references into the cells behind `spans` of a line
+    /// [`changed_logical_lines`](Self::changed_logical_lines) reported, if the line still reads
+    /// `text`; returns whether it was painted
+    /// ([#967](https://github.com/kihyun1998/justerm/issues/967)).
+    ///
+    /// The colour is written into the cell, like an SGR colour: it scrolls into scrollback with
+    /// the text, survives a reflow, and later output over the cell replaces it. It is not an
+    /// overlay — the selection and search highlights still draw over it. Only the channels a
+    /// span names change; bold, underline and the other attributes are left alone. Pass a
+    /// palette reference ([`Color::Indexed`]) to have each consumer resolve it against its own
+    /// theme. A refused paint (see [`Term::paint_logical_line`]) changes nothing: the line it
+    /// named was rewritten or moved and is reported again — unless it has left the buffer, or it
+    /// was on an alternate screen that has since closed.
+    pub fn paint_logical_line(&mut self, at: LineRef, text: &str, spans: &[PaintSpan]) -> bool {
+        self.term.paint_logical_line(at, text, spans)
     }
 
     /// The whole buffer (scrollback + screen) as one text document for a
