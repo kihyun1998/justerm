@@ -59,6 +59,10 @@ mod replies;
 /// per-cell queries on what is on screen. `search`, `selection` and `markers` call into it.
 mod viewport;
 
+/// The paint surface (#967) — the changed-logical-lines query and the colour write into settled
+/// cells, and the change record the write path keeps for them.
+mod paint;
+
 /// Owns the authoritative screen state and applies VT actions to it.
 ///
 /// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
@@ -268,6 +272,9 @@ pub struct Term {
     normal_tracked: Vec<TrackedPoint>,
     alt_tracked: Vec<TrackedPoint>,
     next_tracked_id: u32,
+    /// What [`Term::changed_logical_lines`] reports next, per buffer (#967).
+    normal_watch: ChangeWatch,
+    alt_watch: ChangeWatch,
     /// Cursor state saved by DECSC (ESC 7), restored by DECRC (ESC 8). A slot
     /// separate from `saved_cursor` (which is the alt-screen save). Defaults to
     /// home/default so a DECRC with no prior DECSC restores a sane state.
@@ -504,6 +511,15 @@ struct TrackedPoint {
     col: usize,
 }
 
+/// One buffer's change record for [`Term::changed_logical_lines`] (#967), in absolute lines.
+#[derive(Clone, Copy, Default)]
+struct ChangeWatch {
+    /// The lowest line whose content changed since the last answer.
+    changed_from: Option<usize>,
+    /// The first line the last answer covered.
+    answered_from: Option<usize>,
+}
+
 /// One live marker, as the pull query reports it: its stable id, its absolute
 /// `[scrollback ++ screen]` line, and its kind. `kind` rides here rather than on the frame
 /// because it never changes after the marker is made.
@@ -651,6 +667,8 @@ impl Term {
             normal_tracked: Vec::new(),
             alt_tracked: Vec::new(),
             next_tracked_id: 0,
+            normal_watch: ChangeWatch::default(),
+            alt_watch: ChangeWatch::default(),
             decsc: SavedCursor::default(),
             charsets: [Charset::Ascii; 4],
             gl: 0,
@@ -711,6 +729,7 @@ impl Term {
     /// reattach that needs a full re-sync — see [`crate::Engine::mark_fully_damaged`]).
     pub fn mark_fully_damaged(&mut self) {
         self.full_damage = true;
+        self.content_changed_at(self.scrollback.len());
     }
 
     /// Record that columns `[left, right]` of `row` changed. Both columns are clamped to the
@@ -723,6 +742,7 @@ impl Term {
             "damage_span({row}, {left}, {right}) is not a span inside [0, {last}]"
         );
         self.line_damage[row].expand(left.min(last), right.min(last));
+        self.content_changed_at(self.scrollback.len() + row);
     }
 
     /// The first-class scroll recorded since the last `reset_damage`, if any. `None` while
@@ -1076,6 +1096,9 @@ impl Term {
             // Primary-scoped tracked points reflow with this pane too (#691).
             let tracked_off = marker_pts.len();
             marker_pts.extend(self.normal_tracked.iter().map(|p| (p.line, p.col)));
+            // The primary change record rides last (#967).
+            let watch_off = marker_pts.len();
+            marker_pts.extend(self.normal_watch.points());
             let primary = self.alt_grid.take_lines();
             let r = reflow_pane(
                 primary,
@@ -1087,6 +1110,8 @@ impl Term {
             self.alt_grid.set_screen(r.screen, cols, rows);
             self.scrollback = r.scrollback;
             self.saved_cursor.set_point(r.cursor, rows, cols);
+            self.normal_watch
+                .reflowed(&r.extras[watch_off..], r.evicted);
             for (i, m) in self.normal_markers.iter_mut().enumerate() {
                 m.line = r.extras[i].0.saturating_sub(r.evicted);
                 m.col = r.extras[i].1;
@@ -1169,12 +1194,17 @@ impl Term {
             // Tracked points ride after the markers, by the same offset idiom (#691).
             let tracked_off = pts.len();
             pts.extend(self.normal_tracked.iter().map(|p| (p.line, p.col)));
+            // The change record rides last (#967).
+            let watch_off = pts.len();
+            pts.extend(self.normal_watch.points());
 
             let primary = self.grid.take_lines();
             let r = reflow_pane(primary, scrollback, self.cursor.point(), &pts, dims);
             self.grid.set_screen(r.screen, cols, rows);
             self.scrollback = r.scrollback;
             self.cursor.set_point(r.cursor, rows, cols);
+            self.normal_watch
+                .reflowed(&r.extras[watch_off..], r.evicted);
             if let Some(sel) = &mut self.selection {
                 // A selection endpoint is UI state, so a `col == cols` result (#562) is clamped into the
                 // grid: UI state may not move the application's content to make room for itself.
@@ -1356,6 +1386,7 @@ impl Term {
                     self.selection_shift_below_margin(below);
                     self.markers_shift_below_margin(below);
                     self.tracked_shift_below_margin(below);
+                    self.content_changed_at(below);
                     self.invalidate_search_highlights();
                     let evicted = self.grid.row_owned(0);
                     self.shift_region(
@@ -1465,6 +1496,7 @@ impl Term {
         }
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
         self.grid.clear();
+        self.alt_watch = ChangeWatch::default();
         self.swap_kitty_keyboard();
         self.on_alt = true;
         self.display_offset = 0; // the alt screen has no scrollback to view
@@ -2411,6 +2443,7 @@ impl Term {
             && let Some(cell) = self.scrollback.back_mut().and_then(|r| r.last_mut())
         {
             cell.clear_leading_spacer();
+            self.content_changed_at(self.scrollback.len() - 1);
         }
     }
 
@@ -2461,6 +2494,11 @@ impl Term {
         // Record the scroll op before any seam clear: `record_scroll` rotates `line_damage` with
         // the content, so damage recorded earlier would land on the wrong row (ADR-0025).
         self.record_scroll(top, bottom, if down { -1 } else { 1 });
+        // A shift that feeds scrollback leaves the region's absolute lines where they were; any
+        // other moves them, so their lines are reported again (#967).
+        if !evicts_to_scrollback {
+            self.content_changed_at(self.scrollback.len() + top);
+        }
         if top > 0 {
             self.end_wrap(top - 1);
         } else if !evicts_to_scrollback && !self.on_alt {
@@ -2472,6 +2510,7 @@ impl Term {
                 if let Some(cell) = row.last_mut() {
                     cell.clear_leading_spacer();
                 }
+                self.content_changed_at(self.scrollback.len() - 1);
             }
         }
         // The row that lost its continuation: `bottom` going down, `bottom - 1` going up — but
@@ -2567,6 +2606,7 @@ impl Term {
         self.invalidate_search_highlights();
         self.markers_evict_oldest(n);
         self.tracked_evict_oldest(n);
+        self.watches_evict_oldest(n);
     }
 
     /// Clear the primary screen and its scrollback, keeping the cursor's line

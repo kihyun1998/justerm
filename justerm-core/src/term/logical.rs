@@ -46,33 +46,12 @@ impl Term {
             // tail may run past `bottom` (off-screen below) — included too.
             let mut text = String::new();
             let mut map: Vec<(i32, usize)> = Vec::new();
-            let mut cur = line;
-            loop {
-                let cells = self.abs_line(cur);
-                for (col, cell) in cells.iter().enumerate() {
-                    if cell.is_spacer() {
-                        continue;
-                    }
-                    // Signed viewport row: < 0 above the top, >= rows below.
-                    let vrow = cur as i32 - top as i32;
-                    text.push(cell.c());
-                    map.push((vrow, col));
-                    // Combining marks (#45) ride the same cell — append each and
-                    // map it to that cell so `text` stays 1:1 with `cells`.
-                    if let Some(marks) = self.combining_at(cur, col) {
-                        for &m in marks {
-                            text.push(m);
-                            map.push((vrow, col));
-                        }
-                    }
-                }
-                let soft = self.abs_row(cur).is_wrapped();
-                if soft && cur + 1 < total {
-                    cur += 1;
-                } else {
-                    break;
-                }
-            }
+            // Combining marks (#45) map to their base's cell, so `text` stays 1:1 with `cells`.
+            // The row is signed: < 0 above the top, >= rows below.
+            let cur = self.walk_logical_line(&self.grid, line, |ch, abs, col| {
+                text.push(ch);
+                map.push((abs as i32 - top as i32, col));
+            });
             // Trim trailing blanks (only the last row can have them), keeping
             // `text` and `cells` in lockstep. That premise is what a run-length bound (#206)
             // would break — `docs/map/territory/logical-lines.md`.

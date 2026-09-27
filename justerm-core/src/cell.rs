@@ -423,6 +423,11 @@ impl Cell {
         self.content = (self.content & !CODEPOINT_MASK) | c as u32;
     }
 
+    /// Overwrite the foreground colour, preserving the fg-word flag bits.
+    pub(crate) fn set_fg(&mut self, fg: Color) {
+        self.fg = pack_color(fg) | (self.fg & !(COLOR_VALUE_MASK | (0b11 << COLOR_MODE_SHIFT)));
+    }
+
     /// Overwrite the background colour (the BCE erase fill), preserving the
     /// bg-word flag bits.
     pub fn set_bg(&mut self, bg: Color) {
