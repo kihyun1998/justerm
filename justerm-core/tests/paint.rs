@@ -123,7 +123,11 @@ fn paint_follows_the_wrap_and_covers_a_wide_pair_whole() {
     let g = term.grid();
     assert!(g.cell(0, 3).flags().contains(CellFlags::WIDE_CHAR));
     assert_eq!(g.cell(0, 3).fg(), RED);
-    assert_eq!(g.cell(0, 4).fg(), RED, "the spacer is painted with its lead");
+    assert_eq!(
+        g.cell(0, 4).fg(),
+        RED,
+        "the spacer is painted with its lead"
+    );
     assert_eq!(g.cell(1, 0).fg(), RED);
     assert_eq!(g.cell(1, 1).fg(), Color::Default);
     assert_eq!(g.cell(0, 2).fg(), Color::Default);
@@ -145,7 +149,10 @@ fn paint_sets_both_channels_and_clips_to_the_text() {
 
     let g = term.grid();
     assert_eq!((g.cell(0, 1).fg(), g.cell(0, 1).bg()), (RED, BLUE));
-    assert_eq!((g.cell(0, 2).fg(), g.cell(0, 2).bg()), (Color::Default, Color::Default));
+    assert_eq!(
+        (g.cell(0, 2).fg(), g.cell(0, 2).bg()),
+        (Color::Default, Color::Default)
+    );
 }
 
 /// The colour is in the cell: it scrolls into scrollback with the text.
@@ -175,7 +182,10 @@ fn a_painted_colour_survives_reflow() {
     term.resize(4, 3);
     let g = term.grid();
     // "xxER" / "ROR"
-    assert_eq!(fgs(&g.row(0)[..4]), vec![Color::Default, Color::Default, RED, RED]);
+    assert_eq!(
+        fgs(&g.row(0)[..4]),
+        vec![Color::Default, Color::Default, RED, RED]
+    );
     assert_eq!(fgs(&g.row(1)[..3]), vec![RED, RED, RED]);
 }
 
@@ -288,7 +298,11 @@ fn painting_a_visible_scrollback_line_repaints_the_view() {
     term.scroll_up(1);
     term.reset_damage();
 
-    assert!(term.paint_logical_line(line_with(&lines, "ERROR").at, "ERROR", &[fg_span(0, 5, RED)]));
+    assert!(term.paint_logical_line(
+        line_with(&lines, "ERROR").at,
+        "ERROR",
+        &[fg_span(0, 5, RED)]
+    ));
     assert_eq!(term.damage(), TermDamage::Full);
 }
 

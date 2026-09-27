@@ -26,7 +26,6 @@ impl Term {
     /// soft-wrapped run (7.3 ms against 17 µs for the same bytes as short lines).
     pub fn viewport_logical_lines(&self) -> Vec<LogicalLine> {
         let rows = self.grid.rows();
-        let total = self.scrollback.len() + rows;
         let top = self.scrollback.len() - self.display_offset; // abs line of viewport row 0
         let bottom = top + rows; // abs lines [top, bottom) are on screen
 
