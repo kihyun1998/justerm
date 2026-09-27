@@ -101,6 +101,9 @@ at a recorded SHA; a paraphrase drops the pin).
 ## Blast radius
 
 - [viewport](viewport.md) — its scroll position gates whether damage is reported at all
+- [settled-cell paint](settled-cell-paint.md) — `damage_span` and `mark_fully_damaged` also move
+  its change record (#967), so a write site that damages is reported and one that changes text
+  without damaging is not. A paint damages without recording a change
 - [caret report](caret-report.md) — the old+new fold lives in this code but the rule is about the
   caret; changing either side produces ghosting
 - [frame](frame.md) — damage and the scroll op are frame fields, so their shape is a wire question

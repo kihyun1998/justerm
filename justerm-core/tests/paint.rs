@@ -458,7 +458,12 @@ fn a_wide_lead_cut_from_its_spacer_is_painted_alone() {
     term.feed("\x1b[?1049haaaaaaaa中".as_bytes());
     take(&mut term);
     term.resize(9, 3);
-    assert!(term.grid().cell(0, 8).flags().contains(CellFlags::WIDE_CHAR));
+    assert!(
+        term.grid()
+            .cell(0, 8)
+            .flags()
+            .contains(CellFlags::WIDE_CHAR)
+    );
 
     let lines = take(&mut term);
     let line = line_with(&lines, "aaaaaaaa中");

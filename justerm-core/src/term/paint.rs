@@ -20,9 +20,8 @@ impl ChangeWatch {
         ]
     }
 
-    /// Re-anchor after a reflow, from the two points [`Self::points`] gave it. The lines the last
-    /// answer covered join the changed ones: a reflow moves them, so a paint taken against them
-    /// is refused, and they are reported again.
+    /// Re-anchor after a reflow, from the two points [`Self::points`] gave it. The lines answered
+    /// since the previous reflow join the changed ones, and the answered record starts over.
     pub(super) fn reflowed(&mut self, mapped: &[(usize, usize)], evicted: usize) {
         let at = |i: usize| mapped[i].0.saturating_sub(evicted);
         let changed = self.changed_from.map(|_| at(0));
@@ -110,10 +109,11 @@ impl Term {
     /// if that line still reads `text`; returns whether it was painted.
     ///
     /// `at` is rebased by the lines evicted since it was reported. The paint is refused, and
-    /// nothing changes, when the line has left the buffer, when `at` no longer names the start of
-    /// a logical line, or when the line's text is no longer `text` — output since the report
-    /// rewrote it, or a resize or a region scroll moved another line under the reference. A line
-    /// that reads the same text is painted wherever it now is.
+    /// nothing changes, when the line has left the buffer, when it was on an alternate screen that
+    /// has since closed, when `at` no longer names the start of a logical line, or when the line's
+    /// text is no longer `text` — output since the report rewrote it, or a resize or a region
+    /// scroll moved another line under the reference. A line that reads the same text is painted
+    /// wherever it now is. A primary-screen line is painted even while the alternate screen is up.
     ///
     /// Only the channels a span names change, on the cells its `char`s came from; a wide glyph's
     /// spacer takes its lead's colour. Painting damages the painted cells like any cell write, and

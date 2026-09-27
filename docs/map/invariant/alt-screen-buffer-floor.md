@@ -51,6 +51,8 @@ since #602, `walk.rs`'s module doc.
 - [search & active match](../territory/search.md) — `Term::search_with` (`term/search.rs`; #144)
 - [logical lines](../territory/logical-lines.md) — `Term::viewport_logical_lines`
   (`term/logical.rs` since #601; #113)
+- [settled-cell paint](../territory/settled-cell-paint.md) — `Term::changed_logical_lines`
+  (`term/paint.rs`; #967)
 - [accessibility](../territory/accessibility.md) — `Term::accessible_text`, which moved to
   `term/selection.rs` with #587 because it reuses selection's extraction path, not because it is a
   selection. Its `## Code` entry is carried by **both** [selection](../territory/selection.md) and
@@ -81,6 +83,13 @@ above. It belongs to [search](../territory/search.md) and [marker](../territory/
 the mechanism is the marker's, the holder is search's. **The generalisation worth carrying:** flooring
 protects a *walk*, which starts from a row it already knows is on this screen; it cannot rescue a
 coordinate that arrived without one, because the two screens' index ranges overlap by construction.
+
+A fifth, added by #967, took #691's lesson from the start rather than rediscovering it.
+`Term::paint_logical_line` receives a coordinate the consumer held across IPC, so it carries the
+**identity** as well — `LineRef::alt` — and floors by the buffer that names (`scrollback.len()` for
+alt, `0` for primary) instead of calling `abs_floor`, since a primary paint may land while the alt
+screen is up. Like the other non-derivable entries it is invisible to the grep above;
+[settled-cell paint](../territory/settled-cell-paint.md) owns it.
 
 A third satisfies it by **construction** rather than by argument, found by #601's pass: `Term::viewport_link_at`
 reaches cells through `abs_row` — so the recurrence test below flags it — but its index is

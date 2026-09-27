@@ -2495,8 +2495,7 @@ impl Term {
         // Record the scroll op before any seam clear: `record_scroll` rotates `line_damage` with
         // the content, so damage recorded earlier would land on the wrong row (ADR-0025).
         self.record_scroll(top, bottom, if down { -1 } else { 1 });
-        // A shift that feeds scrollback leaves the region's absolute lines where they were; any
-        // other moves them, so their lines are reported again (#967).
+        // Lines the shift moved to other absolute lines are reported again (#967).
         if !evicts_to_scrollback {
             self.content_changed_at(self.scrollback.len() + top);
         }

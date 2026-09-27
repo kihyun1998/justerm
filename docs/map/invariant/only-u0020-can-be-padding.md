@@ -44,6 +44,10 @@ as both existed, and nothing compared them.
   showed the two returning different text for the same cells when only one was fixed
 - [logical lines](../territory/logical-lines.md) — `viewport_logical_lines`, whose text feeds the
   consumer's URL detection and whose `cells` map must stay 1:1 with it through the trim
+- [settled-cell paint](../territory/settled-cell-paint.md) — `changed_logical_lines` and
+  `paint_logical_line` (#967), a sixth and seventh trim. They share `walk_logical_line` with
+  `viewport_logical_lines` for the text, but each trims on its own; the paint compares its trimmed
+  text against the query's, so the two must trim alike or every paint is refused
 - [search](../territory/search.md) — the haystack's own trailing loop. The one surface where the
   effect is not "a character is missing from a copy" but "the character does not exist": a written
   NBSP at a row's end was **unfindable**, and a regex `$` anchored one column early

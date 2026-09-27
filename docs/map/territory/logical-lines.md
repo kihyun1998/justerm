@@ -58,7 +58,9 @@ context contract is.
   module's extraction path, not because it is a selection — moved there with it in #587
 - `justerm-core/src/term/walk.rs` — the stepping and materialisation primitives the join is built
   from: `prev_pos` / `next_pos`, `extract_lines`, `append_cell`, `is_wrap_artefact`,
-  `is_walk_transparent_spacer`. Extracted in #585
+  `is_walk_transparent_spacer`. Extracted in #585. `walk_logical_line` (#967) is the forward
+  run walk `viewport_logical_lines` now shares with [settled-cell paint](settled-cell-paint.md)'s
+  query and paint guard, so the three build a line's text one way
 
 ## Reference behaviour
 

@@ -533,7 +533,8 @@ impl Engine {
     /// span names change; bold, underline and the other attributes are left alone. Pass a
     /// palette reference ([`Color::Indexed`]) to have each consumer resolve it against its own
     /// theme. A refused paint (see [`Term::paint_logical_line`]) changes nothing: the line it
-    /// named was rewritten or moved, and it is reported again.
+    /// named was rewritten or moved and is reported again — unless it has left the buffer, or it
+    /// was on an alternate screen that has since closed.
     pub fn paint_logical_line(&mut self, at: LineRef, text: &str, spans: &[PaintSpan]) -> bool {
         self.term.paint_logical_line(at, text, spans)
     }
