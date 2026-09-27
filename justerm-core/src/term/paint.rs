@@ -4,6 +4,7 @@
 //! core mechanism; the rule that picks the spans is the consumer's
 //! ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
 
+use crate::cell::Cell;
 use crate::grid::Row;
 use crate::paint::{ChangedLine, LineRef, PaintSpan};
 
@@ -81,7 +82,8 @@ impl Term {
         while start > floor && self.abs_row(start - 1).is_wrapped() {
             start -= 1;
         }
-        self.watch_mut().answered_from = Some(start);
+        let watch = self.watch_mut();
+        watch.answered_from = Some(watch.answered_from.map_or(start, |from| from.min(start)));
 
         let mut out = Vec::new();
         let mut line = start;
@@ -126,6 +128,9 @@ impl Term {
         else {
             return false;
         };
+        if at.alt && !self.on_alt {
+            return false;
+        }
         let active = at.alt == self.on_alt;
         let grid = if active { &self.grid } else { &self.alt_grid };
         let floor = if at.alt { self.scrollback.len() } else { 0 };
@@ -153,8 +158,8 @@ impl Term {
             let end = span.end.min(cells.len());
             for &(abs, col) in cells.get(span.start..end).unwrap_or_default() {
                 let row = self.row_for_paint(at.alt, abs);
-                let wide = row[col].is_wide();
-                for c in col..=col + usize::from(wide) {
+                let pair = row[col].is_wide() && row.get(col + 1).is_some_and(Cell::is_wide_spacer);
+                for c in col..=col + usize::from(pair) {
                     if let Some(fg) = span.fg {
                         row[c].set_fg(fg);
                     }
@@ -163,7 +168,7 @@ impl Term {
                     }
                 }
                 if active {
-                    self.damage_painted(abs, col, col + usize::from(wide));
+                    self.damage_painted(abs, col, col + usize::from(pair));
                 }
             }
         }

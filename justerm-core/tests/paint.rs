@@ -324,19 +324,21 @@ fn the_alt_screen_is_reported_and_its_redraw_erases_the_paint() {
     assert_eq!(fgs(&term.grid().row(0)[..5]), vec![Color::Default; 5]);
 }
 
-/// A paint taken on the alt screen and arriving after it closed lands on the alt buffer, never
-/// on the primary line at the same index.
+/// A primary line's paint that arrives while the alt screen is up lands on the primary line, not
+/// on the alt line at the same index, and is there when the primary screen comes back.
 #[test]
-fn an_alt_paint_arriving_after_the_alt_screen_closed_leaves_the_primary_alone() {
+fn a_primary_paint_arriving_during_the_alt_screen_lands_on_the_primary() {
     let mut term = Engine::new(10, 2);
-    term.feed(b"ERROR\x1b[?1049h\x1b[HERROR");
-    let lines = take(&mut term);
-    let alt = line_with(&lines, "ERROR");
-    assert!(alt.at.alt);
+    term.feed(b"ERROR");
+    let primary = line_with(&take(&mut term), "ERROR").at;
+    assert!(!primary.alt);
+
+    term.feed(b"\x1b[?1049h\x1b[HERROR");
+    assert!(term.paint_logical_line(primary, "ERROR", &[fg_span(0, 5, RED)]));
+    assert_eq!(fgs(&term.grid().row(0)[..5]), vec![Color::Default; 5]);
 
     term.feed(b"\x1b[?1049l");
-    term.paint_logical_line(alt.at, "ERROR", &[fg_span(0, 5, RED)]);
-    assert_eq!(fgs(&term.grid().row(0)[..5]), vec![Color::Default; 5]);
+    assert_eq!(fgs(&term.grid().row(0)[..5]), vec![RED; 5]);
 }
 
 /// A resize between the ask and the paint moves lines the paint names, so it is refused — and
@@ -446,6 +448,65 @@ fn a_scrollback_line_whose_wrap_was_cut_is_reported_again() {
     term.feed(b"\x1b[H\x1b[L"); // IL at row 0
     let texts: Vec<String> = take(&mut term).into_iter().map(|l| l.text).collect();
     assert!(texts.contains(&"abcde".to_string()), "{texts:?}");
+}
+
+/// A wide lead left in the last column with no spacer beside it — the alt screen re-fits rather
+/// than re-wraps, so a narrowing cuts the pair — is painted alone.
+#[test]
+fn a_wide_lead_cut_from_its_spacer_is_painted_alone() {
+    let mut term = Engine::new(10, 3);
+    term.feed("\x1b[?1049haaaaaaaa中".as_bytes());
+    take(&mut term);
+    term.resize(9, 3);
+    assert!(term.grid().cell(0, 8).flags().contains(CellFlags::WIDE_CHAR));
+
+    let lines = take(&mut term);
+    let line = line_with(&lines, "aaaaaaaa中");
+    assert!(term.paint_logical_line(line.at, &line.text, &[fg_span(8, 9, RED)]));
+    assert_eq!(term.grid().cell(0, 8).fg(), RED);
+}
+
+/// When the cap evicts the first row of a soft-wrapped line, the rows left behind are a line of
+/// their own, with other text; it is reported.
+#[test]
+fn the_rest_of_a_line_whose_start_was_evicted_is_reported() {
+    let mut term = Engine::with_scrollback(5, 2, 1);
+    term.feed(b"ERROR0123456789"); // ERROR / 01234 / 56789, one logical line
+    take(&mut term);
+
+    term.feed(b"\r\nz"); // the cap evicts "ERROR"; "01234" + "56789" remain, wrapped
+    let texts: Vec<String> = take(&mut term).into_iter().map(|l| l.text).collect();
+    assert!(texts.contains(&"0123456789".to_string()), "{texts:?}");
+}
+
+/// A resize re-reports every line any answer since the previous resize covered, not only the
+/// latest answer's — paints from several answers can be in flight at once.
+#[test]
+fn a_resize_re_reports_lines_from_every_answer_since_the_last_one() {
+    let mut term = Engine::with_scrollback(10, 2, 100);
+    term.feed(b"aaaaaaaaaaaa\r\nERROR\r\nb\r\nc");
+    let first = take(&mut term);
+    let error = line_with(&first, "ERROR").at;
+    term.feed(b"\r\nd");
+    take(&mut term);
+
+    term.resize(20, 2);
+    assert!(!term.paint_logical_line(error, "ERROR", &[fg_span(0, 5, RED)]));
+    let again = take(&mut term);
+    assert!(again.iter().any(|l| l.text == "ERROR"), "{again:?}");
+}
+
+/// A paint for an alt-screen line arriving after the alt screen closed is refused: the buffer it
+/// names is gone from view and is cleared on the next entry.
+#[test]
+fn an_alt_paint_after_the_alt_screen_closed_is_refused() {
+    let mut term = Engine::new(10, 2);
+    term.feed(b"ERROR\x1b[?1049h\x1b[HERROR");
+    let line = line_with(&take(&mut term), "ERROR").at;
+    assert!(line.alt);
+    term.feed(b"\x1b[?1049l");
+    assert!(!term.paint_logical_line(line, "ERROR", &[fg_span(0, 5, RED)]));
+    assert_eq!(fgs(&term.grid().row(0)[..5]), vec![Color::Default; 5]);
 }
 
 /// A region scroll that does not feed scrollback moves the lines inside it to other absolute

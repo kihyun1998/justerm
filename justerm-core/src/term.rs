@@ -516,7 +516,7 @@ struct TrackedPoint {
 struct ChangeWatch {
     /// The lowest line whose content changed since the last answer.
     changed_from: Option<usize>,
-    /// The first line the last answer covered.
+    /// The first line any answer since the last reflow covered.
     answered_from: Option<usize>,
 }
 
@@ -1411,6 +1411,10 @@ impl Term {
                 if self.scrollback.len() > self.scrollback_limit {
                     self.recycled_row = self.scrollback.pop_front();
                     self.lines_left_the_front(1);
+                    // The rows a wrapped line leaves behind are a line of their own (#967).
+                    if self.recycled_row.as_ref().is_some_and(Row::is_wrapped) {
+                        self.content_changed_at(0);
+                    }
                     if self.display_offset > 0 {
                         // Scrolled up: evicting the oldest line advanced the
                         // viewport, so it must be repainted (the "frozen while
