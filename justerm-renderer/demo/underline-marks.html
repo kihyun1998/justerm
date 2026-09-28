@@ -30,7 +30,7 @@
 
   ## What these checks can and cannot observe
 
-  Every row was RUN as a mutation of `webgl.rs`, not reasoned. Two of them redden exactly one check,
+  Every row was RUN as a mutation of the shader (`shader.rs`; `webgl.rs` when they were run), not reasoned. Two of them redden exactly one check,
   which is what makes those two checks evidence rather than decoration.
 
   | Mutation | What reddens |
@@ -331,8 +331,9 @@
   // A completeness pass asked what the second band interacts with that a single one did not, and the
   // strikethrough is the answer: it is a fixed 0.5 of the glyph box while the second underline band
   // is a fixed number of device PIXELS above 0.88, so the two approach each other as the box shrinks.
-  // The comment licensing the composite's arithmetic (`webgl.rs`, "band-vs-band overlap is
-  // arithmetically out of reach") was written for the 0.88/0.5 pair and this change moved the pair.
+  // The reasoning licensing the composite's arithmetic (`docs/map/territory/cell-compositing.md`,
+  // "Band-vs-band overlap is out of reach for the single underline") was written for the 0.88/0.5
+  // pair and this change moved the pair.
   const struck = profile(UNDERLINE | style(ST.double) | STRIKETHROUGH);
   const struckSingle = profile(UNDERLINE | STRIKETHROUGH);
   checks.aStruckDoubleKeepsThreeSeparateBands = every(struck.bandsWhereLit, (b) => b === 3);

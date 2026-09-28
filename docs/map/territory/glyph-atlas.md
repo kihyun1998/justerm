@@ -91,6 +91,16 @@ it.
 - **`builtin` is outside it by construction, not by a list.** The builtin check precedes `fill_text`,
   so no fit can fire on a glyph the font never drew — the same shape as #507's dependency inversion,
   where the classifier *asks* `builtin::owns` rather than restating its ranges.
+- **How the fragment stage reads a slot** (`shader.rs` `FRAG_SRC`). 32 glyphs stack vertically per
+  texture-array layer, so a slot is `(layer = slot >> 5, band = slot & 31)`. The cell-local texcoord is
+  inset into the padded slot's content region through `u_cell_uv = (origin.xy, span.xy)` (#288,
+  #791), so the transparent guard band is never sampled (beamterm `cell.frag`) while the content maps
+  edge to edge of the cell — block elements are baked at cell size (#359), so they tile. It is **not a
+  symmetric inset** any more: with a bleed band the slot's two vertical edges differ, and a cell that
+  insets symmetrically stretches itself over the band instead of leaving it alone. The texcoord is then
+  nudged `+0.001` off the exact texel edge so `NEAREST` cannot round to a neighbour (beamterm
+  `cell.frag`) — belt and braces for a fractional cell-to-texel mapping (DPR != 1, #265); a
+  neighbour's slot is read with the same nudge.
 
 ## Code
 
@@ -98,6 +108,7 @@ it.
 - `justerm-renderer/src/glyph_cache.rs` — the slot map and LRU regions
 - `justerm-renderer/src/rasterizer.rs` — OffscreenCanvas rasterisation (**wasm32/browser only**)
 - `justerm-renderer/src/bitmap.rs` — `InkBounds` and the pure bitmap helpers
+- `justerm-renderer/src/shader.rs` — `FRAG_SRC`'s slot read: `u_cell_uv`, `slot_texel`
 - `justerm-renderer/src/lcd.rs` — the subpixel slot layout and the dark-ink curve fit (host-testable)
 - `justerm-renderer/src/emoji.rs` · `bitmap.rs` — the two halves of the classification the cache
   takes as input: `is_emoji_text` decides by unicode, `is_color_bitmap` by what the font actually

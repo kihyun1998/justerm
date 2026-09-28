@@ -319,7 +319,7 @@ same trace.
 - Public doc-comments anywhere in `justerm-core/src/` — they ship verbatim as the docs.rs page.
   **Not just `lib.rs`**, which this entry used to say: a page is generated per *public item*, and
   the crate's 61 pages are produced by 18 source files, `term.rs` and `serialize.rs` among the
-  largest contributors. `mod` privacy is what decides, not the file — `term/walk.rs`'s `//!` reaches
+  largest contributors. Module privacy is what decides, not the file — `term/walk.rs`'s `//!` reaches
   no page at all. Derive it rather than trusting a list: the `src/justerm_core/*.rs.html` links in
   `target/doc` name every file that actually produced one
 - `.github/scripts/check-published-rustdoc.mjs` — the repo-only-pointer gate for the **rendered

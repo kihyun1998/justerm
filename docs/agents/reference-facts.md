@@ -838,7 +838,7 @@ out before any value is copied.
 **Direction.** Not a divergence to fix. On the *shape* of the knob the references split 1–1 (alacritty
 scalar, xterm boolean-plus-colour-alpha) and justerm took alacritty's in #298, so there is no majority
 to be an outlier against. On *which cells* go transparent, justerm's shader
-(`webgl.rs`, the `(!block && v_bg_default > 0.5) ? u_bg_alpha : 1.0` gate — the expression quoted here
+(`shader.rs`, the `(!block && v_bg_default > 0.5) ? u_bg_alpha : 1.0` gate — the expression quoted here
 until 2026-08-18 was `bg_a = … mix(u_bg_alpha, 1.0, cov) …`, which #317 §2 replaced; the *convergence*
 is unaffected, only the code it was read off) converges with
 alacritty's **default** exactly — default-bg only, glyph coverage pulled back to opaque, cursor cell
@@ -994,7 +994,7 @@ architecture**, not that this architecture cannot.
 | Background and text are **separate passes with hardware blending**, so no fragment ever has to compose the two itself: `BlendFuncSeparate(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, SRC_ALPHA, ONE)` | alacritty | `alacritty/src/renderer/mod.rs:252` |
 | Text then switches to dual-source subpixel blending — a second, different blend func on the same frame | alacritty | `alacritty/src/renderer/mod.rs:260` |
 | Translucency is a whole configurable blending *mode*, with an sRGB framebuffer for linear blending | ghostty | `src/renderer/OpenGL.zig:157`, `generic.zig` (`use_linear_blending`, `use_linear_correction`) |
-| ⚠ **Neither is precedent for justerm's shader, and the difference is structural.** justerm enables no GL blending at all and emits one fragment carrying the whole composite (`premultipliedAlpha: false`). Straight-alpha source-over is closed-form there — `a = 1 - w(1-A)`, `rgb = (ink + bg·A·w)/a` — so the arithmetic is available in one pass and was simply not being done. A finding of the form *"the references use two passes"* is a design proposal on a layer where they have no vote, not a defect | — | this repo, `justerm-renderer/src/webgl.rs` |
+| ⚠ **Neither is precedent for justerm's shader, and the difference is structural.** justerm enables no GL blending at all and emits one fragment carrying the whole composite (`premultipliedAlpha: false`). Straight-alpha source-over is closed-form there — `a = 1 - w(1-A)`, `rgb = (ink + bg·A·w)/a` — so the arithmetic is available in one pass and was simply not being done. A finding of the form *"the references use two passes"* is a design proposal on a layer where they have no vote, not a defect | — | this repo, `justerm-renderer/src/shader.rs` (the composite) and `webgl.rs` (`premultipliedAlpha: false`) |
 
 ## Validating a decoded payload against its own declared geometry (#582, verified 2026-07-31)
 
