@@ -476,6 +476,13 @@ sites, the outlier, or demoted — so a difference from it is not by itself a de
 
 ## Known holes / open
 
+- **A band at a fractional position draws a full row plus a partial neighbour** — derived from
+  `hline`'s arithmetic during #989, not measured. With a half-pixel ramp and `top` only clamped, a
+  1px band whose top sits at 0.3 px covers the row centred at 0.5 fully and the row at 1.5 at 0.6.
+  #515's substance holds (a full-coverage core row always exists, so the old 118/255 grey cannot
+  recur), but "snaps the band to whole device pixels", which the shader comment and
+  `demo/cursor.html` both said, was never what the code does. Whether the partial row is visible
+  softness at the default size is unmeasured.
 - **`preedit::caret_col`'s right-edge step-back has lost its stated reason.** At the edge it puts the
   caret on the last glyph's *lead* rather than its spacer, because "a block caret spans one column on
   a spacer and inverts the right half of the glyph being composed" — measured then on a 106-column

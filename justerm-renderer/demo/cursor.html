@@ -473,7 +473,7 @@
   const ulFlags = new Uint16Array(COLS * ROWS);
   ulFlags[0] = UL; // cell (0,0)
   // (Until #515 this needed `setFontSize(48)`: the AA underline's thin band didn't separate its green
-  // core from the red cursor fill at dpr 1. #515 snaps the line to a solid device-pixel box, so the
+  // core from the red cursor fill at dpr 1. #515 gives the line a full-coverage core row, so the
   // default cell is enough — the enlargement is removed as the downstream flip of that workaround.)
   const bigCh = ch, bigCw = cw;
   r.clearCursor(g);
