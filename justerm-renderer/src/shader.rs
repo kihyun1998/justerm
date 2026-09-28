@@ -74,7 +74,7 @@ uniform mediump sampler2DArray u_atlas;
 // Where a cell sits inside its padded atlas slot: (origin.xy, span.xy), all 0..1 (#288, #791).
 uniform vec4 u_cell_uv;
 uniform float u_bg_alpha;    // background cell opacity: 0 = transparent, 1 = opaque (#298)
-// Declared in both stages, so `highp` to match the vertex stage's default.
+// `u_cell_size` is declared in both stages, so `highp` to match the vertex stage's default.
 uniform highp vec2 u_cell_size;   // the grid cell in device px
 uniform highp vec2 u_char_size;   // the glyph box inside it (#338) — decorations only
 uniform highp vec2 u_char_offset; // where that box starts

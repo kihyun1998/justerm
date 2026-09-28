@@ -247,9 +247,7 @@ What the shader's own comments carried before #989, by the step each one explain
   approach at roughly `0.38 * H < sep_px + T`, about ten device px. A completeness pass raised it;
   `demo/underline-marks.html` mounts a struck double (`aStruckDoubleKeepsThreeSeparateBands`) and
   reads three separate bands at every dpr it sweeps, and a mutation walking the strike toward the
-  underline reddens that check and only it. It is also why the coverage product may stay on `max`
-  for the double's two bands while the colour path composites in sequence: the two agree everywhere
-  the bands do not meet.
+  underline reddens that check and only it.
 - **A double's two bands merge as coverage (`max`), not as two composites**: ADR-0019 rule 4 splits
   marks by authorship of the colour, both halves share one, and compositing them separately would
   apply `v_underline_fg` twice where they overlap.
@@ -284,6 +282,12 @@ What the shader's own comments carried before #989, by the step each one explain
   so a stroked pixel has no background left. `w_bg` is per channel since #961 and one channel serves
   `a`: the three are equal wherever `bg_alpha < 1` (`text_cov` is scalar there), and `bg_alpha == 1`
   makes `a` 1 whatever they are.
+- **`u_cell_size` is `highp` in the fragment stage by necessity.** It is the one uniform both stages
+  declare (`u_projection` is vertex-only), one per program, so its precision must match: the
+  fragment stage is `mediump float` and the vertex stage defaults to `highp`, and an unqualified
+  `vec2` fails to link ("Precisions of uniform 'u_cell_size' differ"). The fragment-only glyph-box
+  uniforms (`u_char_size`, `u_char_offset`, `u_line_thickness`, `u_dots_per_cell`) are `highp` too,
+  with no link constraint behind them.
 - **Subpixel coverage is gated twice** (#961): only over an opaque background — one alpha cannot
   carry three coverages — and never for a colour emoji, whose RGB is its own colour. For foreign ink,
   also never for a background-class owner, whose slot RGB is not a mask (a builtin glyph keeps white
@@ -291,14 +295,16 @@ What the shader's own comments carried before #989, by the step each one explain
 
 ### The underline and strikethrough marks (`hline`, `xgate`, the style chain)
 
-- **A band is a solid, pixel-snapped fill, not a tent** (#515). `hline` resolves the band to full
-  coverage on the device-pixel rows it covers. It used to be `1 - smoothstep`, a beamterm port
+- **A band is a solid fill, not a tent** (#515). `hline` gives the band full coverage between its
+  edges, with a half-pixel ramp (`0.5 * fwidth(gy)`) at each. It used to be `1 - smoothstep`, a beamterm port
   (#267): the tent peaks at 1 only at the exact centre and has no plateau, so a sub-pixel band
   integrates below 1 and the line read grey at small cells (measured 118/255 at dpr 1). Every GPU
   terminal (kitty, ghostty, wezterm) draws a straight line as a solid pixel-snapped fill. The band's
   centre is pulled inside `[0,1]` so it never spills into the next row — the invariant alacritty
-  holds with `max_y` and this renderer did not — and `fwidth` gives a one-device-pixel antialiased
-  edge, crisp rather than stair-stepped at fractional DPR.
+  holds with `max_y` and this renderer did not — and the half-pixel ramp keeps the edge crisp rather
+  than stair-stepped at fractional DPR. **The band's position is not rounded to a pixel row**: `top`
+  is only clamped, so a band at a fractional position covers its two edge rows partially. The shader
+  comment this came from said the band is "snapped to the pixel grid", which the code does not do.
 - **The thickness is a device-px rule from the font size** (#517): `u_line_thickness =
   max(1, round(font_size * dpr / 15))`, computed host-side — xterm.js's rule (`TextureAtlas.ts`,
   `max(1, floor(fontSize*dpr/15))`), the right reference because it is a Canvas renderer under this
@@ -363,10 +369,11 @@ What the shader's own comments carried before #989, by the step each one explain
   canvas with padding below the cell; xterm.js, which does restrict to the cell height, shifts the
   pair up so the bottom band lands where the single would — the same answer under the same
   constraint, and justerm is permanently in that regime.
-  **`2 * thickness` does not survive this rasteriser**: at 16px and dpr 1 the thickness is one device
+  **`2 * thickness` does not survive this rasteriser**: at the default 16px font and dpr 1 the thickness is one device
   pixel, so the bands sit 2px apart with a 1px gap, and `hline`'s half-pixel ramp on each edge closes
   it — the proof read `doubleBandHistogram: {"1": 96}`, one band at every column, the merged run's
-  centre exactly 1px above the single's. So the separation is `max(2 * thickness, thickness + 2px)`:
+  centre exactly 1px above the single's — so following the references' number would ship a double
+  underline that is a slightly thicker single one at the size almost every user runs. So the separation is `max(2 * thickness, thickness + 2px)`:
   the reference rule wherever it has room, and a floor of **one** device pixel of clear air where it
   does not (the nominal gap is two, and the two ramps spend half a pixel each — a refuting pass caught
   an earlier sentence claiming two). The floor binds at one-pixel thickness only: `max(2,3) = 3`,

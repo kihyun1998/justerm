@@ -130,11 +130,6 @@ for the tier and its lifetime.
   down), from `metrics::horizontal_bleed` and `metrics::vertical_bleed`. Both floor at their
   headroom, so 0 does not reach the shader in practice: the fragment stage's `armed` guards defend a
   value the pipeline does not currently produce, not a mode anything selects.
-- **The glyph-box uniforms are `highp` in the fragment stage by necessity.** `u_cell_size`,
-  `u_char_size`, `u_char_offset` and friends are declared in both stages, one per program, so their
-  precision must match: the fragment stage is `mediump float` and the vertex stage defaults to
-  `highp`, and an unqualified `vec2` in the fragment stage fails to link ("Precisions of uniform
-  'u_cell_size' differ").
 
 ## Code
 
