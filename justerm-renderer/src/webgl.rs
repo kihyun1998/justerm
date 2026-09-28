@@ -1037,7 +1037,7 @@ struct GridTier {
     /// so only changed cells re-upload (#263). Empty until the first upload (forces a `Full`).
     ///
     /// INVARIANT: this mirrors what the live `instance_vbo` holds, so it is valid ONLY while that
-    /// buffer persists. WebGL **context loss** destroys the buffer, so [`restore`](Self::restore)
+    /// buffer persists. WebGL **context loss** destroys the buffer, so [`restore`](JustermRenderer::restore)
     /// calls [`invalidate_baseline`](crate::upload::invalidate_baseline) on it — otherwise the next identical frame diffs to zero
     /// ranges and never refills the fresh (empty) buffer → a blank render that won't self-heal.
     /// (Surfaced by the #263 adversarial 2-lens pass; implemented in #269.)
@@ -1058,7 +1058,7 @@ struct GridTier {
     /// its colour win where they overlap. Empty = no active match.
     active_match_spans: Vec<u32>,
     /// The hovered link's spans (#934), same stride — drawn underlined. Set via
-    /// [`set_link_hover`](Self::set_link_hover). Empty = no link hovered.
+    /// [`set_link_hover`](JustermRenderer::set_link_hover). Empty = no link hovered.
     link_hover_spans: Vec<u32>,
     /// The in-progress IME composition and the cell it is anchored to (#249, ADR-0028). Empty = no
     /// composition. Unlike every other retained state here this describes something the **engine
@@ -1124,7 +1124,7 @@ fn f32_bytes(v: &[f32]) -> &[u8] {
 
 /// Upload one glyph's RGBA bitmap to its `(layer, band)` in the atlas. A free function (not
 /// a `&self` method) so the frame resolver's upload closure can borrow only the GL fields,
-/// leaving the drawing configuration's `&mut cache` free for [`glyph_resolve::resolve_frame`].
+/// leaving the drawing configuration's `&mut cache` free for [`resolve_frame`].
 fn upload_glyph(
     gl: &glow::Context,
     atlas: glow::Texture,
@@ -1799,7 +1799,7 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// Re-resolve [`Self::cursor_cells`] against the last frame's flags. Called when a frame arrives
+    /// Re-resolve [`GridTier::cursor_cells`] against the last frame's flags. Called when a frame arrives
     /// (its flags may have changed under a still cursor) *and* when the cursor moves (onto either
     /// half of a wide char, with no new frame).
     fn resolve_cursor_cells(&mut self, at: usize) {

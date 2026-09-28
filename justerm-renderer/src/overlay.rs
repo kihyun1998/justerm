@@ -31,7 +31,7 @@
 //! coloured cell it must read crisp, not as a muddy 0x80 tint (#400 item ①, [`should_blend_kind`]). A
 //! **selection** still blends over a non-default / inverse cell (its own colour shows through) and
 //! paints solid only over the default background. The **active** (focused/current) search match — the
-//! result the search box is on — is a third kind that ranks **above the selection** ([`highlight_at`]:
+//! result the search box is on — is a third kind that ranks **above the selection** ([`highlight_at`](Overlay::highlight_at):
 //! ActiveMatch > Selection > Match) and paints solid in its own colour, xterm's `layer:'top'`
 //! `activeMatchBackground` (`DecorationManager.ts`); the renderer side is wired here (#427), the
 //! consumer pushes the active span via `set_active_match` (#424 slice 1).
