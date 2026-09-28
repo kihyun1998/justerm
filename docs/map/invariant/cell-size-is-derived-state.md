@@ -4,7 +4,7 @@
 
 **The grid cell is not a constant and not owned by anyone who reads it.** It is derived, inside
 `justerm-renderer`, from four inputs together — the glyph box, the device pixel ratio, the letter
-spacing and the line height — and re-derived through a single funnel (`webgl.rs` `bake_config`)
+spacing and the line height — and re-derived through a single funnel (`webgl/font.rs` `bake_config`)
 whenever any of them moves. Five widget-exposed setters can move it: `setFontSize`, `setFontFamily`,
 `setLetterSpacing`, `setLineHeight` (#578) and `setDevicePixelRatio` (#325, **wired 2026-08-10**) —
 and since #773 the first four **name the grid they move**, while the fifth moves every cell at once.

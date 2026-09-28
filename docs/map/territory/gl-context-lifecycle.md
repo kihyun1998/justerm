@@ -320,7 +320,7 @@ machine that decides what the renderer does in between.
 - `justerm-renderer/src/context_loss.rs` — the state machine (pure, host-tested)
 - `justerm-renderer/src/webgl/context.rs` — `ContextLossHandler`, `arm_restore_deadline`,
   `gpu_work_must_wait`, `restore`, and the four exports (browser-only)
-- `justerm-renderer/src/webgl.rs` — `render`, the one caller of `restore` (`FrameAction::Rebuild`)
+- `justerm-renderer/src/webgl/draw.rs` — `render`, the one caller of `restore` (`FrameAction::Rebuild`)
 
 ## Reference behaviour
 

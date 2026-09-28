@@ -99,7 +99,7 @@
   // row, the one recorded as "covered from behind".
   //
   // The dirt is made by a CPU-only setter, NOT by `apply_frame`, and that is the whole care of this
-  // section: `apply_frame` calls `resolve_and_pack` *itself* (`webgl.rs`), with no liveness guard of
+  // section: `apply_frame` calls `resolve_and_pack` *itself* (`webgl/draw.rs`), with no liveness guard of
   // its own — a separate, still-open row that this change does not touch. Packing through it here
   // would measure that row and credit this fix with it. `setBoldToBright` only flips a policy field
   // and marks the buffer dirty, so the pack it causes is unambiguously `render`'s.

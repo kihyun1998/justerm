@@ -100,8 +100,8 @@ about *how the caret looks* is decided here.
 
 - `justerm-renderer/src/cursor.rs` — the geometry: `THICKNESS`, stroke computation, the rect
   builders (pure, host-testable)
-- `justerm-renderer/src/webgl.rs` — `set_cursor`, `clear_cursor`, `cursor_rects_js`,
-  `set_cursor_contrast`, `set_cursor_thickness` — five of the crate's wasm exports
+- `justerm-renderer/src/webgl/grid_state.rs` — `set_cursor`, `clear_cursor`, `set_cursor_contrast`,
+  `set_cursor_thickness`; `webgl.rs` — `cursor_rects_js`. Five of the crate's wasm exports
 - `justerm-renderer/src/shader.rs` — `FRAG_SRC`: `u_cursor`, `block_cursor_at`, `stroke_coverage`
 - `justerm-web/src/cursor.ts` — the consumer half that resolves the blink policy and owns the clock
 

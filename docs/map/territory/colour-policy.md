@@ -71,7 +71,7 @@ this is what resolves it.
   nudge on one opens a visible seam. xterm excludes them (`excludeFromContrastRatioDemands`) and
   re-tints them toward the selection colour instead; since #507 the set is **unioned with what this
   crate draws itself** ([built-in block glyphs](builtin-block-glyphs.md))
-- `justerm-renderer/src/webgl.rs` — `set_palette`, `set_bg_alpha`, `set_bold_to_bright`,
+- `justerm-renderer/src/webgl/grid_state.rs` — `set_palette`, `set_bg_alpha`, `set_bold_to_bright`,
   `set_minimum_contrast_ratio`, `set_selection_foreground`
 - `justerm-web/src/scrollbar.ts` — `thumbBackground`, `thumbState`, `SCROLLBAR_THUMB_ATTRIBUTE`: the
   thumb's colour, the one piece of widget chrome a consumer themes; `startsThumbDrag`,

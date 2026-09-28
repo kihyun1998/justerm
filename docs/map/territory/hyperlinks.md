@@ -153,7 +153,7 @@ What those calls did not cover is recorded under *Design model* as derivations.
 - `justerm-web/src/pointer.ts` — `PointerRouter`'s link half and `cellAt`
 - `justerm-web/src/terminal.ts` — `TerminalOptions.links`, the hover presentation
 - `justerm-renderer/src/frame.rs` — `line_flags` in `pack_instances`; `overlay.rs` —
-  `Overlay::is_link_hovered`; `webgl.rs` — `set_link_hover`
+  `Overlay::is_link_hovered`; `webgl/grid_state.rs` — `set_link_hover`
 
 ## Reference behaviour
 

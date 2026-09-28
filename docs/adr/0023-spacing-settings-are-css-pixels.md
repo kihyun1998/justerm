@@ -25,7 +25,7 @@ is **what unit its argument is in** — CSS pixels (which the renderer then scal
 ratio) or device pixels (which the consumer must scale itself).
 
 justerm takes **CSS pixels** and applies `round(letter_spacing * dpr)` device px to the cell
-(`webgl.rs::set_letter_spacing`). Both references take **device pixels**.
+(`webgl/font.rs::set_letter_spacing`). Both references take **device pixels**.
 
 ### Both references split the units of one font description
 

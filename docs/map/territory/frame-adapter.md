@@ -60,7 +60,7 @@ a coherent full viewport.
 ## Code
 
 - `justerm-renderer/src/frame_grid.rs` — `FrameGrid`, the persistent dense grid and the scatter
-- `justerm-renderer/src/webgl.rs` — `apply_frame`, which consumes the dense result
+- `justerm-renderer/src/webgl/draw.rs` — `apply_frame`, which consumes the dense result
 
 ## Reference behaviour
 

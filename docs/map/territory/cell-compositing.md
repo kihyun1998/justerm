@@ -432,7 +432,7 @@ What the shader's own comments carried before #989, by the step each one explain
 - `justerm-renderer/src/contrast.rs` — `ensure_contrast_ratio`
 - `justerm-renderer/src/palette.rs` · `attrs.rs` · `color.rs` — the reference→colour step and the
   attribute decode
-- `justerm-renderer/src/webgl.rs` — `packs`, and the policy setters that feed it
+- `justerm-renderer/src/webgl/draw.rs` — `packs`; `webgl/grid_state.rs` — the policy setters that feed it
 - `justerm-renderer/src/shader.rs` — `FRAG_SRC`, the composite chain and the marks; `VERT_SRC`, the
   instance unpacking (both browser-consumed, host-compiled since #989)
 

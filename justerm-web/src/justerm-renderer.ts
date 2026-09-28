@@ -1376,7 +1376,7 @@ export class JustermRenderer implements Renderer {
    * Presents immediately, and — unlike {@link setCursorBlink} / {@link setTextBlinkInterval}, which
    * first check that there is a cursor or a frame to redraw — does so unconditionally. Those guards
    * exist because their redraw has nothing to say without retained content; this one always does.
-   * The alpha rides the *clear* colour as well as the per-cell one (`webgl.rs` `draw`), so even an
+   * The alpha rides the *clear* colour as well as the per-cell one (`webgl/draw.rs` `draw`), so even an
    * empty terminal changes, and a consumer that sets this before the first frame sees it at once
    * rather than at the next output.
    *
@@ -1943,7 +1943,7 @@ export class JustermRenderer implements Renderer {
       asU32(frame.underlineColor ?? new Uint32Array(0)),
     );
     // Everything below records what the renderer NOW holds, so it is committed only after
-    // `apply_damage` returns: that call refuses a malformed span directory (`webgl.rs`, #355) and
+    // `apply_damage` returns: that call refuses a malformed span directory (`webgl/grid_state.rs`, #355) and
     // returns *before* it stores the phase, so recording first would leave this side believing it
     // pushed a phase the renderer never took — and the loop, seeing no flip, would not correct it.
     this.lastTextBlinkOn = textBlinkOn;
@@ -2342,7 +2342,7 @@ export class JustermRenderer implements Renderer {
     // Gated on there being something to conceal: the flip is a full re-pack, and running it over
     // a grid with no BLINK cell produces a byte-identical buffer at the cost of a walk over every
     // cell. The two orders below are interchangeable (the cursor is a shader uniform, not an
-    // instance — `webgl.rs` `set_cursor` sets no `needs_repack`), so this one is only convention.
+    // instance — `webgl/grid_state.rs` `set_cursor` sets no `needs_repack`), so this one is only convention.
     const textFlip = this.mayHaveBlinkCells && textOn !== this.lastTextBlinkOn;
     const repacked = textFlip && this.repackAtTextBlinkPhase(textOn);
     if (cursorFlip) this.pushCursor(cursorOn);
