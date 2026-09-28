@@ -1291,6 +1291,9 @@ test.describe("active search match rides its own channel, not the selection (#42
   }) => {
     // Every demo row contains "select" ('s' has no ascender — the corner-inset
     // pixel the probe samples is guaranteed bg), so matches are plentiful.
+    // The live output is paused: its ticks scroll the drag-selected row off the viewport, so the
+    // last assertion would depend on how long the steps before it took.
+    await page.evaluate(() => window.__output!(false));
     await page.locator("#term").click({ position: { x: 50, y: 50 } });
     await page.keyboard.press("Control+f");
     await page.locator('input[placeholder="search"]').fill("select");

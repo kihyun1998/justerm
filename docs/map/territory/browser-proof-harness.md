@@ -198,6 +198,16 @@ a justerm shape here wrong, only corroborate one.
   still drives the real `appendTick` (#818's reason stands) but withholds every tick's frame and
   presents once at the end. The trap it leaves: a test that needs the per-tick frames — scroll ops,
   the a11y announce of each row — must not seed; it drives `appendTick`'s timer or `__output`.
+- **On the runner, the demo's live output alone keeps the page mostly busy.** Its 300ms tick
+  presents, and a runner present costs ~180ms on justerm-renderer 0.23 and ~238ms on 0.24 (4 cores,
+  SwiftShader; 128 → 142 columns after #962, plus #966's band reads). Measured on CI with a
+  temporary probe: the main thread was blocked ~57% of the time on 0.23 and ~77% on 0.24, and an
+  `evaluate` round trip took a median 98–194ms against 201–225ms. At that utilisation a 31% dearer
+  present stretched the whole suite ~1.7× (median per-test ratio). Locally a present is ~60ms and
+  the page is ~20% busy, which is why none of this reproduces off the runner. So a test whose
+  assertion depends on *which rows are on screen* after several steps pauses the output first
+  (`__output(false)`): #429's drag-selected row scrolled off the viewport while its steps ran 9s →
+  23s, and its last check read no selection.
 
 ## Code
 
