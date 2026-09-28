@@ -138,7 +138,7 @@ for the tier and its lifetime.
   `cols`, `rows`, `set_font_size`, `set_font_family`, `set_font_weight`, `set_font_weight_bold`,
   `set_line_height`, `set_letter_spacing`,
   `set_device_pixel_ratio` — the largest single share of the crate's wasm exports
-  (`rg -c '#\[wasm_bindgen' justerm-renderer/src/webgl.rs` for the total)
+  (`rg -c '#\[wasm_bindgen' justerm-renderer/src/webgl.rs justerm-renderer/src/webgl/` for the total)
 
 ## Reference behaviour
 

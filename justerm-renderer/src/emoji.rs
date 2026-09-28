@@ -2,7 +2,7 @@
 //! detector (#297). Pure, host `cargo test`-able (no GL, no rasteriser).
 //!
 //! ## Why a text-side check at all (the #284 → #297 story)
-//! #284 classifies emoji by the **bitmap** the browser drew ([`is_color_bitmap`]): a colour
+//! #284 classifies emoji by the **bitmap** the browser drew ([`is_color_bitmap`](crate::bitmap::is_color_bitmap)): a colour
 //! glyph comes back in the font's own palette, a text glyph in grayscale white. That is font
 //! ground-truth and correct for the common case, but misses one class — an emoji the font draws
 //! in pure grayscale (`⬛ ⬜ ⚫ ⚪`, monochrome chess/card emoji): every pixel is `R=G=B`, so the

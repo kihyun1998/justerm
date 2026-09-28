@@ -42,11 +42,8 @@ use crate::attrs::{is_wide_lead, is_wide_spacer};
 /// The pairing never crosses a row: a lead in the last column has no `col + 1` on its own row, and
 /// the row is the unit a span is expressed in.
 ///
-/// The index is widened to `u64` before the lookup for the reason [`cursor_span_at`] documents —
-/// `row * cols + col` overflows a 32-bit `usize` on wasm32 for grids the packer will still accept,
+/// The index is widened to `u64` before the lookup: `row * cols + col` overflows a 32-bit `usize` on wasm32 for grids the packer will still accept,
 /// and the overflow is invisible to the host suite (#355).
-///
-/// [`cursor_span_at`]: crate::cursor::cursor_span_at
 pub fn partner_at(flags: &[u16], cols: u32, row: u32, col: u32) -> Option<u32> {
     let at = |c: u32| -> u16 {
         let idx = row as u64 * cols as u64 + c as u64;

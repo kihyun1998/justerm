@@ -24,7 +24,7 @@ describe("ContextLossRelay", () => {
     // The dispose obligation, and it is the reference's behaviour rather than a preference:
     // xterm.js's disposable clears its restore timeout (`WebglRenderer.ts:161-163`), so a disposed
     // renderer never delivers `onContextLoss`. justerm-renderer clears its own callback slot only
-    // in `Drop` (`webgl.rs`), which `Terminal.dispose()` never reaches — it stops work, not memory
+    // in `Drop` (`webgl/context.rs`), which `Terminal.dispose()` never reaches — it stops work, not memory
     // — so the gate has to live on this side to keep the same observable contract.
     const relay = new ContextLossRelay();
     const handler = vi.fn();

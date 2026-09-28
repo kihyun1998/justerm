@@ -2181,7 +2181,7 @@ test("an oversized fit adopts the grid the granted buffer holds (#339/#773)", as
 // #325 follow-up, found by measuring the slice rather than by reading it: **a GL restore is the one
 // buffer change with no consumer call behind it.**
 //
-// `restore()` re-reads the LIVE device pixel ratio and re-derives the cell at it (`webgl.rs`, #269) —
+// `restore()` re-reads the LIVE device pixel ratio and re-derives the cell at it (`webgl/context.rs`, #269) —
 // deliberately, because a DPR notification arriving while the context is lost is dropped rather than
 // queued. So a density that moved during a loss is adopted there, the drawing buffer moves, and until
 // this slice nothing re-applied the canvas display box.
