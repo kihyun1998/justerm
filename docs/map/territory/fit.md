@@ -45,7 +45,7 @@ a CSS box and reads the grid back, rather than asking for 80×24 and being given
 
 - `justerm-web/src/fit.ts` — `FitPadding`, `ResizePort`, and the proposal arithmetic
 - `justerm-web/src/scrollbar.ts` — supplies the width this subtracts
-- `justerm-renderer/src/webgl.rs` — `css_cell_width` / `css_cell_height`, the divisor
+- `justerm-renderer/src/webgl/surface.rs` — `css_cell_width` / `css_cell_height`, the divisor
 - `justerm-core/src/lib.rs` — `Engine::resize`, the intent's destination, and `MIN_COLUMNS`
 
 ## Reference behaviour
