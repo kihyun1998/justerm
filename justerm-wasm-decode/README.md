@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/kihyun1998/justerm/master/logo/justerm-dark.png">
+    <img alt="justerm logo" src="https://raw.githubusercontent.com/kihyun1998/justerm/master/logo/justerm-light.png" width="96">
+  </picture>
+</p>
+
 # justerm-wasm-decode
 
 The **canonical web decoder** for [justerm](https://github.com/kihyun1998/justerm)'s binary wire

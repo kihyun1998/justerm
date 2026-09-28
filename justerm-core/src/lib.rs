@@ -4,6 +4,10 @@
 // published usage snippet cannot drift from the real API (#483, and the #473
 // rule that a shipped usage snippet must compile against the real types).
 #![doc = include_str!("../README.md")]
+#![doc(
+    html_logo_url = "https://raw.githubusercontent.com/kihyun1998/justerm/master/logo/justerm-tile.svg",
+    html_favicon_url = "https://raw.githubusercontent.com/kihyun1998/justerm/master/logo/justerm-tile.svg"
+)]
 
 mod base64;
 mod cell;

@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/kihyun1998/justerm/master/logo/justerm-dark-banner.png">
+    <img alt="justerm" src="https://raw.githubusercontent.com/kihyun1998/justerm/master/logo/justerm-light-banner.png" width="600">
+  </picture>
+</p>
+
 # justerm
 
 [![crates.io](https://img.shields.io/crates/v/justerm-core.svg?label=justerm-core)](https://crates.io/crates/justerm-core)
