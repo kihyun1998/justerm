@@ -200,12 +200,125 @@ machine that decides what the renderer does in between.
   dependent, not a property of the fix**: CI's Linux font takes the same 19 to 38, so *both* axes
   divide back evenly there and the box does not move at all. The portable statement is
   `canvas.style x dpr === drawing buffer`, never that the box changed.
+- **The listeners hold only the shared state, never the renderer** (#269). The two closures capture
+  the `Rc`'d `ContextState` and nothing else, so either can fire while a `&mut JustermRenderer`
+  method is on the stack without a `RefCell` double-borrow. The `webglcontextlost` one calls
+  `preventDefault()` **first**: without it the browser never fires `webglcontextrestored` and the
+  context stays dead for good. Every reference implementation does this first — beamterm's
+  `context_loss.rs`, xterm.js's `WebglRenderer.ts`. The grace period is a consumer-injected value
+  (ADR-0017: the renderer times, the consumer decides how long), read at the moment a loss arms
+  its deadline — which is why a changed timeout applies to the *next* loss only.
+- **The restore deadline is never cancelled, and a loss epoch is what makes that safe** (#327).
+  `clearTimeout` would work — a merely-queued timer task aborts when it finds its id gone from the
+  map (HTML spec, timer initialization steps), which is how xterm.js does it — but cancelling means
+  *owning* the `Closure`, and the consumer's notification handler is exactly the place that destroys
+  the renderer (VSCode's `onContextLoss` calls `_disposeOfWebglRenderer()`). Dropping the handler
+  would free the very closure whose body is running; JS gets away with this because its closures
+  are garbage-collected, and Rust's are not. So the closure is handed to JS instead
+  (`Closure::once_into_js` keeps it alive through an internal `Rc` cycle that the single invocation
+  breaks, freeing it *after* the body returns), and every deadline with nothing to say identifies
+  itself: `on_restore_deadline` rejects it if the context came back, if it already notified, or if
+  it belongs to an earlier loss. A stale deadline costs one no-op task. Inside the body the state
+  borrow is released and the callback cloned out **before** calling into JS, because the consumer's
+  handler runs re-entrantly and may dispose the renderer, poll `isRestoreOverdue` or replace itself.
+  `Drop` disarms from the other end: it clears the callback slot, so a deadline still pending finds
+  nobody to call, while the `Rc`s it captured keep its state alive until it runs once and frees
+  itself — the same observable contract as xterm.js's `clearTimeout` on dispose
+  (`WebglRenderer.ts:161-163`).
+  The epoch guards the **lost → restored → lost** order: the first loss's timer is still pending
+  when the second loss arms its own, and without the stamp it would land inside the second loss's
+  grace period and cut it short. That order is reachable — every transition into "lost" dispatches
+  — and `context_loss.rs`'s `a_deadline_left_over_from_a_previous_loss_never_notifies` is written on
+  it. **This used to claim more, and the extra claim was wrong** (measured 2026-08-04, #579): it said
+  the epoch made us stricter than xterm.js, whose single `_contextRestorationTimeout` is overwritten
+  without being cleared when a second `webglcontextlost` arrives *with no restore between*
+  (`WebglRenderer.ts:131`), so "both timers then fire and its `onContextLoss` is delivered twice".
+  The overwrite is real in its source; the antecedent is not reachable. A second
+  `WEBGL_lose_context.loseContext()` on an already-lost context delivers **no** second event
+  (headless Chromium: two `loseContext()` calls with no restore between produce exactly **1**
+  `webglcontextlost`), because the event fires on the transition into lost and an already-lost
+  context has none to make. So that comparison described a state neither implementation can be put
+  into. The epoch still earns its place on the order above — a favourable comparison is just the
+  kind nobody re-checks.
+- **`gpu_work_must_wait` covered only one of its two windows until #772.** The #639 bullet above
+  names both sources and the window each covers; the mirror one — a context back before
+  `webglcontextrestored` is processed, so GL answers "live" while the program, VAO and atlas it
+  owned are still the destroyed ones — was described and not covered. The function asked
+  `is_lost()`, and `on_restored` clears exactly that flag while setting `pending_rebuild`, so in the
+  post-restored, pre-rebuild window both sources answered "fine" and a setter baked into resources
+  `restore` replaced on the next frame. The composition now lives on the state machine
+  (`must_defer`), beside `action`, which is where ADR-0027 D1 puts it: the source that owns the
+  flags answers the question about them. `apply_surface_size` does not use it — it holds the actual
+  answer, having just read the drawing buffer back, and guards on that.
+- **`restore` runs in four steps, and the order is what makes a failure harmless.** The context
+  *object* survives a loss (the browser reuses it; xterm.js keeps its `_gl`, and beamterm's
+  re-`getContext` hands back the same object), so only what it owned is rebuilt — the program, the
+  VAOs and buffers, the atlas textures and the uniform locations bound to that program — while CPU
+  state (glyph cache, instances, grid, palette) survives untouched, which is what preserves the
+  terminal's content. The DPR is re-read *before* anything is built, so the fresh atlas is baked
+  once at the live density rather than baked at the stale one and immediately re-baked, as
+  beamterm's `restore_context` → `handle_pixel_ratio_change` does (#322 is the same re-bake driven
+  by a `matchMedia` notification). On any failure the old resources stay in place and
+  `pending_rebuild` stays set, so the next frame retries — self-healing, mirroring
+  `set_device_pixel_ratio`.
+  1. **Build every replacement without touching a live field.** Every grid gets its own buffers,
+     because the VAO and instance buffer are per-grid (#771) and both died: rebuilding only the
+     default's would leave a registered grid binding a dead VAO, the bind raises
+     `INVALID_OPERATION` and leaves the *previous* grid's VAO bound, so grid B silently draws grid
+     A's cells. Every **configuration** gets its own atlas at the live DPR, keeping its own glyph
+     slots (#772) — one atlas would restore one grid's font and leave the others sampling a dead
+     texture. Each error arm deletes what the step built (`discard`: built on the **live** context
+     and never published, so this deletion is real), which makes the order of the three free.
+     The configurations baked are the ones that will **still** have a holder after step 3, asked
+     of the registry by key (`ids_wanted_by`, #788) — an entry whose every grid drifted off its key
+     is released by the reconcile, and baking it would rasterise a glyph set into a texture deleted
+     a few lines later, once per restore after a mid-loss font change. **It used to also require a
+     *current* holder, which is the set as of now rather than as of after**: step 3 can place a grid
+     on an entry nobody holds at this instant, so two grids swapping configurations mid-loss
+     re-baked neither and one came back drawing through a dead texture. Measured: `bakes()` 1
+     against `atlasCount()` 2, and that grid's ink 168 where a correctly baked atlas gives 183 —
+     silent, and not self-healing until the next loss. #774 made the rest of this step measured
+     rather than reasoned: `demo/context-loss-grids.html` loses one context with four grids in four
+     states (drawn / hidden / never drawn / registered mid-loss) and reads each grid's own rect back
+     — one bake per *live* configuration, including one whose only holder is hidden, and `packs()`
+     unmoved across the whole restore.
+  2. **Commit.** The uniform locations come out of the new pipeline **destructured**, not copied
+     field by field: a location that survives a restore by being copied is one an author has to
+     remember — `demo/context-loss.html` says in as many words that forgetting one leaves a location
+     belonging to the dead program — and #791 forgot `u_bleed_px` exactly that way: every frame after a restore raised
+     `INVALID_OPERATION` and the band silently stopped drawing. Binding every field by name makes
+     the next omission a compile error. Every grid's upload baseline is invalidated here, not just
+     the default's (#263, #774: narrowing either this or step 4's refill to the grids that draw
+     leaves a hidden grid's rect blank past the restore, with every other check on that page
+     green). The displaced objects are **not deleted** — the #793 bullet above. The measurement
+     under it (#770, before #793 acted on it) was taken two ways: raw WebGL with no wasm involved
+     (delete a pre-loss buffer → `0x0502`; delete one created after the restore → `0`) and through
+     `restore` itself (the restoring `render` leaves `0x0502`, a renderer that never lost its
+     context leaves `0`), on headless SwiftShader and on a real NVIDIA/D3D11 browser alike. #770
+     judged the flag harmless — no state effect, the next frame reads clean, the only cost a
+     consumer polling `getError` around a restore seeing a failure that is not one — and #793
+     reversed that for the channel reason in its bullet. What not deleting costs on the glow side
+     is under *Known holes*.
+  3. **Reconcile grids whose selectors moved while the context was dead** (#772). A mid-loss
+     `setFontSize` / `setLetterSpacing` writes the selector and defers the rest, so the grid now
+     names a configuration whose key it no longer matches; step 1 rebuilt the entries that exist,
+     and this moves grids between them. It runs after the commit because it needs a live context,
+     which it has — `restore` is only reached on a `Rebuild`. A failure here leaves a committed,
+     self-consistent restore and returns `Err`, so the retry latch stays set and the next frame
+     runs the whole restore again (idempotent).
+  4. **Refill.** The loss reset the drawing-buffer size and the viewport, so `apply_surface_size`
+     re-asks for the buffer the consumer last requested — in device px, as given — and every grid's
+     buffer is re-uploaded so `render` draws the pre-loss frame. This is also where a
+     `resizeSurface` that arrived *during* the loss gets its adopt-what-fits pass: it committed the
+     request and skipped the read-back (#639). Nothing extra is stored for it — the buffer it asked
+     for *is* `requested`.
 
 ## Code
 
 - `justerm-renderer/src/context_loss.rs` — the state machine (pure, host-tested)
-- `justerm-renderer/src/webgl.rs` — the event closures, resource recreation, and the four exports
-  (browser-only)
+- `justerm-renderer/src/webgl/context.rs` — `ContextLossHandler`, `arm_restore_deadline`,
+  `gpu_work_must_wait`, `restore`, and the four exports (browser-only)
+- `justerm-renderer/src/webgl.rs` — `render`, the one caller of `restore` (`FrameAction::Rebuild`)
 
 ## Reference behaviour
 
@@ -361,6 +474,14 @@ eager rather than as shapes to follow.
   presented frame is composited and the buffer is gone — so it could not tell "cleared" from
   "already discarded". A read of an unpresented buffer only means something inside the frame the
   library itself scheduled.
+- **Not deleting the displaced objects leaves their glow handles behind, once per restore.** glow
+  keeps each GL object's JS handle in a `SlotMap` that only `delete_*` removes (`glow` 0.18.0,
+  `src/web_sys.rs`, `delete_buffer` / `delete_texture` / `delete_program` /
+  `delete_vertex_array`), so since #793 every restore leaves the program, the quad VBO, each
+  grid's VAO and instance buffer, and each configuration's atlas in those maps for the renderer's
+  lifetime. The comment `restore` carried before #988 gave freeing those slots as *the* reason to
+  delete, and #793's record weighs only the `INVALID_OPERATION` flag. Found reading source during
+  #988; not measured, and nobody has been asked whether it matters.
 - **No reference comparison at all**, and the usual comparison set does not apply cleanly — see
   ADR-0027's *Named prior art* for why the absence is itself the finding.
 - **The interaction with the upload planner is stated here and nowhere else.** That a restore must

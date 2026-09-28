@@ -1038,7 +1038,7 @@ struct GridTier {
     ///
     /// INVARIANT: this mirrors what the live `instance_vbo` holds, so it is valid ONLY while that
     /// buffer persists. WebGL **context loss** destroys the buffer, so [`restore`](Self::restore)
-    /// calls [`invalidate_baseline`] on it — otherwise the next identical frame diffs to zero
+    /// calls [`invalidate_baseline`](crate::upload::invalidate_baseline) on it — otherwise the next identical frame diffs to zero
     /// ranges and never refills the fresh (empty) buffer → a blank render that won't self-heal.
     /// (Surfaced by the #263 adversarial 2-lens pass; implemented in #269.)
     uploaded: Vec<f32>,
