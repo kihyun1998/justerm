@@ -60,6 +60,24 @@ machine that decides what the renderer does in between.
   the loss window, and the restore bakes it again). Bounded, not merely small: `render` cannot draw
   while `gpu_work_must_wait()` holds, and a grid born on a configuration is that configuration's own
   key-matching holder, so the restore always re-bakes it — the second half only true since #788.
+  **What makes it pay rather than refuse is two browser answers, measured because the obvious
+  assumption is false.** Chromium's `createBuffer()` hands back a **non-null** object on a lost
+  context, both in the synchronous window before `webglcontextlost` dispatches and after it
+  (2026-08-19, #770), so the buffer build succeeds and `add_grid`'s `Err` arm — glow's `null` path —
+  is not taken. `createTexture` answers the same way (2026-08-20, #774), and that half is
+  load-bearing rather than symmetric: the bake on a cache miss creates a texture, and had it answered
+  `null`, `bake_config` would map that to `Err` and the registration would **refuse** — the contract
+  ruled out above. Not refusing is the contract because a consumer registering a terminal while the
+  context happens to be dead wants the grid, and `restore` gives **every** registered grid a fresh
+  VAO and buffer and refills it, drawn or not (#771 had to, since a stale per-grid VAO draws the
+  *wrong* grid once there is a draw loop). `demo/context-loss-grids.html` watches it rather than
+  reasoning it: it registers *and feeds* a grid inside the loss window with three siblings already on
+  the registry, places it after the restore, and asserts it draws its own ink rather than a
+  neighbour's.
+- **Deleting a dead object mid-life raises an error flag and changes nothing** (measured, #770).
+  `remove_grid` deletes the grid's VAO and instance buffer, and `release_config` the atlas of a
+  configuration whose last grid left, with no liveness check: on a lost context the delete raises
+  `INVALID_OPERATION` and has no state effect — an error flag, not a no-op.
 - **Construction is the one entry point that refuses instead of deferring, and it is the only one
   where the *binding* decides the failure shape.** The five below can defer because there is a
   renderer to defer *into*; a constructor has no state machine yet, nothing to replay at `restore`,
