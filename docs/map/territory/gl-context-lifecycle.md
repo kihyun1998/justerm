@@ -486,6 +486,10 @@ eager rather than as shapes to follow.
   #988; not measured, and nobody has been asked whether it matters.
 - **No reference comparison at all**, and the usual comparison set does not apply cleanly — see
   ADR-0027's *Named prior art* for why the absence is itself the finding.
-- **The interaction with the upload planner is stated here and nowhere else.** That a restore must
+- ~~**The interaction with the upload planner is stated here and nowhere else.** That a restore must
   invalidate the diff baseline is exactly the kind of cross-territory rule this map exists to hold,
-  and it currently has no test naming it.
+  and it currently has no test naming it.~~ — **stale since #774, measured 2026-09-28 (#988).**
+  `demo/context-loss-grids.html` names the rule, and it is not the only page that holds it: with
+  `restore`'s `invalidate_baseline` call removed, **20 of 24** context-loss proof runs go red — every
+  page but `context-loss-construct.html` (which never restores) at all four DPRs — against 24/24
+  green on the unmutated build.
