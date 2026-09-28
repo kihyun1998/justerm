@@ -474,7 +474,7 @@ fn f32_bytes(v: &[f32]) -> &[u8] {
 
 /// Upload one glyph's RGBA bitmap to its `(layer, band)` in the atlas. A free function (not
 /// a `&self` method) so the frame resolver's upload closure can borrow only the GL fields,
-/// leaving the drawing configuration's `&mut cache` free for [`resolve_frame`].
+/// leaving the drawing configuration's `&mut cache` free for [`resolve_frame`](crate::glyph_resolve::resolve_frame).
 fn upload_glyph(
     gl: &glow::Context,
     atlas: glow::Texture,

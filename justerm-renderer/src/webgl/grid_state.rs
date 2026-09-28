@@ -270,7 +270,7 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// Re-resolve [`GridTier::cursor_cells`] against the last frame's flags. Called when a frame arrives
+    /// Re-resolve [`GridTier::cursor_cells`](super::GridTier::cursor_cells) against the last frame's flags. Called when a frame arrives
     /// (its flags may have changed under a still cursor) *and* when the cursor moves (onto either
     /// half of a wide char, with no new frame).
     pub(super) fn resolve_cursor_cells(&mut self, at: usize) {
