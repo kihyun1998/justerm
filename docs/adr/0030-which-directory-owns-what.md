@@ -65,7 +65,8 @@ justerm-core/src/term/<x>.rs    the `Term` half — cell-aware logic needing the
                                 goldens (*.golden), and the capture-*.sh that record them.
                                 .gitattributes pins each kind; it is material, not test source
 <crate>/tests/*.proptest-regressions   proptest's committed failure corpus, written by the runner
-inline #[cfg(test)] mod tests   module-internal units
+inline #[cfg(test)] mod tests   module-internal units — inline, or file-backed as
+  / <x>/tests.rs                <crate>/src/<x>/tests.rs behind `#[cfg(test)] mod tests;`
 <crate>/benches/*.rs            criterion
 <crate>/examples/*.rs           cargo example binaries
 justerm-wasm-decode/js/         hand-written JS shipped with the binding
@@ -145,3 +146,11 @@ Resolving it is a decision this record deliberately does not make.
 - **Re-opened 2026-09-28 for `logo/` (#998).** It holds image assets only, and no seam runs through
   it. What pins its location is the published pages outside this repo: they point at it by absolute
   raw URL. It was added to D1 with no peer comparison, because none was run for it.
+- **Re-opened 2026-09-28 for a file-backed test module (#991).** `justerm-renderer/src/frame.rs` was
+  4,381 lines, 3,557 of them its inline `mod tests`; the module moved to `src/frame/tests.rs` behind
+  `#[cfg(test)] mod tests;`. The row the split falls under is unchanged — a module-internal unit that
+  reaches `super::*`, never the public API, so it is not `tests/` — and the path is `<x>.rs + <x>/`.
+  What changed is the *form*: "inline" had been read as the only one. **The maintainer's call**, made
+  on these facts — no file-backed test module existed anywhere in the repo, the rule's axis is access
+  (module-internal vs public API) rather than form, and the move was not needed for #975's decant,
+  only for reading the file. No peer comparison was run for it.
