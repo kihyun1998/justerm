@@ -49,8 +49,8 @@ impl JustermRenderer {
     /// Drop one grid's reference to a configuration, deleting the atlas when the last grid leaves.
     fn release_config(&mut self, id: ConfigId) {
         if let Some(tier) = self.configs.release(id) {
-            // Safety: live GL context — or a dead one, where the delete only raises an error flag
-            // (`docs/map/territory/gl-context-lifecycle.md` § Deleting a dead object mid-life).
+            // Safety: live GL context — or a dead one, where the delete has no state effect and
+            // sets `INVALID_OPERATION` (`docs/map/territory/gl-context-lifecycle.md` § Deleting a dead object mid-life).
             unsafe { self.global.gl.delete_texture(tier.atlas) };
         }
     }
@@ -175,8 +175,8 @@ impl JustermRenderer {
             .grids
             .remove(GridId::from_raw(grid))
             .map_err(|e| JsValue::from_str(&e.message()))?;
-        // Safety: live GL context — or a dead one, where the deletes only raise an error flag
-        // (`docs/map/territory/gl-context-lifecycle.md` § Deleting a dead object mid-life).
+        // Safety: live GL context — or a dead one, where the deletes have no state effect and set
+        // `INVALID_OPERATION` (`docs/map/territory/gl-context-lifecycle.md` § Deleting a dead object mid-life).
         unsafe {
             self.global.gl.delete_vertex_array(removed.vao);
             self.global.gl.delete_buffer(removed.instance_vbo);

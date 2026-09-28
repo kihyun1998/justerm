@@ -107,7 +107,7 @@ warns about, so prefer `## Code` over it if the two ever disagree again.)
     (#772 AC 4, #773): it joins rather than bakes whenever a sibling already stands on the same
     configuration, so six terminals in one font hold one atlas between them. Until S5 a new grid was
     born onto whichever configuration the implicit default grid stood on, because it had no way to
-    ask for its own. Taking the seven selectors as `addGrid` arguments rather than hardcoding the
+    ask for its own. Taking the selectors as `addGrid` arguments rather than hardcoding the
     defaults is not a convenience on top of that: a grid born at the defaults and moved a line later
     would **bake an atlas nobody asked for**, once per registration, and free it again the moment
     the move released it — a bake per terminal, in the slice whose whole point is one atlas per font.
@@ -122,16 +122,16 @@ warns about, so prefer `## Code` over it if the two ever disagree again.)
     `(0, 0)`: `cols` / `rows` answer 0 honestly rather than inheriting a sibling's dimensions, which
     would be a size nobody asked for. What a registration during a context loss does and costs is in
     [GL context lifecycle](gl-context-lifecycle.md).
-  - **A configuration change is a move** (`select_config`, which every selector setter and
-    `restore`'s reconcile go through). The shared entry is never edited to follow one grid — the
-    immutability rule above, and ghostty's
-    ([sharing font machinery](../../agents/reference-facts.md#sharing-font-machinery-between-terminals--how-the-one-reference-that-does-it-refcounts-keys-and-invalidates-772-verified-2026-08-19)):
-    acquire the new entry, then release the old. That order is what lets a grid re-select the same
-    key without the entry being freed in between, and it is also the failure order: a build that
-    fails leaves the grid exactly where it was, with nothing half-applied to roll back. The grid must
-    then re-pack, because its packed instances address slots in the *old* entry's cache and the new
-    entry's are its own — the same row records ghostty forcing a full rebuild on the same switch for
-    the same reason. **The instance count is dropped unconditionally, and the unconditional part is
+  - **A configuration change is a move** (`select_config`, which a selector setter reaches on a live
+    context — `adopt_selectors` defers it on a lost one — and `restore`'s reconcile reaches after).
+    The shared entry is never edited to follow one grid — the immutability rule above, and ghostty's
+    ([resource tiering](../../agents/reference-facts.md#multi-viewport-resource-tiering--how-the-one-reference-that-shares-font-machinery-splits-it-768-verified-2026-08-18)):
+    acquire the new entry, then release the old. Selecting the key a grid already stands on returns
+    before either step; for a different key the order is the failure order — a build that fails
+    leaves the grid exactly where it was, with nothing half-applied to roll back. The grid must then
+    re-pack, because its packed instances address slots in the *old* entry's cache and the new
+    entry's are its own — ghostty forces a full rebuild on the same switch for the same reason
+    ([sharing font machinery](../../agents/reference-facts.md#sharing-font-machinery-between-terminals--how-the-one-reference-that-does-it-refcounts-keys-and-invalidates-772-verified-2026-08-19)). **The instance count is dropped unconditionally, and the unconditional part is
     the point.** The retained-grid path (`apply_damage`, which is what `justerm-web` drives) re-packs
     inside the same `render`, so dropping it there is invisible — until the re-pack *fails*, which
     `render` deliberately survives rather than blanking the frame. Without the drop, that survival

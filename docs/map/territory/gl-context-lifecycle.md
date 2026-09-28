@@ -74,10 +74,11 @@ machine that decides what the renderer does in between.
   reasoning it: it registers *and feeds* a grid inside the loss window with three siblings already on
   the registry, places it after the restore, and asserts it draws its own ink rather than a
   neighbour's.
-- **Deleting a dead object mid-life raises an error flag and changes nothing** (measured, #770).
-  `remove_grid` deletes the grid's VAO and instance buffer, and `release_config` the atlas of a
-  configuration whose last grid left, with no liveness check: on a lost context the delete raises
-  `INVALID_OPERATION` and has no state effect — an error flag, not a no-op.
+- **Deleting a dead object mid-life has no state effect and raises `INVALID_OPERATION`** (measured,
+  #770). `remove_grid` deletes the grid's VAO and instance buffer, and `release_config` the atlas of
+  a configuration whose last grid left, with no liveness check, so on a lost context each delete
+  leaves the error flag set. That flag is not free: it is the channel a guard listens on, which is
+  why `restore` deletes nothing it displaces (the #793 bullet above).
 - **Construction is the one entry point that refuses instead of deferring, and it is the only one
   where the *binding* decides the failure shape.** The five below can defer because there is a
   renderer to defer *into*; a constructor has no state machine yet, nothing to replay at `restore`,
