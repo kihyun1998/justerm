@@ -96,6 +96,73 @@ warns about, so prefer `## Code` over it if the two ever disagree again.)
     ghostty's `deref` does, rather than pooled — a closed terminal should not hold an atlas open
     against the next font change — and the registry starts empty (#773), since a bake before any grid
     asks is a bake charged to nobody.
+- **The grid registry's exports** (`webgl/grids.rs`), each rule with its reason:
+  - **Registration.** A new grid is registered but not drawn until `setViewport` places it, and that
+    order is the consumer's, not a convenience: a widget's rect is a DOM measurement, and it has none
+    until it is laid out. It costs one of the per-grid tier and nothing of the other two — an
+    instance buffer **and the VAO that points at it** (ADR-0021 D2: no selector, not shareable,
+    cheap to create; a VAO's whole content is *which* buffer feeds the draw, so it cannot be shared
+    byte-for-byte and follows the buffer).
+    **A grid names the font it is born into, and that is what keeps the middle tier's economy real**
+    (#772 AC 4, #773): it joins rather than bakes whenever a sibling already stands on the same
+    configuration, so six terminals in one font hold one atlas between them. Until S5 a new grid was
+    born onto whichever configuration the implicit default grid stood on, because it had no way to
+    ask for its own. Taking the selectors as `addGrid` arguments rather than hardcoding the
+    defaults is not a convenience on top of that: a grid born at the defaults and moved a line later
+    would **bake an atlas nobody asked for**, once per registration, and free it again the moment
+    the move released it — a bake per terminal, in the slice whose whole point is one atlas per font.
+    It also retired a mid-loss edge the inheritance carried: a grid registered while a `setFontSize`
+    was deferred used to be born at the configuration in force rather than the one asked for, with
+    no way back; it names its own font now, and `restore` reconciles it.
+    The selectors are optional and **trailing**, the `apply_frame` precedent, so
+    `addGrid(palette, fg, bg)` still reads as a call. Size and line height are floored exactly as
+    their setters floor them, so a grid cannot be born on a configuration `setFontSize` could not
+    have produced. A failed buffer build hands back the configuration reference just taken, or a
+    failed registration would hold an atlas open for the renderer's whole life. A new grid is born
+    `(0, 0)`: `cols` / `rows` answer 0 honestly rather than inheriting a sibling's dimensions, which
+    would be a size nobody asked for. What a registration during a context loss does and costs is in
+    [GL context lifecycle](gl-context-lifecycle.md).
+  - **A configuration change is a move** (`select_config`, which a selector setter reaches on a live
+    context — `adopt_selectors` defers it on a lost one — and `restore`'s reconcile reaches after).
+    The shared entry is never edited to follow one grid — the immutability rule above, and ghostty's
+    ([resource tiering](../../agents/reference-facts.md#multi-viewport-resource-tiering--how-the-one-reference-that-shares-font-machinery-splits-it-768-verified-2026-08-18)):
+    acquire the new entry, then release the old. Selecting the key a grid already stands on returns
+    before either step; for a different key the order is the failure order — a build that fails
+    leaves the grid exactly where it was, with nothing half-applied to roll back. The grid must then
+    re-pack, because its packed instances address slots in the *old* entry's cache and the new
+    entry's are its own — ghostty forces a full rebuild on the same switch for the same reason
+    ([sharing font machinery](../../agents/reference-facts.md#sharing-font-machinery-between-terminals--how-the-one-reference-that-does-it-refcounts-keys-and-invalidates-772-verified-2026-08-19)). **The instance count is dropped unconditionally, and the unconditional part is
+    the point.** The retained-grid path (`apply_damage`, which is what `justerm-web` drives) re-packs
+    inside the same `render`, so dropping it there is invisible — until the re-pack *fails*, which
+    `render` deliberately survives rather than blanking the frame. Without the drop, that survival
+    would draw the old entry's slot ids through the new entry's atlas: a wrong glyph rather than a
+    stale one, which is the failure class this repo treats as sacred. The direct `apply_frame` path
+    has no columns to re-pack from at all, so for it the drop is the whole repair. A grid that draws
+    only its background until the consumer's next frame is honest; one that draws another
+    configuration's glyphs is not.
+  - **Placement.** `setViewport` stores the rect as the consumer measured it; the y-flip is
+    `Viewport::gl_rect`'s, applied where `gl.viewport` is issued (above). A rect with **no area is
+    refused**: it draws no pixels, so accepting one and then answering `true` to `isGridDrawn` would
+    be a lie about what this renderer does. The state for "this grid has no rect yet" already exists
+    and is `clearViewport` — the honest answer for the case that produces a zero rect in the first
+    place, a consumer measuring a DOM box that is still `display: none`. No grid is exempt from
+    `setViewport`, `clearViewport` or `removeGrid`: since #773 every rect has one producer, the
+    consumer's measured box, and no grid's lifetime is owned by anyone but the consumer.
+  - **Removal is session close, not hide.** Removing and re-adding a grid to hide it would
+    reintroduce exactly the re-attach cost the shared surface exists to remove; hiding is
+    `clearViewport`. A removal frees the grid's buffer and VAO and releases its configuration
+    reference, so closing one of six terminals in one font frees a buffer and a VAO, not the font
+    machinery the other five are still drawing through.
+  - **The counters.** `gridCount` and `atlasCount` are registry *state* — they answer what the
+    renderer holds, which the consumer put there — not diagnostic counters, so ADR-0021 D5 (where
+    diagnostics like `packs` live is left to whoever adds the second one) is not their question.
+    `atlasCount` is what makes sharing **observable** rather than asserted; ghostty exposes the same
+    number for the same reason (same row as above). `bakes` *is* a diagnostic, read as a delta like
+    `packs`: a grid joining an existing configuration must move it by zero, which is the claim the
+    middle tier exists to make and the one a memory figure cannot settle. It counts **committed**
+    bakes — a rebuild that fails part-way leaves it where it was — so the number tracks
+    configurations the renderer is drawing through rather than rasterising work it performed, which
+    is what a delta is read for and what keeps the delta deterministic.
 - **"Surface" means one thing here and the opposite in the references — the single most reliable way
   to get this territory wrong.** ADR-0021's `TerminalSurface` is **one per app**: the canvas, the
   context, the atlas registry and the single frame loop. Ghostty's `Surface` is **one per terminal**,
@@ -400,9 +467,10 @@ The list below is what lands **when the multi-grid work does**, and the entries 
     which they do drift, deliberately: a setter arriving while the context is lost writes the
     selector and defers the move, because an atlas cannot be baked on a dead context. `restore`
     reconciles it. Nothing reads a grid's selectors in that window — `render` skips a lost frame
-    entirely — and a grid *registered* inside it is born at the configuration actually in force
-    rather than the one the default has asked for and not yet got, which is the only answer available
-    and is recorded at `add_grid`.
+    entirely. (This entry used to add that a grid *registered* inside the window is born at the
+    configuration in force rather than the one the default had asked for; S5 (#773) retired that
+    edge, since a grid now names its own font at `addGrid` — see **Registration** under `## Design
+    model`.)
   - **A DPR change is a different path from all of that, and stayed one:** it rebuilds every entry in
     place rather than re-keying anything, because one canvas has one density (see `## Design model`).
   - **Still true, and worth not re-deriving:** registering during a loss does not announce itself.
