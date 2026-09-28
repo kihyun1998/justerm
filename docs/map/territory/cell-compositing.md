@@ -144,7 +144,7 @@ becomes an actual colour — the engine never does that by identity.
   the same order (#791 the vertical pair, #966 the horizontal) — 20 floats. Each group of four is
   one `vec4` attribute, so the instance spends 10 of WebGL2's guaranteed 16 attribute locations
   rather than the 16 one-float-per-location would have (#792 recorded that ceiling as a reason
-  against a horizontal band); `webgl.rs` asserts at compile time that the four stay consecutive. One buffer, one instanced draw call — the same fixed-stride
+  against a horizontal band); `shader.rs` asserts at compile time that the four stay consecutive. One buffer, one instanced draw call — the same fixed-stride
   reasoning the wire format uses, for the same reason. **The offsets are named** (`frame.rs`), not
   arithmetic: `INSTANCE_FLOATS - 1` for "the last field" and a literal stride both read the *wrong*
   float the moment a field is appended, and appending four is how that was found.
@@ -180,6 +180,234 @@ becomes an actual colour — the engine never does that by identity.
 - **Every frame re-packs entirely.** There is no incremental repaint here, which is why the
   engine's damage model targets the *wire* rather than this renderer.
 
+### The fragment stage (`shader.rs` `FRAG_SRC`), step by step
+
+What the shader's own comments carried before #989, by the step each one explains.
+
+- **The instance's inks travel as floats, exactly.** `a_underline_fg` / `a_strike_fg` carry
+  `0xRRGGBB` one per float (#513, split by #525); a colour is below 2^24, so an `f32` carries it
+  exactly — measured with a standalone WebGL2 probe. The vertex stage unpacks them once per
+  instance rather than per fragment. The glyph field is read the same way (`uint(a_glyph)`), which is
+  why its ink class (bit 16, #712) and underline style (bits 17..19, #829) may sit above the `u16`
+  the rest fits in: the field is full, the transport is not. `a_bg_default` is **provenance**
+  packed by the Rust side, not re-inferred from the resolved colour (#455).
+- **I_neighbour, in the fragment** (#791, #966). A slot holds `bleed | cell | bleed` on each axis,
+  so the band that spilled toward this cell sits exactly one *cell* away from where its own texel
+  reads — `± u_cell_uv.w` down the slot for the rows above and below, `± u_cell_uv.z` across it for
+  the cells beside — and no arithmetic about padding or band depth is needed. `metrics::ink_rows`
+  states the same mapping in device px and is where it is tested, on both axes; the shader holds its
+  texcoord form. The four neighbours are sampled **unconditionally and masked**, not branched: an
+  implicit-LOD fetch under non-uniform control flow is undefined in GLSL ES 3.00, which is also why
+  `slot_texel` passes an explicit LOD. One neighbour supplies a fragment's foreign ink — the one
+  laying down the most, the earlier in up-down-left-right order on a tie, so a fragment only rows
+  reach behaves as it did before #966.
+- **Foreign ink carries its owner's emoji rule, not the receiver's.** Reading only coverage drew a
+  colour emoji's overflow as a monochrome silhouette in the receiving cell's SGR foreground —
+  measured, a brown pile spilling into the row below arrived as 11 device px of pure red. **One rule-6
+  position serves every direction, and that is a property of the rule, not of what can spill**: the
+  clause is "above the receiver's own tile, below everything else the receiver owns", which never
+  asks the neighbour's class. A shader comment once justified it by claiming a background-class glyph
+  cannot overflow; that is false — Powerline `U+E0A4..=U+E0D6` is background-class by `glyph_class`,
+  is drawn by the font rather than by `builtin`, and spills like any other font glyph.
+- **The block cursor completes rule 5's withdrawal in the fragment** (#791; any column since #966).
+  A block replaces the cell's background at fragment time, so it never reaches the packed instance —
+  and the packer is where ADR-0019 rule 5 withdraws `I_neighbour` at a background edge. Both
+  directions were wrong without the shader-side half: a neighbour's descender drew *over* the block,
+  and a cursor cell's own glyph — painted in `u_cursor_text_color` — spilled into the next row in the
+  pre-cursor `fg`, one glyph in two colours split at the cell boundary.
+- **A colour emoji samples the atlas RGB, a text glyph the packed foreground** — beamterm's
+  `cell.frag` `mix(base_fg, glyph.rgb, emoji_factor)`.
+- **The two bands carry separate coverages because they carry separate inks** (#525). Folding them
+  with `max()` first was free while one colour served both; it is lossy the moment `SGR 58` makes
+  them differ, and the loss is total — the underline's colour would paint the strike. The line draws
+  in its **own** ink, resolved without the glyph-only rules (#513, ADR-0019 rule 4 — `I_line` is
+  `TEXT` class), and is still overridden by a block cursor, because the cursor recolours the whole
+  cell: under a block the line bases follow `base_fg`.
+- **Composite in steps, not once.** Folding a line into `fg` first and compositing once applies the
+  band's coverage twice (`mix(bg, mix(fg, line, L), L)`), leaving `L(1-L)` of the glyph's ink in the
+  line — up to 25% at half coverage. Invisible while the two inks were equal; an error the moment
+  #513 made them differ, proportional to exactly the divergence the channel exists to create: at the
+  default font size an underline on a selected tile was never the cell's ink, only mostly it.
+- **The strikethrough goes last**, so where a thick band makes the two overlap the strike wins —
+  xterm's band order (`TextureAtlas.ts` strokes the underline at :565-688 and the strike at :762),
+  and all three references put the strike over the glyph. The underline's place is the #712 bullet
+  above; blanket "underline first", which ghostty (`generic.zig:2932`, the descender reason) and
+  xterm (`fillText` at :735, between the two bands) take, would trade that defect for its mirror —
+  measured on this renderer, a red underline over `█▄▓░` goes from 66 red px per cell to 0. Neither
+  reference has a background ink class driving occlusion, so neither faced the choice. In the chain,
+  `bg_class` splits the glyph's coverage between the two sides of the band — exactly one side is ever
+  non-zero, so it is one `mix` more than the chain before #712, not a branch. The cursor's
+  strokes draw last and opaque, over the glyph — both references append the cursor rects after the
+  text pass.
+- **Band-vs-band overlap is out of reach for the single underline, and #830's second band moves
+  the threshold.** The single's centre is 0.38 of the glyph box from the strike's while
+  `u_line_thickness / char_height` stays near 0.06 at every font size, so reaching it needs a glyph
+  box of about three device px. A double's second band sits a fixed number of device *pixels* above
+  0.88 rather than a fixed fraction, so its distance to the strike shrinks with the box — the two
+  approach at roughly `0.38 * H < sep_px + T`, about ten device px. A completeness pass raised it;
+  `demo/underline-marks.html` mounts a struck double (`aStruckDoubleKeepsThreeSeparateBands`) and
+  reads three separate bands at every dpr it sweeps, and a mutation walking the strike toward the
+  underline reddens that check and only it. It is also why the coverage product may stay on `max`
+  for the double's two bands while the colour path composites in sequence: the two agree everywhere
+  the bands do not meet.
+- **A double's two bands merge as coverage (`max`), not as two composites**: ADR-0019 rule 4 splits
+  marks by authorship of the colour, both halves share one, and compositing them separately would
+  apply `v_underline_fg` twice where they overlap.
+- **The #317 premultiplied chain, with its measurement.** The old chain seeded with `base_bg` and
+  computed alpha separately; at `u_bg_alpha = 0`, `cov = 0.5` a pixel came out `0.5*bg + 0.5*fg` at
+  alpha 0.5, where a fully transparent background can contribute nothing and the answer is `fg`.
+  Measured before the fix (white `A` on a Default blue, dpr 2, `bg_alpha = 0`): of 174 pixels with
+  any alpha, **35** were the foreground and the rest carried background blue that was not there —
+  `a = 126` read `rgb(150,175,207)`, which is `mix(blue, white, 0.494)` to the byte. It is **not**
+  inherent to compositing in one pass — the premise #317 recorded from beamterm and nobody had
+  re-derived for this shader: straight-alpha source-over of opaque ink onto a background of opacity
+  `A` is `a = 1 - w_bg*(1-A)` and `rgb = (ink + base_bg*A*w_bg) / a`, both available in one pass (the
+  references reach the same result with separate passes and hardware blend: alacritty
+  `BlendFuncSeparate` at `renderer/mod.rs:252`, ghostty a whole `AlphaBlending` mode). Accumulating
+  rather than subtracting `base_bg * w_bg` back out is a **precision** choice under `mediump`: every
+  term stays positive and numerator and denominator shrink together, where the subtraction form
+  cancels two near-equal quantities exactly where `a` is smallest.
+- **`w_bg` is a product, and it replaced an approximation.** `max(coverage, max(ul_band, st_band))`
+  approximated the ink's total weight and disagreed with the colour chain wherever two sources
+  overlapped — a descender crossing its underline is the reachable case, #712's own geometry. The two
+  agreed only where at most one source was partial, which is why it never showed while alpha was the
+  only consumer.
+- **Only the default background is translucent, keyed on provenance** (#298, #455). An explicit
+  `SGR 48`, an inverse, a selection or a cursor background is *content* and stays opaque, or a
+  highlight would vanish on a translucent terminal; ink is always opaque, a background-class glyph's
+  included (ADR-0019 R1.1 carries why). Keying on `base_bg == u_default_bg` instead went translucent on
+  any content cell whose composite coincidentally landed on the default RGB — an `SGR 48` set to the
+  theme bg, an `Indexed` slot resolving to it, a decoration painting it: a pinhole in opaque content.
+  A block cursor is forced opaque even where its colour equals the default background — alacritty
+  forces `bg_alpha = 1.` for the cursor cell unconditionally (`display/content.rs:175`, "we must
+  adjust alpha to make it visible"). The strokes no longer need `max(bg_a, cur)`: `cur` is in `w_bg`,
+  so a stroked pixel has no background left. `w_bg` is per channel since #961 and one channel serves
+  `a`: the three are equal wherever `bg_alpha < 1` (`text_cov` is scalar there), and `bg_alpha == 1`
+  makes `a` 1 whatever they are.
+- **Subpixel coverage is gated twice** (#961): only over an opaque background — one alpha cannot
+  carry three coverages — and never for a colour emoji, whose RGB is its own colour. For foreign ink,
+  also never for a background-class owner, whose slot RGB is not a mask (a builtin glyph keeps white
+  there).
+
+### The underline and strikethrough marks (`hline`, `xgate`, the style chain)
+
+- **A band is a solid, pixel-snapped fill, not a tent** (#515). `hline` resolves the band to full
+  coverage on the device-pixel rows it covers. It used to be `1 - smoothstep`, a beamterm port
+  (#267): the tent peaks at 1 only at the exact centre and has no plateau, so a sub-pixel band
+  integrates below 1 and the line read grey at small cells (measured 118/255 at dpr 1). Every GPU
+  terminal (kitty, ghostty, wezterm) draws a straight line as a solid pixel-snapped fill. The band's
+  centre is pulled inside `[0,1]` so it never spills into the next row — the invariant alacritty
+  holds with `max_y` and this renderer did not — and `fwidth` gives a one-device-pixel antialiased
+  edge, crisp rather than stair-stepped at fractional DPR.
+- **The thickness is a device-px rule from the font size** (#517): `u_line_thickness =
+  max(1, round(font_size * dpr / 15))`, computed host-side — xterm.js's rule (`TextureAtlas.ts`,
+  `max(1, floor(fontSize*dpr/15))`), the right reference because it is a Canvas renderer under this
+  one's constraint: no font file, so no `underline_thickness` metric. The old `0.05 * box`
+  half-thickness was a beamterm inheritance (#267), about twice too heavy (11.3% of the cell against
+  xterm's 6.2%). `hline` works in device px and divides by `char_h` (`u_char_size.y`) only to reach
+  glyph-box space, so the thickness tracks the font size and `lineHeight` or font family cannot
+  distort it.
+- **Positions are fixed fractions of the glyph box, in glyph-box space** — underline centre 0.88,
+  strikethrough 0.5. Deriving them from font metrics is not available: Canvas 2D exposes no
+  `underline_position` (#517), so a better fraction is a later refinement. They are glyph-local, not
+  cell-local: with `lineHeight = 1.5` a cell-local 0.88 would drop the underline far below its text.
+  That space is also what keeps the band inside the cell under a tall `lineHeight` — `gy` is bounded
+  to the box, so `hline`'s centre-clamp holds without the cell-relative `max_y` alacritty needs. The
+  glyph's own coverage no longer needs the glyph-box uniforms (#359 bakes the offset into the bitmap);
+  its decorations still do. The two spaces coincide at the default (#338).
+- **The style displaces or gates the one band; it never adds a draw except for double** (#829,
+  #830). Curly displaces the centre; dotted and dashed gate the same band along x (`xgate`); double
+  is the only one that adds a band — what the maintainer settled when #830's "make no new structural
+  decision" rule met it. So a curl is the same band, ink and thickness, and everything #513 / #525 /
+  #712 settled about the channel keeps holding.
+- **The style chain is total over all eight representable values, not six.** `attrs.rs` forwards
+  the raw 3-bit field and names none of them on purpose, and that crate is published separately —
+  `apply_frame` takes any `u16` from any caller. So 0, 1, 6 and 7 fall through to a straight band.
+  For 1, 6 and 7 that is what `UnderlineStyle::from_bits` normalises them to one crate away; **0 is
+  reconciled by a different mechanism** — `from_bits(0)` is `None`, not a single, and what makes the
+  two agree is the `underline` bit, which core's one writer (`set_underline_style`) arms with the
+  style. An earlier comment said `from_bits` normalises all four to a band, which a refuting pass
+  measured false. An `else if` ending at 5 with no fall-through would break the agreement in silence:
+  a mark that vanishes on a malformed input.
+- **`xgate` takes its ramp as an argument** because a caller gates a *wrapped* coordinate: the
+  derivative of `fract(x)` spikes at the seam, and a ramp derived from it (`fwidth(t)`) draws a
+  visible line there. The caller passes the ramp of the unwrapped coordinate (`aa`).
+- **Curly: one cycle per cell.** `sin` is 2π-periodic, so a row-continuous x and a per-cell x agree
+  at every boundary and everywhere else. A first draft added the cell's column to the phase to "join
+  the curls" and a mutation proved the term dead — removing it changed no pixel. Per-cell is what the
+  two references that draw a curl do, each baking one per cell (ghostty a sprite codepoint, xterm.js
+  a stroke into the glyph atlas). The curl oscillates **upward** from 0.88 so its lowest point sits
+  where the straight band does and `hline`'s centre-clamp holds at the bottom of the box. The
+  amplitude carries a device-px floor for #515's reason: a curl a fraction of a pixel tall *is* a
+  straight line, and every pixel assertion would still pass.
+  **Its antialiasing is vertical, measured rather than assumed**: `hline`'s ramp comes from
+  `fwidth(gy)`, a function of the vertical coordinate alone, which is exact for a horizontal edge and
+  narrower by `cos(theta)` across the curl's diagonal one. Max slope is
+  `2*pi*max(line_thickness,1) / cell_width` — `char_h` cancels, so it is fixed by the cell's
+  *aspect*: about 0.79 px/px at an 8x16 cell (theta ~38°, cos ~0.79). The vertical extent stays
+  constant across the curl (browser proof, `steepOverFlatExtent` at font 48: 1.00 / 0.90 / 1.00 /
+  0.93 over dpr 1 / 1.1 / 1.5 / 2, against a straight-band control of exactly 1); a
+  perpendicular-correct shader would read about 1.27. So the band is about 21% thinner
+  perpendicularly where the sine is steepest — 0.2–0.4 px at the default font, sub-pixel, reaching
+  ~1 px only at very large fonts. **Deliberately not asserted**: the ratio is the current answer, and
+  correcting the ramp for slope would move it to ~1.27, so a test pinning 1.00 would redden on the
+  fix. The measurement is published in the proof's `measured` block instead.
+- **Double: the lower band where the single sits, the second above it.** The separation is 2 of 3:
+  xterm.js `yBotDefault = yTopDefault + lineWidth * 2` (`TextureAtlas.ts:590-591`) and ghostty "one
+  above ... and one below by one thickness" (`special.zig:57-70`) agree; alacritty straddles the
+  descent at 0.25 / 0.75 of it (`rects.rs:82-83`), a metric this renderer does not have — no font
+  file, #517's reason. The **direction** is `hline`'s clamp, not a preference: `top` is clamped into
+  the glyph box, so a pair placed downward has both bands pulled to the same `top` and collapses into
+  one line, with no error and a pixel assertion that still sees an underline. Going up is free, which
+  is also why the curl oscillates upward. ghostty centres the pair and can, because it bakes into a
+  canvas with padding below the cell; xterm.js, which does restrict to the cell height, shifts the
+  pair up so the bottom band lands where the single would — the same answer under the same
+  constraint, and justerm is permanently in that regime.
+  **`2 * thickness` does not survive this rasteriser**: at 16px and dpr 1 the thickness is one device
+  pixel, so the bands sit 2px apart with a 1px gap, and `hline`'s half-pixel ramp on each edge closes
+  it — the proof read `doubleBandHistogram: {"1": 96}`, one band at every column, the merged run's
+  centre exactly 1px above the single's. So the separation is `max(2 * thickness, thickness + 2px)`:
+  the reference rule wherever it has room, and a floor of **one** device pixel of clear air where it
+  does not (the nominal gap is two, and the two ramps spend half a pixel each — a refuting pass caught
+  an earlier sentence claiming two). The floor binds at one-pixel thickness only: `max(2,3) = 3`,
+  `max(4,4) = 4`, `max(6,5) = 6`. A deliberate divergence with a measurement behind it, on the
+  tie-breaker's "renderer cell composition is justerm's own model" row.
+- **Dotted: a whole number of dots per cell, computed host-side** (#830). `u_dots_per_cell` comes
+  from `metrics::dots_per_cell`, so the pattern is cell-periodic by construction and the cell-local
+  `v_tex.x` needs no cross-cell phase — the term #829 proved inert stays deleted. The two references
+  whose period is not a whole cell pay with cross-cell state (xterm.js's `variantOffset`,
+  alacritty's every-two-cells inversion); ghostty quantises as this does. A shader comment used to
+  send the reader to xterm.js's `variantOffset` as *the* answer; #830 took ghostty's route instead.
+  The count is computed in Rust, not in GLSL, and not only to keep it testable: GLSL ES 3.00 leaves
+  `round()` implementation-dependent at exactly 0.5 (`roundEven` is the defined one), so an odd cell
+  width could give a different dot count on a different GPU.
+  **At or above a 2px dot** the dot is centred in its period, so `fract`'s seam falls inside the gap
+  where coverage is zero on both sides; anchoring it at [0, 0.5) would put a hard edge on the
+  discontinuity, a seam at every dot. **Below 2px it is pixel-aligned and hard**, and both halves of
+  that were measured wrong first. Antialiasing a 1px dot erases the mark: at 16px the cell is 8 device
+  px and `dots_per_cell` gives 4, so a half-pixel ramp on each side fills the whole 0.5-wide gate —
+  the proof read `dottedDuty: 1.0`, `dottedRuns: 1`, a solid line with every "is drawn" check green.
+  alacritty splits on exactly this and is where the threshold comes from: `draw_dotted` is a hard
+  per-pixel on/off below a 2px thickness and `draw_dotted_aliased` is used at or above it
+  (`rect.f.glsl`); `aa = 0` makes `xgate` a hard step, the same split. And the hard gate is
+  **half-open from the start of the period**, not centred: with a 2px period the fragment centres land
+  on `fract == 0.25` and `0.75`, exactly a centred gate's two edges and symmetric about the dot, so a
+  symmetric test admits both or neither — measured `dottedRuns: 0`. Half-open breaks the symmetry,
+  the asymmetry alacritty gets from a parity test on a pixel index. **It must not be that pixel index,
+  and a refuting pass measured why**: alacritty's period is the integer 2, ours is `cell_w / n`, a
+  whole number of pixels only when the cell width is even. On an odd cell `mod(pixel, period)` drifts
+  across the cell and the residue walks out of the gate — computed over the shipped arithmetic, an
+  11px cell lit columns 0, 2, 4 and nothing from 5 to 10, and a 17px cell lit 0, 2, 4, 6 and nothing
+  from 7 to 16 — invisible to the cross-cell check by construction, because the drift is identical in
+  every cell. The normalised coordinate tiles the cell exactly whatever `n` is. The two branches
+  differ in phase by a quarter period, which is safe because the branch is chosen from
+  `u_cell_size.x` and `n`, both uniform over the grid.
+- **Dashed: one period per cell, the dash at the two outer quarters**, so adjacent cells' dashes join
+  into one half-cell dash separated by a half-cell gap — alacritty's construction, whose comment
+  states the reason: "since dashes of adjacent cells connect with each other our dash length is half
+  of the desired total length" (`rect.f.glsl`, `draw_dashed`). All three references are cell-periodic
+  for dashed, so unlike dotted this needed no decision.
+
 ## Code
 
 - `justerm-renderer/src/frame.rs` — `pack_instances`, the instance layout
@@ -198,6 +426,8 @@ becomes an actual colour — the engine never does that by identity.
 - `justerm-renderer/src/palette.rs` · `attrs.rs` · `color.rs` — the reference→colour step and the
   attribute decode
 - `justerm-renderer/src/webgl.rs` — `packs`, and the policy setters that feed it
+- `justerm-renderer/src/shader.rs` — `FRAG_SRC`, the composite chain and the marks; `VERT_SRC`, the
+  instance unpacking (both browser-consumed, host-compiled since #989)
 
 ## Reference behaviour
 

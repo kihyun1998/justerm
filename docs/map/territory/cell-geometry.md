@@ -122,6 +122,19 @@ for the tier and its lifetime.
 - **The cell is per font configuration, so a surface can hold several at once** (#772/#773). Every
   cell reader takes a grid: `cellWidth(grid)`, `cssCellWidth(grid)`. See the cross-cutting invariant
   below for what a *reader* of one owes.
+- **The atlas slot *is* the padded cell** (#359), so the bitmap already carries the glyph at its
+  offset inside it and the shader neither places nor masks it. Widening the cell spaces the text
+  because the *bitmap* has wider margins, and a wide glyph's halves touch because it was baked centred
+  over its two-cell advance. The vertex stage pixel-snaps each quad corner (`floor(... + 0.5)`).
+- **The bleed depth reaches the shader as `u_bleed_px`**, per font configuration (#966 across, #791
+  down), from `metrics::horizontal_bleed` and `metrics::vertical_bleed`. Both floor at their
+  headroom, so 0 does not reach the shader in practice: the fragment stage's `armed` guards defend a
+  value the pipeline does not currently produce, not a mode anything selects.
+- **The glyph-box uniforms are `highp` in the fragment stage by necessity.** `u_cell_size`,
+  `u_char_size`, `u_char_offset` and friends are declared in both stages, one per program, so their
+  precision must match: the fragment stage is `mediump float` and the vertex stage defaults to
+  `highp`, and an unqualified `vec2` in the fragment stage fails to link ("Precisions of uniform
+  'u_cell_size' differ").
 
 ## Code
 
@@ -129,6 +142,8 @@ for the tier and its lifetime.
 - `justerm-renderer/src/css_font.rs` — `FontWeight` and `font_string`, the `font` the scan and every
   glyph are drawn with (host-testable)
 - `justerm-renderer/src/metrics.rs` — the cell box / glyph box nesting
+- `justerm-renderer/src/shader.rs` — `VERT_SRC`'s pixel snap, `FRAG_SRC`'s `u_bleed_px` and the
+  glyph-box uniforms
 - `justerm-renderer/src/dpr.rs` — `css_px`, the device→CSS derivation. It is the only direction
   left: grid_px, cells_that_fit and device_px were all retired with the grid-derived buffer (#773),
   because the surface is now asked for in device px and kept as asked, so nothing in this crate

@@ -79,6 +79,22 @@ about *how the caret looks* is decided here.
   long the frame carrying that move takes to arrive. Measured at tens of ms and drifting with
   unrelated work on the composition path (#706, #707) — which is why anything timing the caret has to
   observe the phase rather than compute when it should have flipped.
+- **Every shape lives in one uniform, not in the instance buffer** (#270). `u_cursor` is
+  `(col, row, span, shape)`, shape 0 = no cursor and otherwise `shape_id + 1` (1 block, 2 underline,
+  3 bar, 4 hollow block). So moving or blinking the caret costs one uniform and no upload; a block that
+  lived in the instances could not be un-painted without re-packing the frame.
+- **A block is still a colour override on the cell, not geometry**, and both references draw it that
+  way: xterm's `RectangleRenderer.ts:251` emits no vertices and alacritty's `display/cursor.rs:33` no
+  rects — each recolours the cell. Doing it per fragment rather than per instance keeps the order: the
+  instance colours arrive already inverse-swapped and the glyph already concealed, so the cursor lands
+  last — the order alacritty gets by overwriting `cell.fg` / `cell.bg` in `display/content.rs:167`.
+  What that costs `I_neighbour` is in [cell compositing](cell-compositing.md) (the block cursor is a
+  background edge the packer cannot see).
+- **The strokes mirror `cursor::cursor_rects` in device pixels, with hard edges.** The strokes are
+  pixel-aligned, so antialiasing them would only blur a rectangle onto its own boundary. The shader
+  applies the same clamp as `cursor_rects` — a stroke is never thicker than the box it outlines — and
+  a bar's width is clamped by its own cell, not by the cell's height. `cursor_dx` mirrors
+  `cursor::covers`.
 
 ## Code
 
@@ -86,6 +102,7 @@ about *how the caret looks* is decided here.
   builders (pure, host-testable)
 - `justerm-renderer/src/webgl.rs` — `set_cursor`, `clear_cursor`, `cursor_rects_js`,
   `set_cursor_contrast`, `set_cursor_thickness` — five of the crate's wasm exports
+- `justerm-renderer/src/shader.rs` — `FRAG_SRC`: `u_cursor`, `block_cursor_at`, `stroke_coverage`
 - `justerm-web/src/cursor.ts` — the consumer half that resolves the blink policy and owns the clock
 
 ## Reference behaviour

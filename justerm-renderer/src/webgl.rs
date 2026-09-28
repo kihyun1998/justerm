@@ -1113,7 +1113,7 @@ impl JustermRenderer {
     /// consumer — the renderer stays theme-agnostic.
     ///
     /// **Every shape, the block included, lives in the cursor uniform** (`u_cursor` + its colours,
-    /// declared with `FRAG_SRC` in this file) and is resolved per fragment. So any cursor change —
+    /// uniforms of the fragment shader) and is resolved per fragment. So any cursor change —
     /// move, blink, shape — takes effect on the next `render` alone: one uniform,
     /// no re-pack and no instance upload. Blink phase is the consumer's policy, exactly as
     /// `blink_on` is — call `clearCursor` for the off phase.
