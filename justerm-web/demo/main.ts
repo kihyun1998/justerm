@@ -4359,9 +4359,12 @@ function appendTick(): void {
   // Real scroll amount: 0 while the screen is still filling, 1 once full (the top
   // line actually scrolls off). Following → emit it; scrolled up → scrollbar only.
   const scrollCount = Math.max(0, log.length - ROWS) - Math.max(0, log.length - 1 - ROWS);
+  if (seeding) return; // `__seedRows` presents once, after its last tick
   if (displayOffset === 0) render({ scrollCount });
   else bar.update({ displayOffset, scrollbackLen: maxOffset(), rows: ROWS });
 }
+/** Set while `__seedRows` runs its ticks: they append, and the one frame comes after the last. */
+let seeding = false;
 // Named + handle-held so a probe can stop it: this timer *presents a frame* three times a second,
 // which is invisible to every other probe here (they sample in the same turn as their own draw)
 // but silently answers for the blink loop — #576's probe measured the phase alternating with the
@@ -4387,11 +4390,21 @@ window.__output = (on) => {
  * function the timer drives, so the state a test starts from is the state 65 ticks produce, not an
  * approximation of it. Raising the budget instead would have moved the cliff rather than removed
  * it, and this repo's gate rule refuses a threshold moved to make a run green.
+ *
+ * The ticks append without presenting; one full frame follows the last of them
+ * (`docs/map/territory/browser-proof-harness.md`).
  */
 window.__setScrollOptions = (opts) => term?.setScrollOptions(opts);
 
 window.__seedRows = (n: number): { rows: number; scrollbackLen: number } => {
-  for (let i = 0; i < n; i++) appendTick();
+  seeding = true;
+  try {
+    for (let i = 0; i < n; i++) appendTick();
+  } finally {
+    seeding = false;
+  }
+  if (displayOffset === 0) render();
+  else bar.update({ displayOffset, scrollbackLen: maxOffset(), rows: ROWS });
   return { rows: log.length, scrollbackLen: maxOffset() };
 };
 
