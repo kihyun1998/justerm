@@ -158,7 +158,7 @@ because every value involved is finite and in range. The four measured shapes:
   feature name, which is the only reason this row exists
 - **#639** (before either) — reached this fact in the renderer without naming it, and is the
   reference-free ground the repair actually rests on: *"A buffer of no size is not a grant, it is the
-  absence of an answer"* (`justerm-renderer/src/webgl.rs`), with the same `<= 0`, both-axes, `||`
+  absence of an answer"* (`justerm-renderer/src/webgl/surface.rs`), with the same `<= 0`, both-axes, `||`
   predicate. Found only by a completeness pass looking for prior art **inside** the family after the
   argument had been built out of the references
 - **#810** (2026-08-25) — repaired the second site the same day it was filed, and found a **third

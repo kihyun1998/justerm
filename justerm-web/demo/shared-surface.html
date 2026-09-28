@@ -19,7 +19,7 @@
 
            (2) On THIS page it is also the evidence. `draw()` clears the whole canvas to
                `rgba(0,0,0,0)` and each grid then clears only inside its own scissor rect
-               (`justerm-renderer/src/webgl.rs`), so every part of the shared canvas that no grid
+               (`justerm-renderer/src/webgl/draw.rs`), so every part of the shared canvas that no grid
                was placed over stays transparent and shows this pattern through. The gutter between
                the two panes, and the band above the right one, are therefore not decoration: they
                are the only thing on screen that says the two terminals are on ONE canvas rather

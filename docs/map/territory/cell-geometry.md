@@ -144,8 +144,8 @@ for the tier and its lifetime.
   because the surface is now asked for in device px and kept as asked, so nothing in this crate
   converts *into* device px any more. (Retired names un-backticked on purpose — this heading
   resolves every code-span against the source.)
-- `justerm-renderer/src/webgl/surface.rs` — `css_cell_width`, `css_cell_height`, `css_width`, `css_height`;
-  `webgl/grid_state.rs` — `cols`, `rows`; `webgl/font.rs` — `set_font_size`, `set_font_family`,
+- `justerm-renderer/src/webgl/surface.rs` — `css_cell_width`, `css_cell_height`, `css_width`, `css_height`,
+  `cols`, `rows`; `webgl/font.rs` — `set_font_size`, `set_font_family`,
   `set_font_weight`, `set_font_weight_bold`, `set_line_height`, `set_letter_spacing`,
   `set_device_pixel_ratio` — together the largest single share of the crate's wasm exports
   (`rg -c '#\[wasm_bindgen' justerm-renderer/src/webgl.rs justerm-renderer/src/webgl/` for the total)
