@@ -685,3 +685,24 @@ fn a_reflow_moves_the_column_under_a_new_generation() {
         "the move is dated by a new generation, so the birth's (line, col) is not adopted"
     );
 }
+
+/// #973 — the same move when the primary is reflowed while the alt screen is up, which runs a
+/// separate branch of `resize`: the column published after leaving the alt screen is the
+/// reflowed one.
+#[test]
+fn a_reflow_under_the_alt_screen_moves_the_primary_column_too() {
+    let mut e = Engine::new(10, 5);
+    e.feed(b"abcdef\x1b]133;B\x07");
+    e.feed(b"\x1b[?1049h");
+
+    e.resize(4, 5);
+    e.feed(b"\x1b[?1049l");
+
+    let ix = e.marker_index();
+    assert_eq!(ix.markers.len(), 1, "the primary's one mark is the pull's answer again");
+    assert_eq!(
+        (ix.markers[0].line, ix.markers[0].col),
+        (1, 2),
+        "`abcdef` rewrapped to `abcd` / `ef` under the alt screen, so `B` is at row 1, column 2"
+    );
+}
