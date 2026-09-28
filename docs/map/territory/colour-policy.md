@@ -59,6 +59,60 @@ this is what resolves it.
 - **The bit positions mirror `justerm_core::CellFlags`** — the renderer decodes the same word the
   engine packed, so a flag added on one side is a silent no-op on the other until both move.
 
+### Where the policies meet the highlight (`frame.rs` `pack_instances`)
+
+- **The fg channel is keyed on selection coverage, not on the winning highlight** (#430, xterm's
+  model). The selection-only fg rules (#224, #227, #239) survive on a cell whose bg the active match
+  outranks: `CellColorResolver` keys its selection stage on `$isSelected`, while the active match is a
+  bg-only top decoration. `selectionForeground` (#227) forces a selected cell's fg to the injected
+  colour — never a match's — over the cell's own or a bottom decoration's fg; a tile glyph discards it
+  (below), and being selection-only it never triggers the #230 re-dim.
+- **A tile glyph under a selection fuses into the band** (#239, #241). xterm re-tints it toward the
+  *raw* selection colour (not the effective post-blend bg), from the cell's own undimmed fg, discarding
+  `selectionForeground`. An inverse cell with a Default bg is "treated as transparent" (#241): it
+  contributes no colour of its own, so its fg becomes the band over whatever *is* beneath — the raw
+  selection colour with no blend, or (#453) the selection over a bottom decoration's bg when one painted
+  there. That band is recomputed with the cell taken out of the stack, **not** read from `eff_bg`, which
+  is the band over *this* cell and for an inverse cell carries the cell's own colour (probe: `0x97AFDF`
+  against the raw `0x3060C0`) — exactly what "transparent" says to drop. With no decoration it is the
+  raw selection colour, byte-identical to xterm (`CellColorResolver.ts:139` sets it flat). The
+  decoration folds in only when the *selection* is the layer painted over it: a match paints solid
+  (#400) and erases the decoration from the bg channel, so blending over it would compose a stack no
+  pixel shows. The code tests `deco_bg && kind == Selection` as the collapsed form of "did the bg
+  channel blend": this arm requires `is_inverse`, which makes `should_blend` unconditionally true, so
+  the two are equal here — valid as long as no future `HighlightKind` both outranks `Selection` and
+  blends.
+- **The re-tint starts from `cell_fg`, after bold→bright** (#223), and that is the model's answer:
+  ADR-0019 rule 1 puts `L0` at "the cell after inverse and bold→bright", and rule 4 sends a
+  background-class glyph's ink through the bg fold from there. xterm differs for a bold + ANSI 0–7 +
+  tile + selection cell, re-tinting from the *base* ANSI colour (its `CellColorResolver` bypasses the
+  `+8`) — a corner-of-corner, sub-perceptible under the 0x80 blend. That is documentation for a
+  consumer porting from xterm, not a defect: ADR-0019 makes xterm a design input for cell composition
+  rather than a validator. #398 asked for the xterm value and was closed won't-fix on exactly this
+  rule; do not "restore parity" without amending the ADR. (Its older framing — a family change to keep
+  justerm-web byte-neutral — is doubly dead: the widget's compositing half went with #504.)
+- **The fg policy applies once, against the effective bg, on the undimmed fg** — xterm's model
+  (`TextureAtlas._getMinimumContrastColor`), which the renderer can follow because the highlight is
+  already folded into `eff_bg` (beamterm could not, so justerm-web double-passed; a compromise the
+  renderer sheds, which the #272 two-lens pinned). Minimum contrast (#225) is checked **first**: if it
+  fires, the corrected fg wins and DIM is skipped — mutually exclusive, xterm `TextureAtlas.ts:329` —
+  and a dim cell that already clears the *halved* ratio is dimmed instead (#232). A selected cell's DIM
+  is cleared (#224, xterm `& ~BgFlags.DIM`), so its text stays legible over the highlight and the ratio
+  is not halved. A decoration fg override on a dim, unselected cell **keeps** the DIM (#230: xterm
+  leaves `BgFlags.DIM` set, so the override is dimmed too) and is re-dimmed before contrast; the base
+  fg's own dim is the `!fg_overridden` arm, so exactly one path dims the fg. DIM is a property of the
+  *cell*, so a dim cell's underline is dim too (#513 rule 6).
+- **A tile glyph is excluded from the contrast demand, and the exclusion is scoped** (#226). It
+  exists because `ensure_contrast_ratio` is a function of `eff_bg`: two cells of one tiling run over
+  different backgrounds get nudged differently and the run *seams*. Once a decoration has taken the
+  glyph (#508) there is no tile left, and the remaining ink is `I_line`, TEXT class by rule 4 — so the
+  exclusion has no referent there and must not reach it; an undecorated tile still keeps it (the control
+  in `minimum_contrast_reaches_the_line_on_a_taken_tile`). The line inks run the same two policies
+  again rather than sharing the glyph's result, because the two inks can start from different colours
+  and need different corrections — and the line's contrast gate is the glyph's verbatim, a correction
+  of #513's first shape: an underline is as continuous across cells as a tile is, and dropping the term
+  let a `────` run under `minimumContrastRatio` change colour at a background boundary.
+
 ## Code
 
 - `justerm-renderer/src/palette.rs` — `Palette`, `resolve_indexed_or_rgb`

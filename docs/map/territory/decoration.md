@@ -85,6 +85,85 @@ ADR-0024 is authoritative; this is routing. **If they disagree, the ADR is right
   line said "non-finite or out-of-range" until #500 corrected it; the ADR carries the amendment and
   the reasoning.
 
+### The packer's half (`frame.rs` `pack_instances`)
+
+- **Decorations compose back-to-front around the highlight** (#120, #393): base < bottom
+  decoration < highlight < top decoration — justerm-web's `composeCellColors` order. A decoration
+  overrides the bg and/or fg with an **absolute** `0xRRGGBB` (the consumer owns its theme and resolves
+  it before pushing), so it is used verbatim: no palette, inverse or bold→bright. A fg override sets
+  `fg_overridden`, which the #230 re-dim keys off. bg and fg merge **independently** across every
+  decoration covering the cell (#452, xterm's per-property last-wins), one accumulating pass per layer,
+  so a bg-only and an fg-only decoration both apply. A bottom decoration that painted a bg (`deco_bg`,
+  #444) counts as a real colour beneath the highlight: the selection's blend decision reads it, so the
+  decoration is not erased. The top layer paints over the highlight, overriding the effective bg
+  and/or fg (`composeCellColors` applies top last, after selection); it is *read* early, before the
+  ink rules, because whether it takes the glyph decides what those rules are even for — a pure lookup,
+  so reading it early moves nothing.
+- **A tile glyph follows a bg-only top decoration** (#494), and this is a **deliberate divergence
+  from xterm**, which is unanimous the other way (the #494 two-lens corrected an earlier, wrong reading
+  — do not restore it). The cell paints solid in the decoration's colour instead of the glyph occluding
+  the layer above it. It follows from #495's rule for the same classifier — a tile glyph is
+  background-shaped ink, not text — and without it the cell is self-contradictory: `bg` is the
+  decoration's while `fg` stays the selection's, so the layer *above* the selection loses the glyph area
+  to it. Both of xterm's cell renderers let the glyph paint over a bg-only decoration: the webgl addon
+  (`CellColorResolver.ts:178-187`, after the selection stage, `$hasBg` and `$hasFg` independent) and
+  the DOM renderer (`DomRendererRowFactory.ts:357-408`). xterm's decoration *elements*
+  (`css/xterm.css:194-201`, z-index 6 / 7 over the screen) can cover a glyph, but xterm never styles
+  them — a consumer does, in `onRender`, and they are registered for every renderer
+  (`CoreBrowserTerminal.ts:617`) — so they are a separate feature justerm has no equivalent of, not a
+  second xterm answer. That is settled: ADR-0024 R1 states "colours + a mark, not an object" without a
+  condition (#502, 2026-08-18). What xterm leaves undefined is only the interaction: `layer` is
+  documented purely against the selection (`typings/xterm.d.ts:688-692`, whose `*` footnote has no
+  text), never against glyphs.
+  **The precedent is weaker than it looks.** xterm's tile re-tint under selection *blends* 50% from the
+  cell's own fg (`CellColorResolver.ts:168-171`), leaving the tile distinguishable, and flattens to the
+  band only for an inverse + Default-bg cell it calls *transparent* (`:139`). So "the tile participates
+  in what is painted over it" is xterm's; "the tile is replaced by it" is justerm's own step — taken
+  because a decoration bg *replaces* the background (`eff_bg = c`) where a selection washes over it.
+  The same reason makes it flat rather than blended. xterm's DOM renderer resolves the contradiction a
+  third way, rejected knowingly: `DomRendererRowFactory.ts:399-408` applies decorations before
+  selection and paints the selection only `if (!isTop && isInSelection)`, so a top decoration suppresses
+  the selection outright — dropping a highlight the user made, and splitting justerm's fg-channel model
+  (which follows webgl deliberately, #430) across two features.
+  Only a **bg-only** decoration means "this whole cell is background now": one that also sets `fg` keeps
+  the art in the consumer's colour (the escape hatch), and a bottom decoration is untouched — "bottom"
+  means *under* the glyph, so an opaque tile occluding it is correct (a transparent one lets it
+  through, #453).
+- **The decoration takes the glyph by dropping its slot, not by recolouring** (#508, fixed). It used
+  to set `fg = bg`, which erased everything else the shader draws in the foreground — the underline and
+  strikethrough and the visible half of a blink phase — none of which is the glyph. ADR-0019 rule 4 puts
+  `I_line` and `I_cursor` on the TEXT side unconditionally, so the slot is blanked instead and the ink
+  channel is left holding the cell's own ink for the line, stating the rule structurally rather than
+  by a colour coincidence. `glyph_taken_by_decoration` carries it to the glyph field and stands the R1
+  ink rules down; the attribute bits stay, since only the glyph was taken (unlike `ESC[8m`, which hides
+  the whole cell). Blink is deliberately not restored: a dropped glyph has nothing to blink, which is
+  rule 5 working. The #494 assignment sits in an `else` on purpose: written as its own guarded `if`
+  (`exclude && top.fg.is_some()`) it was behaviourally dead — the branch above re-applied `top.fg`
+  immediately, so no mutation of the guard could turn a test red (the two-lens caught this: dropping the
+  guard left the suite green). As an `else` it is the only thing that keeps a both-channel decoration's
+  art, and `a_top_decoration_setting_both_channels_keeps_the_tile_glyph` discriminates it.
+  A dim tile survives either way, and the reason is arithmetic, not a flag: both dim paths resolve
+  `dim_foreground(c, c)`, and `blend_over(c, c, DIM_BLEND_ALPHA)` adds `round(0)` per channel — exactly
+  identity. (`fg_overridden` is not what protects it: a bottom fg-only decoration on the same cell
+  already set it, so the `dim && fg_overridden` arm can run anyway — the two-lens caught that
+  mis-stated reason.) Pinned by `a_dim_tile_following_a_top_decoration_is_not_dimmed_away_from_the_bg`.
+- **The same visual concept routes differently by authorship, and that is the rule** (#494's AC,
+  ADR-0019 rule 5). justerm's own active search match is an overlay *kind* (#427, #430), and a tile
+  under it keeps the raw selection colour (pinned by
+  `an_inverse_default_bg_tile_on_an_active_matched_selected_cell_uses_the_raw_selection_colour`); the
+  same concept pushed as a bg-only top decoration goes solid. The two layers have the same shape —
+  above the selection, a bg and no fg — so paint mode cannot tell them apart; authorship can. A
+  decoration is the application declaring "this cell is now this colour", knowing what it covered;
+  the active match is the user stepping through results, and erasing box-drawing and shading as they
+  cycle is content loss — the tile is often the only thing drawing a table border or a progress bar.
+  Do not "unify" the routes (#511, closed won't-do; the seam it named is real and accepted).
+  The cost lands on a consumer porting xterm's decoration-based search: that addon marks the active
+  match `layer: 'top'` with a background and every other match `'bottom'`
+  (`addon-search/DecorationManager.ts: 134-144`), so a box-drawing or Powerline cell loses its glyph
+  on the active hit and keeps it on the others — the glyph blinks as the user cycles — and the escape
+  hatch is out of reach, since `ISearchDecorationOptions` (`addon-search.d.ts:46-76`) has no
+  foreground field (#506, closed as not currently real for justerm itself).
+
 ## Code
 
 - `justerm-web/src/` — the decoration registry and projection (the consumer half)
