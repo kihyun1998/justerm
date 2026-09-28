@@ -45,7 +45,10 @@
   fitGrid(r, g, COLS, 1); // cols x rows — the buffer is COLS*CW x CH device px, exactly (#331)
 
   // Row: ['A'][default-bg space][INVERSE space][space][explicit-Rgb-EQUAL-to-default space].
-  // Cell 0 has a glyph; cell 1 is the pure default background; cell 2 is an INVERSE space — its
+  // Cell 0 has a glyph; cell 3 is the pure default background every background check reads — a
+  // space between two inkless cells, so no neighbour's horizontal bleed band (#966) reaches it.
+  // Cell 1 is not: at a floored advance (#962) the 'A''s anti-aliased right edge overhangs into
+  // cell 1 on some faces (DejaVu Sans Mono at dpr 1, Consolas). Cell 2 is an INVERSE space — its
   // background is the swapped-in foreground (a highlight), which must stay OPAQUE even on a
   // translucent terminal (#298). Cell 4 is the #455 pinhole guard: an EXPLICIT Rgb bg set to the
   // very default colour. The retired `base_bg == u_default_bg` shader test made it translucent by
@@ -61,17 +64,18 @@
   const gl = document.querySelector("#c").getContext("webgl2");
   // Alpha stats for cell `col`: min/max of the alpha channel over the cell's DEVICE-px pixels.
   const cellAlpha = (col) => alphaStats(readCells(gl, r, g, col));
+  const BG_CELL = 3; // the pure default background, out of every neighbour's ink
 
   // 1) Default (opaque): background cell fully opaque.
   apply();
   r.render();
-  const opaqueBg = cellAlpha(1); // a pure-background cell
+  const opaqueBg = cellAlpha(BG_CELL);
 
   // 2) Translucent: half background opacity.
   r.setBgAlpha(g, 0.5);
   apply();
   r.render();
-  const transBg = cellAlpha(1);      // default-bg cell now ~half alpha
+  const transBg = cellAlpha(BG_CELL);// default-bg cell now ~half alpha
   const transGlyph = cellAlpha(0);   // the 'A' cell: strokes stay opaque
   const transInverse = cellAlpha(2); // the INVERSE space: its highlight bg must stay opaque
   const transExplicit = cellAlpha(4);// #455: explicit Rgb == default colour must stay opaque
@@ -87,18 +91,19 @@
   r.setBgAlpha(g, NaN);
   apply();
   r.render();
-  const nanBg = cellAlpha(1);
+  const nanBg = cellAlpha(BG_CELL);
   const nanGlyph = cellAlpha(0);
   // …and a finite out-of-range value was never the problem: the clamp already handled it. Kept as
   // the control, so `nanFallsBackToOpaque` cannot pass by the setter simply ignoring its argument.
   r.setBgAlpha(g, -3);
   apply();
   r.render();
-  const negBg = cellAlpha(1);
+  const negBg = cellAlpha(BG_CELL);
 
+  const measured = { opaqueBg, transBg, transGlyph, transInverse, transExplicit, nanBg, nanGlyph, negBg };
   window.__proof = {
     dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, g, COLS, 1),
-    opaqueBg, transBg, transGlyph, transInverse, transExplicit, nanBg, nanGlyph, negBg,
+    ...measured, measured,
     checks: {
       // Default: an uncovered cell is fully opaque.
       defaultOpaque: opaqueBg.min === 255 && opaqueBg.max === 255,
