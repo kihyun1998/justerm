@@ -13,8 +13,6 @@ use super::{BakedConfig, GridTier, JustermRenderer, upload_glyph, weight_from_js
 
 #[wasm_bindgen]
 impl JustermRenderer {
-    /// Rasterise + upload the 95 normal-styled ASCII glyphs into their fixed fast-path
-    /// slots (`0..=94`), so a cell using the ASCII fast path samples a real bitmap.
     /// Build one configuration's resources: rasteriser, cell geometry, atlas texture, and the
     /// glyphs baked into it (#772). Nothing here touches a live field, so every caller commits it
     /// atomically or throws it away.
@@ -79,6 +77,8 @@ impl JustermRenderer {
     }
 
     /// Bake the 95 normal ASCII glyphs into `atlas` using `rasterizer`.
+    /// Rasterise + upload the 95 normal-styled ASCII glyphs into their fixed fast-path
+    /// slots (`0..=94`), so a cell using the ASCII fast path samples a real bitmap.
     fn prebake_ascii_into(
         gl: &glow::Context,
         rasterizer: &Rasterizer,
