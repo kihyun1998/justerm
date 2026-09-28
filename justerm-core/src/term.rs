@@ -533,7 +533,8 @@ pub struct MarkerEntry {
     /// The column the mark was recorded at, in `[0, cols]` — a bound, not a cell. On an OSC 133
     /// command mark it is the cursor's column when the sequence arrived, so on a
     /// [`MarkerKind::CommandStart`] it is where the typed command begins; a mark recorded after
-    /// a row filled exactly reports `cols`. A plain marker's is `0`.
+    /// a row filled exactly reports `cols`. A plain marker is placed at column `0`, and a reflow
+    /// moves it like any other.
     ///
     /// It is dated by [`MarkerIndex`]'s `evicted_total` and `epoch` exactly as `line` is: only a
     /// reflow moves it, and a reflow moves the epoch.
