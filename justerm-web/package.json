@@ -30,7 +30,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p tsconfig.node.json",
     "build": "tsup",
     "demo": "vite",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test e2e/zz-blink-ci.spec.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",

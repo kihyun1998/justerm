@@ -113,6 +113,12 @@ const renderer = await JustermRenderer.create({
     ...(bootCursorColor === null ? {} : { cursorColor: Number(bootCursorColor) }),
   },
 });
+// TEMP CI PROBE (never merged): a timeline of presents, demo frames and caret samples.
+const __tr: { t0: number; ev: string[] } = { t0: performance.now(), ev: [] };
+const __ts = (): string => (performance.now() - __tr.t0).toFixed(0);
+(window as any).__trace = __tr;
+{ const orig = (renderer as any).render.bind(renderer); (renderer as any).render = (...a: unknown[]) => { const t = performance.now(); const r = orig(...a); __tr.ev.push(`P${__ts()}+${(performance.now() - t).toFixed(0)}`); return r; }; }
+{ let last = performance.now(); const tick = () => { const now = performance.now(); if (now - last > 120) __tr.ev.push(`G${__ts()}:${(now - last).toFixed(0)}`); last = now; setTimeout(tick, 20); }; setTimeout(tick, 20); }
 
 const canvas = document.querySelector<HTMLCanvasElement>("#term")!;
 
@@ -1125,6 +1131,7 @@ const bar = new Scrollbar(document.body, {
 });
 
 function render(out?: { scrollCount: number }): void {
+  __tr.ev.push(`F${__ts()}`);
   const frame = viewportFrame(out);
   source.push(frame);
   a11y.onFrame(frame); // S14: mirror the viewport + announce new output
@@ -2180,11 +2187,15 @@ async function pollForCaret(
   want: string,
   deadlineAt: number,
 ): Promise<string> {
+  __tr.ev.push(`POLL${__ts()} want=${want}`);
   let seen = sample();
+  __tr.ev.push(`S${__ts()}:${seen === want ? 'W' : 'x'}`);
   while (seen !== want && performance.now() < deadlineAt) {
     await new Promise((r) => setTimeout(r, 40));
     seen = sample();
+    __tr.ev.push(`S${__ts()}:${seen === want ? 'W' : 'x'}`);
   }
+  __tr.ev.push(`END${__ts()} ${seen === want ? 'FOUND' : 'MISSED'}`);
   return seen;
 }
 
