@@ -63,8 +63,8 @@ this is what resolves it.
 
 - **The fg channel is keyed on selection coverage, not on the winning highlight** (#430, xterm's
   model). The selection-only fg rules (#224, #227, #239) survive on a cell whose bg the active match
-  outranks: `CellColorResolver` keys its selection stage on `$isSelected`, while the active match is a
-  bg-only top decoration. `selectionForeground` (#227) forces a selected cell's fg to the injected
+  outranks: xterm's `CellColorResolver` keys its selection stage on `$isSelected`, while xterm's active match
+  is a bg-only top decoration (justerm's is an overlay kind, see [decoration](decoration.md)). `selectionForeground` (#227) forces a selected cell's fg to the injected
   colour — never a match's — over the cell's own or a bottom decoration's fg; a tile glyph discards it
   (below), and being selection-only it never triggers the #230 re-dim.
 - **A tile glyph under a selection fuses into the band** (#239, #241). xterm re-tints it toward the
@@ -101,7 +101,8 @@ this is what resolves it.
   is not halved. A decoration fg override on a dim, unselected cell **keeps** the DIM (#230: xterm
   leaves `BgFlags.DIM` set, so the override is dimmed too) and is re-dimmed before contrast; the base
   fg's own dim is the `!fg_overridden` arm, so exactly one path dims the fg. DIM is a property of the
-  *cell*, so a dim cell's underline is dim too (#513 rule 6).
+  *cell*, so a dim cell's underline is dim too (#513 rule 6); the line re-dim shares `fg_overridden`
+  because a decoration that set the fg set both.
 - **A tile glyph is excluded from the contrast demand, and the exclusion is scoped** (#226). It
   exists because `ensure_contrast_ratio` is a function of `eff_bg`: two cells of one tiling run over
   different backgrounds get nudged differently and the run *seams*. Once a decoration has taken the
@@ -111,7 +112,11 @@ this is what resolves it.
   again rather than sharing the glyph's result, because the two inks can start from different colours
   and need different corrections — and the line's contrast gate is the glyph's verbatim, a correction
   of #513's first shape: an underline is as continuous across cells as a tile is, and dropping the term
-  let a `────` run under `minimumContrastRatio` change colour at a background boundary.
+  let a `────` run under `minimumContrastRatio` change colour at a background boundary — the symptom
+  #513 exists to remove, re-entered through contrast. On a taken tile the gate is open (#508): the
+  glyph is gone, the line is the only ink, and a decoration paints one colour across its whole span
+  anyway, so nothing can seam. Where the line's ink forks and which cells compute it:
+  [cell compositing](cell-compositing.md) § The packer.
 
 ## Code
 

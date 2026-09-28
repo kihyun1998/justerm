@@ -120,9 +120,9 @@ pub struct DecorationOverride {
 /// ink channel is what the cell's underline and strikethrough draw in (#508). That one is a divergence from xterm proper — both its cell
 /// renderers let the glyph win (`CellColorResolver.ts:178-187` webgl, `DomRendererRowFactory.ts:
 /// 357-408` DOM); what xterm leaves undefined is only how `layer` relates to glyphs rather than to
-/// the selection. The reasoning, and the two xterm behaviours it knowingly declines, are at the call
-/// site in `frame::pack_instances`. Do not "restore parity" here by reading this paragraph as an
-/// endorsement — see `overlay::should_blend_kind` and that call site.
+/// the selection. The reasoning, and the two xterm behaviours it knowingly declines, are in
+/// `docs/map/territory/decoration.md` § The packer's half. Do not "restore parity" here by reading this
+/// paragraph as an endorsement — see `overlay::should_blend_kind` and that section.
 ///
 /// **Precedence is wire order.** "Last wins" means last in the `rects` slice, so the consumer must
 /// push in the order it wants resolved. (xterm's own ordering is its line-cache bucket, which starts

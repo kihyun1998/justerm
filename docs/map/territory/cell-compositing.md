@@ -426,7 +426,7 @@ What the packer's own comments carried before #991. The decoration stages are in
   `0xFFFFFF`, `0x010101` and both sides of the sign-bit boundary, all exact. Packed because a line is
   *rare*: every cell would otherwise pay three floats per band for a channel almost none use, and
   ADR-0021 keeps one instance buffer resident per grid. **Two line inks rather than #513's one**, split
-  by authorship of the colour (the #525 bullet above); with no `SGR 58` they are equal and the second
+  by authorship of the colour (the #525 bullet above) — the same axis rule 5 and #520 already turn on; with no `SGR 58` they are equal and the second
   float is redundant — the common case, pinned from the other side by
   `sgr58_colours_the_underline_only_and_the_strike_keeps_the_follow_fg_ink`. The costless alternative —
   draw the strike from `v_fg` — is wrong on exactly the cells #513 exists for: a glyph-only rule (the
@@ -457,7 +457,8 @@ What the packer's own comments carried before #991. The decoration stages are in
 - **An open composition stands every stage below glyph resolution down** (ADR-0028 D2, #249): the
   pass *replaces* the covered cells, so a selection, a match or a decoration covering the run must not
   tint the text being composed — leaving the overlay and decoration lookups live would put the cells
-  back into the stack one channel at a time. The fifth stand-down is the underline colour (#711): the
+  back into the stack one channel at a time. Four stand-downs are the highlight lookup, selection
+  coverage, and the bottom and top decoration lookups; the fifth is the underline colour (#711): the
   pass writes `UNDERLINE` itself (`preedit::writes`), and both grid-drawing references give that mark
   the run's **own** fg — alacritty literally, as a field beside the glyph's (`renderer/mod.rs:225`,
   `underline: fg`), ghostty by passing one `screen_fg` into the glyph and both `addUnderline` calls
@@ -468,7 +469,8 @@ What the packer's own comments carried before #991. The decoration stages are in
   #711's other option — writes the same `0` and packs byte-identically, so the two are one declaration
   in two places; the choice was made on the one axis where they differ: `webgl.rs` is wasm32-only and
   0-compiles on host, so a patch-side fix is unreachable by the renderer's `cargo test`, where every
-  test of this behaviour lives. The ink class of a composed cell is right only because `codepoints` is
+  test of this behaviour lives — and there it sits with the other four, so what a composition stands
+  down reads in one place. The ink class of a composed cell is right only because `codepoints` is
   one of the columns `preedit_patch` *replaces*, so it describes the preedit's glyph; that holds as long
   as the patch keeps mirroring that column — a column answered by *neither* half is the failure `SGR
   58` had for one release, and here it would order a composition's underline against a `█` no longer
@@ -485,22 +487,30 @@ What the packer's own comments carried before #991. The decoration stages are in
   own ink, a bottom decoration's fg, `selectionForeground`), which answer "what colour is this cell's
   ink" and reach both, and before the tile re-tint, the one rule about *the glyph* (ADR-0019 R1). Rules
   5–7 (top decoration, dim, contrast) then run over both — a fork, not a second pipeline. A top
-  decoration's fg reaches only a **follow-fg** line: an explicit `SGR 58` colour (#520) is
+  decoration's fg reaches the line because a decoration declares the cell's *ink*, not the glyph's
+  (#513 rule 5) — but only a **follow-fg** line; for an explicit line that write is dead, which is why
+  the fork left it unguarded: an explicit `SGR 58` colour (#520) is
   **authoritative**, drawn raw and immune to the glyph's ink treatments — decoration fg, DIM and
   minimum contrast all leave it alone. That is xterm's rule (`TextureAtlas` sets the underline
   `strokeStyle` from the raw `getUnderlineColor()` and disables its threshold clear) and the only
   coherent one: the two-lens found that adjusting an explicit colour by some rules but not others is an
   invented asymmetry. `Default` keeps #513's behaviour. The follow-fg pipeline is computed only for a
   cell that draws a follow-fg underline or a strike (`needs_follow_fg`, the union of what each band
-  needs), so an explicitly coloured underline with no strike skips the second `ensure_contrast_ratio`
-  luminance loop — the bulk of the viewport. The strike is the follow-fg value unconditionally, since
+  needs). Cells that draw no line — the bulk of the viewport — skip the second
+  `ensure_contrast_ratio` luminance loop, and so does an explicitly coloured underline with no strike
+  (the #520 cost win survives #525's split). Skipping changes nothing: the line value is a pure
+  function of the same inputs whether or not the attribute bits are set, and a cell that draws no
+  strike never reads the strike ink. Why the line runs the colour policies again, with the glyph's
+  contrast gate: [colour policy](colour-policy.md). The strike is the follow-fg value unconditionally, since
   nothing can declare its colour.
 - **A concealed cell points at the blank slot and drops the attribute bits too**, because `ESC[8m`
-  hides the whole cell; a decoration that took the glyph (#508) keeps the bits, because an underline is
+  hides the whole cell — as does a blink cell in the off phase, where `blink_on` is the render loop's
+  phase, driven by the consumer (timing is policy, #282); a decoration that took the glyph (#508) keeps the bits, because an underline is
   not the glyph. The ink **class** goes with the glyph (#712): a taken glyph has none, for the same
   reason it stands the glyph-only treatments down. Leaving the bit set would be inert — a blank slot has
   zero coverage — but it would assert something false about the cell, which the five #508 pins say.
-- **`bg_default` is complete by construction** (#455): the ref is Default (tag 0), the cell is not
+- **`bg_default` is complete by construction** (#455), which is ADR-0019's totality clause applied:
+  resolution follows the cell's state, not an accident of the fold — state, not arithmetic. It is `1.0` iff the ref is Default (tag 0), the cell is not
   inverse (which swaps the fg *in* as the bg — content), no decoration painted a bg (bottom or top),
   and no highlight composited one. These are exactly the four sites that assign the bg channel. Both
   references decide this by provenance too — the convergence is the point: alacritty's

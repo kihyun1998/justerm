@@ -32,7 +32,7 @@ question:
 |---|---|---|
 | `justerm-core/src/<x>.rs` vs `src/term/<x>.rs` | the returned **shape** and the coordinate model it documents / the **`Term` half**, cell-aware and needing the whole buffer | 3 / 3, clean |
 | core: inline `mod tests` vs files in `tests/` | module-internal unit / through the public API | **overlap 0** — no module is tested from both sides |
-| renderer: inline everywhere vs **no** `tests/` | pure module / `webgl.rs` + `rasterizer.rs`, wasm32-only and 0-compiling on host, so their proof is `e2e/` | every module but those two |
+| renderer: module-internal everywhere (inline, or `<x>/tests.rs` since #991) vs **no** `tests/` | pure module / `webgl.rs` + `rasterizer.rs`, wasm32-only and 0-compiling on host, so their proof is `e2e/` | every module but those two |
 | two script homes | CI's / the package's own | clean by owner |
 
 Where the sort comes out clean, the measured rule **is** the rule.
@@ -118,7 +118,7 @@ grow. Each row below is a place this tree **chose against** a peer that was actu
 | One topic file per VT behaviour in `justerm-core/tests/` | alacritty runs one `tests/ref.rs` over recorded fixtures | `CLAUDE.md`'s cumulative-conformance rule. One file per behaviour is how the long tail gets **named**; a ref harness records that a capture matched and never *which behaviour* it was |
 | **No** co-located `*.test.ts` under `src/` | xterm.js co-locates units as `src/**/X.test.ts` | D2 above — **measured**, not preferred: co-locating dissolves the typecheck gate while breaking no test |
 | The binding's JS lives **inside** the binding crate | beamterm keeps `js/` at the repository root | ADR-0008. The binding is a crate and its npm artifact is built from that crate, so the shims are that crate's surface |
-| The renderer has **no** `tests/`; the pure modules test inline | alacritty mixes inline with `tests/`; wezterm uses `src/test/` | The pure modules are host-testable; `webgl.rs` and `rasterizer.rs` are wasm32-only and 0-compile on host, so a `tests/` directory could not build and `e2e/` is the proof |
+| The renderer has **no** `tests/`; the pure modules test module-internally (inline, or `<x>/tests.rs` since #991) | alacritty mixes inline with `tests/`; wezterm uses `src/test/` | The pure modules are host-testable; `webgl.rs` and `rasterizer.rs` are wasm32-only and 0-compile on host, so a `tests/` directory could not build and `e2e/` is the proof |
 | **Two** script homes | beamterm keeps one root `scripts/` | Split by owner: CI's (`.github/scripts/`) and the package's (`<pkg>/scripts/`). *Was three until 2026-09-04*, when the generated graph build was retired and `scripts/` left the tree with it |
 | The widget is **one** package, not core plus addons | xterm.js publishes 13 `addons/*` | ADR-0017 already decided it: xterm's addons hold **in-process buffer access**, so that split buys them something a frame-mode consumer cannot have |
 

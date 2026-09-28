@@ -134,8 +134,8 @@ ADR-0024 is authoritative; this is routing. **If they disagree, the ADR is right
   strikethrough and the visible half of a blink phase — none of which is the glyph. ADR-0019 rule 4 puts
   `I_line` and `I_cursor` on the TEXT side unconditionally, so the slot is blanked instead and the ink
   channel is left holding the cell's own ink for the line, stating the rule structurally rather than
-  by a colour coincidence. `glyph_taken_by_decoration` carries it to the glyph field and stands the R1
-  ink rules down; the attribute bits stay, since only the glyph was taken (unlike `ESC[8m`, which hides
+  by a colour coincidence. `glyph_taken_by_decoration` carries it to the glyph field and stands every R1
+  ink rule down — and the TEXT-class ones must *not* stand down, since the line is TEXT class; the attribute bits stay, since only the glyph was taken (unlike `ESC[8m`, which hides
   the whole cell). Blink is deliberately not restored: a dropped glyph has nothing to blink, which is
   rule 5 working. The #494 assignment sits in an `else` on purpose: written as its own guarded `if`
   (`exclude && top.fg.is_some()`) it was behaviourally dead — the branch above re-applied `top.fg`

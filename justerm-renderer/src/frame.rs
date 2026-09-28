@@ -85,8 +85,8 @@ pub struct Frame<'a> {
 
 /// Pack a [`Frame`] (row-major) into [`INSTANCE_FLOATS`] per cell: resolve colours through the
 /// palette and `policy`, compose the decorations and the selection/search highlight, fold the
-/// marks into the glyph field, and grant each cell its neighbours' ink. Every cell is emitted
-/// (#255). Why each stage is as it is: `docs/map/territory/cell-compositing.md` § The packer,
+/// marks into the glyph field, and grant each cell its neighbours' ink. A concealed cell (hidden,
+/// or blink while `blink_on` is false) shows only its background. Every cell is emitted (#255). Why each stage is as it is: `docs/map/territory/cell-compositing.md` § The packer,
 /// `decoration.md` § The packer's half, `colour-policy.md` § Where the policies meet the
 /// highlight.
 pub fn pack_instances(
@@ -182,7 +182,8 @@ pub fn pack_instances(
                 fg = sfg;
             }
             // #271/#400/#444: composite the selection/search highlight onto the bg — a selection
-            // blends, a match paints solid.
+            // blends over a real colour and paints solid over a bare default bg; a match always paints
+            // solid.
             let mut eff_bg = composite_bg(
                 bg_running,
                 kind.is_some_and(|k| should_blend_kind(k, bg_ref, cell_flags, deco_bg)),
