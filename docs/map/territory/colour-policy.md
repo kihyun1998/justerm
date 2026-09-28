@@ -117,6 +117,13 @@ this is what resolves it.
   glyph is gone, the line is the only ink, and a decoration paints one colour across its whole span
   anyway, so nothing can seam. Where the line's ink forks and which cells compute it:
   [cell compositing](cell-compositing.md) § The packer.
+- **A live palette swap is a re-pack** (`setPalette`). The palette *values* are the consumer's and
+  re-resolving every retained cell against them is the renderer's (ADR-0017), so the swap marks the
+  grid dirty and the next `render` re-packs; nothing else is re-pushed. The re-pack re-resolves every
+  cell's colour, and the render's clear reads `default_bg` fresh. Translucency used to need a
+  uniform re-push here as well; it no longer does, because its trigger is the packer's per-cell
+  `bg_default` provenance flag ([cell compositing](cell-compositing.md)), which does not depend on
+  the palette.
 
 ## Code
 

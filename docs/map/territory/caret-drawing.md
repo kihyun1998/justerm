@@ -82,7 +82,12 @@ about *how the caret looks* is decided here.
 - **Every shape lives in one uniform, not in the instance buffer** (#270). `u_cursor` is
   `(col, row, span, shape)`, shape 0 = no cursor and otherwise `shape_id + 1` (1 block, 2 underline,
   3 bar, 4 hollow block). So moving or blinking the caret costs one uniform and no upload; a block that
-  lived in the instances could not be un-painted without re-packing the frame.
+  lived in the instances could not be un-painted without re-packing the frame. A block *could* have
+  been an instance — it is a colour override on the cell, not geometry (next bullet) — and it is not
+  one because [ADR-0018](../../adr/0018-justerm-renderer.md) makes that **the contract, not an
+  optimisation**: a blink tick produces no terminal output, so a block packed into the instances
+  could not blink off without the consumer re-feeding the frame, and an early draft did exactly
+  that. The re-pack cost and the free ordering are consequences of that choice, not its cause.
 - **A block is still a colour override on the cell, not geometry**, and both references draw it that
   way: xterm's `RectangleRenderer.ts:251` emits no vertices and alacritty's `display/cursor.rs:33` no
   rects — each recolours the cell. Doing it per fragment rather than per instance keeps the order: the
@@ -95,6 +100,14 @@ about *how the caret looks* is decided here.
   applies the same clamp as `cursor_rects` — a stroke is never thicker than the box it outlines — and
   a bar's width is clamped by its own cell, not by the cell's height. `cursor_dx` mirrors
   `cursor::covers`.
+- **The stroke thickness is a clamped fraction of the cell** (`setCursorThickness`). It is
+  alacritty's rule (`alacritty/src/display/cursor.rs:25`, `(thickness * width).round().max(1.)`,
+  default `Percentage::new(0.15)`), and the setter added only the configurability the mechanism
+  already had. The `[0, 1]` clamp is load-bearing, not hygiene: `cursor_thickness` computes
+  `(frac * cell_w).round() as u32`, and an unclamped `f32::INFINITY` saturates that cast to
+  `u32::MAX` device pixels. `NaN` passes the clamp and is caught a layer deeper — `frac.max(0.0)`
+  returns `0.0` for it (`f32::max` yields the non-NaN operand) — so the `.max(1)` floor gives it a
+  one-pixel stroke, as it does `0`.
 
 ## Code
 
