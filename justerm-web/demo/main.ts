@@ -2189,6 +2189,10 @@ async function pollForCaret(
 }
 
 window.__composeCaretProbe = async (): Promise<ComposeCaretProbe> => {
+  // The demo's output timer stops first: each of its frames is a present the caret sample's
+  // readPixels waits out, spacing the samples past the blink's OFF half on a slow runner
+  // (`docs/map/territory/browser-proof-harness.md`).
+  window.clearInterval(appendTimer);
   // #592: the caret must stop blinking while an IME composition is open. The composition events are
   // dispatched from the e2e side onto the real hidden textarea, so the real CompositionController
   // and the real Terminal wiring run — this probe only samples.
@@ -2251,6 +2255,10 @@ window.__composeCaretProbe = async (): Promise<ComposeCaretProbe> => {
 };
 
 window.__blinkIdleProbe = async (): Promise<BlinkIdleProbe> => {
+  // The demo's output timer stops first: each of its frames is a present the caret sample's
+  // readPixels waits out, spacing the samples past the blink's OFF half on a slow runner
+  // (`docs/map/territory/browser-proof-harness.md`).
+  window.clearInterval(appendTimer);
   // #593: with no user input the cursor stops blinking and parks solid. The default is five minutes,
   // which an e2e cannot wait out — so this drives the real consumer knob (`setCursorBlinkTimeout`)
   // down to a testable window. That is the same policy path a consumer uses, not a test backdoor.
@@ -2305,6 +2313,10 @@ window.__blinkIdleProbe = async (): Promise<BlinkIdleProbe> => {
 };
 
 window.__cursorBlinkProbe = async (): Promise<CursorBlinkProbe> => {
+  // The demo's output timer stops first: each of its frames is a present the caret sample's
+  // readPixels waits out, spacing the samples past the blink's OFF half on a slow runner
+  // (`docs/map/territory/browser-proof-harness.md`).
+  window.clearInterval(appendTimer);
   // #575: the widget must resolve the cursor blink from the application's mode and the consumer's
   // override, instead of blinking unconditionally. The unit tests pin the resolution; this drives
   // the REAL wasm renderer through the real adapter and reads the cursor cell, which is the only

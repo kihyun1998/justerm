@@ -208,6 +208,14 @@ a justerm shape here wrong, only corroborate one.
   assertion depends on *which rows are on screen* after several steps pauses the output first
   (`__output(false)`): #429's drag-selected row scrolled off the viewport while its steps ran 9s →
   23s, and its last check read no selection.
+- **A caret-blink probe stops the output timer, like every other present-reading probe.** Its
+  sample is `render()` + a synchronous `readPixels`, which waits for every present queued before
+  it. With the timer running, two tick presents land between samples, so on the runner a sample
+  took ~730ms against a 600ms blink (300ms OFF): consecutive samples both fell in the ON half and
+  the poll ran out. A CI timeline of the three probes × 6 runs missed the OFF phase in 9 of 30
+  poll windows with the timer running and 0 of 31 with it stopped (`__blinkIdleProbe`'s first
+  poll, bounded at input + 1400ms, missed 6 of 6). This is why #575 / #592 / #593 failed
+  together on CI while never failing locally, where a present is ~60ms.
 
 ## Code
 
