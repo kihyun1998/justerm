@@ -53,6 +53,8 @@ fuzz/                  cargo-fuzz targets (own [workspace], package `justerm-fuz
 bench/<name>/          a cross-implementation comparison harness belonging to no crate
 .github/scripts/       CI's scripts
 teach/                 the learning-course workspace
+logo/                  the project mark, banners and social preview. Published READMEs and
+                       rustdoc reach it by absolute raw URL, so a rename breaks every shipped page
 
 <crate>/src/*.rs                one module per concern, flat
 justerm-core/src/<x>.rs         the returned shape, and the coordinate model it documents
@@ -140,3 +142,6 @@ Resolving it is a decision this record deliberately does not make.
   is what the rule rests on, and re-running it means writing the matcher again.
 - ADR-0010's crate-prefix rule and ADR-0017's boundary keep their authority. Where a row cites one,
   this record is a **sharper statement** of it, and a change to the parent falsifies the row.
+- **Re-opened 2026-09-28 for `logo/` (#998).** It holds image assets only, and no seam runs through
+  it. What pins its location is the published pages outside this repo: they point at it by absolute
+  raw URL. It was added to D1 with no peer comparison, because none was run for it.
