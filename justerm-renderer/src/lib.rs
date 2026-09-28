@@ -63,6 +63,7 @@ pub(crate) mod palette;
 pub(crate) mod preedit;
 pub(crate) mod registry;
 pub(crate) mod render_policy;
+pub(crate) mod shader;
 pub(crate) mod suggestion;
 pub(crate) mod upload;
 
