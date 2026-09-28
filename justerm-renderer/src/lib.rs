@@ -63,6 +63,7 @@ pub(crate) mod palette;
 pub(crate) mod preedit;
 pub(crate) mod registry;
 pub(crate) mod render_policy;
+pub(crate) mod suggestion;
 pub(crate) mod upload;
 
 // The browser/GL glue is wasm32-only (web-sys/glow-web). Host builds skip it so the

@@ -1,6 +1,11 @@
 # ADR-0019: The cell composition model — a layered, per-channel, total resolution
 
-Status: accepted (2026-07-21) — **amended 2026-08-20** (#791): rules 1–6 resolve the sources belonging
+Status: accepted (2026-07-21) — **amended 2026-09-28** (#972): Totality's second glyph-supplying
+gap. A consumer's suggestion run (an autosuggestion after the cursor) supplies a glyph too, and rule 5's
+authorship axis has no value for it either: the application did not declare it, the user did not pass
+over it, and unlike the preedit it is not typed. Resolved as a **second pass** that, unlike the first,
+takes only cells that draw nothing but their background and yields to every layer — see the
+Consequences. — **amended 2026-08-20** (#791): rules 1–6 resolve the sources belonging
 to **one** cell, and a glyph whose ink exceeds its cell produces a source whose owner is a *different*
 cell. The model had no term for it, so the renderer resolved it by destruction — at bake and again at
 sample — and the loss is total: measured on our own renderer, the ink drawn equals the ink inside the
@@ -462,6 +467,31 @@ decoration); it is rejected here because it drops a highlight the user explicitl
   after (`renderer/generic.zig` @ `e6e26e1`), alacritty draws the run with its own `draw_string` pass after
   the grid (`display/mod.rs` @ `852e971`) — so the shape is prior-art-convergent rather than invented here.
   The rules are unchanged for every cell the pass does not cover, and this ADR keeps governing those.
+- **Totality's second glyph-supplying gap: the consumer's suggestion (#972).** A suggestion is text the
+  consumer draws after the cursor and stores in no cell, so it never reaches copy or search. Like the
+  preedit it supplies a glyph and rule 5 has no value for it. Unlike the preedit it is a *guess*, while the
+  cells around it are fact, and that one difference inverts every answer the preedit pass gives:
+  - **It takes only cells that draw nothing but their background.** It stops at the first cell that
+    carries a glyph, a grapheme, half of a wide pair, or ink of its own on an empty cell (`INVERSE`, any
+    underline, strikethrough), and does not resume. A guess does not hide what the application wrote, and
+    at pending wrap (which the wire does not carry) the cursor cell still holds the character just typed.
+  - **It keeps the cell's own background**, where the preedit re-supplies Default. Forcing Default notches
+    a coloured row: the cell goes translucent under `u_bg_alpha` while its neighbours stay opaque, and a
+    selection over it paints solid where every neighbour blends — #715's defect by a new route.
+  - **It yields to every layer instead of standing them down.** A cell under a highlight, either
+    decoration layer or the hovered link keeps the engine's cell, glyph withheld, so what a highlight
+    shows is what it describes and what copy returns. The preedit stands the layers down because the
+    user is typing it; nothing here is being typed.
+  - **It replaces the flags** with its own (`DIM` when asked, the two `WIDE` bits), so a covered cell's
+    `BLINK`, `HIDDEN` or `INVERSE` cannot reach it. On a cell that draws nothing only `INVERSE` and the
+    marks would have shown, and those already stop the run.
+  - **It yields to the preedit whole**: while a composition is open, no suggestion cell is drawn.
+  Those five are derivations. Three calls inside them were **the maintainer's on 2026-09-28**, made on
+  the issue's comment and against PenTerm's current DOM implementation (which has no rule for any of
+  them): stop at a non-blank cell rather than draw over it; a highlight wins over the suggestion; and a
+  DECTCEM-hidden cursor does not hide the suggestion, since ADR-0028 D5 governs the caret. They are
+  theirs to reverse. The pass is `justerm-renderer/src/suggestion.rs`; the reasons per rule are in
+  `docs/map/territory/cell-compositing.md`.
 - **Rule 6 cost the packer one bit and the pins caught the one place it was wrong (#712).** The shader
   sees an atlas slot, never a codepoint, so only `pack_instances` can know R1's answer — it was already
   computing it for the #226 contrast exclusion and the #239 re-tint and throwing it away. It now rides

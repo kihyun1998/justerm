@@ -32,7 +32,9 @@ use crate::cursor::{
     Cursor, DEFAULT_CURSOR_CONTRAST, THICKNESS, cursor_cells_at, cursor_rects, cursor_thickness,
     guarded_cursor_colors, shape_from_id, shape_id,
 };
-use crate::decoration::parse_decorations;
+use crate::decoration::{
+    DecorationLayer, DecorationOverride, decoration_override_at, parse_decorations,
+};
 use crate::dpr::{css_px, dpr_changed};
 use crate::emoji::is_emoji_text;
 use crate::frame::{
@@ -68,6 +70,7 @@ use crate::preedit::{
 use crate::rasterizer::Rasterizer;
 use crate::registry::{GridId, GridRegistry, Viewport};
 use crate::render_policy::ColorPolicy;
+use crate::suggestion::patch as suggestion_patch_of;
 use crate::upload::{UploadPlan, invalidate_baseline, plan_upload};
 
 /// Texture-array layers covering the whole slot space (normal + wide = 6144 / 32 = 192),
@@ -1209,6 +1212,14 @@ struct GridTier {
     preedit_run: Vec<PreeditCodepoint>,
     preedit_col: u32,
     preedit_row: u32,
+    /// The consumer's suggestion run, the cell it starts at, its tagged fg reference and whether it
+    /// draws dim (#972). Empty = no suggestion. A separate writer from the preedit (ADR-0028 D4),
+    /// drawn only while no composition is open.
+    suggestion_run: Vec<PreeditCodepoint>,
+    suggestion_col: u32,
+    suggestion_row: u32,
+    suggestion_fg: u32,
+    suggestion_dim: bool,
     /// The consumer-injected blend colours for the overlay kinds (policy #115).
     highlight_colors: HighlightColors,
     /// Draw bold text in the bright (8–15) ANSI colour, consumer policy (xterm's
@@ -1746,6 +1757,40 @@ impl JustermRenderer {
         Ok(self.grid_at_mut(at).set_preedit(col, row, codepoints))
     }
 
+    /// Text of the consumer's own to draw after the cursor — an autosuggestion at a shell prompt —
+    /// anchored at `(col, row)`, a **viewport** cell. `codepoints` is the text; an empty array
+    /// clears it. `fg` is a tagged colour reference in the frame's own encoding (high byte `0`
+    /// Default, `1` Indexed, `2` Rgb; low 24 bits the payload), so a Default or Indexed colour
+    /// follows a theme change; `dim` draws it with the SGR 2 treatment.
+    ///
+    /// This is renderer state only: no engine cell changes, so it never reaches copy or search.
+    /// The run keeps its head and stops at the first cell that is not blank, at the right edge,
+    /// and before a wide character that does not fit. A cell under the selection, a search match,
+    /// a decoration or the hovered link keeps the engine's cell. Each written cell keeps its own
+    /// background. Nothing is drawn while a preedit run is (see `setPreedit`), and the caret is not
+    /// moved.
+    ///
+    /// Three things are the caller's, because nothing this renderer is given can see them: the
+    /// anchor (re-send it when the cursor moves), the alternate screen (clear the suggestion on entering
+    /// it; the frame this renderer receives carries no alt flag), and a composition that has started
+    /// but has no preedit run drawn yet (clear it from `compositionstart`). Design and
+    /// the reasons behind each rule: [justerm#972](https://github.com/kihyun1998/justerm/issues/972).
+    #[wasm_bindgen(js_name = setSuggestion)]
+    pub fn set_suggestion(
+        &mut self,
+        grid: u32,
+        col: u32,
+        row: u32,
+        codepoints: Vec<u32>,
+        fg: u32,
+        dim: bool,
+    ) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        self.grid_at_mut(at)
+            .set_suggestion(col, row, codepoints, fg, dim);
+        Ok(())
+    }
+
     /// Swap the palette + default fg/bg for a **live theme change** — the renderer-side of a
     /// theme picker or a runtime scheme swap, so a consumer need not tear down and rebuild the
     /// renderer to recolour. `palette_colors` is the 256 pre-built indexed colours (as the
@@ -1964,7 +2009,7 @@ impl JustermRenderer {
         cells: &Cells,
         bg: &[u32],
         fg: &[u32],
-    ) -> Option<PreeditPatch> {
+    ) -> Option<PreeditPatch<'static>> {
         self.grid_at(at).preedit_patch(cells, bg, fg)
     }
 
@@ -3392,13 +3437,17 @@ impl JustermRenderer {
         // so the glyph it supplies is rasterised like any other and every later stage — contrast,
         // overlay compositing, the cursor span — sees the composed cell rather than the one the
         // application last wrote there.
-        let patch = self.preedit_patch(at, cells, bg, fg);
+        // The suggestion (#972) is the second pass and yields to the first: while a composition is
+        // open it draws nothing.
+        let patch = self
+            .preedit_patch(at, cells, bg, fg)
+            .or_else(|| self.grid_at(at).suggestion_patch(cells, bg, fg));
         let patched = patch.as_ref().map(|p| Cells {
             cols: cells.cols,
             rows: cells.rows,
             codepoints: &p.codepoints,
             flags: &p.flags,
-            clusters: &p.clusters,
+            clusters: &p.clusters[..],
         });
         let (cells, bg, fg) = match (patched.as_ref(), patch.as_ref()) {
             (Some(c), Some(p)) => (c, &p.bg[..], &p.fg[..]),
@@ -4046,6 +4095,11 @@ impl GridTier {
             preedit_run: Vec::new(),        // no composition open (#249)
             preedit_col: 0,
             preedit_row: 0,
+            suggestion_run: Vec::new(), // no suggestion (#972)
+            suggestion_col: 0,
+            suggestion_row: 0,
+            suggestion_fg: 0,
+            suggestion_dim: false,
             highlight_colors: HighlightColors::default(),
             bold_to_bright: true, // xterm's drawBoldTextInBrightColors default (#223)
             min_contrast: 1.0,    // xterm's minimumContrastRatio default: off (#225)
@@ -4233,7 +4287,12 @@ impl GridTier {
         })
     }
 
-    fn preedit_patch(&self, cells: &Cells, bg: &[u32], fg: &[u32]) -> Option<PreeditPatch> {
+    fn preedit_patch(
+        &self,
+        cells: &Cells,
+        bg: &[u32],
+        fg: &[u32],
+    ) -> Option<PreeditPatch<'static>> {
         preedit_patch_of(
             &self.preedit_run,
             self.preedit_col,
@@ -4337,5 +4396,64 @@ impl GridTier {
         self.preedit_row = row;
         self.needs_repack = true; // defer the pack to render (#421), same as set_overlay
         self.preedit_caret_col()
+    }
+
+    fn set_suggestion(&mut self, col: u32, row: u32, codepoints: Vec<u32>, fg: u32, dim: bool) {
+        self.suggestion_run = codepoints
+            .into_iter()
+            .map(|cp| PreeditCodepoint {
+                cp,
+                wide: preedit_is_wide(cp),
+            })
+            .collect();
+        self.suggestion_col = col;
+        self.suggestion_row = row;
+        self.suggestion_fg = fg;
+        self.suggestion_dim = dim;
+        self.needs_repack = true; // defer the pack to render (#421), same as set_overlay
+    }
+
+    /// The frame's columns with the suggestion written in (#972), or `None` when there is none, when
+    /// a composition is open, or when it writes no cell. A cell covered by a highlight, either
+    /// decoration layer or the hovered link is withheld.
+    fn suggestion_patch<'c>(
+        &self,
+        cells: &Cells<'c>,
+        bg: &'c [u32],
+        fg: &[u32],
+    ) -> Option<PreeditPatch<'c>> {
+        if self.suggestion_run.is_empty() || !self.preedit_run.is_empty() {
+            return None;
+        }
+        let overlay = Overlay {
+            active: &self.active_match_spans,
+            selection: &self.selection_spans,
+            matches: &self.match_spans,
+            link_hover: &self.link_hover_spans,
+            colors: self.highlight_colors,
+        };
+        let decorations = parse_decorations(&self.decoration_spans);
+        let row = self.suggestion_row;
+        let withheld = |col: u32| {
+            overlay.highlight_at(row, col, None).is_some()
+                || overlay.is_link_hovered(row, col, None)
+                || [DecorationLayer::Bottom, DecorationLayer::Top]
+                    .into_iter()
+                    .any(|layer| {
+                        decoration_override_at(&decorations, row, col, None, layer)
+                            != DecorationOverride::default()
+                    })
+        };
+        suggestion_patch_of(
+            &self.suggestion_run,
+            self.suggestion_col,
+            row,
+            self.suggestion_fg,
+            self.suggestion_dim,
+            cells,
+            bg,
+            fg,
+            withheld,
+        )
     }
 }

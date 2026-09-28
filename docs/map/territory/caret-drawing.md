@@ -19,6 +19,10 @@ about *how the caret looks* is decided here.
 
 ## Design model
 
+- **A block caret at a shell prompt with a suggestion shows the first suggested character** (#972).
+  The suggestion is drawn from the cursor cell and the caret is drawn last, so the block covers that
+  character in the caret's text colour — as fish's in-band suggestion looks. Nothing here changed for
+  it: the caret neither knows nor moves for the suggestion.
 - **The caret is a native overlay, not a cell inversion.** The previous renderer had no cursor
   concept at all and left the caller to swap a cell's fg/bg; drawing it as its own geometry is why
   the engine only has to report scalars.

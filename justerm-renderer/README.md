@@ -83,7 +83,7 @@ requiring a dense one.
 
 Every per-grid call names the grid it acts on and throws on an id it does not know:
 `apply_frame`, `apply_damage`, `setPalette`, `setOverlay`, `setActiveMatch`, `setDecorations`,
-`setCursor`, `clearCursor`, `setPreedit`, `setLinkHover`, `cols`/`rows`,
+`setCursor`, `clearCursor`, `setPreedit`, `setSuggestion`, `setLinkHover`, `cols`/`rows`,
 `cell_width`/`cell_height`/`cssCellWidth`/`cssCellHeight`, the font setters and the colour/cursor
 policy scalars. The calls that belong to the surface rather than to any one grid —
 `render`, `resizeSurface`, `setDevicePixelRatio`, `cssWidth`/`cssHeight` and the context-loss

@@ -10,6 +10,7 @@ import {
   wheelScrollTarget,
   preeditIntent,
   preeditLatch,
+  suggestionCell,
 } from "../src/terminal";
 import { StubFrameSource } from "../src/frame-source";
 import { MouseEvents, StubInputSink } from "../src/input";
@@ -611,5 +612,139 @@ describe("scrollsToBottomOnInput", () => {
     expect(isUserInput(key("Shift"))).toBe(false);
     expect(isUserInput({ kind: "imeKey", key: "Shift" })).toBe(false);
     expect(isUserInput({ kind: "focus", focused: true })).toBe(false);
+  });
+});
+
+// #972: the consumer's suggestion, drawn by the renderer after the engine cursor.
+describe("Terminal suggestion", () => {
+  type Call = { col: number; row: number; text: string; color: number; dim: boolean };
+  class SuggestingRenderer extends FakeRenderer {
+    calls: Call[] = [];
+    setSuggestion(col: number, row: number, codepoints: Uint32Array, color: number, dim: boolean): void {
+      this.calls.push({ col, row, text: String.fromCodePoint(...codepoints), color, dim });
+    }
+  }
+  const at = (
+    col: number,
+    row: number,
+    extra: Partial<Pick<DecodedFrame, "displayOffset" | "altScreen">> = {},
+  ): DecodedFrame => ({ ...emptyFrame(20, 5), cursorCol: col, cursorRow: row, ...extra });
+  const setup = () => {
+    const source = new StubFrameSource();
+    const renderer = new SuggestingRenderer();
+    const term = new Terminal(source, renderer);
+    term.mount();
+    return { source, renderer, term };
+  };
+
+  it("draws at the engine cursor, dim in the default colour unless told otherwise", () => {
+    const { source, renderer, term } = setup();
+    source.push(at(4, 2));
+    const renders = renderer.renderCount;
+    expect(term.setSuggestion("abc")).toBe(true);
+    expect(renderer.calls).toEqual([{ col: 4, row: 2, text: "abc", color: 0, dim: true }]);
+    expect(renderer.renderCount).toBe(renders + 1);
+
+    term.setSuggestion("x", { color: { indexed: 8 }, dim: false });
+    expect(renderer.calls.at(-1)).toEqual({ col: 4, row: 2, text: "x", color: (1 << 24) | 8, dim: false });
+  });
+
+  it("encodes each colour form as the frame's tagged reference", () => {
+    const { source, renderer, term } = setup();
+    source.push(at(0, 0));
+    term.setSuggestion("x", { color: { rgb: 0x888888 } });
+    expect(renderer.calls.at(-1)?.color).toBe(((2 << 24) | 0x888888) >>> 0);
+    term.setSuggestion("x", { color: { indexed: 0x1ff } });
+    expect(renderer.calls.at(-1)?.color).toBe((1 << 24) | 0xff);
+    term.setSuggestion("x", { color: "default" });
+    expect(renderer.calls.at(-1)?.color).toBe(0);
+  });
+
+  it("after dispose it refuses and touches nothing", () => {
+    const { source, renderer, term } = setup();
+    source.push(at(4, 2));
+    term.dispose();
+    const [calls, renders] = [renderer.calls.length, renderer.renderCount];
+    expect(term.setSuggestion("abc")).toBe(false);
+    expect(renderer.calls).toHaveLength(calls);
+    expect(renderer.renderCount).toBe(renders);
+  });
+
+  it("waits for a frame when set before the cursor is known", () => {
+    const { source, renderer, term } = setup();
+    term.setSuggestion("abc");
+    expect(renderer.calls).toEqual([]);
+    source.push(at(1, 0));
+    expect(renderer.calls).toEqual([{ col: 1, row: 0, text: "abc", color: 0, dim: true }]);
+  });
+
+  it("follows the cursor frame by frame and re-sends only when it moved", () => {
+    const { source, renderer, term } = setup();
+    source.push(at(4, 2));
+    term.setSuggestion("abc");
+    source.push(at(4, 2));
+    expect(renderer.calls).toHaveLength(1);
+    source.push(at(6, 3));
+    expect(renderer.calls.at(-1)).toMatchObject({ col: 6, row: 3, text: "abc" });
+    expect(renderer.calls).toHaveLength(2);
+  });
+
+  it("maps the cursor through the display offset and clears when it is off screen", () => {
+    const { source, renderer, term } = setup();
+    source.push(at(4, 2));
+    term.setSuggestion("abc");
+    source.push(at(4, 2, { displayOffset: 1 }));
+    expect(renderer.calls.at(-1)).toMatchObject({ col: 4, row: 3, text: "abc" });
+    source.push(at(4, 2, { displayOffset: 3 }));
+    expect(renderer.calls.at(-1)).toMatchObject({ text: "" });
+    source.push(at(4, 2));
+    expect(renderer.calls.at(-1)).toMatchObject({ col: 4, row: 2, text: "abc" });
+  });
+
+  it("an empty text clears what is drawn", () => {
+    const { source, renderer, term } = setup();
+    source.push(at(4, 2));
+    term.setSuggestion("abc");
+    expect(term.setSuggestion("")).toBe(true);
+    expect(renderer.calls.at(-1)).toMatchObject({ text: "" });
+  });
+
+  it("is dropped on entering the alternate screen and refused while there", () => {
+    const { source, renderer, term } = setup();
+    source.push(at(4, 2));
+    term.setSuggestion("abc");
+    source.push(at(0, 0, { altScreen: true }));
+    expect(renderer.calls.at(-1)).toMatchObject({ text: "" });
+    const n = renderer.calls.length;
+    expect(term.setSuggestion("late")).toBe(false);
+    source.push(at(0, 0, { altScreen: true }));
+    expect(renderer.calls).toHaveLength(n);
+    // Leaving the alternate screen does not bring the dropped suggestion back.
+    source.push(at(4, 2));
+    expect(renderer.calls).toHaveLength(n);
+  });
+
+  it("a renderer without the binding draws nothing and does not throw", () => {
+    const source = new StubFrameSource();
+    const term = new Terminal(source, new FakeRenderer());
+    term.mount();
+    source.push(at(4, 2));
+    expect(term.setSuggestion("abc")).toBe(true);
+    source.push(at(5, 2));
+  });
+});
+
+describe("suggestionCell (#972)", () => {
+  const anchor = { col: 3, row: 2 };
+  it("is the cursor's viewport cell", () => {
+    expect(suggestionCell(anchor, 1, 5, "abc", false)).toEqual({ col: 3, row: 3 });
+  });
+  it("is nothing while a composition is open, even before its first update", () => {
+    expect(suggestionCell(anchor, 0, 5, "abc", true)).toBeUndefined();
+  });
+  it("is nothing with no text, no cursor yet, or the cursor's row off screen", () => {
+    expect(suggestionCell(anchor, 0, 5, "", false)).toBeUndefined();
+    expect(suggestionCell(undefined, 0, 5, "abc", false)).toBeUndefined();
+    expect(suggestionCell(anchor, 3, 5, "abc", false)).toBeUndefined();
   });
 });

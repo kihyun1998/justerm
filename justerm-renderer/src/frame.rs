@@ -927,7 +927,7 @@ mod tests {
         // The rejected rule, packed side by side: re-supply the repair's colours like a run cell's
         // and the Default backdrop makes the highlight paint solid — a bright notch in the band.
         let mut resupplied = patch(&run, 3, 0, &cells, &bg, &fg).expect("the run is on grid");
-        resupplied.bg[2] = 0;
+        resupplied.bg.to_mut()[2] = 0;
         resupplied.fg[2] = 0;
         let notch = pack(&resupplied);
         assert_ne!(

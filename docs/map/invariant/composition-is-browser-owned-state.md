@@ -55,6 +55,11 @@ reading that one. The same shape as an absolute-index walk being rediscovered th
   a *labelled accessible input* rather than `aria-hidden` (#248), which is what puts the anchor's
   position inside the accessibility tree — the reason *"does an AT tool read the anchor?"* is a live
   question rather than an idle one (#640 Q4)
+- [cell compositing](../territory/cell-compositing.md) — the consumer's suggestion (#972) is hidden for
+  the whole composition, from `compositionstart` to `compositionend`. The renderer alone could only
+  hide it while a preedit run is *drawn*, which misses the start of a composition before its first
+  update and an update to `""`, so the widget gates it on `composing` (`suggestionCell`) and the
+  renderer's own check is the second line
 
 ## What a violation looks like
 
