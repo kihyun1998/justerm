@@ -334,12 +334,15 @@ const BLINK_COL = 4;
 const BLINK_WIDTH = 3;
 const BLOCK_GLYPH = 0x2588;
 
-// #928: a run of regular `M` followed by a run of bold `M`, drawn only while `__fontWeightProbe` asks
+// #928: a run of regular `M` and, one blank cell later, a run of bold `M`, drawn only while `__fontWeightProbe` asks
 // for it. Row 9 is clear of the other probes' rows (0, 2, 5, 7).
 let weightText = false;
 const WEIGHT_ROW = 9;
 const WEIGHT_COL = 4;
 const WEIGHT_WIDTH = 4;
+/** The bold run starts one blank cell past the regular run, so neither run's overhanging ink (the
+ * renderer's horizontal bleed band, justerm#966) lands in the other's sample. */
+const WEIGHT_BOLD_COL = WEIGHT_COL + WEIGHT_WIDTH + 1;
 const WEIGHT_GLYPH = 0x4d;
 
 // #577: the consumer's background opacity. Starts at `1` and the option is deliberately left OFF the
@@ -1029,10 +1032,11 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     if (at >= 0) for (let i = 0; i < "select".length; i++) link[line * COLS + at + i] = 1;
   }
   if (weightText) {
-    for (let i = 0; i < 2 * WEIGHT_WIDTH; i++) {
-      const at = WEIGHT_ROW * COLS + WEIGHT_COL + i;
-      codepoints[at] = WEIGHT_GLYPH;
-      flags[at] = i < WEIGHT_WIDTH ? 0 : renderer.cellFlags.bold;
+    for (let i = 0; i < WEIGHT_WIDTH; i++) {
+      codepoints[WEIGHT_ROW * COLS + WEIGHT_COL + i] = WEIGHT_GLYPH;
+      const bold = WEIGHT_ROW * COLS + WEIGHT_BOLD_COL + i;
+      codepoints[bold] = WEIGHT_GLYPH;
+      flags[bold] = renderer.cellFlags.bold;
     }
   }
   return {
@@ -2673,7 +2677,7 @@ window.__fontWeightProbe = (): FontWeightProbe => {
     const cell = renderer.cellSize();
     return {
       regular: inkOf(WEIGHT_COL),
-      bold: inkOf(WEIGHT_COL + WEIGHT_WIDTH),
+      bold: inkOf(WEIGHT_BOLD_COL),
       cellW: cell.width,
       cellH: cell.height,
     };
@@ -2714,7 +2718,7 @@ window.__subpixelProbe = (): SubpixelProbe => {
   const gl = canvas.getContext("webgl2")!;
   const sample = (): SubpixelSample => {
     const { width: cw, height: ch } = renderer.cellSize(); // device px
-    const w = Math.round(2 * WEIGHT_WIDTH * cw);
+    const w = Math.round((WEIGHT_BOLD_COL + WEIGHT_WIDTH - WEIGHT_COL) * cw);
     const h = Math.round(ch);
     const buf = new Uint8Array(w * h * 4);
     const x = Math.round(WEIGHT_COL * cw);
