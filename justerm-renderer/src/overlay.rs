@@ -264,8 +264,8 @@ pub fn should_blend(bg_ref: u32, flags: u16) -> bool {
 /// the cell paints solid, rather than recolouring its ink to match (#508 — the ink channel belongs to
 /// the underline). The two are consistent once "bottom means under the glyph, top means over it" is
 /// applied to a glyph that is itself background-shaped ink — under it, the tile hides it; over it, the
-/// tile follows it. Reasoning and the declined xterm alternatives are at the `frame::pack_instances`
-/// call site.
+/// tile follows it. Reasoning and the declined xterm alternatives: `docs/map/territory/decoration.md` § The
+/// packer's half.
 ///
 /// **The adjacent gap this used to leave open is closed (#454).** A span covering one half of a wide
 /// glyph bisected it visibly, and this note routed the fix to "consumer span policy" — which was

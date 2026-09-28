@@ -164,7 +164,7 @@ and the third is the one that makes the rule falsifiable rather than merely cohe
    neighbour blends: the repaired cell packs `[0.188, 0.376, 0.753]` inside a band whose other cells
    pack `[0.157, 0.314, 0.565]` — a bright notch in the middle of the user's own selection. Blanking
    only the glyph makes it pack byte-identically to its untouched neighbours. Pinned by
-   `a_repaired_cell_packs_identically_to_its_untouched_neighbours_under_a_selection` (`frame.rs`),
+   `a_repaired_cell_packs_identically_to_its_untouched_neighbours_under_a_selection` (`frame/tests.rs`),
    which packs both rules side by side.
 
 **Neither reference can arbitrate this**, and recording that is what stops the next reader spending

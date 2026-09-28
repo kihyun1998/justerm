@@ -415,6 +415,128 @@ What the shader's own comments carried before #989, by the step each one explain
   of the desired total length" (`rect.f.glsl`, `draw_dashed`). All three references are cell-periodic
   for dashed, so unlike dotted this needed no decision.
 
+### The packer (`frame.rs` `pack_instances`), stage by stage
+
+What the packer's own comments carried before #991. The decoration stages are in
+[decoration](decoration.md), the selection, contrast and dim policies in [colour policy](colour-policy.md).
+
+- **The line inks and the four neighbour inks ride as packed floats, measured exact.** A colour maxes
+  at `2²⁴ − 1` and an `f32` represents every integer below `2²⁴`, so the value survives the attribute
+  and `uint()` in the shader — a standalone WebGL2 probe round-tripped ten values including `0x000000`,
+  `0xFFFFFF`, `0x010101` and both sides of the sign-bit boundary, all exact. Packed because a line is
+  *rare*: every cell would otherwise pay three floats per band for a channel almost none use, and
+  ADR-0021 keeps one instance buffer resident per grid. **Two line inks rather than #513's one**, split
+  by authorship of the colour (the #525 bullet above) — the same axis rule 5 and #520 already turn on; with no `SGR 58` they are equal and the second
+  float is redundant — the common case, pinned from the other side by
+  `sgr58_colours_the_underline_only_and_the_strike_keeps_the_follow_fg_ink`. The costless alternative —
+  draw the strike from `v_fg` — is wrong on exactly the cells #513 exists for: a glyph-only rule (the
+  #239 re-tint) moves `fg` and must not reach `I_line`. `bg_default` costs its own float because #513
+  already spent the exact-integer budget: a colour fills all 24 f32-safe bits, leaving no spare bit.
+  The foreign inks re-pack a neighbour's resolved fg from floats that were divided by 255 from
+  integers a moment before, so that round trip is exact too.
+- **The offsets are named because arithmetic read the wrong float** (#791): `INSTANCE_FLOATS - 1` for
+  the last field and a literal `12` for the stride both silently mis-address the moment a field is
+  appended. A name cannot.
+- **`Frame` carries only what resolution left for it to read.** A short or missing column entry
+  resolves as `Default` / slot `0` / no flags and the cell is still emitted (#255). `codepoints` is
+  the **base** scalar only, kept solely to classify the glyph — its contrast exclusion (#226), its
+  selection re-tint (#239 / #241) and whether a bg-only top decoration paints over it (#494); a cell's
+  grapheme cluster stops at `glyph_resolve`, which rasterises it, and that is the declared rule rather
+  than an omission — coverage is set by the base and a combining mark can only add ink (#495, reasoned
+  in `glyph_class`). `underline_colors` (SGR 58, #520) is a tagged reference resolved through the
+  palette like fg/bg; `justerm-core` arms it only when `UNDERLINE` is set (`term.rs::pen_ext_attrs`), so
+  a strike-only cell never carried a colour.
+- **Colours stay packed through the whole cell pipeline** and unpack to GL floats (`gl_rgb`) only at
+  the end: the blends are integer math, so they match the reference to the byte. Because the viewport
+  re-packs every frame and the #263 upload diff re-sends only changed cells, a cell that gains or loses
+  a highlight re-uploads with no bookkeeping (unlike beamterm's overlay delta). The capacity reservation
+  is `checked_mul`ed because `usize` is 32 bits on wasm32 and `cells * INSTANCE_FLOATS` overflows it
+  for a grid `resolve_frame` still accepts (it bounds `cells` by slice length only); a failed
+  reservation falls back to growing on demand rather than aborting, since the loop is bounded by
+  `rows * cols` and `resolve_frame` has already refused a grid its slices cannot back (#355).
+- **An open composition stands every stage below glyph resolution down** (ADR-0028 D2, #249): the
+  pass *replaces* the covered cells, so a selection, a match or a decoration covering the run must not
+  tint the text being composed — leaving the overlay and decoration lookups live would put the cells
+  back into the stack one channel at a time. Four stand-downs are the highlight lookup, selection
+  coverage, and the bottom and top decoration lookups; the fifth is the underline colour (#711): the
+  pass writes `UNDERLINE` itself (`preedit::writes`), and both grid-drawing references give that mark
+  the run's **own** fg — alacritty literally, as a field beside the glyph's (`renderer/mod.rs:225`,
+  `underline: fg`), ghostty by passing one `screen_fg` into the glyph and both `addUnderline` calls
+  (`generic.zig:3299`, `:3335`). `SGR 58` spoke for the covered cell, no longer on screen, so reading it
+  drew the composition in the colour of the text it erased, and in a different colour per column as
+  the run moved. **Zeroing the reference *is* the declaration**, not a suppression: `0` is `Default`,
+  "follow the fg", and the fg is the pass's. Mirroring the column into `preedit_patch` beside bg/fg —
+  #711's other option — writes the same `0` and packs byte-identically, so the two are one declaration
+  in two places; the choice was made on the one axis where they differ: `webgl.rs` is wasm32-only and
+  0-compiles on host, so a patch-side fix is unreachable by the renderer's `cargo test`, where every
+  test of this behaviour lives — and there it sits with the other four, so what a composition stands
+  down reads in one place. The ink class of a composed cell is right only because `codepoints` is
+  one of the columns `preedit_patch` *replaces*, so it describes the preedit's glyph; that holds as long
+  as the patch keeps mirroring that column — a column answered by *neither* half is the failure `SGR
+  58` had for one release, and here it would order a composition's underline against a `█` no longer
+  on screen.
+- **Every span lookup asks about the cell and its wide-pair partner** (#454), from the frame's flags —
+  the *patched* ones inside a preedit, since the pass writes its own pairs. The partner's own
+  `composed` state is deliberately not re-checked, safe because `preedit::range` counts a wide
+  codepoint as two cells (`end = start + (w - 1)`), so a pair the run writes lies wholly inside the
+  span and a non-composed cell never has a composed partner. If that counting changes, the lookup gains
+  a `!partner_composed` term.
+- **A hovered link draws a single underline only where the cell has none** (#934). The underline and
+  the glyph field read these `line_flags`; the colour stages keep reading `cell_flags`.
+- **The line's ink forks from the glyph's at exactly one point** (#513): after rules 1–3 (the cell's
+  own ink, a bottom decoration's fg, `selectionForeground`), which answer "what colour is this cell's
+  ink" and reach both, and before the tile re-tint, the one rule about *the glyph* (ADR-0019 R1). Rules
+  5–7 (top decoration, dim, contrast) then run over both — a fork, not a second pipeline. A top
+  decoration's fg reaches the line because a decoration declares the cell's *ink*, not the glyph's
+  (#513 rule 5) — but only a **follow-fg** line; for an explicit line that write is dead, which is why
+  the fork left it unguarded: an explicit `SGR 58` colour (#520) is
+  **authoritative**, drawn raw and immune to the glyph's ink treatments — decoration fg, DIM and
+  minimum contrast all leave it alone. That is xterm's rule (`TextureAtlas` sets the underline
+  `strokeStyle` from the raw `getUnderlineColor()` and disables its threshold clear) and the only
+  coherent one: the two-lens found that adjusting an explicit colour by some rules but not others is an
+  invented asymmetry. `Default` keeps #513's behaviour. The follow-fg pipeline is computed only for a
+  cell that draws a follow-fg underline or a strike (`needs_follow_fg`, the union of what each band
+  needs). Cells that draw no line — the bulk of the viewport — skip the second
+  `ensure_contrast_ratio` luminance loop, and so does an explicitly coloured underline with no strike
+  (the #520 cost win survives #525's split). Skipping changes nothing: the line value is a pure
+  function of the same inputs whether or not the attribute bits are set, and a cell that draws no
+  strike never reads the strike ink. Why the line runs the colour policies again, with the glyph's
+  contrast gate: [colour policy](colour-policy.md). The strike is the follow-fg value unconditionally, since
+  nothing can declare its colour.
+- **A concealed cell points at the blank slot and drops the attribute bits too**, because `ESC[8m`
+  hides the whole cell — as does a blink cell in the off phase, where `blink_on` is the render loop's
+  phase, driven by the consumer (timing is policy, #282); a decoration that took the glyph (#508) keeps the bits, because an underline is
+  not the glyph. The ink **class** goes with the glyph (#712): a taken glyph has none, for the same
+  reason it stands the glyph-only treatments down. Leaving the bit set would be inert — a blank slot has
+  zero coverage — but it would assert something false about the cell, which the five #508 pins say.
+- **`bg_default` is complete by construction** (#455), which is ADR-0019's totality clause applied:
+  resolution follows the cell's state, not an accident of the fold — state, not arithmetic. It is `1.0` iff the ref is Default (tag 0), the cell is not
+  inverse (which swaps the fg *in* as the bg — content), no decoration painted a bg (bottom or top),
+  and no highlight composited one. These are exactly the four sites that assign the bg channel. Both
+  references decide this by provenance too — the convergence is the point: alacritty's
+  `compute_bg_alpha` (`display/content.rs`) checks `bg == Color::Named(NamedColor::Background)` under
+  the comment *"an RGB color matching the background should not be transparent … computed using the
+  named input color, rather than checking the RGB after its color is computed"* — the #455 bug, guarded
+  at the source — and xterm keys on the colour-mode bits (`bg & CM_MASK != CM_DEFAULT`) and draws no
+  background rect for a default cell. The block-cursor cell is the one class neither reaches through
+  these signals; both force it opaque by a dedicated path (alacritty `content.rs`, "we must adjust
+  alpha to make it visible"), which here is the shader's `!block` term — correctly outside this
+  predicate.
+- **`I_neighbour` is granted in a second walk over what was packed, withdrawn by *default*.** A cell
+  starts with its four handles blank — right both for a cell with no neighbour and for one across a
+  background edge — and is granted a neighbour's glyph field and ink where the two cells' **resolved**
+  backgrounds are equal (ADR-0019 rule 5, #791 vertical, #966 across). Resolved, not referenced: two
+  cells can hold the same `Default` reference and differ once a selection covers one, and that edge is
+  where crossing ink reads as a fault. The walk is separate because the answer needs the *neighbour's*
+  composite, and reading it back out of the instance shares one resolution with the cell — no second
+  copy of the bg pipeline to drift. A wide pair needs no reconciliation across: each outer edge spills
+  into a different receiver and its inner band is empty by construction (`bitmap::split_wide_bitmap`).
+  Up and down it does — [a span covers a wide pair whole](../invariant/a-span-covers-a-wide-pair-whole.md)
+  carries why — and the reconciliation blanks **both** receivers, not just the one being visited:
+  one-sided blanking happens to converge because the partner is visited too (measured — the mutation
+  still passes), but that makes the result depend on the walk visiting every cell, which the loop
+  should not have to promise.
+
 ## Code
 
 - `justerm-renderer/src/frame.rs` — `pack_instances`, the instance layout
