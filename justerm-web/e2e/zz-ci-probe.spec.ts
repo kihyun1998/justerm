@@ -19,6 +19,13 @@ test("zz ci probe", async ({ browser }) => {
       boots.push(Date.now() - t0);
     }
     if (fam !== "monospace") await page.evaluate((f) => (window as any).__probeSetFont?.(f), fam);
+    // page latency while the demo's 300ms live output runs (the state every e2e test is in)
+    await page.waitForTimeout(1500);
+    const lat: number[] = [];
+    for (let i = 0; i < 25; i++) { const t0 = Date.now(); await page.evaluate(() => 1); lat.push(Date.now() - t0); await page.waitForTimeout(97); }
+    const busy = await page.evaluate(() => new Promise<number>((res) => { let n = 0, last = performance.now(), gap = 0; const t0 = last; const f = () => { const now = performance.now(); gap += Math.max(0, now - last - 20); last = now; if (now - t0 < 3000) { n++; setTimeout(f, 10); } else res(Math.round((gap / (now - t0)) * 100)); }; setTimeout(f, 10); }));
+    lat.sort((a, b) => a - b);
+    say(`font=${fam} LIVE latency median=${lat[12]}ms p90=${lat[22]}ms max=${lat[24]}ms mainThreadBlocked~${busy}%`);
     await page.evaluate(() => window.__output!(false));
     await page.waitForTimeout(800);
     const info = await page.evaluate(() => {
