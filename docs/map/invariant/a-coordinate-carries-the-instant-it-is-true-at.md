@@ -16,7 +16,7 @@ Core hands coordinates out on **three channels**, and each answers the instant q
 | channel | how the instant reaches the receiver | example |
 |---|---|---|
 | the **frame** | by construction — the header carries `evicted_total`, and every scalar in a `Frame` is sampled in one `Term::frame` body, so the snapshot is internally coherent | `display_offset`, `scrollback_len`, `marker_count` |
-| an **event** | only if the variant carries it. An occurrence is a *point in time* whose payload outlives the instant that gave it meaning, and the frame's basis does **not** reach it — a `feed` that creates a marker and then evicts closes on a basis the event's line predates | `TermEvent::MarkerCreated { line, evicted_total, epoch }` |
+| an **event** | only if the variant carries it. An occurrence is a *point in time* whose payload outlives the instant that gave it meaning, and the frame's basis does **not** reach it — a `feed` that creates a marker and then evicts closes on a basis the event's line predates | `TermEvent::MarkerCreated { line, col, evicted_total, epoch }` |
 | a **query answer** | only if the return type carries it — **or** if the answer is declared instantaneous and a re-ask always works | `Engine::marker_index` carries it · `Engine::command_marks` is declared instantaneous (#742) · so is `Engine::command_lines`, whose space would need two scalars of its own to carry (#743) |
 
 So the rule is not *"put a basis on the frame"*. It is: **whichever channel a coordinate leaves by, the
@@ -228,8 +228,8 @@ now undischarged.
 
 ## Where it will recur
 
-- **Any new `TermEvent` variant carrying a position.** `MarkerCreated.line` is the only one today
-  (verified by reading the enum), so the next one has no sibling to copy and will start from the frame's
+- **Any new `TermEvent` variant carrying a position.** `MarkerCreated`'s `(line, col)` is the only one
+  today (verified by reading the enum; `col` joined in #973 under the same triple), so the next one has no sibling to copy and will start from the frame's
   model, which is the model that does not apply. The check that does not need a forcing case: name the
   **pull** that answers the same question and carry every scalar it carries. A variant with no such
   pull is the harder case and has not happened yet.

@@ -699,7 +699,11 @@ fn a_reflow_under_the_alt_screen_moves_the_primary_column_too() {
     e.feed(b"\x1b[?1049l");
 
     let ix = e.marker_index();
-    assert_eq!(ix.markers.len(), 1, "the primary's one mark is the pull's answer again");
+    assert_eq!(
+        ix.markers.len(),
+        1,
+        "the primary's one mark is the pull's answer again"
+    );
     assert_eq!(
         (ix.markers[0].line, ix.markers[0].col),
         (1, 2),

@@ -167,6 +167,17 @@ the shell emits.
   off, reporting a marker four lines past the end on a rows-only resize. A marker whose row went is
   **disposed** with `MarkerDisposed`, as alt scrolling already does, rather than relocated to row 0
   onto content it never marked.
+- **The column is published on both incremental channels, `MarkerCreated.col` and
+  `MarkerEntry::col` (#973)**, and not on the frame's `MarkerPosition` or on `command_marks`.
+  The forcing case is a consumer reading the command *being typed*, between `B` and `C`: before
+  `C` nothing else bounds it, and the cursor after `feed` has already passed `B` whenever the
+  same batch carries the echo (fast typing, a paste, a line editor's full redraw). It needs no
+  dating of its own: `col` is written only by the two reflow branches of `resize`, and `resize`
+  bumps the epoch on a dimension change when *either* population holds a mark, so the triple that
+  dates `line` dates `col`. Pinned per branch — `a_reflow_moves_the_column_under_a_new_generation`
+  (primary active) and `a_reflow_under_the_alt_screen_moves_the_primary_column_too`; before the
+  second existed, disabling the alt branch's column write left the **whole** core suite green,
+  which is the #166 regression with nothing watching it.
 - **A tracked point whose line was evicted is released, where a marker saturates** (#691). A marker
   on the wrong line still paints something the consumer can see and correct; a tracked point is
   *asked* for a position, and answering with content the caller never anchored to is the failure

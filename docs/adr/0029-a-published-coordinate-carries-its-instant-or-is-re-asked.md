@@ -172,8 +172,9 @@ up — so neither is importable, and a finding shaped *"the reference does it an
 ## Consequences
 
 - **A new `TermEvent` variant carrying a position** is answered by D4 with no forcing case needed:
-  name the pull that answers the same question and carry every scalar it carries. `MarkerCreated.line`
-  is the only coordinate on the whole enum today, so the next one has no sibling to copy and would
+  name the pull that answers the same question and carry every scalar it carries. `MarkerCreated`'s
+  `(line, col)` is the only coordinate on the whole enum today (`col` joined in #973, dated by the
+  same triple — D4 applied, not reopened), so the next one has no sibling to copy and would
   otherwise start from the frame's model — the model that does not apply.
 - **A new query returning coordinates** runs D3 rather than copying its neighbour. Two answers are
   legitimate and the record says which is which, so this stops being a fresh decision.
