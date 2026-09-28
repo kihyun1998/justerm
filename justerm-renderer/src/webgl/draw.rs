@@ -11,6 +11,7 @@ use crate::frame_grid::cell_count;
 use crate::glyph_resolve::{Cells, ResolveError, resolve_frame};
 use crate::mat4::Mat4;
 use crate::overlay::Overlay;
+use crate::preedit::{Patch as PreeditPatch, Span as PreeditSpan};
 use crate::registry::Viewport;
 use crate::render_policy::ColorPolicy;
 use crate::upload::{UploadPlan, plan_upload};
@@ -67,6 +68,48 @@ impl JustermRenderer {
         result
     }
 
+    /// Re-resolve [`GridTier::cursor_cells`](super::GridTier::cursor_cells) against the last frame's flags. Called when a frame arrives
+    /// (its flags may have changed under a still cursor) *and* when the cursor moves (onto either
+    /// half of a wide char, with no new frame).
+    fn resolve_cursor_cells(&mut self, at: usize) {
+        self.grid_at_mut(at).resolve_cursor_cells()
+    }
+
+    /// The inclusive span the open composition covers, or `None` when nothing is composing or the
+    /// anchor is off the grid. The packer takes it so the layers below glyph resolution can stand
+    /// down over those cells; `preedit_patch` writes the same cells, and both derive from
+    /// [`preedit::writes`](crate::preedit::writes) so they cannot disagree.
+    fn preedit_span(&self, at: usize, cols: u32, rows: u32) -> Option<PreeditSpan> {
+        self.grid_at(at).preedit_span(cols, rows)
+    }
+
+    /// The composed cells, re-supplied (#249, ADR-0028 D2).
+    ///
+    /// A preedit is a **pass**, not a layer: ADR-0019's stack can recolour a channel or blank a
+    /// slot but nothing in it can *supply* a glyph, and its rule 5 authorship axis has no value for
+    /// content the browser owns and the application never declared. So the covered cells leave the
+    /// stack entirely and come back with background, foreground and glyph together — which is also
+    /// the only way a selection tint under a composition stops reading as *selected text*.
+    ///
+    /// Returns owned columns, and only while a composition is open: a page that never composes
+    /// allocates nothing here. `0` is the `Default` colour tag (see [`palette`](crate::palette)),
+    /// so the run draws in the terminal's own default fg over its default bg — ghostty's choice
+    /// (`state.colors.foreground`, no background cell at all).
+    fn preedit_patch(
+        &self,
+        at: usize,
+        cells: &Cells,
+        bg: &[u32],
+        fg: &[u32],
+    ) -> Option<PreeditPatch<'static>> {
+        self.grid_at(at).preedit_patch(cells, bg, fg)
+    }
+
+    /// Resolve each cell's glyph slot then pack the instance buffer. Shared by [`apply_frame`]
+    /// (no clusters) and [`apply_damage`] (grapheme clusters from the persistent grid, #285).
+    ///
+    /// [`apply_frame`]: Self::apply_frame
+    /// [`apply_damage`]: Self::apply_damage
     fn resolve_and_pack(
         &mut self,
         at: usize,

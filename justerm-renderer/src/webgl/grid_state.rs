@@ -1,7 +1,5 @@
 //! Per-grid state — damage, the overlays, the palette, the caret, the preedit and suggestion runs, and the colour and cursor policies.
 
-use crate::glyph_resolve::Cells;
-use crate::preedit::{Patch as PreeditPatch, Span as PreeditSpan};
 use wasm_bindgen::prelude::*;
 
 use super::JustermRenderer;
@@ -268,76 +266,6 @@ impl JustermRenderer {
         let at = self.slot(grid)?;
         self.grid_at_mut(at).clear_cursor();
         Ok(())
-    }
-
-    /// Re-resolve [`GridTier::cursor_cells`](super::GridTier::cursor_cells) against the last frame's flags. Called when a frame arrives
-    /// (its flags may have changed under a still cursor) *and* when the cursor moves (onto either
-    /// half of a wide char, with no new frame).
-    pub(super) fn resolve_cursor_cells(&mut self, at: usize) {
-        self.grid_at_mut(at).resolve_cursor_cells()
-    }
-
-    /// The number of columns this grid was last sized to by `resizeGrid` —
-    /// exactly that, and nothing else reads it.
-    ///
-    /// **It is an echo, and it has not always been one.** While the renderer sized the drawing buffer
-    /// from the grid it could refuse one it could not draw, so this reported the grid actually
-    /// adopted and a clamp was visible here. The buffer belongs to the *surface* now — N
-    /// grids in M cell sizes share it — so `resizeSurface` adopts what the
-    /// browser granted and a consumer that asked for more than fits learns it from
-    /// `cssWidth`, never from this.
-    ///
-    /// A consumer that keeps sending frames of a grid larger than its rect does not corrupt
-    /// anything — every per-cell read is bounds-checked and the surplus cells are clipped by the
-    /// grid's own scissor — but its mouse mapping and reflow will be wrong. The grid is the
-    /// consumer's to compute from its own box ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), as xterm's `FitAddon` computes it.
-    #[wasm_bindgen(js_name = cols)]
-    pub fn cols(&self, grid: u32) -> Result<u32, JsValue> {
-        let at = self.slot(grid)?;
-        Ok(self.grid_at(at).cols())
-    }
-
-    /// The number of rows this grid was last sized to by `resizeGrid` — see
-    /// `cols`.
-    #[wasm_bindgen(js_name = rows)]
-    pub fn rows(&self, grid: u32) -> Result<u32, JsValue> {
-        let at = self.slot(grid)?;
-        Ok(self.grid_at(at).rows())
-    }
-
-    /// Resolve each cell's glyph slot then pack the instance buffer. Shared by [`apply_frame`]
-    /// (no clusters) and [`apply_damage`] (grapheme clusters from the persistent grid, #285).
-    ///
-    /// [`apply_frame`]: Self::apply_frame
-    /// [`apply_damage`]: Self::apply_damage
-    /// The composed cells, re-supplied (#249, ADR-0028 D2).
-    ///
-    /// A preedit is a **pass**, not a layer: ADR-0019's stack can recolour a channel or blank a
-    /// slot but nothing in it can *supply* a glyph, and its rule 5 authorship axis has no value for
-    /// content the browser owns and the application never declared. So the covered cells leave the
-    /// stack entirely and come back with background, foreground and glyph together — which is also
-    /// the only way a selection tint under a composition stops reading as *selected text*.
-    ///
-    /// Returns owned columns, and only while a composition is open: a page that never composes
-    /// allocates nothing here. `0` is the `Default` colour tag (see [`palette`](crate::palette)),
-    /// so the run draws in the terminal's own default fg over its default bg — ghostty's choice
-    /// (`state.colors.foreground`, no background cell at all).
-    /// The inclusive span the open composition covers, or `None` when nothing is composing or the
-    /// anchor is off the grid. The packer takes it so the layers below glyph resolution can stand
-    /// down over those cells; `preedit_patch` writes the same cells, and both derive from
-    /// [`preedit::writes`](crate::preedit::writes) so they cannot disagree.
-    pub(super) fn preedit_span(&self, at: usize, cols: u32, rows: u32) -> Option<PreeditSpan> {
-        self.grid_at(at).preedit_span(cols, rows)
-    }
-
-    pub(super) fn preedit_patch(
-        &self,
-        at: usize,
-        cells: &Cells,
-        bg: &[u32],
-        fg: &[u32],
-    ) -> Option<PreeditPatch<'static>> {
-        self.grid_at(at).preedit_patch(cells, bg, fg)
     }
 
     /// Set the background cell opacity: `0` = fully transparent, `1` = opaque (default). The

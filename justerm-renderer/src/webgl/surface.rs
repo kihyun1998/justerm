@@ -48,6 +48,34 @@ impl JustermRenderer {
         Ok(css_px(self.config_at(at).cell_size.1, self.global.dpr))
     }
 
+    /// The number of columns this grid was last sized to by `resizeGrid` —
+    /// exactly that, and nothing else reads it.
+    ///
+    /// **It is an echo, and it has not always been one.** While the renderer sized the drawing buffer
+    /// from the grid it could refuse one it could not draw, so this reported the grid actually
+    /// adopted and a clamp was visible here. The buffer belongs to the *surface* now — N
+    /// grids in M cell sizes share it — so `resizeSurface` adopts what the
+    /// browser granted and a consumer that asked for more than fits learns it from
+    /// `cssWidth`, never from this.
+    ///
+    /// A consumer that keeps sending frames of a grid larger than its rect does not corrupt
+    /// anything — every per-cell read is bounds-checked and the surplus cells are clipped by the
+    /// grid's own scissor — but its mouse mapping and reflow will be wrong. The grid is the
+    /// consumer's to compute from its own box ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), as xterm's `FitAddon` computes it.
+    #[wasm_bindgen(js_name = cols)]
+    pub fn cols(&self, grid: u32) -> Result<u32, JsValue> {
+        let at = self.slot(grid)?;
+        Ok(self.grid_at(at).cols())
+    }
+
+    /// The number of rows this grid was last sized to by `resizeGrid` — see
+    /// `cols`.
+    #[wasm_bindgen(js_name = rows)]
+    pub fn rows(&self, grid: u32) -> Result<u32, JsValue> {
+        let at = self.slot(grid)?;
+        Ok(self.grid_at(at).rows())
+    }
+
     /// Size **one grid** to `cols`×`rows` cells.
     ///
     /// Until S5 this was `resize(cols, rows)` and it wrote two tiers at once: the implicit grid's
