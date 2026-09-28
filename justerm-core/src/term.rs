@@ -521,8 +521,8 @@ struct ChangeWatch {
 }
 
 /// One live marker, as the pull query reports it: its stable id, its absolute
-/// `[scrollback ++ screen]` line, and its kind. `kind` rides here rather than on the frame
-/// because it never changes after the marker is made.
+/// `[scrollback ++ screen]` line and column, and its kind. `kind` rides here rather than on the
+/// frame because it never changes after the marker is made.
 ///
 /// No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): no public
 /// function accepts one, so the attribute would bind nothing.
@@ -530,6 +530,15 @@ struct ChangeWatch {
 pub struct MarkerEntry {
     pub id: MarkerId,
     pub line: u32,
+    /// The column the mark was recorded at, in `[0, cols]` — a bound, not a cell. On an OSC 133
+    /// command mark it is the cursor's column when the sequence arrived, so on a
+    /// [`MarkerKind::CommandStart`] it is where the typed command begins; a mark recorded after
+    /// a row filled exactly reports `cols`. A plain marker is placed at column `0`, and a reflow
+    /// moves it like any other.
+    ///
+    /// It is dated by [`MarkerIndex`]'s `evicted_total` and `epoch` exactly as `line` is: only a
+    /// reflow moves it, and a reflow moves the epoch.
+    pub col: u32,
     pub kind: MarkerKind,
 }
 

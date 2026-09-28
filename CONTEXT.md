@@ -153,8 +153,9 @@ hang from.
 
 A stable handle to a **position** the engine keeps on its content for a holder that lives outside the
 engine. Same machinery as a **Marker** — the write path shifts it as lines scroll, evict or reflow —
-and two deliberate differences: it is a `(line, column)` rather than a line, and **nothing about it
-reaches a Frame**, so tracking a position never paints anything. It is also *asked* rather than
+and two deliberate differences: the holder anchors it at a `(line, column)` of its choosing, where a
+Marker is placed on a line (a command mark's column is only where the cursor stood when the shell
+sent it), and **nothing about it reaches a Frame**, so tracking a position never paints anything. It is also *asked* rather than
 announced: the holder reads it back and is told the point is gone, where a marker's death is an event.
 What it exists for is the coordinate a **Consumer** must remember between two queries — a search
 anchor carrying the emphasis across a re-search — which the engine renumbers while nobody is looking.

@@ -31,7 +31,7 @@ nothing about it appears in the frame.
 - **A marker's birth and death are both events, and the pair is load-bearing since #490.**
   `MarkerDisposed` was enough while every live marker rode every frame — absence was observable.
   Once the index is *pulled*, a population that only ever shrinks is silently wrong, so
-  `MarkerCreated { id, line, kind, evicted_total, epoch }` is the mirror. ADR-0020 R1 is why neither
+  `MarkerCreated { id, line, col, kind, evicted_total, epoch }` is the mirror. ADR-0020 R1 is why neither
   is a frame field: an appearance and a disappearance are occurrences, not state.
 
 - **An event that carries a coordinate carries the instant it is true at, or it carries nothing

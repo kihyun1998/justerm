@@ -206,6 +206,7 @@ fn a_marker_born_after_the_pull_is_announced() {
             TermEvent::MarkerCreated {
                 id,
                 line,
+                col: _,
                 kind,
                 evicted_total,
                 epoch,
@@ -585,5 +586,127 @@ fn a_birth_can_outlive_its_generation_with_no_resize_at_all() {
         (0, 2),
         "the generation moved twice inside one `feed` — one bump per accrued line — while \
          the birth is true only in the one it names"
+    );
+}
+
+/// Every `MarkerCreated` in the queue, as `(kind, line, col, epoch)`.
+fn births(e: &mut Engine) -> Vec<(MarkerKind, u32, u32, u32)> {
+    e.drain_events()
+        .into_iter()
+        .filter_map(|ev| match ev {
+            TermEvent::MarkerCreated {
+                kind,
+                line,
+                col,
+                epoch,
+                ..
+            } => Some((kind, line, col, epoch)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// #973 — a `CommandStart` publishes the column the typed command starts at, in the shape a
+/// frame-mode consumer cannot recover it from the cursor: `B` and the echo of what was typed
+/// arrive in one `feed`, so the cursor after it is past `B`.
+#[test]
+fn a_command_start_carries_its_column_on_both_channels() {
+    let mut e = Engine::new(20, 5);
+    e.drain_events();
+
+    e.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls -la");
+
+    assert_eq!(
+        e.cursor().col,
+        8,
+        "the cursor has moved past `B`, so reading it after `feed` names the wrong column"
+    );
+    assert_eq!(
+        births(&mut e),
+        vec![
+            (MarkerKind::PromptStart, 0, 0, 0),
+            (MarkerKind::CommandStart, 0, 2, 0),
+        ],
+        "each birth carries the column its mark was recorded at"
+    );
+    let cols: Vec<(MarkerKind, u32, u32)> = e
+        .marker_index()
+        .markers
+        .iter()
+        .map(|m| (m.kind, m.line, m.col))
+        .collect();
+    assert_eq!(
+        cols,
+        vec![
+            (MarkerKind::PromptStart, 0, 0),
+            (MarkerKind::CommandStart, 0, 2),
+        ],
+        "and the pull reports the same column the event did"
+    );
+}
+
+/// #973 — the published column is the stored bound, `[0, cols]`: a prompt that exactly fills its
+/// row puts `B` one past the last column, not on it.
+#[test]
+fn a_command_start_after_a_full_row_publishes_the_column_past_the_last() {
+    let mut e = Engine::new(6, 5);
+    e.drain_events();
+
+    e.feed(b"$ abcd\x1b]133;B\x07");
+
+    assert_eq!(
+        births(&mut e),
+        vec![(MarkerKind::CommandStart, 0, 6, 0)],
+        "the held cursor sits at cols - 1 with a pending wrap; the mark's bound is cols"
+    );
+    assert_eq!(e.marker_index().markers[0].col, 6);
+}
+
+/// #973 — a reflow moves the column with the line and bumps the epoch, so a birth's column is
+/// dated by the same generation its line is, and the pull after the bump holds the moved pair.
+#[test]
+fn a_reflow_moves_the_column_under_a_new_generation() {
+    let mut e = Engine::new(10, 5);
+    e.drain_events();
+    e.feed(b"abcdef\x1b]133;B\x07");
+    let born = births(&mut e);
+    assert_eq!(born, vec![(MarkerKind::CommandStart, 0, 6, 0)]);
+
+    e.resize(4, 5);
+
+    let ix = e.marker_index();
+    assert_eq!(
+        (ix.markers[0].line, ix.markers[0].col),
+        (1, 2),
+        "`abcdef` rewraps to `abcd` / `ef`, so `B` moves to the second row, column 2"
+    );
+    assert_ne!(
+        ix.epoch, born[0].3,
+        "the move is dated by a new generation, so the birth's (line, col) is not adopted"
+    );
+}
+
+/// #973 — the same move when the primary is reflowed while the alt screen is up, which runs a
+/// separate branch of `resize`: the column published after leaving the alt screen is the
+/// reflowed one.
+#[test]
+fn a_reflow_under_the_alt_screen_moves_the_primary_column_too() {
+    let mut e = Engine::new(10, 5);
+    e.feed(b"abcdef\x1b]133;B\x07");
+    e.feed(b"\x1b[?1049h");
+
+    e.resize(4, 5);
+    e.feed(b"\x1b[?1049l");
+
+    let ix = e.marker_index();
+    assert_eq!(
+        ix.markers.len(),
+        1,
+        "the primary's one mark is the pull's answer again"
+    );
+    assert_eq!(
+        (ix.markers[0].line, ix.markers[0].col),
+        (1, 2),
+        "`abcdef` rewrapped to `abcd` / `ef` under the alt screen, so `B` is at row 1, column 2"
     );
 }

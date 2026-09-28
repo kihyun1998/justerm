@@ -167,6 +167,20 @@ the shell emits.
   off, reporting a marker four lines past the end on a rows-only resize. A marker whose row went is
   **disposed** with `MarkerDisposed`, as alt scrolling already does, rather than relocated to row 0
   onto content it never marked.
+- **The column is published on both incremental channels, `MarkerCreated.col` and
+  `MarkerEntry::col` (#973)**, and not on the frame's `MarkerPosition`, on `command_marks`, or
+  in `justerm-web`'s `MarkerIndexEntry` mirror (a structural subset, so nothing there is typed
+  wrong; no consumer read it when #973 landed).
+  The forcing case is a consumer reading the command *being typed*, between `B` and `C`: before
+  `C` nothing else bounds it, and the cursor after `feed` has already passed `B` whenever the
+  same batch carries the echo (fast typing, a paste, a line editor's full redraw). It needs no
+  dating of its own: `col` is written only by the two reflow branches of `resize`, and `resize`
+  bumps the epoch on a dimension change when *either* population holds a mark, so the triple that
+  dates `line` dates `col`. Pinned per branch — `a_reflow_moves_the_column_under_a_new_generation`
+  (primary active) and `a_reflow_under_the_alt_screen_moves_the_primary_column_too`; before the
+  second existed, disabling the on-alt branch's write of the **primary** markers' column left the
+  **whole** core suite green, which is the #166 regression with nothing watching it. That branch's
+  write for the alt markers stays unpinned, as the `(line, col)` bullet above says.
 - **A tracked point whose line was evicted is released, where a marker saturates** (#691). A marker
   on the wrong line still paints something the consumer can see and correct; a tracked point is
   *asked* for a position, and answering with content the caller never anchored to is the failure
@@ -253,7 +267,8 @@ recorded SHA; a paraphrase drops the pin).
   (#584); if the anchor contract ever breaks in both at once, revisit that
 - [search](search.md) — since #691 the write path calls a **third** set of fixups on those same
   lines, for tracked points (`justerm-core/src/term/tracked.rs`), whose forcing case is a search
-  anchor. Same machinery, two deliberate differences: a tracked point carries a column, and nothing
+  anchor. Same machinery, two deliberate differences: a tracked point is anchored at a column its
+  holder chose (a marker's column is recorded, not chosen — published since #973), and nothing
   about it reaches a frame — so "the anchor pair" is now a triple, and a new mover owes three calls,
   not two
 - [viewport](viewport.md) — a marker line is absolute and the ruler divides by
