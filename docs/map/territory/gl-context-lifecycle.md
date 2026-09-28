@@ -74,11 +74,18 @@ machine that decides what the renderer does in between.
   reasoning it: it registers *and feeds* a grid inside the loss window with three siblings already on
   the registry, places it after the restore, and asserts it draws its own ink rather than a
   neighbour's.
-- **Deleting a dead object mid-life has no state effect and raises `INVALID_OPERATION`** (measured,
-  #770). `remove_grid` deletes the grid's VAO and instance buffer, and `release_config` the atlas of
-  a configuration whose last grid left, with no liveness check, so on a lost context each delete
-  leaves the error flag set. That flag is not free: it is the channel a guard listens on, which is
-  why `restore` deletes nothing it displaces (the #793 bullet above).
+- **Deleting a dead object mid-life is silent during a loss and loud after the restore.**
+  `remove_grid` deletes the grid's VAO and instance buffer, and `release_config` the atlas of a
+  configuration whose last grid left, with no liveness check. Measured 2026-09-29 (Chromium
+  headless, raw WebGL, a no-delete control in the same run): a delete issued *during* a loss — in
+  the synchronous window or after `webglcontextlost` — raises nothing beyond the loss's own
+  `CONTEXT_LOST_WEBGL`, and nothing is left over once the context is restored. The flag appears only
+  when a dead object is deleted on a **live** context: `INVALID_OPERATION`, #793's shape. For these
+  two that is the window between `webglcontextrestored` and `restore`'s rebuild, when a grid still
+  holds the dead context's objects. The flag is not free there — it is the channel a guard listens
+  on, which is why `restore` deletes nothing it displaces (the #793 bullet above). (The comments
+  this replaced said "measured, #770 — an error flag, not a no-op" without naming the window; the
+  measurement above is what that claim resolves to.)
 - **Construction is the one entry point that refuses instead of deferring, and it is the only one
   where the *binding* decides the failure shape.** The five below can defer because there is a
   renderer to defer *into*; a constructor has no state machine yet, nothing to replay at `restore`,
