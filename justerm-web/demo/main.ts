@@ -86,7 +86,7 @@ const bootScrollSensitivity = bootParams.get("scrollSensitivity");
 
 const renderer = await JustermRenderer.create({
   canvasSelector: "#term",
-  fontFamily: "monospace",
+  fontFamily: bootParams.get("probeFont") ? "DejaVu Sans Mono" : "monospace",
   fontSize: 16,
   ...(bootBgAlpha === null ? {} : { bgAlpha: Number(bootBgAlpha) }),
   ...(bootLetterSpacing === null ? {} : { letterSpacing: Number(bootLetterSpacing) }),
