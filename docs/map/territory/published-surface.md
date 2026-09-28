@@ -336,7 +336,7 @@ same trace.
   and checks a link's label against the carrying file's own declarations rather than a roster. It
   names what it cannot see: a `//` line is read but never shown in a hover, and the targets it
   reports are dead in every case
-- `justerm-renderer/src/webgl.rs` · `justerm-wasm-decode/src/lib.rs` — the `///` comments that
+- `justerm-renderer/src/webgl.rs` and its `webgl/` children · `justerm-wasm-decode/src/lib.rs` — the `///` comments that
   become those two declaration files verbatim. `justerm-wasm-decode/js/colors.d.ts` is hand-written and
   ships beside them
 - `justerm-web/src/types.ts` — `DecodedFrame`, web's mirror of the published decoder's getters;

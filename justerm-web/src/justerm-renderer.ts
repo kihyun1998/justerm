@@ -969,7 +969,7 @@ export class JustermRenderer implements Renderer {
      * this object knows the *what*, which is its own grid.
      *
      * **Why a restore is one of them** (#325). `restore()` re-reads the **live** device pixel ratio
-     * and re-bakes at it (`webgl.rs`, #269) — deliberately, because a DPR notification arriving
+     * and re-bakes at it (`webgl/context.rs`, #269) — deliberately, because a DPR notification arriving
      * while the context is lost is *dropped* rather than queued. So a density that moved while the
      * context was dead is adopted there, with no setter behind it and no other signal that it
      * happened.

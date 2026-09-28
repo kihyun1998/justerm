@@ -39,7 +39,8 @@ machine that decides what the renderer does in between.
   replaces — the program, the quad VBO, each grid's VAO and instance buffer, each configuration's
   atlas — belonged to the context that died, so it is already gone; asking GL to delete it is a no-op
   that raises `INVALID_OPERATION`. Measured on master before the change: the first frame after every
-  restore raised it **five** times with the pixels perfectly correct, so nothing in the proof corpus
+  restore raised it **five** times — one atlas, the program, the quad VBO, one VAO, one instance VBO,
+  so one grid on one configuration — with the pixels perfectly correct, so nothing in the proof corpus
   could see it. The reason it is worth naming rather than tolerating is the *channel*: a uniform
   location that survives a restore pointing at the dead program raises the same
   `INVALID_OPERATION` — that is how #791's `u_bleed_px` failed — so a renderer that leaves the error
@@ -83,7 +84,8 @@ machine that decides what the renderer does in between.
   *synchronously* and merely **queues** `webglcontextlost`; the mirror holds on the way back. So the
   state machine's flag — the honest thing to report to a *consumer*, since it tracks what we have
   been told — lags the context itself, and an internal caller guarding on it is guarding on the
-  wrong thing. Measured: in the pre-dispatch window `gl.isContextLost()` is already `true`,
+  wrong thing. Measured in Chromium, immediately after `WEBGL_lose_context.loseContext()`: in the
+  pre-dispatch window `gl.isContextLost()` is already `true`,
   `drawingBufferWidth` already `0`, and the flag still `false`. The rule that falls out:
   a caller that **has** the answer in hand tests that (`resize` rejects a non-positive read-back,
   which is also right for any other cause of one), and a caller that must **ask** consults both
@@ -294,14 +296,14 @@ machine that decides what the renderer does in between.
      under it (#770, before #793 acted on it) was taken two ways: raw WebGL with no wasm involved
      (delete a pre-loss buffer → `0x0502`; delete one created after the restore → `0`) and through
      `restore` itself (the restoring `render` leaves `0x0502`, a renderer that never lost its
-     context leaves `0`), on headless SwiftShader and on a real NVIDIA/D3D11 browser alike. #770
-     judged the flag harmless — no state effect, the next frame reads clean, the only cost a
+     context leaves `0`), on headless SwiftShader and on a real NVIDIA/D3D11 browser alike. The comment
+     that carried this measurement judged the flag harmless — no state effect, the next frame reads clean, the only cost a
      consumer polling `getError` around a restore seeing a failure that is not one — and #793
      reversed that for the channel reason in its bullet. What not deleting costs on the glow side
      is under *Known holes*.
   3. **Reconcile grids whose selectors moved while the context was dead** (#772). A mid-loss
      `setFontSize` / `setLetterSpacing` writes the selector and defers the rest, so the grid now
-     names a configuration whose key it no longer matches; step 1 rebuilt the entries that exist,
+     names a configuration whose key it no longer matches; steps 1–2 rebuilt the entries that exist,
      and this moves grids between them. It runs after the commit because it needs a live context,
      which it has — `restore` is only reached on a `Rebuild`. A failure here leaves a committed,
      self-consistent restore and returns `Err`, so the retry latch stays set and the next frame

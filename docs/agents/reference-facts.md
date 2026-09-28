@@ -799,7 +799,7 @@ the reference — a family position, held, and xterm must not be read as licence
 | The `webglcontextrestored` handler calls `_initializeWebGLState()` **unguarded and without `try`/`catch`**, straight from the event listener | xterm.js | `addons/addon-webgl/src/WebglRenderer.ts:137-146` |
 | That method assigns the rectangle renderer, **then** the glyph renderer — two sequential commits with no rollback between them | xterm.js | `addons/addon-webgl/src/WebglRenderer.ts:279-287` |
 | …and `GlyphRenderer`'s constructor throws on a lost context (`throwIfFalsy(gl.getParameter(...))`). So a second loss mid-restore leaves it **half-committed** — new rectangle renderer, stale/disposed glyph renderer — with no retry latch, and the exception escapes into the listener | xterm.js | `addons/addon-webgl/src/GlyphRenderer.ts:128`, `:130` |
-| justerm cannot reach that state by construction: `restore` deletes the half-built replacements and returns `Err` on a re-bake failure, leaving the live objects in place, and the state machine keeps `pending_rebuild` set so the next frame retries | justerm-renderer | `justerm-renderer/src/webgl.rs` `restore` (the `rebake` error path), `context_loss.rs` `a_failed_rebuild_is_retried_on_the_next_frame` |
+| justerm cannot reach that state by construction: `restore` deletes the half-built replacements and returns `Err` on a re-bake failure, leaving the live objects in place, and the state machine keeps `pending_rebuild` set so the next frame retries | justerm-renderer | `justerm-renderer/src/webgl/context.rs` `restore` (the `rebake` error path), `context_loss.rs` `a_failed_rebuild_is_retried_on_the_next_frame` |
 
 ## Surviving a throw from inside a rAF loop — the reference clears its handle first (#696, verified 2026-08-03)
 
