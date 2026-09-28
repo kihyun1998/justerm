@@ -1,0 +1,139 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — the consumer's suggestion run (#972)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #972: `setSuggestion` draws consumer text after the cursor through the real pack pipeline.
+
+  Layout — one row of 10 cells, every cell's bg an explicit blue (a coloured prompt row), all blank
+  except column 7, which holds an 'R' (a right-hand prompt). The suggestion is "MMMMMMMM" in red,
+  anchored on column 2.
+
+  What each check separates:
+  · red ink in column 3 with blue still behind it: the run is drawn, in its own fg, over the cell's
+    own background.
+  · no red in column 7 or 8: the run stops at the first cell that is not blank and does not resume
+    after it (column 8 is blank again).
+  · no red in column 4 under a selection, while column 3 keeps it: a highlight keeps the engine's
+    cell, and only on the cell it covers.
+  · no red in column 5 under a bottom decoration, a top decoration or the hovered link: each keeps
+    the engine's cell, like a highlight.
+  · a wide suggestion glyph with only its right half selected draws neither half.
+  · no red anywhere while a preedit is open, and red back once it closes: the composition outranks
+    the suggestion.
+  · a dim run draws its red halfway toward the blue behind it, and never at full red: `dim` reaches
+    the cell.
+  · no red before any suggestion and after an empty one: the control, and the clear.
+
+  ⚠ Every setter before `apply_frame`: it packs immediately, while the setters only raise
+  `needs_repack`.
+
+  Runner sweeps dpr 1 / 1.1 / 1.5 / 2.
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="160" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect, fitGrid } from "./proof.js";
+  await init();
+
+  const COLS = 10, ROWS = 1, N = COLS * ROWS;
+  const RGB = (c) => ((2 << 24) | c) >>> 0; // tagged Rgb ref (as encode_color)
+  const BLUE = RGB(0x0000ff);
+  const RED = RGB(0xff0000);
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, 0xffffff, 0x000000);
+  const gl = document.querySelector("#c").getContext("webgl2");
+
+  const grab = () => { const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight]; return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h }; };
+  const px = (img, x, y) => { const i = ((img.h - 1 - y) * img.w + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
+
+  const codepoints = new Uint32Array(N).fill(0x20);
+  codepoints[7] = 0x52; // 'R'
+  const flags = new Uint16Array(N);
+  const bg = new Uint32Array(N).fill(BLUE);
+  const M = new Uint32Array(8).fill(0x4d); // "MMMMMMMM"
+
+  const NO_REF = 0xffffffff;
+  const GA = 0xac00; // U+AC00 HANGUL SYLLABLE GA, width 2
+  const draw = ({ run = M, dim = false, selection = [], preedit = [], decorations = [], link = [] } = {}) => {
+    fitGrid(r, g, COLS, ROWS);
+    r.setSuggestion(g, 2, 0, run, RED, dim);
+    r.setOverlay(g, new Uint32Array(selection), new Uint32Array(0), 0x00ff00, 0x00ff00);
+    r.setPreedit(g, 0, 0, new Uint32Array(preedit));
+    r.setDecorations(g, new Uint32Array(decorations));
+    r.setLinkHover(g, new Uint32Array(link));
+    r.apply_frame(g, COLS, ROWS, bg, new Uint32Array(N), codepoints, flags, true, undefined);
+    r.render();
+    return grab();
+  };
+
+  const cellPixels = (img, col) => {
+    const [cw, ch] = [r.cell_width(g), r.cell_height(g)];
+    const x0 = Math.round(col * cw) + 1, x1 = Math.min(Math.round((col + 1) * cw) - 1, img.w);
+    const out = [];
+    for (let y = 0; y < Math.min(ch, img.h); y++) for (let x = x0; x < x1; x++) out.push(px(img, x, y));
+    return out;
+  };
+  const isRed = (p) => p[0] > 60 && p[0] > p[2] + 40 && p[1] < 80;
+  const isBlue = (p) => p[0] < 50 && p[1] < 50 && p[2] > 200;
+  const isWhite = (p) => p[0] > 200 && p[1] > 200 && p[2] > 200;
+  const count = (ps, f) => ps.filter(f).length;
+  const reds = (img, col) => count(cellPixels(img, col), isRed);
+  const isHalfway = (p) => p[0] > 100 && p[0] < 160 && p[2] > 100 && p[2] < 160 && p[1] < 50;
+  const topRed = (img, col) => Math.max(...cellPixels(img, col).map((p) => p[0]));
+  const anyRed = (img) => [...Array(COLS).keys()].some((c) => reds(img, c) > 0);
+
+  const none = draw({ run: [] });
+  const drawn = draw();
+  const selected = draw({ selection: [0, 4, 4] });
+  const composing = draw({ preedit: [0x41] });
+  const decoBottom = draw({ decorations: [0, 5, 5, 0, 0x00ff00, NO_REF] });
+  // Background only on both layers: a decoration fg would recolour a drawn suggestion glyph and hide
+  // it from `isRed` whether or not it was withheld.
+  const decoTop = draw({ decorations: [0, 5, 5, 1, 0x00ff00, NO_REF] });
+  const hovered = draw({ link: [0, 5, 5] });
+  const wide = draw({ run: [GA] });
+  const wideHalf = draw({ run: [GA], selection: [0, 3, 3] });
+  const dimmed = draw({ dim: true });
+  const cleared = draw({ run: [] });
+
+  const checks = {
+    theControlHasNoRed: !anyRed(none),
+    theRunIsDrawnInItsOwnFg: reds(drawn, 3) > 0,
+    theCellKeepsItsOwnBackground: count(cellPixels(drawn, 3), isBlue) > 0,
+    theRunStopsAtTheRightPrompt: reds(drawn, 7) === 0 && count(cellPixels(drawn, 7), isWhite) > 0,
+    theRunDoesNotResumeAfterIt: reds(drawn, 8) === 0,
+    aSelectedCellKeepsTheEngineCell: reds(selected, 4) === 0,
+    anUnselectedNeighbourKeepsTheRun: reds(selected, 3) > 0,
+    aCompositionHidesTheWholeRun: !anyRed(composing),
+    aBottomDecorationKeepsTheEngineCell: reds(decoBottom, 5) === 0 && reds(decoBottom, 4) > 0,
+    aTopDecorationKeepsTheEngineCell: reds(decoTop, 5) === 0 && reds(decoTop, 4) > 0,
+    aHoveredLinkKeepsTheEngineCell: reds(hovered, 5) === 0 && reds(hovered, 4) > 0,
+    aWideGlyphIsDrawn: reds(wide, 2) + reds(wide, 3) > 0,
+    aHalfSelectedWideGlyphIsWithheldWhole: reds(wideHalf, 2) === 0 && reds(wideHalf, 3) === 0,
+    // DIM blends the fg halfway toward the cell's background: red over blue draws purple.
+    dimReachesTheCell: count(cellPixels(dimmed, 3), isHalfway) > 0 && topRed(dimmed, 3) < 200 && topRed(drawn, 3) > 200,
+    anEmptyRunClearsIt: !anyRed(cleared),
+  };
+
+  window.__proof = {
+    ok: Object.values(checks).every(Boolean),
+    checks,
+    dpr: devicePixelRatio,
+    measured: {
+      red3: reds(drawn, 3), blue3: count(cellPixels(drawn, 3), isBlue),
+      red7: reds(drawn, 7), red8: reds(drawn, 8), sel4: reds(selected, 4),
+      dimTop: cellPixels(dimmed, 3).sort((a, b) => b[0] - a[0])[0],
+      topRed: topRed(drawn, 3), topRedDim: topRed(dimmed, 3),
+    },
+  };
+  window.__done = true;
+
+  draw(); // leave the suggestion on screen for someone opening the page
+</script>

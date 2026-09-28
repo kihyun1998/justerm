@@ -10,6 +10,7 @@
 //! (shift the run left rather than clip it) keeps every codepoint the user is currently typing on
 //! screen. alacritty instead shortens with an ellipsis (`display/mod.rs` `StrShortener`); neither
 //! wraps.
+use std::borrow::Cow;
 
 use unicode_width::UnicodeWidthChar;
 
@@ -259,11 +260,11 @@ pub fn writes(
 /// packer instead (ADR-0028 D2, #711): `0` there already means *follow the fg the pass supplied*,
 /// so both halves write the same declaration and the split is a gate artifact rather than a rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Patch {
+pub struct Patch<'a> {
     pub codepoints: Vec<u32>,
     pub flags: Vec<u16>,
-    pub clusters: Vec<String>,
-    pub bg: Vec<u32>,
+    pub clusters: Cow<'a, [String]>,
+    pub bg: Cow<'a, [u32]>,
     pub fg: Vec<u32>,
 }
 
@@ -285,7 +286,7 @@ pub fn patch(
     cells: &crate::glyph_resolve::Cells<'_>,
     bg: &[u32],
     fg: &[u32],
-) -> Option<Patch> {
+) -> Option<Patch<'static>> {
     if run.is_empty() {
         return None;
     }
@@ -303,8 +304,8 @@ pub fn patch(
     let mut p = Patch {
         codepoints: cells.codepoints.to_vec(),
         flags: cells.flags.to_vec(),
-        clusters: cells.clusters.to_vec(),
-        bg: bg.to_vec(),
+        clusters: Cow::Owned(cells.clusters.to_vec()),
+        bg: Cow::Owned(bg.to_vec()),
         fg: fg.to_vec(),
     };
     for cw in w {
@@ -319,7 +320,7 @@ pub fn patch(
         // asked the pass to touch (#715). `Span` already draws this line — the packer's stand-downs
         // apply to the run and never to a repair — and this is the other half of that same line.
         if cw.kind == WriteKind::Run {
-            if let Some(slot) = p.bg.get_mut(cw.idx) {
+            if let Some(slot) = p.bg.to_mut().get_mut(cw.idx) {
                 *slot = 0;
             }
             if let Some(slot) = p.fg.get_mut(cw.idx) {
@@ -328,7 +329,7 @@ pub fn patch(
         }
         // A grapheme override belonging to the cell underneath would otherwise be rasterised in
         // place of the preedit's codepoint — `resolve_frame` prefers a non-empty cluster.
-        if let Some(slot) = p.clusters.get_mut(cw.idx) {
+        if let Some(slot) = p.clusters.to_mut().get_mut(cw.idx) {
             slot.clear();
         }
     }
@@ -632,7 +633,7 @@ mod tests {
             }
         }
 
-        fn patch(&self, run: &[Codepoint], col: u32) -> Patch {
+        fn patch(&self, run: &[Codepoint], col: u32) -> Patch<'static> {
             patch(run, col, 0, &self.cells(), &self.bg, &self.fg).expect("the run is on grid")
         }
     }

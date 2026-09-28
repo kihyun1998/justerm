@@ -124,7 +124,10 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
 
 ## Code
 
-- `justerm-web/src/terminal.ts` — `Terminal`, `dispose`, and the listeners it owns
+- `justerm-web/src/terminal.ts` — `Terminal`, `dispose`, and the listeners it owns. `setSuggestion`
+  (#972) refuses after `dispose`: a consumer's ranker answers asynchronously and can land after the
+  pane is gone, and the renderer throws on a disposed grid. `track` also drops the suggestion on
+  entering the alternate screen
 - `justerm-web/src/renderer.ts` — the port, and the `dispose?()` that made the renderer reachable
 - `justerm-web/src/justerm-renderer.ts` — the blink tick and the reduced-motion listener, and
   the `dispose` `Terminal` now calls

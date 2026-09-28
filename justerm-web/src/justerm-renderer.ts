@@ -429,6 +429,17 @@ export interface RendererBackend extends SurfaceBackend {
    * `TypeError` rather than a missing feature. A renderer without it is preedit-blind, which is the
    * state every consumer was in before #249. */
   setPreedit?(grid: number, col: number, row: number, codepoints: Uint32Array): number;
+  /** Retain the consumer's suggestion run ([justerm#972](https://github.com/kihyun1998/justerm/issues/972));
+   * an empty run clears it. Optional for the reason {@link setPreedit} is: a `renderer-v*` tag
+   * publishes it. */
+  setSuggestion?(
+    grid: number,
+    col: number,
+    row: number,
+    codepoints: Uint32Array,
+    fg: number,
+    dim: boolean,
+  ): void;
   /** Retain the hovered link's spans (#934), drawn underlined; empty spans clear it. Optional for
    * the reason {@link setPreedit} is: a `renderer-v*` tag publishes it. */
   setLinkHover?(grid: number, spans: Uint32Array): void;
@@ -2142,6 +2153,16 @@ export class JustermRenderer implements Renderer {
     }
     this.render();
     return caretCol;
+  }
+
+  /**
+   * Retain the consumer's suggestion at viewport cell `(col, row)`
+   * ([justerm#972](https://github.com/kihyun1998/justerm/issues/972)); an empty run clears it. Does
+   * not present: the widget re-sends the anchor inside a frame it is about to render, so a present
+   * here would draw twice.
+   */
+  setSuggestion(col: number, row: number, codepoints: Uint32Array, color: number, dim: boolean): void {
+    this.backend.setSuggestion?.(this.lease.id, col, row, codepoints, color, dim);
   }
 
   /**

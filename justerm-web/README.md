@@ -351,8 +351,8 @@ on a stricter predicate it does not export.
 ## What it does and does not do
 
 **Does**: renders frames, resolves the injected theme, tracks selection and search
-highlights, exposes a screen-reader mirror and an accessible view, turns pointer/keyboard
-events into intent.
+highlights, draws a host-supplied suggestion after the cursor (`setSuggestion`), exposes a
+screen-reader mirror and an accessible view, turns pointer/keyboard events into intent.
 
 **Does not**: read a PTY, own a transport, pick colours, or run the terminal engine. Those
 are the host's — that boundary is why the engine stays independently testable.

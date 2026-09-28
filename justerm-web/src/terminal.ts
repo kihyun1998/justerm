@@ -335,6 +335,41 @@ export function rendererNotifyingSink(sink: InputSink, renderer: Renderer): Inpu
   };
 }
 
+/** The colour a suggestion draws in. `"default"` and `indexed` follow a theme change. */
+export type SuggestionColor = "default" | { readonly indexed: number } | { readonly rgb: number };
+
+/** How {@link Terminal.setSuggestion} draws its text. */
+export interface SuggestionOptions {
+  /** Default `"default"`: the theme's foreground. */
+  readonly color?: SuggestionColor;
+  /** Draw with the SGR 2 (dim) treatment. Default `true`. */
+  readonly dim?: boolean;
+}
+
+/** `color` as a frame's tagged colour reference: high byte `0` Default, `1` Indexed, `2` Rgb. */
+function suggestionColorRef(color: SuggestionColor | undefined): number {
+  if (color === undefined || color === "default") return 0;
+  if ("indexed" in color) return (1 << 24) | (color.indexed & 0xff);
+  return ((2 << 24) | (color.rgb & 0xffffff)) >>> 0;
+}
+
+/**
+ * The viewport cell a suggestion is drawn from — the engine cursor's cell mapped through the
+ * display offset — or `undefined` when nothing should be drawn: no text, no cursor yet, the cursor's
+ * row off screen, or an IME composition open ([justerm#972](https://github.com/kihyun1998/justerm/issues/972)).
+ */
+export function suggestionCell(
+  cursor: TextareaAnchor | undefined,
+  displayOffset: number,
+  rows: number,
+  text: string,
+  composing: boolean,
+): TextareaAnchor | undefined {
+  if (!cursor || text === "" || composing) return undefined;
+  const row = cursor.row + displayOffset;
+  return row < rows ? { col: cursor.col, row } : undefined;
+}
+
 /**
  * Wiring the {@link Terminal} needs to be a complete widget, not just a frame
  * pump. Omit it and the widget is the pure source→renderer pump (headless-
@@ -530,6 +565,13 @@ export class Terminal {
    * after it falls back to the frame stream instead of reaching past it for a run that may be
    * arbitrarily old — rows that have since scrolled away. */
   private preeditEnd: TextareaAnchor | undefined;
+  /** The consumer's suggestion text and how it draws ([justerm#972](https://github.com/kihyun1998/justerm/issues/972)). `""` = none. */
+  private suggestionText = "";
+  private suggestionColor = 0;
+  private suggestionDim = true;
+  /** The viewport cell the renderer was last given the suggestion at, or `undefined` when nothing
+   * is drawn. */
+  private suggestionPainted: TextareaAnchor | undefined;
   /** The link state (#934), when {@link TerminalOptions.links} is wired. */
   private links: LinkTracker | undefined;
   /** The pointer router, once the DOM group is attached — a frame re-asks its hover question. */
@@ -556,6 +598,29 @@ export class Terminal {
    * {@link Terminal.dispose} it has nothing left to affect. */
   setScrollOptions(opts: ScrollOptions): void {
     this.scroller.setOptions(opts);
+  }
+
+  /**
+   * Draw `text` after the cursor, as an autosuggestion at a shell prompt; `""` clears it.
+   *
+   * It is drawn by the renderer and stored in no cell, so it never reaches copy or search. It
+   * starts at the engine's cursor and moves with it on every frame. It stops at the first cell that
+   * is not blank and at the right edge. A selection, search match, decoration or hovered link
+   * keeps the engine's cell under it. It is hidden while an IME composition is open and when the
+   * cursor's row is scrolled out of view.
+   *
+   * Returns `false`, drawing nothing, after {@link Terminal.dispose} and while the alternate screen is active. Entering the alternate
+   * screen drops the suggestion, and leaving it does not bring it back. Needs a renderer with
+   * {@link Renderer.setSuggestion}; with one that lacks it this returns `true` and draws nothing.
+   */
+  setSuggestion(text: string, options?: SuggestionOptions): boolean {
+    if (this.disposed || (this.altScreen && text !== "")) return false;
+    this.suggestionText = text;
+    this.suggestionColor = suggestionColorRef(options?.color);
+    this.suggestionDim = options?.dim ?? true;
+    this.paintSuggestion(true);
+    this.renderer.render();
+    return true;
   }
 
   /** Focus the keyboard/IME input target (the hidden textarea, #116). Consumers
@@ -604,6 +669,7 @@ export class Terminal {
       this.renderer.applyFrame(frame);
       // Before the links: they re-ask the hover's question against this frame's mask.
       this.track(frame);
+      this.paintSuggestion(false);
       this.applyingFrame = true;
       try {
         this.links?.applyFrame(frame);
@@ -709,6 +775,7 @@ export class Terminal {
     if (alt !== this.altScreen) {
       this.altScreen = alt;
       this.scroller.reset();
+      if (alt) this.suggestionText = "";
     }
   }
 
@@ -790,6 +857,7 @@ export class Terminal {
       this.preeditEnd = undefined;
       composition.compositionStart();
       this.renderer.setComposing?.(true);
+      if (this.paintSuggestion(false)) this.renderer.render();
     };
     const onUpdate = (e: CompositionEvent): void => {
       composition.compositionUpdate(e.data);
@@ -798,6 +866,7 @@ export class Terminal {
     const onEnd = (): void => {
       composition.compositionEnd();
       this.renderer.setComposing?.(false);
+      if (this.paintSuggestion(false)) this.renderer.render();
       // Clear the drawn run BEFORE the commit is anywhere near the grid. Measured (#249): the
       // committed text leaves as an intent one deferred read later, by which time the next
       // composition has already started — so there is no frame to hand the job over to, and
@@ -1032,6 +1101,32 @@ export class Terminal {
     // end" clause, reached by a second route. The fallback is the bounded wrong that clause already
     // chose over an unbounded one; it needs a view that never returns to the bottom to happen at
     // all, which needs a consumer that did not wire `onScroll`.
+  }
+
+  /**
+   * Give the renderer the suggestion at {@link suggestionCell}, or clear it. Sends only when the cell
+   * changed or something drawn has to go, unless `force`; returns whether it sent.
+   */
+  private paintSuggestion(force: boolean): boolean {
+    const want = suggestionCell(
+      this.cursorAnchor,
+      this.frameOffset,
+      this.rows,
+      this.suggestionText,
+      this.composition?.composing ?? false,
+    );
+    const painted = this.suggestionPainted;
+    if (!want) {
+      this.suggestionPainted = undefined;
+      if (!painted) return false;
+      this.renderer.setSuggestion?.(painted.col, painted.row, EMPTY_PREEDIT, 0, false);
+      return true;
+    }
+    if (!force && painted && painted.col === want.col && painted.row === want.row) return false;
+    const codepoints = Uint32Array.from(this.suggestionText, (c) => c.codePointAt(0) ?? 0);
+    this.renderer.setSuggestion?.(want.col, want.row, codepoints, this.suggestionColor, this.suggestionDim);
+    this.suggestionPainted = want;
+    return true;
   }
 
   /**

@@ -43,6 +43,46 @@ becomes an actual colour — the engine never does that by identity.
   composition stayed open. `preedit::Span` had drawn the line correctly the whole time; the patch had
   not, and the two halves of one pass are what disagreed. The rule both now share: a repair blanks the
   glyph, never the pen.
+- **The consumer's suggestion is a second glyph-supplying pass, and it inverts the preedit's answers**
+  (#972, ADR-0019's 2026-09-28 amendment). It shares only the per-codepoint width with the preedit and no
+  state (ADR-0028 D4), because the two refer to different things: the preedit is browser state the engine
+  cannot know, the suggestion hangs off the engine's cursor. So:
+  - **Anchor: the engine cursor, re-sent by justerm-web on every frame**, mapped through the display
+    offset and cleared when off screen. Not the renderer's retained caret — that is cleared on every
+    blink-off phase and under DECTCEM, so a pass anchored there would blink with the caret; and not a
+    latched point, which drifts on output scroll and on resize. The cost is one frame at the wrong cell
+    when output moves the cursor before the consumer clears it.
+  - **Geometry: keep the head, clip on the right.** `preedit::range` shifts left to keep its tail, which
+    here would draw over the text already typed. No underline.
+  - **"Blank" means *draws nothing but its background*.** A space or empty codepoint, no grapheme, not
+    half of a pair, and none of `INVERSE`, any underline or strikethrough — each of those puts ink on an
+    empty cell. This also covers pending wrap, which the wire does not carry: at the right margin the
+    cursor cell still holds the character just typed, so "draw from the cursor cell" would overwrite it.
+    The codepoint half is [only U+0020 can be padding](../invariant/only-u0020-can-be-padding.md): an
+    NBSP or U+3000 was printed by the application, so it stops the run although it draws no ink.
+  - **Withheld, not stood down.** A cell under a highlight, either decoration layer or the hovered link
+    keeps the engine's cell, and a wide suggestion glyph with either half covered is withheld whole. The
+    run still counts that cell. Link hover belongs here too: the suggestion's flags carry no underline,
+    so a hover would otherwise draw one in the covered cell's `SGR 58` colour.
+  - **Colour: a tagged reference, not RGB.** A Default or Indexed colour re-resolves on `setTheme` with
+    no push from the consumer, which an absolute colour would need. `DIM` is the 50 % blend toward the
+    cell's background, so over a coloured row it reads as a mix of the two — measured `[128,0,127]` for
+    red over blue in `demo/suggestion.html`.
+  - **Composition: hidden from `compositionstart` to `compositionend`, by the widget** (`suggestionCell`
+    keys on `composing`). The renderer also yields to a drawn preedit, but that alone misses the start
+    of a composition and an update to `""`. The consumer cannot do it: keys an IME owns never reach
+    its key hook.
+  - **Colour on the web surface is a union** (`"default" | { indexed } | { rgb }`), encoded to the
+    tagged reference in the widget. Every other colour the widget takes is a plain `0xRRGGBB`, so a
+    bare number here would read as RGB and silently draw as Default.
+  - **Cost: the patch borrows the clusters and backgrounds.** A written cell has no cluster to clear
+    (a cell with one stops the run) and keeps its background, so only codepoints, flags and fg are
+    copied. Measured on a 200×60 grid, release host build: 44 µs per pack against `pack_instances`'
+    ~620 µs, down from ~180 µs when all five columns were copied. The copy happens on every pack while
+    a suggestion is set, which at a prompt is every output frame.
+  - **Alternate screen: dropped by justerm-web on entry and refused while there.** The renderer's damage
+    header carries no alt flag. Masking would bring a stale suggestion back after `:q`, because the
+    consumer's ranker answers asynchronously after Enter.
 - **Back-to-front, and decorations sit on *both* sides of the highlight:**
   `base < bottom-decoration < highlight < top-decoration`. A decoration is not simply "above" or
   "below" content — it chooses a side of the selection/search layer, which is what
@@ -145,6 +185,10 @@ becomes an actual colour — the engine never does that by identity.
 - `justerm-renderer/src/frame.rs` — `pack_instances`, the instance layout
 - `justerm-renderer/src/preedit.rs` — `patch`, `WriteKind`, `Span`: the composition's copy-on-write,
   applied before anything here resolves, and the one place that decides which cells are the pass's
+- `justerm-renderer/src/suggestion.rs` — `is_blank`, `writes`, `patch`: the consumer's suggestion run
+  (#972), applied only when no composition is open
+- `justerm-web/src/terminal.ts` — `Terminal.setSuggestion`, `paintSuggestion`: the anchor and the
+  alternate-screen drop
 - `justerm-renderer/src/render_policy.rs` — `ColorPolicy`, `resolve_cell`, `dim_foreground`
 - `justerm-renderer/src/overlay.rs` — `HighlightKind`, `composite_bg`, `blend_over`,
   `should_blend_kind`
@@ -172,6 +216,10 @@ sites, the outlier, or demoted — so a difference from it is not by itself a de
 - [a span covers a wide pair whole](../invariant/a-span-covers-a-wide-pair-whole.md)
   — this is where every span in the family finally meets the flags: the three overlay lookups, both
   decoration layers and the caret all resolve their pair through one helper (#454)
+- [composition is browser-owned state](../invariant/composition-is-browser-owned-state.md) — the
+  suggestion is hidden for a whole composition, which only the widget can see (#972)
+- [only U+0020 can be padding](../invariant/only-u0020-can-be-padding.md) — the suggestion's
+  "blank" test is the by-cell form of it, plus the flags that ink an empty cell (#972)
 - [workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)
   — this crate is outside the root workspace, so no `--workspace` or `--all` command reaches it;
   every gate it has is named for it by `--manifest-path`
@@ -198,6 +246,11 @@ sites, the outlier, or demoted — so a difference from it is not by itself a de
   pair rule (#454, [caret drawing](caret-drawing.md)), a caret on either half covers the whole glyph,
   so the step-back is now redundant rather than necessary. The behaviour is unchanged and harmless;
   whether to keep it is undecided.
+- **A suggestion's zero-width codepoint takes a cell of its own** (#972). The width is per codepoint, as
+  for the preedit, so a combining mark measures narrow here while core attaches it to the previous cell;
+  a decomposed (NFD) suggestion therefore draws one cell per mark and disagrees with what the shell echoes
+  on accept. ADR-0028 excuses this for the preedit because it re-renders on every keystroke; a suggestion
+  lives longer. Reach unmeasured.
 - **The policy setters have no records.** `set_bg_alpha`, `set_minimum_contrast_ratio`,
   `set_bold_to_bright`, `set_selection_foreground` each change what a cell resolves to, and ADR-0019
   governs the *model* rather than the individual knobs.

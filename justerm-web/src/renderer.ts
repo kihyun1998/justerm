@@ -61,6 +61,15 @@ export interface Renderer {
    */
   setPreedit?(col: number, row: number, codepoints: Uint32Array): number;
   /**
+   * Draw the consumer's suggestion after the cursor at viewport cell `(col, row)`, or clear it with
+   * an empty run ([justerm#972](https://github.com/kihyun1998/justerm/issues/972)). `color` is a
+   * tagged colour reference like a frame's `fg`; `dim` draws it with the SGR 2 treatment. Renderer
+   * state only: no cell of the engine changes. Does not present; the caller renders.
+   *
+   * Optional: a renderer that omits it draws no suggestion.
+   */
+  setSuggestion?(col: number, row: number, codepoints: Uint32Array, color: number, dim: boolean): void;
+  /**
    * Underline the hovered link's cells, or clear it with empty spans. `spans` is stride-3
    * `(row, left, right)` viewport triples, `left..=right` inclusive. Kept until the next call.
    *

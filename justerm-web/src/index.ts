@@ -52,7 +52,7 @@ export {
   wheelGoesToApp,
   wheelScrollTarget,
 } from "./terminal";
-export type { InputScrollSignal, TerminalOptions, WheelAction } from "./terminal";
+export type { InputScrollSignal, SuggestionColor, SuggestionOptions, TerminalOptions, WheelAction } from "./terminal";
 // `LocalPointer` is the shape `TerminalOptions.selection` takes (#902) — a SelectionController has it.
 export type { LocalPointer } from "./pointer";
 export { JustermRenderer } from "./justerm-renderer";
