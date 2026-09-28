@@ -187,6 +187,17 @@ a justerm shape here wrong, only corroborate one.
   port-owner check, which retired with that script (`42e3a70`) and was not moved anywhere. Now an
   occupied port fails at start with *"is already used"*: stop the listener (your own `pnpm demo`
   included) rather than re-enabling reuse.
+- **A present is the unit of cost headless, and `__seedRows` makes one.** The runner's WebGL is
+  SwiftShader, software GL: a present costs ~60–70ms there against ~2ms on a GPU (measured on one
+  machine, `__seedRows(n)` then a no-op `evaluate`: headless 0.55 / 3.3 / 9.2 / 18.2s for n = 10 /
+  50 / 150 / 300, headed on a GTX 1050 Ti 0.03 / 0.14 / 0.29 / 0.52s). The cost lands on the page's
+  main thread *after* the helper returns — the next Playwright call, not the seed, is what waits;
+  the six 150-row tests spent it resolving `locator('#term')` (~11s locally, 17–30s on CI) against
+  the 30s test timeout; the three #913 tests failed about half their CI runs from `27c73ce` to
+  `5e607f2`. So the helper
+  still drives the real `appendTick` (#818's reason stands) but withholds every tick's frame and
+  presents once at the end. The trap it leaves: a test that needs the per-tick frames — scroll ops,
+  the a11y announce of each row — must not seed; it drives `appendTick`'s timer or `__output`.
 
 ## Code
 
