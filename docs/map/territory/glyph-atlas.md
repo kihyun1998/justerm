@@ -177,3 +177,6 @@ target**, not one of the three reference terminals, and pinned by nothing.
   that no fringe appears. A platform whose dark mask is not one curve of the light
   mask is the record's falsifier. The browser also declines LCD text for large glyphs (none at 49 device px) and for
   a face it draws aliased, so `demo/subpixel.html` mounts its grid at 28 CSS px to exercise it at all.
+  The Linux measurement predates `willReadFrequently` (#1019); readback bytes were compared with and
+  without it on Windows 11 only, and no gate would notice a platform that stops drawing LCD text on a
+  CPU-backed canvas, since `subpixel.html` does not require fringes.
