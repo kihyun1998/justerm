@@ -16,7 +16,7 @@ impl JustermRenderer {
     /// reinterpreted as `i16`; `blink_on` `0`/`1`). `spans` is the span directory
     /// (`SPAN_STRIDE` `u32`s each);
     /// `codepoints`/`fg`/`bg`/`flags`/`extra` are the span-ordered cell columns.
-    // Eight column views at the wasm-bindgen boundary, one argument each
+    // Eight array views at the wasm-bindgen boundary, one argument each
     // (`docs/map/territory/frame-adapter.md` § The damage entry point's arguments).
     #[allow(clippy::too_many_arguments)]
     pub fn apply_damage(
@@ -53,8 +53,7 @@ impl JustermRenderer {
     /// (`compositionupdate.data`); an empty array clears it.
     ///
     /// **A composition reaches no frame and no wire**, so the consumer is the only source and must
-    /// re-push on every `compositionupdate` ([ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md)).
-    /// An update whose data is unchanged may be skipped.
+    /// re-push on every `compositionupdate` whose data changed ([ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md)).
     ///
     /// The run may extend past the anchor's row end: it shifts left to stay whole rather than
     /// clipping. Width is per codepoint, the same `unicode-width` answer the engine gives, so a VS16
@@ -256,8 +255,10 @@ impl JustermRenderer {
     /// page/desktop behind the canvas, while glyph pixels stay opaque. Clamped to `[0, 1]`; takes
     /// effect on the next `render`.
     ///
-    /// A translucent background contributes to a cell's colour in proportion to how translucent it
-    /// is, so at `0` an antialiased glyph edge shows no background colour at all.
+    /// Only the **default** background goes translucent; a cell with its own background (an SGR
+    /// colour, an inverse, a highlight) and the block cursor stay opaque. A translucent background
+    /// contributes to a cell's colour in proportion to how translucent it is, so at `0` a glyph edge
+    /// over the default background shows no background colour.
     ///
     /// **A non-finite value falls back to `1.0` (opaque).** Why, and what `NaN` did before the
     /// guard: [`docs/map/territory/cell-compositing.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/cell-compositing.md)

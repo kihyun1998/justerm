@@ -58,6 +58,14 @@ this is what resolves it.
     It does not undo #814's inert drag through a hidden pane: that pointer still has its button down.
 - **The bit positions mirror `justerm_core::CellFlags`** — the renderer decodes the same word the
   engine packed, so a flag added on one side is a silent no-op on the other until both move.
+- **A live palette swap is a re-pack** (`setPalette`). The palette *values* are the consumer's and
+  re-resolving every retained cell against them is the renderer's (ADR-0017), so the swap marks the
+  grid dirty and the next `render` re-packs; nothing else is re-pushed. The re-pack re-resolves every
+  cell's colour, and the render's clear reads `default_bg` fresh. Translucency used to need a
+  uniform re-push here as well; it no longer does, because its trigger is the packer's per-cell
+  `bg_default` provenance flag (#455, [cell compositing](cell-compositing.md) § `bg_default` is
+  complete by construction), which does not depend on
+  the palette.
 
 ### Where the policies meet the highlight (`frame.rs` `pack_instances`)
 
@@ -117,13 +125,6 @@ this is what resolves it.
   glyph is gone, the line is the only ink, and a decoration paints one colour across its whole span
   anyway, so nothing can seam. Where the line's ink forks and which cells compute it:
   [cell compositing](cell-compositing.md) § The packer.
-- **A live palette swap is a re-pack** (`setPalette`). The palette *values* are the consumer's and
-  re-resolving every retained cell against them is the renderer's (ADR-0017), so the swap marks the
-  grid dirty and the next `render` re-packs; nothing else is re-pushed. The re-pack re-resolves every
-  cell's colour, and the render's clear reads `default_bg` fresh. Translucency used to need a
-  uniform re-push here as well; it no longer does, because its trigger is the packer's per-cell
-  `bg_default` provenance flag ([cell compositing](cell-compositing.md)), which does not depend on
-  the palette.
 
 ## Code
 

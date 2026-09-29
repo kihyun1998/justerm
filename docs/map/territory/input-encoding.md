@@ -191,8 +191,8 @@ Nothing governs the encoding itself.
 - **`CellGeometry` is CSS px, and saying so is load-bearing.** The published README's example once
   built it from `renderer.cellSize()` — device px — so every click resolved to the wrong cell at
   `devicePixelRatio !== 1`; nothing type-checks a unit.
-- **The preedit run's caret column** (`setPreedit`). A composition is the one piece of renderer state
-  with no representation anywhere in the engine
+- **The preedit run's caret column** (`setPreedit`). A composition has no representation anywhere in
+  the engine
   ([ADR-0028](../../adr/0028-composition-surfaces-have-one-writer-each.md)): it is browser-owned and
   reaches no frame and no wire, so the consumer is the only possible source and re-pushes it on every
   `compositionupdate`. Skipping an update whose data is unchanged is worth doing — a real IME emits

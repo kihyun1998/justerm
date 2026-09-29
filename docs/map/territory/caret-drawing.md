@@ -101,8 +101,8 @@ about *how the caret looks* is decided here.
   a bar's width is clamped by its own cell, not by the cell's height. `cursor_dx` mirrors
   `cursor::covers`.
 - **The stroke thickness is a clamped fraction of the cell** (`setCursorThickness`). It is
-  alacritty's rule (`alacritty/src/display/cursor.rs:25`, `(thickness * width).round().max(1.)`,
-  default `Percentage::new(0.15)`), and the setter added only the configurability the mechanism
+  alacritty's rule and default ([cursor policy knobs](../../agents/reference-facts.md#cursor-policy-knobs--where-each-reference-puts-them-580-verified-2026-08-10)),
+  and the setter added only the configurability the mechanism
   already had. The `[0, 1]` clamp is load-bearing, not hygiene: `cursor_thickness` computes
   `(frac * cell_w).round() as u32`, and an unclamped `f32::INFINITY` saturates that cast to
   `u32::MAX` device pixels. `NaN` passes the clamp and is caught a layer deeper — `frac.max(0.0)`
