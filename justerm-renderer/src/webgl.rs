@@ -1,8 +1,8 @@
 //! Thin `#[wasm_bindgen]` + WebGL2 glue — browser-only (wasm32), verified in the demo.
 //!
 //! `JustermRenderer` and its three tiers (global, per-config, per-grid), the accessors every export
-//! goes through, the constructor and the GL builders. The exports themselves live in the child
-//! modules below, one per axis. A frame's cells are resolved against the injected palette and the
+//! goes through, the constructor and the GL builders. Every other export except `cursorRects` lives
+//! in the child modules below, one per axis. A frame's cells are resolved against the injected palette and the
 //! glyph cache, packed one instance per cell — highlights folded into the packed background — and
 //! drawn with one instanced call per grid; the cursor is a shader uniform composited last.
 
@@ -89,7 +89,8 @@ struct GridBuffers {
     instance_vbo: glow::Buffer,
 }
 
-/// The GL program, the shared quad buffer and the uniform locations, built once (`build_pipeline`).
+/// The GL program, the shared quad buffer and the uniform locations (`build_pipeline`), built at
+/// construction and again by each restore.
 struct Pipeline {
     program: glow::Program,
     /// The one quad every cell instance is drawn from — static, identical for every grid, and
@@ -265,9 +266,10 @@ impl ConfigTier {
 ///
 /// Everything a consumer can set differently per terminal is a **selector** and lands here, including
 /// the seven font/metric fields: they are per-grid *as settings*, while the machinery they key
-/// (`ConfigTier`) is not. `instance_vbo` and `vao` are per-grid too. A method that touches only this
-/// tier is an inherent method here rather than on the facade. Why each:
-/// `docs/map/territory/multi-viewport.md` § Resources sort into three tiers.
+/// (`ConfigTier`) is not. `instance_vbo` and `vao` are per-grid too (ADR-0021 D2). A method that
+/// touches only this tier is an inherent method here rather than on the facade. Why:
+/// `docs/map/territory/multi-viewport.md` § Resources sort into three tiers, and its `## Blast
+/// radius` entry for GPU upload.
 struct GridTier {
     /// The configuration this grid draws through — the atlas, rasteriser, glyph cache and cell it
     /// selects into (#772). A **handle, not a copy**: the seven selector fields below say what this
@@ -442,8 +444,9 @@ fn upload_glyph(
 #[wasm_bindgen]
 impl JustermRenderer {
     /// The registry slot a consumer's grid handle addresses, or the error the wasm boundary throws
-    /// (#773). **Every per-grid export starts here.** An unknown or removed id is a caller error
-    /// arriving from JS, so it throws rather than silently addressing something.
+    /// (#773). Every export that addresses a grid's state starts here; the registry exports ask
+    /// `GridRegistry` by id. An unknown or removed id is a caller error arriving from JS, so it throws
+    /// rather than silently addressing something.
     fn slot(&self, grid: u32) -> Result<usize, JsValue> {
         self.grids
             .index_of(GridId::from_raw(grid))
@@ -658,8 +661,8 @@ impl JustermRenderer {
             // neighbour slots(4), neighbour inks(4)] → locations 1..9.
             let instance_vbo = gl.create_buffer().map_err(js_err)?;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_vbo));
-            // Byte offsets come from `frame`'s named float offsets where it names one (#791;
-            // `docs/map/territory/gpu-upload.md` § The instance layout is stated once).
+            // Byte offsets come from `frame`'s named float offsets (#791), except three literals
+            // (`docs/map/territory/gpu-upload.md` § The instance layout is stated once).
             const F: i32 = 4; // bytes per float
             for (loc, size, offset) in [
                 (1u32, 2i32, 0i32),
@@ -705,9 +708,9 @@ impl JustermRenderer {
                 (cell_h * GLYPHS_PER_LAYER as u32) as i32,
                 TOTAL_LAYERS,
             );
-            // NEAREST, matching beamterm: 32 glyphs pack vertically per layer, and LINEAR would
-            // interpolate across a band seam (adjacent-glyph bleed) under mediump precision or a
-            // non-1:1 cell↔texel mapping (#265 DPR).
+            // NEAREST, matching beamterm: a cell samples texel-exact. The band seam is guarded by
+            // `bitmap::PADDING`, not by the filter (`docs/map/territory/glyph-atlas.md` § How the
+            // fragment stage reads a slot).
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D_ARRAY,
                 glow::TEXTURE_MIN_FILTER,

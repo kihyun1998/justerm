@@ -45,11 +45,12 @@ contiguous ranges that actually changed.
   release cycle, which is the whole argument for deriving it. The attribute byte offsets come from
   `frame`'s named float offsets where it names one (#791): the attribute table and the packer are
   two statements of one layout, and a literal is how they come apart when a field is appended.
-  Three offsets are still literals (fg at 5, the two line inks at 9 and 10), so a float inserted
-  before them moves them by hand. The upload baseline (`uploaded`) mirrors the live buffer and is
-  therefore valid only while that buffer persists — a restore invalidates it, or an identical frame
-  diffs to zero ranges and never refills the fresh buffer (found by #263's adversarial pass,
-  implemented in #269).
+  Three offsets are still literals: fg at 5, although `frame::FG_RGB` names it, and the two line
+  inks at 9 and 10, which `frame` does not name — so a float inserted before them moves them by hand.
+- **The upload baseline is valid only while its buffer persists.** `uploaded` mirrors the live
+  instance buffer, so a restore invalidates it — otherwise an identical frame diffs to zero ranges
+  and never refills the fresh, empty buffer, a blank render that will not self-heal (found by #263's
+  adversarial pass, implemented in #269).
 
 ## Code
 

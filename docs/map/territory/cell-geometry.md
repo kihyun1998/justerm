@@ -26,7 +26,8 @@ for the tier and its lifetime.
 
 ## Design model
 
-- **Device pixels are the source of truth; the CSS view is derived.** The rasteriser reads the
+- **Device pixels are the source of truth; the CSS view is derived** — the renderer, not the
+  consumer, owns the DPR the atlas is baked at, as beamterm's `device_pixel_ratio` does. The rasteriser reads the
   advance and ink-scans `█` at `FONT_SIZE * dpr`, the shader lays the grid out in device px (`u_cell_size`), and a
   single-grid consumer can size the drawing buffer to an exact multiple of them. `cssCellWidth()` is a **float** on purpose, so the derivation
   can be undone — a consumer's `cols * cssCellWidth()` box scales back to `cols * cell` device px

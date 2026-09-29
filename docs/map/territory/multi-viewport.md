@@ -166,8 +166,8 @@ warns about, so prefer `## Code` over it if the two ever disagree again.)
     bakes — a rebuild that fails part-way leaves it where it was — so the number tracks
     configurations the renderer is drawing through rather than rasterising work it performed, which
     is what a delta is read for and what keeps the delta deterministic. `bakes` is the *second*
-    diagnostic counter, so it is the one ADR-0021 D5 left the placement of to: it lands beside
-    `packs` because the question is the same shape — a proof reading a delta, not a rendering control.
+    diagnostic counter, the one whose placement D5 leaves open: it lands beside `packs` because the
+    question is the same shape — a proof reading a delta, not a rendering control.
 - **The selector funnel** (`adopt_selectors`, and `setDevicePixelRatio` beside it). All seven
   selector setters — size, family, both weights, the subpixel setting, and the two spacings through
   `adopt_spacing` — go through one site, so none of them can decide any of this differently. It owes
