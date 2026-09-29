@@ -190,6 +190,49 @@ warns about, so prefer `## Code` over it if the two ever disagree again.)
   atomically across the whole registry: every replacement is built before any is committed. That
   matters more with several entries than it did with one — a half-applied density would leave two
   grids drawing through atlases baked at different densities, with one shared `dpr` describing both.
+- **The draw loop** (`render`, `draw`, `draw_grid`), each rule with its reason:
+  - *Pack once, in `render`, per drawn grid that a mutation dirtied* (#421). A frame that set the
+    overlay, the decorations and `apply_damage` marks the grid dirty three times and packs once.
+    A pack error leaves the flag set, so the next render retries, and it is **held**: one grid's
+    bad frame must not blank its neighbours, so the frame still draws and the error surfaces after.
+  - *A grid with no viewport is not packed either* (#771). Measured (`## Known holes`, ≈0.4 ms per
+    hidden 120×40 grid per frame), and free rather than clever: the dirty flag stays set while the
+    grid is hidden, so the first render after it is placed packs it once. ghostty gates the draw and
+    the CPU rebuild on the same state; alacritty gates only the paint
+    ([the registry rows](../../agents/reference-facts.md#a-terminal-registry-and-what-registered-but-not-drawn-is-made-of-770-verified-2026-08-19)).
+  - *One pin set spans the whole loop* (#772). Without it the second grid's pack repoints slots the
+    first committed earlier in the same frame, and the first is not re-diffed because its instance
+    floats did not change — it draws stably wrong (the 911 / 891 measurement under `## Known
+    holes`). With the pin the second pack is refused, which is what an over-capacity single frame
+    has always got (`FrameExceedsCapacity`), extended to the union. A grid also re-packs when its
+    configuration's eviction count moved since it last packed: the upload diff cannot see a slot a
+    sibling repointed, and comparing counters costs a `u32` per grid per frame.
+  - *A refused pack dirties every drawn grid on its configuration, so the refusal is a fixed point.*
+    The pin covers only grids that pack this frame, and a clean grid does not pack — so without it
+    the refused grid's sibling goes clean next frame, leaves the pins empty, and the refused grid
+    succeeds by repointing the sibling's slots: measured, a grid alternating 891 (right) / 911
+    (wrong) with the error on alternate frames. Dirtying them all makes every one pack each frame
+    for as long as the overflow lasts, so the earlier ones pin first and the same grid is refused
+    every time — registration order decides, the grid registered first wins, the order the rest of
+    the loop already uses. The extra packing is bounded by the overflow, in a state that is already
+    reporting an error every frame.
+  - *The full-buffer clear is to transparent.* The buffer is one shared plane the grids need not tile
+    (ADR-0021's z-order constraint: every terminal is an overlay on it), so the area between two
+    rects belongs to the page behind the canvas — painting a terminal's colour there would decide a
+    background nobody gave. A single grid placed over the whole buffer, the single-grid arrangement
+    since #773, sees no difference; a smaller rect gets a transparent margin, honestly. three.js's
+    multiple-views example does no full clear (`examples/webgl_multiple_views.html:252-278`) because
+    its views tile — a silence, not a divergence.
+  - *Each grid then draws under its own scissor.* The viewport alone clips the cells, which are
+    drawn in clip space mapped onto the rect, but `clear` ignores the viewport — without the scissor
+    each grid's background clear would wipe the whole buffer and only the last grid would show. Its
+    projection is sized to the rect, not the buffer, since `gl.viewport` already maps clip space
+    onto the rect and a buffer-sized one would scale the grid by `buffer / rect`. Every uniform is
+    set per draw because two grids in two fonts draw through two atlases in one frame —
+    `u_cell_uv` included, set once per program until #772: the guard band is a fixed pixel count,
+    so its *fraction* differs with the padded cell. The grid's own clear uses its `bg_alpha`, so an
+    area of its rect no cell covers is see-through too (#298); a rect of `cols * cellWidth(grid)`
+    device px leaves none, and since #773 that arithmetic is the consumer's (#331).
 - **"Surface" means one thing here and the opposite in the references — the single most reliable way
   to get this territory wrong.** ADR-0021's `TerminalSurface` is **one per app**: the canvas, the
   context, the atlas registry and the single frame loop. Ghostty's `Surface` is **one per terminal**,

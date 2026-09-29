@@ -62,6 +62,8 @@ a coherent full viewport.
   struct-of-arrays transport. The underline colour column (#520, SGR 58) is optional and
   **trailing** for the same reason as `apply_frame`'s: a caller that predates it keeps working, and
   the scatter reads it tolerantly — omitted means every cell's underline colour is Default.
+  `apply_frame` takes its dense frame the same way, and its underline column is likewise not grouped
+  with the colour columns, because that would shift every existing call.
 
 ## Code
 

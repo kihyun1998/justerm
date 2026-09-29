@@ -29,7 +29,9 @@ becomes an actual colour — the engine never does that by identity.
   browser owns and the application never declared. So the composed cells leave the stack at resolve
   time and come back with bg, fg and glyph together, and `pack_instances` stands every stage below
   glyph resolution down inside the run. Replacing only the resolver's *inputs* is not enough and was
-  measured not to be: a selection covering the run still tinted it.
+  measured not to be: a selection covering the run still tinted it. The run draws in the terminal's
+  default fg over its default bg — ghostty's choice, the terminal foreground and no background cell
+  ([drawing the preedit](../../agents/reference-facts.md#drawing-the-preedit-two-draw-into-the-grid-one-draws-a-dom-box-249-verified-2026-08-03)).
   **Every per-cell column owes an answer for a composed cell; which half gives it is free**
   (ADR-0028 D2, #711). Five columns are re-supplied by the patch and `underline_colors` is stood down
   in the packer, and that split is a gate artifact rather than a rule — `0` already means *follow the

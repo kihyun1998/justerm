@@ -108,6 +108,14 @@ about *how the caret looks* is decided here.
   `u32::MAX` device pixels. `NaN` passes the clamp and is caught a layer deeper — `frac.max(0.0)`
   returns `0.0` for it (`f32::max` yields the non-NaN operand) — so the `.max(1)` floor gives it a
   one-pixel stroke, as it does `0`.
+- **The contrast guard reads the packed background** (#368, `draw_grid`). The cursor inverts to the
+  default fg/bg when its contrast with the cell's *resolved* bg — looked up in the packed instances
+  — is below the injected threshold; only the renderer has that resolved RGB, which is why the
+  mechanism lives here (ADR-0017). The index is bounded only by `get()`, not by `col < last_cols`,
+  so a cursor with `col >= last_cols` on a small row reads a *different* row's cell. That is
+  harmless because the shader's `covers()` paints the cursor only where a real cell has
+  `col ∈ [cursor.col, cursor.col + span)`, i.e. only when `col < cols` — a mis-read guarded colour
+  is never sampled by any fragment. It stays valid only while `covers()` keeps that gate.
 
 ## Code
 
