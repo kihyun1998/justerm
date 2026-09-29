@@ -548,7 +548,7 @@ export class JustermRenderer implements Renderer {
      * for the object's life — what changed at renderer 0.15.0 is that the grid has to be *named* on
      * every call that acts on a terminal rather than on the surface.
      *
-     * A lease rather than the bare id, so a call after teardown cannot address a stale grid — see
+     * A lease rather than the bare id, so no registry call has to cope with a stale id — see
      * {@link GridLease}.
      */
     private readonly lease: GridLease,
@@ -608,7 +608,8 @@ export class JustermRenderer implements Renderer {
    * case of this one rather than a second path through the code.
    *
    * Everything else is identical, deliberately: the widget experience is unchanged and the only new
-   * noun is the surface. The consumer still owns the DOM overlay — the hidden IME textarea, the a11y
+   * noun is the surface ([ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)).
+   * The consumer still owns the DOM overlay — the hidden IME textarea, the a11y
    * tree, the scrollbar — and one canvas means every terminal shares one stacking plane, so arbitrary
    * DOM cannot be interleaved between two of them.
    */

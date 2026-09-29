@@ -355,9 +355,10 @@ Two things came out of it that are worth carrying rather than re-deriving:
   #805, one issue earlier, in this same file.
 - **Hidden-ness is state the widget consults, never a command it issues once.** Both references keep
   the same shape and neither issues a one-shot — xterm.js holds `_isPaused` and consults it in
-  `refreshRows` (`src/browser/services/RenderService.ts:140-153`), ghostty holds `flags.visible` and
-  consults it at draw (`src/renderer/Thread.zig:528`); a cross-check, since the derivation below stands
-  without it. Seven entry points
+  `refreshRows` (`src/browser/services/RenderService.ts:156-160` at the pin; not yet a
+  `reference-facts.md` row), and ghostty's `flags.visible` is the
+  [registry rows](../../agents/reference-facts.md#a-terminal-registry-and-what-registered-but-not-drawn-is-made-of-770-verified-2026-08-19);
+  a cross-check, since the derivation below stands without it. Seven entry points
   re-derive a placement — `onReapply` (a density change and a context restore), the four font and
   spacing setters, `resize` and `setViewportRect` — and all seven funnel into `applyGrid`, which
   holds this package's only `setViewport` call site. A `hide()` that merely called `clearViewport`

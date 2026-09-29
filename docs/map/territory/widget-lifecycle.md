@@ -121,10 +121,12 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
 - **Why #606 was separable from that.** The renderer's was the only row a consumer could not close by
   discipline: `dispose` was not on the port, a **type-level** obstacle rather than a missing call.
   The rest are callable and uncalled, which is a different question — tracked on the spine #605.
-- **How a `JustermRenderer` is built** (`create`, `attach`, `build`, `assemble`). It is the pivot's
-  payoff (ADR-0018): the beamterm adapter composited in TypeScript (`CellMirror` +
-  `makeRenderPolicy` + `composeOverlayDraws`) because beamterm had no such concepts, and this adapter
-  is a thin translator because the renderer owns them.
+- **How a `JustermRenderer` is built** (`create`, `attach`, `build`, `assemble`). It is a thin
+  translator because the renderer owns the compositing — the full-stack pivot's payoff: the beamterm
+  adapter composited in TypeScript (`CellMirror` + `makeRenderPolicy` + `composeOverlayDraws`) because
+  beamterm had no such concepts. Overlay, cursor and decoration state is consumer-pushed every frame
+  and retained by the renderer, exactly like the cursor (#273), and set before the frame's damage so
+  the frame packs once.
   - *Both entry points take one construction path*, so a sole tenant and a shared one differ by a
     parameter (`composedSurface`) rather than by a second body that can drift. `create` composes the
     surface and keeps it in a private field, so it is the surface's only possible tenant; `attach`
@@ -145,7 +147,8 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
     demo's headless e2e and the renderer's own GL proofs.
   - *The grid is named at birth* (#773, #928, #961): the seven selectors go into `addGrid`, one bake,
     where pushing them by setter afterwards baked up to eight, each of the first seven freed by the
-    next. That also retired an ordering question — font had once to precede spacing, a dependency the
+    next. The values are the ones the setters used, defaults included, so the initial fit is still
+    computed at the consumer's final cell. That also retired an ordering question — font had once to precede spacing, a dependency the
     renderer had already removed, since every path that changes the glyph box, the DPR or either
     spacing funnels through one function (`recompute_cell` up to 0.14.x, `bake_config` after, #772).
   - *`build` and `assemble` are an error boundary.* A grid is GPU memory — a VAO, an instance buffer and
@@ -168,9 +171,10 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
     ([the INITIAL focus state](../../agents/reference-facts.md#the-initial-focus-state--who-establishes-it-912-verified-2026-09-16)). It also fails safe: a focused
     terminal that reads as blurred recovers on the first keystroke, a blurred one reading as focused
     never did.
-  - *The rect's origin is stored, its extent re-derived*, because WebGL binds one context to one
-    canvas: a terminal is a transparent overlay over its viewport, and nothing inside the GL layer can
-    observe the overlay drifting from it — so the host re-supplies the origin whenever the box moves.
+  - *The rect's origin is stored and its extent re-derived*: the extent follows from the grid and the
+    cell, while the origin is the host's measurement. The host re-supplies the origin whenever the box
+    moves because WebGL binds one context to one canvas — a terminal is a transparent overlay over its
+    viewport, and nothing inside the GL layer can observe the overlay drifting from it.
 
 ## Code
 
