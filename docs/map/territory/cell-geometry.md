@@ -139,6 +139,48 @@ for the tier and its lifetime.
   with the cell width floored at 1 by the geometry. The consumer reads the adopted result back from
   the cell. The letter-spacing unit is ADR-0023's (CSS px, where
   both references take device px).
+- **The surface's size is the consumer's device-px request** (`resizeSurface`, `resizeGrid`,
+  `apply_surface_size`). Until S5 (#773) one call, `resize(cols, rows)`, wrote two tiers at once: the
+  implicit grid's dimensions and the drawing buffer, snapped to `cols * cell` device px. ADR-0021 D3
+  is the rule that separates them — tier the **fields**, and describe a setter by which fields it
+  writes — and multi-viewport makes the separation load-bearing: with two grids in two cells on one
+  canvas there is no cell the buffer can be a multiple of. `resizeGrid` is the per-grid half, at
+  least one cell each way because a zero would make `cols` / `rows` describe something that cannot be
+  fed a frame.
+  - *`resizeGrid` is not clamped to the rect, and that is a decision.* The guarantee that a column
+    cannot fall outside the buffer holding it was the renderer's to keep while the buffer was
+    derived from the grid; the rect is now the consumer's measured box, so keeping it is the
+    consumer's. An oversized grid corrupts nothing — every per-cell read is bounds-checked and the
+    surplus is clipped by the grid's own scissor — but its mouse mapping and reflow are wrong.
+  - *Device px rather than a CSS box.* The obvious substitute for the cell count, a CSS box as
+    three.js's `setSize` takes, would make this the one canvas-addressing export in CSS px while
+    every rect placed on that canvas is in device px — one canvas, one space. It also keeps the old
+    exact fit *reachable*: `cols * cellWidth(grid)` is two integers this crate handed out, where a
+    CSS box would put a rounding step between them. The consumer sets the canvas's CSS display box
+    itself, as it did when the buffer came from a grid — the measured cell geometry couples the
+    two, and beamterm's `auto_resize_canvas_css = false` is the same split.
+  - *A density change leaves the buffer as asked* — the rule a viewport rect already follows,
+    applied to the surface: a device-px quantity the consumer measured is re-issued by the consumer,
+    never adjusted here. A consumer re-fits after a density change regardless, since the cell moved,
+    so this costs it nothing and removes the one thing that could go wrong silently.
+  - *Ask, then adopt; at most two passes.* The bound is a backstop against a browser that clamps
+    non-monotonically: pass 2 asks for a buffer already granted, so it cannot be clamped again.
+    `canvas.width` / `height` are re-set **down** to the grant rather than left oversized, as
+    xterm.js, beamterm and three.js all leave them, because #337 couples the CSS display box to them
+    — a lying attribute would make `cssWidth()` describe a buffer that does not exist. The request is
+    stored, not passed, because the second caller is a context restore: the loss reset the buffer
+    and nobody is going to re-ask.
+  - *A read-back of no size is not a grant* (#639). A lost context reports 0x0; adopting it would
+    commit a 1x1 surface that `restore` then rebuilds at, leaving the canvas one pixel wide,
+    permanently and silently. So the request stays committed and only the verification defers. In
+    that window `cssWidth` describes a buffer that does not exist yet; a consumer sizing its canvas
+    from it overshoots, and the overshoot outlives the restore because the display box is the
+    consumer's (measured through `justerm-web`) — its remedy is to repeat its fit.
+  - *The CSS readbacks are unrounded.* A rounded `cssCellWidth` loses the device cell for good, and a
+    rounded `cssWidth` misses the buffer by up to `dpr/2` device px — an absolute error, ruinous on a
+    small canvas — and can round *up*, stretching the image over a box wider than the buffer; the
+    unrounded one misses by the layout grain (the #337 bullet above). `cellWidth` carries the bare name because it
+    is the exact, measured cell, as xterm.js's `dimensions.device.cell` and beamterm's `cell_size()`.
 
 ## Code
 
