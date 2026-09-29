@@ -25,21 +25,10 @@ import type { DecodedFrame, FlagBits, UnderlineStyle, UnderlineStyles } from "./
 /**
  * The two decoder members the widget **carries** rather than lets a consumer re-import (#862).
  *
- * **Extracted only so it can be tested, and that is not ceremony — it is the one wiring on this
- * seam that the type system cannot check.** Measured: replacing `decoder.underlineStyle` with
- * `decoder.wireVersion` typechecks clean and ships a widget that answers `16` for every cell.
- * Two TypeScript rules combine to allow it, and neither can be tightened away here:
- *
- * - a function taking **fewer** parameters is assignable where one taking more is expected, so
- *   `() => number` satisfies `(flags: number) => …`;
- * - a **numeric enum** accepts `number`, so the return type does not discriminate either.
- *
- * The sibling member *is* caught — `decoder.Flags` in place of `decoder.UnderlineStyle` is a type
- * error, because an enum object's type is nominal enough to refuse one. Only the function slips,
- * which is exactly why the check below is by **reference identity** rather than by type.
- *
- * Generic in the value map so a test can hand it a plain object with no cast; the real module
- * infers `typeof UnderlineStyle`.
+ * Extracted so it can be tested: the wiring is one the type system cannot check, so the test
+ * checks it by **reference identity**. Generic in the value map so a test can hand it a plain object
+ * with no cast. Why: `docs/map/territory/published-surface.md` § The decoder members the widget
+ * carries.
  */
 export function cellStyleContext<S>(decoder: {
   underlineStyle: (flags: number) => UnderlineStyle;
@@ -49,19 +38,14 @@ export function cellStyleContext<S>(decoder: {
   return { underlineStyleOf: decoder.underlineStyle, styleValues: decoder.UnderlineStyle };
 }
 
-/** Theme colours (packed `0xRRGGBB`). The engine stays ignorant of these — the
- * consumer owns them and the renderer resolves cell refs against them. Carried over
- * verbatim from the beamterm adapter: the theme contract is renderer-neutral.
+/** Theme colours (packed `0xRRGGBB`). The engine stays ignorant of these — the consumer owns them
+ * and the renderer resolves cell refs against them.
  *
- * **A theme is a complete description, not a patch**, and a field added here inherits that:
- * {@link JustermRenderer.setTheme} pushes **every** member, so an unset one *resets* to its default
- * rather than keeping whatever the previous theme set. Adding a field therefore means adding an
- * unconditional push there too — which is the opposite of how the optional members of
- * {@link JustermRendererOptions} are wired (read once at `create`, pushed only when present), and
- * the two conventions sit close enough together to swap by accident. Nothing but a test catches it:
- * the wrong shape type-checks, and it only misbehaves on the *second* `setTheme`. Stated here rather
- * than at one field because it is a property of the interface. (#580 — see
- * `DEFAULT_CURSOR_CONTRAST` for what it costs when a default is not a neutral identity.) */
+ * **A theme is a complete description, not a patch**: {@link JustermRenderer.setTheme} pushes
+ * **every** member, so an unset one *resets* to its default rather than keeping whatever the
+ * previous theme set. Why, and what each member's placement rests on:
+ * [`docs/map/territory/colour-policy.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/colour-policy.md) § `Theme` is colours plus the
+ * two colour policies. */
 export interface Theme {
   /** The 16 ANSI colours (slots `0..15`); the decoder's `buildPalette` fills `16..255`. */
   ansi: number[];
@@ -76,8 +60,7 @@ export interface Theme {
   /** The *active* (current) search match's background (`0xRRGGBB`) — xterm's
    * `activeMatchBackground`, painted above selection and the other matches.
    * Defaults to a dark orange, distinct from both {@link selectionBg} and
-   * {@link matchBg} (the Chrome find-in-page yellow-others/orange-active model;
-   * alacritty's `focused_match` gold agrees on "brighter, warmer than the rest").
+   * {@link matchBg}.
    * On a cell that is both selected and the active match, {@link
    * selectionForeground} paints over THIS background (#430, xterm's channel
    * independence) — pick the two to read on each other, or set {@link
@@ -98,30 +81,20 @@ export interface Theme {
    * decoration bg wins over the cell's own. It does **not** account for
    * {@link JustermRendererOptions.bgAlpha}: the correction runs on the nominal opaque colour, so
    * under a translucent background the real contrast against whatever is behind the canvas may be
-   * lower than the ratio asked for. That is not an oversight to fix here — xterm.js discards the
-   * background's alpha byte before computing luminance, and ghostty composites first and still uses
-   * only `bg.rgb`. None of the three can know what is behind the window. */
+   * lower than the ratio asked for — the references share that limit ([`docs/map/territory/colour-policy.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/colour-policy.md)
+   * § Minimum contrast is a faithful port). */
   minimumContrastRatio?: number;
   /** Minimum WCAG contrast between the **cursor** and the cell it sits on (#580, consumer half of
    * #368). Below it the cursor inverts to the terminal's default fg/bg, so a {@link cursorColor}
    * that happens to match the cell underneath never makes the caret vanish. Defaults to
-   * {@link DEFAULT_CURSOR_CONTRAST}; pass `1` — the floor of the ratio range — to switch the guard
+   * `1.5` ({@link DEFAULT_CURSOR_CONTRAST}); pass `1` — the floor of the ratio range — to switch the guard
    * off, which is xterm.js's behaviour (it has no cursor guard at all).
    *
    * **A separate knob from {@link minimumContrastRatio}, deliberately.** That one corrects a cell's
    * *text* against its background; this one rescues an *overlay* against the cell it covers. They
    * run on different comparands and either can be set without the other.
    *
-   * Out-of-range values are the renderer's to clamp (`[1, 21]`) and are not re-clamped here — two
-   * layers holding the same bound is how they drift apart.
-   *
-   * Deliberately here rather than on {@link JustermRendererOptions}, though **both references put
-   * their contrast knob outside the colour scheme** — xterm.js's `minimumContrastRatio` is an option
-   * (`common/services/OptionsService.ts:43`) and alacritty's `MIN_CURSOR_CONTRAST` is not
-   * configurable at all (`alacritty/src/display/content.rs:22`). What governs a consumer-facing API
-   * shape here is this API's own coherence, not theirs: the thing this defends — {@link cursorColor}
-   * — is on `Theme`, and so is the sibling policy {@link minimumContrastRatio}, so a consumer would
-   * have to remember that one contrast ratio lives with the colours and the other does not. Its
+   * Out-of-range values are the renderer's to clamp (`[1, 21]`) and are not re-clamped here. Its
    * runtime path is {@link JustermRenderer.setTheme}, like every other policy on this interface. */
   cursorContrast?: number;
   /** Draw bold text in the bright (8-15) ANSI colour — xterm's
@@ -131,19 +104,10 @@ export interface Theme {
 
 /**
  * The cursor-contrast threshold applied when {@link Theme.cursorContrast} is unset — the renderer's
- * own default (alacritty's `MIN_CURSOR_CONTRAST`, `alacritty/src/display/content.rs:22`), restated
- * here.
- *
- * **Restated deliberately, unlike {@link JustermRendererOptions.cursorThickness}'s default, and the
- * asymmetry follows from where each one lives.** A `Theme` is a *complete* description rather than a
- * patch: {@link JustermRenderer.setTheme} pushes every field it carries, so an unset one must
- * **reset** to the default and not silently keep whatever the previous theme set. That obliges this
- * file to name a value, where an option — read once at `create`, never re-applied — can simply not
- * call the setter and leave the number where the renderer documents it.
- *
- * The cost of naming it is a second copy that can drift from the renderer's, which is why it is a
- * named constant rather than a literal in two call sites. The renderer publishes no getter for its
- * own default, so nothing checks the two against each other.
+ * own default (alacritty's `MIN_CURSOR_CONTRAST`), restated here because a `Theme` field must
+ * reset to a named value. Why restated, and the drift it risks:
+ * [`docs/map/territory/colour-policy.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/colour-policy.md) § `Theme` is colours plus the
+ * two colour policies.
  */
 export const DEFAULT_CURSOR_CONTRAST = 1.5;
 
@@ -198,10 +162,7 @@ export interface JustermRendererOptions {
    * Omit (or `undefined`) to **follow the application's** DECSCUSR / `CSI ?12` mode, which is the
    * default and what both references default to.
    *
-   * Deliberately here rather than on {@link Theme}: `Theme` is colours plus the two colour
-   * policies that resolve against them, and a blink is motion, not a colour. xterm.js draws the
-   * same line — `cursorBlink` is an option, its theme is colours only. Change it at runtime with
-   * {@link JustermRenderer.setCursorBlink}.
+   * Change it at runtime with {@link JustermRenderer.setCursorBlink}.
    */
   cursorBlink?: boolean;
   /**
@@ -214,31 +175,20 @@ export interface JustermRendererOptions {
    * How long the cursor keeps blinking with no user input before parking solid, in ms.
    * `0` disables the timeout. Omit for the default — 5 minutes, xterm.js's `CURSOR_BLINK_IDLE_TIMEOUT`.
    *
-   * Exposed because the two references disagree by 60x (alacritty stops after **5 seconds**), so the
-   * number is a product choice rather than a standard. Change it at runtime with
-   * {@link JustermRenderer.setCursorBlinkTimeout}.
+   * Change it at runtime with {@link JustermRenderer.setCursorBlinkTimeout}.
    */
   cursorBlinkTimeout?: number;
   /**
    * The cursor's stroke thickness as a **fraction of the cell width** (#580, consumer half of
    * #369) — the width of a bar, an underline, or a hollow block's outline. Omit for the renderer's
-   * default, `0.15` (alacritty's `cursor.thickness`, `alacritty/src/config/cursor.rs:31`).
+   * default, `0.15` (alacritty's `cursor.thickness`).
    *
    * **A block ignores it.** A block cursor recolours its cell and draws no stroke, so this changes
    * nothing for a block — a bar or underline (DECSCUSR, or {@link cursorStyle}) shows it.
    *
-   * A *fraction*, not a length, because the renderer resolves it as
-   * `(frac * cell_w).round().max(1)` device px — so it tracks dpr **and** font size. That is
-   * alacritty's rule, which #270 chose over xterm.js's `cursorWidth` in CSS px
-   * (`common/services/OptionsService.ts:19`) because a fixed length gives a 32px font the same
-   * hairline caret as a 12px one. [ADR-0023](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0023-spacing-settings-are-css-pixels.md) does not apply: a fraction carries no unit to get wrong.
-   * The `.max(1)` floor means even `0` leaves a one-pixel stroke rather than no cursor.
-   *
-   * Out-of-range values are the renderer's to clamp (`[0, 1]`) and are not re-clamped here.
-   *
-   * Deliberately here rather than on {@link Theme}, and **both references agree**: a thickness is
-   * geometry, not a colour, and each keeps it out of its colour scheme (alacritty under `cursor`,
-   * xterm.js as an option beside `cursorWidth`'s siblings). Change it at runtime with
+   * The renderer resolves it as `(frac * cell_w).round().max(1)` device px, so it tracks dpr **and**
+   * font size, and even `0` leaves a one-pixel stroke rather than no cursor. Out-of-range values are
+   * the renderer's to clamp (`[0, 1]`) and are not re-clamped here. Change it at runtime with
    * {@link JustermRenderer.setCursorThickness}.
    */
   cursorThickness?: number;
@@ -246,12 +196,7 @@ export interface JustermRendererOptions {
    * The half-period of the **SGR 5 (blink) text** phase, in ms. Omit (or `0`) to leave
    * blinking text steadily shown, which is the default.
    *
-   * Off by default because that is where the references sit: only xterm.js animates blinking text
-   * at all, and its `blinkIntervalDuration` defaults to `0` (`OptionsService.ts:16-17`); alacritty
-   * has no text blink and ghostty stores the attribute without ever drawing it. There is therefore
-   * no inheritable cadence to default to — the number is the consumer's product choice, so this is
-   * an interval rather than a boolean. `prefers-reduced-motion` pins the text visible whatever is
-   * set here. Change it at runtime with
+   * `prefers-reduced-motion` pins the text visible whatever is set here. Change it at runtime with
    * {@link JustermRenderer.setTextBlinkInterval}.
    */
   textBlinkInterval?: number;
@@ -266,9 +211,8 @@ export interface JustermRendererOptions {
    * and it is the first thing to check when this appears to do nothing.
    *
    * Only cells carrying the **default** background are affected — a cell with an explicit SGR
-   * background, and the cursor cell, stay opaque. That is alacritty's rule (`compute_bg_alpha`
-   * returns `0.` only for the named background colour), and it is what keeps coloured output
-   * readable over an arbitrary desktop.
+   * background, and the cursor cell, stay opaque, which keeps coloured output readable over an
+   * arbitrary desktop.
    *
    * **Widget chrome is not alpha-aware.** The scrollbar thumb defaults to a translucent white
    * (`rgba(255,255,255,0.25)`) over a track with no background of its own, which reads well against
@@ -276,20 +220,15 @@ export interface JustermRendererOptions {
    * build that combination, set the thumb's colour from your side through the
    * `--justerm-scrollbar-thumb` custom properties that `Scrollbar` reads.
    *
-   * Deliberately here rather than on {@link Theme}, though an alpha is the closest thing on this
-   * roster to a colour: it changes no palette entry, only how much of what is behind shows through.
-   * Both references put it outside the colour scheme too — xterm.js's `allowTransparency` is an
-   * option (`OptionsService.ts:47`), alacritty's `opacity` sits under `window`, not `colors`
-   * (`config/window.rs:46`). Change it at runtime with {@link JustermRenderer.setBgAlpha}.
+   * Change it at runtime with {@link JustermRenderer.setBgAlpha}.
    */
   bgAlpha?: number;
   /**
    * Extra space between columns, in **CSS pixels**. Defaults to `0`.
    *
-   * CSS px, not device px, because {@link fontSize} is ([ADR-0023](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0023-spacing-settings-are-css-pixels.md)) — one font description should not
-   * speak two units. Both references disagree and take device px, which is why the same setting is a
-   * different gap on a Retina display there and moving a window between monitors re-lays-out the
-   * text. The renderer applies `round(letterSpacing * dpr)`.
+   * CSS px, not device px, because {@link fontSize} is — one font description speaks one unit
+   * ([ADR-0023](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0023-spacing-settings-are-css-pixels.md)).
+   * The renderer applies `round(letterSpacing * dpr)`.
    *
    * May be **negative**, which narrows the cell and crops the glyph rather than condensing it.
    *
@@ -318,12 +257,10 @@ export interface JustermRendererOptions {
    * a real restore once a second indefinitely — so a context may well come back *after* this fires.
    * What it exists for is the case that has no other signal: a context that never returns leaves a
    * blank canvas, and nothing else tells a consumer to dim the terminal, show a message, or fall back.
-   * xterm.js's consumer, VSCode, tears its WebGL renderer down and swaps in a DOM one; what to do here
-   * is likewise consumer policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), so the widget forwards the signal and applies none itself.
+   * What to do is consumer policy, so the widget forwards the signal and applies none itself.
    *
-   * **Fires at most once per loss**, and never after {@link JustermRenderer.dispose} — matching
-   * xterm.js, whose disposable clears the pending restore timeout
-   * (`addons/addon-webgl/src/WebglRenderer.ts:161-163`). Change it at runtime with
+   * **Fires at most once per loss**, and never after {@link JustermRenderer.dispose}. Change it at
+   * runtime with
    * {@link JustermRenderer.setOnContextLoss}.
    *
    * To ask instead of being told — a consumer that attaches late, or polls — use
@@ -336,17 +273,8 @@ export interface JustermRendererOptions {
    * Negative values are clamped to `0` by the renderer. Applies to the *next* loss; a deadline
    * already armed keeps the duration it was armed with.
    *
-   * Exposed rather than left at the default, and that is not a judgement call: `justerm-renderer`
-   * declares this one **consumer policy** in as many words — *"only the consumer knows how long a
-   * blank terminal is tolerable against how long its GPU takes to recover"* (`context_loss.rs`,
-   * `DEFAULT_RESTORE_TIMEOUT_MS`) — and epic #583 settled that every knob the renderer declares
-   * consumer policy under [ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md) is reachable through the widget, because the widget *is* that
-   * consumer. (#579's own body proposed leaving it unwired "until someone needs a non-default
-   * deadline"; that predates the answer and is superseded by it.)
-   *
-   * Deliberately here rather than on {@link Theme}, with {@link cursorBlinkTimeout} and
-   * {@link textBlinkInterval}: a duration is not a colour. Change it at runtime with
-   * {@link JustermRenderer.setContextRestoreTimeout}.
+   * Consumer policy the renderer declares as such, and so reachable through the widget. Change it at
+   * runtime with {@link JustermRenderer.setContextRestoreTimeout}.
    */
   contextRestoreTimeout?: number;
   theme: Theme;
@@ -357,27 +285,16 @@ export interface JustermRendererOptions {
 const EMPTY_U32 = new Uint32Array(0);
 const EMPTY_U16 = new Uint16Array(0);
 
-/** The subset of `justerm-renderer`'s `JustermRenderer` this adapter drives. Declared as an
- * interface (not the imported wasm type) so the wiring is unit-testable behind a fake with no
- * GL context — the injected-seam pattern the beamterm adapter used via the `Renderer` port. The
- * real wasm instance is assigned to this in {@link JustermRenderer.create}, so a signature drift
- * is a compile error there. Method names match wasm-bindgen's output (snake_case where there is
- * no `js_name`, camelCase where there is).
- *
- * That declaration gates this mirror against the published *renderer* only. The other published
- * package this widget consumes is gated separately, in `test/published-seam.types.ts`,
- * which asserts that the decoder's columns can feed these parameters — the pairing #627 broke. */
 /**
  * The full renderer surface this adapter drives — **the per-grid half plus everything
  * {@link SurfaceBackend} carries**, which is why it extends it rather than restating those members.
- *
- * The two halves are split on a criterion the renderer already compiled in at 0.15.0: a call
- * naming a `grid` acts on one terminal, a call naming none acts on the thing every terminal shares.
- * Extending is what turns that from a comment into a gate — a member that drifts between the two
- * interfaces fails to compile where {@link TerminalSurface.open}'s `TerminalSurface<PublishedRenderer>`
- * is passed to {@link JustermRenderer.build}, which takes a `TerminalSurface<RendererBackend>`. That
- * parameter is this package's drift gate against the published renderer; before #775 the same job was
- * done by a `const backend: RendererBackend` assignment in `create`, which this change removed.
+ * Declared as an interface (not the imported wasm type) so the wiring is unit-testable behind a fake
+ * with no GL context; method names match wasm-bindgen's output (snake_case where there is no
+ * `js_name`, camelCase where there is). A call naming a `grid` acts on one terminal, and a call
+ * naming none acts on what every terminal shares — the renderer's own 0.15.0 split. How this is
+ * gated against the published renderer:
+ * [`docs/map/territory/published-surface.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/published-surface.md) § The widget's
+ * renderer seam is gated at `build`.
  */
 export interface RendererBackend extends SurfaceBackend {
   /** Scatter a decoded frame's damage into the persistent grid, then re-pack. Header is
@@ -390,11 +307,8 @@ export interface RendererBackend extends SurfaceBackend {
     fg: Uint32Array,
     bg: Uint32Array,
     flags: Uint16Array,
-    /** Per-cell 1-based grapheme-cluster index — **u32, not u16** (#621/#627). A `u16` cannot
-     * number one cluster per cell of a viewport the frame header's own `cols`/`rows` permit, so
-     * the column widened at the decoder; narrowing it back here truncated silently above
-     * `u16::MAX` (65536 → `0` = "no cluster", 65537 → the *wrong* cluster) and cost an
-     * unconditional per-frame copy. `flags` above stays u16 — only this column moved. */
+    /** Per-cell 1-based grapheme-cluster index — **u32, not u16** (#621/#627); `flags` above stays
+     * u16. */
     extra: Uint32Array,
     sideTable: string[],
     /** Per-cell underline colour column (SGR 58, #520) — trailing/optional, so an older
@@ -417,16 +331,13 @@ export interface RendererBackend extends SurfaceBackend {
    *
    * **`row` is a VIEWPORT row**, like everything else this renderer is handed — it draws the window
    * the user is looking at. It is *not* the grid row core reports the cursor at: those agree only
-   * while `display_offset` is 0, and the caller owes the mapping. Saying so here because not saying
-   * so is where #921's follow-up came from — the widget passed the origin's grid row straight
-   * through, and with the view up 2 the run was drawn on row 33 while row 35 was showing its cell.
+   * while `display_offset` is 0, and the caller owes the mapping
+   * ([justerm#921](https://github.com/kihyun1998/justerm/issues/921)).
    *
-   * **Optional because the published package decides, not this file.** `justerm-web` consumes
-   * `justerm-renderer` from npm, so a binding added in the repo is absent at runtime — and from the
-   * `.d.ts` — until a `renderer-v*` tag publishes it. Required here would make the widget
-   * un-typecheckable against every renderer that predates it, and calling it unguarded would be a
-   * `TypeError` rather than a missing feature. A renderer without it is preedit-blind, which is the
-   * state every consumer was in before #249. */
+   * **Optional**: absent from a renderer until a `renderer-v*` release publishes it, and a renderer
+   * without it is preedit-blind. Why optional:
+   * [`docs/map/territory/published-surface.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/published-surface.md) § A binding
+   * added in the repo is absent until published. */
   setPreedit?(grid: number, col: number, row: number, codepoints: Uint32Array): number;
   /** Retain the consumer's suggestion run ([justerm#972](https://github.com/kihyun1998/justerm/issues/972));
    * an empty run clears it. Optional for the reason {@link setPreedit} is: a `renderer-v*` tag
@@ -469,16 +380,18 @@ export interface RendererBackend extends SurfaceBackend {
    * (the clear colour and a shader uniform), not at pack time, so unlike `setBoldToBright` this
    * needs no re-pack — a bare `render` presents it. */
   setBgAlpha(grid: number, alpha: number): void;
-  /** Re-bake the atlas at a new font size (CSS px) / family (#406/#413). The cell size moves, so the
-   * consumer must re-fit. A no-op if unchanged; a non-finite / `<1` size is guarded by the renderer. */
+  /** Move this grid onto the configuration a new font size (CSS px) / family names (#406/#413),
+   * baking one only if no grid holds it. The cell size moves, so the consumer must re-fit. A no-op if
+   * unchanged; a non-finite / `<1` size is guarded by the renderer. */
   setFontSize(grid: number, cssPx: number): void;
   setFontFamily(grid: number, family: string): void;
-  /** Re-bake the atlas at a new weight for regular / bold text (#928). The cell does not move. A
-   * weight outside {@link FontWeight} is ignored by the renderer; unchanged is a no-op. */
+  /** Move this grid onto the configuration a new weight for regular / bold text names (#928). The
+   * cell does not move. A weight outside {@link FontWeight} is ignored by the renderer; unchanged is
+   * a no-op. */
   setFontWeight(grid: number, weight: FontWeight): void;
   setFontWeightBold(grid: number, weight: FontWeight): void;
-  /** Re-bake the atlas with or without per-channel (LCD) text coverage. The cell does not move;
-   * unchanged is a no-op. */
+  /** Move this grid onto the configuration with or without per-channel (LCD) text coverage. The
+   * cell does not move; unchanged is a no-op. */
   setSubpixelAntialiasing(grid: number, on: boolean): void;
   /** Extra space between columns in **CSS px** (ADR-0023 — the space `fontSize` already speaks), and
    * a multiplier on the glyph height (`>= 1`). Both move the cell, so the consumer must re-fit; both
