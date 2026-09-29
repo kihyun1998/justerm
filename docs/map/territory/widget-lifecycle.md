@@ -87,9 +87,9 @@ obligation. The rest depend on a consumer remembering, and the measurement below
   rather than closing it), and a
   re-mounted renderer would have lost its `prefers-reduced-motion` listener permanently — its only
   registration is in a private constructor.
-- **It stops work, not memory.** The renderer's wasm instance, GL context, glyph atlas and the
-  canvas context-loss listeners its Rust side owns all survive `dispose()`; they belong to the
-  binding's `free()`, which is unsafe while the consumer still holds the object.
+- **It stops work and releases its grid** (since #770 added `removeGrid`). The renderer's wasm
+  instance, GL context and the canvas context-loss listeners its Rust side owns survive `dispose()`;
+  they belong to the binding's `free()`, which is unsafe while the consumer still holds the object.
 
 Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
 
@@ -145,6 +145,8 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
     made them serial — pure startup latency. The adapter is not exercised by vitest (it needs a GL
     context and the wasm); its pure wire logic is unit-tested and the whole path is proven by the
     demo's headless e2e and the renderer's own GL proofs.
+  - *The first frame packs once*: `setOverlay`'s re-pack is a no-op until the first `apply_damage`,
+    and the frame's overlay, decorations and cursor are set before its damage.
   - *The grid is named at birth* (#773, #928, #961): the seven selectors go into `addGrid`, one bake,
     where pushing them by setter afterwards baked up to eight, each of the first seven freed by the
     next. The values are the ones the setters used, defaults included, so the initial fit is still
@@ -218,12 +220,14 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
     application had hidden the caret, and on an idle hidden-caret terminal there may be no next
     present at all. The mount-time call takes neither branch, since `focused` starts `false`. xterm.js
     re-shows the caret from its own focus handler for the same reason
-    (`browser/CoreBrowserTerminal.ts:309`, `_showCursor()`).
+    (`browser/CoreBrowserTerminal.ts:310`, `_showCursor()`).
   - *`dispose` releases the grid* (called by `Terminal.dispose()` since #606; the doc once said
-    "nothing calls this yet", which was the defect). It used to say "stops work, does not release
-    memory", on the ground that `free()` is the only release — untrue since #770 added `removeGrid`;
-    what keeping it cost is the 4.2 / 12.8 MiB atlas above, per closed terminal, until the tab went
-    away. So every per-grid method throws after it — the honest answer rather than a regression. The
+    "nothing calls this yet", which was the defect), so every per-grid method throws after it — the
+    honest answer rather than a regression. It used to say "stops work, does not release memory", on
+    the ground that `free()` is the only release — untrue since #770 added `removeGrid`; what keeping
+    it cost, at the time, was the atlas above per closed terminal until the tab went away: a fixed
+    `tex_storage_3d(RGBA8, paddedW, paddedH * 32, 192)` allocation whose size does not depend on how
+    many glyphs were used (4.2 / 12.8 MiB), plus the rasteriser and glyph cache on the wasm heap. The
     wasm instance, the GL context and the Rust-side canvas listeners survive until the binding's
     `free()`. The context-loss notification is ended by the surface's own `dispose`, which only a
     terminal that composed its surface reaches — a shared surface's channel belongs to the surface.

@@ -259,7 +259,9 @@ export interface JustermRendererOptions {
    * blank canvas, and nothing else tells a consumer to dim the terminal, show a message, or fall back.
    * What to do is consumer policy, so the widget forwards the signal and applies none itself.
    *
-   * **Fires at most once per loss**, and never after {@link JustermRenderer.dispose}. Change it at
+   * **Fires at most once per loss**, and never after {@link JustermRenderer.dispose} on a terminal that
+   * composed its surface — on {@link JustermRenderer.attach} the handler belongs to the surface and
+   * outlives the widget. Change it at
    * runtime with
    * {@link JustermRenderer.setOnContextLoss}.
    *
@@ -999,7 +1001,7 @@ export class JustermRenderer implements Renderer {
    *
    * Stays truthful after {@link dispose}: disposal stops this object's *work*, and the renderer's
    * canvas listeners belong to the wasm binding, so the state machine behind this keeps tracking.
-   * Only the notification is closed.
+   * On a terminal that composed its surface the notification is closed with it.
    *
    * A {@link resize} that landed during the loss is provisional; on a terminal that composed its
    * surface the widget re-syncs it at the restore with no call from you (see {@link resize}). A host
@@ -1261,7 +1263,7 @@ export class JustermRenderer implements Renderer {
       asU32(frame.bg),
       asU16(frame.flags),
       // #627: u32. Whether this is a zero-copy identity is the frame producer's decoder version
-      // (docs/map/territory/frame-adapter.md § The widget's wire encoders).
+      // (docs/map/territory/frame-adapter.md § The damage entry point's arguments).
       asU32(frame.extra),
       Array.from(frame.sideTable),
       // #520: the underline colour column (SGR 58), forwarded; omitted → all Default.
@@ -1594,7 +1596,8 @@ export class JustermRenderer implements Renderer {
    *
    * **So a disposed widget has no grid, and every method that acts on one throws afterwards** —
    * `cellSize`, `terminalSize`, `resize`, the font and spacing setters, the frame and cursor paths.
-   * `isContextLost()` / `isRestoreOverdue()` keep answering, because the surface is still there. Why
+   * `isContextLost()` / `isRestoreOverdue()` keep answering: they read the state machine the canvas
+   * listeners still feed. Why
    * each: [`docs/map/territory/widget-lifecycle.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/widget-lifecycle.md) § The blink loop and the present.
    */
   dispose(): void {

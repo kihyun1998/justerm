@@ -98,7 +98,7 @@ composition it never saw, so nothing throws and no test on the core side can fai
   composition in its causal chain. Measured in a browser rather than traced: with the cursor moved
   four cells during the excursion, the composition's caret landed at the cell the view left rather
   than the cell the cursor holds, while the same sequence without the excursion landed correctly.
-- **The caret column is retained, not re-derived per frame** (`JustermRenderer.setPreedit`,
+- **Re-deriving the caret column per frame snaps it back under the run** (`JustermRenderer.setPreedit`,
   `preeditCaret`). ADR-0028 D5 is a rule about every frame: frames keep arriving while a composition
   is open, each describing the engine's cursor, which knows nothing of the preedit — so without the
   retained column the caret snaps back under the composed text on the next output frame, #637's harm
