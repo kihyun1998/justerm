@@ -2,21 +2,16 @@ import type { FrameSource, Unsubscribe, DecodedFrame } from "./types";
 import type { Renderer } from "./renderer";
 import {
   captureInput,
+  isUserInput,
   wheelMouseFromDom,
   type CellGeometry,
+  type InputScrollSignal,
   type InputSink,
   type NamedKey,
 } from "./input";
 import { PointerRouter, type LocalPointer } from "./pointer";
 import { SCROLLBAR_ATTRIBUTE } from "./scrollbar";
-import {
-  isUserInput,
-  routeWheel,
-  scrollsToBottomOnInput,
-  WheelScroller,
-  type InputScrollSignal,
-  type ScrollOptions,
-} from "./scroll-control";
+import { routeWheel, scrollsToBottomOnInput, WheelScroller, type ScrollOptions } from "./scroll-control";
 import { CompositionController, preeditIntent, preeditLatch, textareaMove, type TextareaAnchor } from "./composition";
 import { suggestionCell, suggestionColorRef, type SuggestionOptions } from "./suggestion";
 import { ClipboardController, type ClipboardOptions } from "./clipboard";

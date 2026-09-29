@@ -1,4 +1,4 @@
-import { MouseEvents, type Intent, type Key } from "./input";
+import { isUserInput, MouseEvents, type InputScrollSignal } from "./input";
 
 /** The wheel-event fields the scroller reads (a DOM `WheelEvent` satisfies it). */
 export interface WheelLike {
@@ -194,41 +194,6 @@ export function routeWheel(
 }
 
 /**
- * DOM `KeyboardEvent.key` values that name a modifier. `keyOf` maps every key it does
- * not recognise to a `char`, so a bare modifier press arrives as `Char("Shift")` and is
- * indistinguishable from typing without this list.
- */
-const MODIFIER_KEYS: ReadonlySet<string> = new Set([
-  "Alt",
-  "AltGraph",
-  "CapsLock",
-  "Control",
-  "Fn",
-  "FnLock",
-  "Hyper",
-  "Meta",
-  "NumLock",
-  "ScrollLock",
-  "Shift",
-  "Super",
-  "Symbol",
-  "SymbolLock",
-]);
-
-/**
- * What the input path saw, for the scroll-on-user-input decision: an {@link Intent} on its
- * way to the application, or `imeKey` — a keydown the IME gate swallowed, which produces no
- * intent at all. `imeKey` carries its DOM `KeyboardEvent.key` because the gate swallows bare
- * modifiers too, and they are not input on either path.
- */
-export type InputScrollSignal = Intent | { kind: "imeKey"; key: string };
-
-/** A bare modifier press. `keyOf` maps it to a `char` carrying the DOM key name. */
-function isBareModifier(key: Key): boolean {
-  return key.type === "char" && MODIFIER_KEYS.has(key.char);
-}
-
-/**
  * Whether user input should bring the viewport back to the bottom.
  *
  * Counts: a key, committed IME text, a paste, and a keydown the IME gate swallowed — a bare
@@ -243,26 +208,4 @@ function isBareModifier(key: Key): boolean {
  */
 export function scrollsToBottomOnInput(signal: InputScrollSignal, displayOffset: number): boolean {
   return isUserInput(signal) && displayOffset !== 0;
-}
-
-/**
- * Whether this signal is the user providing input at all — the question the snap and the
- * selection drop share, and **all** they share. Only the snap asks where the view is; a selection
- * is dropped wherever it was, which is what both references do (xterm.js fires `onUserInput`
- * outside its `scrollOnUserInput` guard; alacritty's `on_terminal_input_start` clears before it
- * tests `display_offset`). Splitting them is not a refactor — bundling the offset guard would
- * leave a selection alive exactly when the user is already at the bottom, which is most of the time.
- */
-export function isUserInput(signal: InputScrollSignal): boolean {
-  switch (signal.kind) {
-    case "key":
-      return !isBareModifier(signal.event.key);
-    case "imeKey":
-      return !MODIFIER_KEYS.has(signal.key);
-    case "text":
-    case "paste":
-      return true;
-    default:
-      return false;
-  }
 }

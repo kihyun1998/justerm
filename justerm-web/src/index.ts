@@ -44,14 +44,10 @@ export type {
 // (S16 #133). The routing/notify decisions are pure + exported for reuse.
 export { INPUT_ATTRIBUTE, rendererNotifyingSink, Terminal } from "./terminal";
 export type { TerminalOptions } from "./terminal";
-export {
-  routeWheel,
-  isUserInput,
-  scrollsToBottomOnInput,
-  wheelGoesToApp,
-  wheelScrollTarget,
-} from "./scroll-control";
-export type { InputScrollSignal, WheelAction } from "./scroll-control";
+export { routeWheel, scrollsToBottomOnInput, wheelGoesToApp, wheelScrollTarget } from "./scroll-control";
+export type { WheelAction } from "./scroll-control";
+export { isUserInput } from "./input";
+export type { InputScrollSignal } from "./input";
 export type { SuggestionColor, SuggestionOptions } from "./suggestion";
 // `LocalPointer` is the shape `TerminalOptions.selection` takes (#902) — a SelectionController has it.
 export type { LocalPointer } from "./pointer";
