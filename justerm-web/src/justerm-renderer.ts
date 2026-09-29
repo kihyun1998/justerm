@@ -87,7 +87,7 @@ export interface Theme {
   /** Minimum WCAG contrast between the **cursor** and the cell it sits on (#580, consumer half of
    * #368). Below it the cursor inverts to the terminal's default fg/bg, so a {@link cursorColor}
    * that happens to match the cell underneath never makes the caret vanish. Defaults to
-   * {@link DEFAULT_CURSOR_CONTRAST}; pass `1` — the floor of the ratio range — to switch the guard
+   * `1.5` ({@link DEFAULT_CURSOR_CONTRAST}); pass `1` — the floor of the ratio range — to switch the guard
    * off, which is xterm.js's behaviour (it has no cursor guard at all).
    *
    * **A separate knob from {@link minimumContrastRatio}, deliberately.** That one corrects a cell's
@@ -331,7 +331,8 @@ export interface RendererBackend extends SurfaceBackend {
    *
    * **`row` is a VIEWPORT row**, like everything else this renderer is handed — it draws the window
    * the user is looking at. It is *not* the grid row core reports the cursor at: those agree only
-   * while `display_offset` is 0, and the caller owes the mapping (#921).
+   * while `display_offset` is 0, and the caller owes the mapping
+   * ([justerm#921](https://github.com/kihyun1998/justerm/issues/921)).
    *
    * **Optional**: absent from a renderer until a `renderer-v*` release publishes it, and a renderer
    * without it is preedit-blind. Why optional:

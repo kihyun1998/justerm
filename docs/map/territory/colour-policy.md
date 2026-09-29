@@ -66,7 +66,7 @@ this is what resolves it.
   `bg_default` provenance flag (#455, [cell compositing](cell-compositing.md) § `bg_default` is
   complete by construction), which does not depend on
   the palette.
-- **`Theme` is colours plus the two colour policies; every other widget knob is a
+- **`Theme` is colours plus the two colour policies; every other renderer policy knob is a
   `JustermRendererOptions` field** (`justerm-web/src/justerm-renderer.ts`). The theme contract is
   renderer-neutral — carried over verbatim from the beamterm adapter.
   - *A theme is a complete description, not a patch* (#580). `setTheme` pushes **every** member, so
@@ -91,14 +91,14 @@ this is what resolves it.
     ([cursor policy knobs](../../agents/reference-facts.md#cursor-policy-knobs--where-each-reference-puts-them-580-verified-2026-08-10)).
     They are separate knobs on purpose: one corrects a cell's *text* against its background, the
     other rescues an *overlay* against the cell it covers.
-  - *Everything else is an option, and the references agree on each.* A blink is motion, not a colour
+  - *Everything else is an option, and where a reference has the knob, it agrees.* A blink is motion, not a colour
     (`cursorBlink` — xterm.js draws the same line, its theme is colours only); a duration is not a
     colour (`cursorBlinkTimeout`, `textBlinkInterval`, `contextRestoreTimeout`); a thickness is
     geometry (`cursorThickness` — alacritty keeps it under `cursor`, xterm.js beside `cursorWidth`);
     and `bgAlpha`, though the closest thing on the roster to a colour, changes no palette entry —
     xterm.js's `allowTransparency` is an option (`OptionsService.ts:47`) and alacritty's `opacity`
     sits under `window` (`config/window.rs:46`).
-  - *The defaults, and why each is one.* `cursorBlinkTimeout` is exposed because the references
+  - *Why each knob is shaped as it is.* `cursorBlinkTimeout` is exposed because the references
     disagree by 60x (alacritty stops after five seconds), so the number is a product choice.
     `textBlinkInterval` defaults to off because only xterm.js animates blinking text and its
     `blinkIntervalDuration` defaults to `0` (`OptionsService.ts:16-17`) — alacritty has no text blink
@@ -109,7 +109,8 @@ this is what resolves it.
     policy under ADR-0017 is reachable through the widget (#579's body had proposed leaving it
     unwired; that predates the answer). `activeMatchBg` defaults to a dark orange, warmer than the
     selection and the other matches — the Chrome find-in-page model, and alacritty's `focused_match`
-    gold agrees. `cursorThickness` is alacritty's fraction rule, chosen at #270 over xterm.js's
+    gold agrees. `cursorThickness` is alacritty's fraction rule (default `0.15`, pinned under
+    [cursor policy knobs](../../agents/reference-facts.md#cursor-policy-knobs--where-each-reference-puts-them-580-verified-2026-08-10)), chosen at #270 over xterm.js's
     `cursorWidth` in CSS px (`OptionsService.ts:19`), which gives a 32px font the same hairline as a
     12px one; ADR-0023 does not apply, since a fraction carries no unit. `onContextLoss` fires at
     most once per loss and never after dispose, matching xterm.js, whose disposable clears the pending
