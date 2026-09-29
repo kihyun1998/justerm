@@ -142,7 +142,7 @@ What those calls did not cover is recorded under *Design model* as derivations.
 
 ## Code
 
-- `justerm-core/src/cell.rs` — `LINK_PRESENT`
+- `justerm-core/src/cell.rs` — `BG_LINK` (the bit the docs call LINK_PRESENT)
 - `justerm-core/src/grid.rs` — `Links`, the row's column-keyed link map
 - `justerm-core/src/term.rs` — `Term::current_link` and the per-frame remap into `link_table`
 - `justerm-core/src/serialize.rs` — `Frame`'s `link_table`

@@ -12,8 +12,9 @@
 //   3. nothing restates a value another artifact owns (a record's status)
 // Links and anchors are left to the batch gate, which already resolves them across the graph.
 
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
-import { join, extname } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
+import { extname } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const file = process.argv[2];
 if (!file || !existsSync(file)) {
@@ -40,14 +41,15 @@ const INVARIANT_SECTIONS = [
   '## Discovery history',
   '## Where it will recur',
 ];
-const SRC_ROOTS = [
-  'justerm-core/src',
-  'justerm-renderer/src',
-  'justerm-wasm-decode/src',
-  'justerm-web/src',
-  '.github',
-];
+// The tree is every file git tracks or would track (untracked, not ignored) with one of these
+// extensions, under the working directory.
 const SRC_EXT = new Set(['.rs', '.ts', '.mjs', '.yml', '.toml']);
+
+// A name only a comment mentions is not in the code. Line-based and string-unaware.
+const stripComments = (path, text) =>
+  /\.(yml|toml)$/.test(path)
+    ? text.replace(/(^|\s)#.*$/gm, '$1')
+    : text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
 const raw = readFileSync(file, 'utf8');
 const isAggregate = raw.startsWith('# Aggregate');
@@ -71,33 +73,18 @@ const codeSection = /^## Code\r?\n([\s\S]*?)^## /m.exec(raw)?.[1] ?? '';
 // the prose after it may name things that do not exist yet.
 const noCode = /^\s*\*\*None\.\*\*/.test(codeSection);
 if (codeSection.trim() && !noCode) {
-  const blob = [];
-  const walk = (dir) => {
-    if (!existsSync(dir)) return;
-    for (const e of readdirSync(dir)) {
-      const p = join(dir, e);
-      if (statSync(p).isDirectory()) walk(p);
-      else if (SRC_EXT.has(extname(p))) blob.push(readFileSync(p, 'utf8'));
-    }
-  };
-  SRC_ROOTS.forEach(walk);
-  for (const extra of ['Cargo.toml', 'justerm-facade/Cargo.toml', 'justerm-renderer/Cargo.toml']) {
-    if (existsSync(extra)) blob.push(readFileSync(extra, 'utf8'));
-  }
-  const tree = blob.join('\n');
+  const allPaths = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
+    encoding: 'utf8',
+  })
+    .split('\0')
+    .filter((p) => p && existsSync(p));
+  const tree = allPaths
+    .filter((p) => SRC_EXT.has(extname(p)))
+    .map((p) => stripComments(p, readFileSync(p, 'utf8')))
+    .join('\n');
 
   // Notes write a full path once and then bare siblings — `…/src/palette.rs` · `attrs.rs` · `color.rs`
-  // — so a basename that exists anywhere in the source roots resolves.
-  const allPaths = [];
-  const collect = (dir) => {
-    if (!existsSync(dir)) return;
-    for (const e of readdirSync(dir)) {
-      const p = join(dir, e);
-      if (statSync(p).isDirectory()) collect(p);
-      else allPaths.push(p.replace(/\\/g, '/'));
-    }
-  };
-  SRC_ROOTS.forEach(collect);
+  // — so a basename that exists anywhere in the tree resolves.
 
   const files = new Set([...codeSection.matchAll(/`([\w./-]+\.(?:rs|ts|mjs|yml|toml))`/g)].map((m) => m[1]));
   for (const f of files) {
@@ -105,17 +92,20 @@ if (codeSection.trim() && !noCode) {
     if (!known) problems.push(`## Code names a missing file: ${f}`);
   }
 
-  const syms = new Set([
-    ...[...codeSection.matchAll(/`(?:[A-Za-z_]+::)?([a-z_][a-z0-9_]{2,})`/g)].map((m) => m[1]),
-    ...[...codeSection.matchAll(/`([A-Z][A-Za-z0-9_]+)`/g)].map((m) => m[1]),
-  ]);
+  // Every identifier in a backticked name of any casing — `name`, `name()`, `Type.member`,
+  // `path::Type::member` — except lowercase ones shorter than three characters.
+  const syms = new Set();
+  for (const [, t] of codeSection.matchAll(/`([A-Za-z_]\w*(?:(?:\.|::)[A-Za-z_]\w*)*)(?:\(\))?`/g)) {
+    if (files.has(t)) continue;
+    for (const part of t.split(/\.|::/)) if (part.length > 2 || /^[A-Z]./.test(part)) syms.add(part);
+  }
   for (const s of syms) {
-    if (files.has(s)) continue;
-    // declaration, call/field, enum variant, macro, or TOML key.
+    // declaration, wasm-bindgen export name, call/field, enum variant, macro, or TOML key.
     const pats = [
       // Rust and TypeScript declaration keywords; `impl` because a note may name a *foreign* trait
       // the tree implements but does not declare.
       new RegExp(`(?:fn|struct|enum|const|static|type|trait|mod|class|interface|let|var|impl)\\s+${s}\\b`),
+      new RegExp(`\\bjs_name\\s*=\\s*${s}\\b`),
       new RegExp(`\\b${s}\\s*[:(!]`),
       new RegExp(`^\\s*${s}\\s*,?\\s*$`, 'm'),
       new RegExp(`^\\s*${s}\\s*=`, 'm'),

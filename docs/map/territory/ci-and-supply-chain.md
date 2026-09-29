@@ -62,9 +62,34 @@ Nothing governs the gate matrix itself — which checks exist, and what each is 
   notes written hours apart — checking after the third would have ended it. It checks sections per
   note kind (territory, invariant and aggregate have different schemas; applying the territory one to
   an invariant note reported three real notes broken), symbols under `## Code` (declarations *and*
-  call/field, enum variant, macro, TOML key, Rust and TS keywords including `impl` for a foreign
-  trait, a bare basename resolved anywhere in the source roots), and restated status. `**None.**`
-  under `## Code` is a legal state — a design recorded and not built — and stands the symbol check down.
+  call/field, enum variant, macro, TOML key, wasm-bindgen `js_name`, Rust and TS keywords including
+  `impl` for a foreign trait, a bare basename resolved anywhere in the tree), and restated status.
+  `**None.**` under `## Code` is a legal state — a design recorded and not built — and stands the
+  symbol check down.
+- **"The tree" is what `git ls-files` lists — tracked plus untracked-not-ignored — not a
+  hand-written root list** (#1016). Untracked is in so a note naming a file not yet added passes
+  mid-write. The list it replaced had drifted the way every hand-written scope does
+  ([workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)):
+  no `e2e/`, `demo/` or `test/` tree, no `justerm-facade/src`, no `justerm-core/tests`.
+- **A token shape the collector does not match is never checked at all**, and passes exactly like a
+  resolved one. Until #1016 the collector took three casing patterns, so no camelCase name, no
+  `name()` call form and no member of a dotted or `::` path was checked, and a stale TypeScript name
+  (`viewport.md`'s `requestBottom`, fixed in #1015) passed. It now takes each identifier segment of a
+  token shaped `a`, `a()`, `a.b` or `a::b` (minus a token the file check already owns). Still
+  unchecked: anything else inside backticks — generics (`Foo<Bar>`), an expression
+  (`width.min(2)`), a call with arguments, a `*` wildcard, `?.` — and file names with an extension
+  outside the file check's list (`.sh`, `.html`, `.js`).
+- **Resolution is textual over the whole tree with comments stripped**, so a name that appears in
+  code in call or field form passes, whether or not it is ours. Comments are out because a concept
+  label a comment uses is not a symbol: `COMBINED_PRESENT` and `LINK_PRESENT` resolved through
+  `cell.rs` comments for the bits the code declares as `C_COMBINED` and `BG_LINK` (#1016). The
+  stripper is line-based and string-unaware, so a `//` inside a string (a URL) hides the rest of
+  that line — that fails loud (a false red), never silent. A symbol that belongs to a *reference*
+  rather than to this tree is named under `## Reference behaviour`, never under `## Code` — the
+  maintainer's call (#1016, chosen over an exempting marker and over dropping the backticks), made
+  on the ground that a marker is also a way past the gate for a stale name. **The gate enforces that
+  only for a name the tree never mentions**: `bench/xterm-compare` drives xterm.js's own API, so
+  `Terminal`, `dispose` or `translateToString` resolve whoever they belong to.
 - **`check-tool-pins.mjs` checks that pins agree, never that they are current.** Dependabot never
   edits a `run:` line (`git log -S "cargo install wasm-pack"` returned three commits, all human), so
   the realistic failure is one workflow bumped alone and CI building the artifact with a different

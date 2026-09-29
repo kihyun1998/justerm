@@ -185,9 +185,10 @@ this is what resolves it.
   `glyph_field`, `BLANK_SLOT`
 - `justerm-renderer/src/glyph_class.rs` — `treat_glyph_as_background_color`: the **exception**.
   Powerline separators and box-drawing elements butt against the neighbouring cell, so a contrast
-  nudge on one opens a visible seam. xterm excludes them (`excludeFromContrastRatioDemands`) and
-  re-tints them toward the selection colour instead; since #507 the set is **unioned with what this
-  crate draws itself** ([built-in block glyphs](builtin-block-glyphs.md))
+  nudge on one opens a visible seam, so they are excluded from the contrast demand and re-tinted
+  toward the selection colour instead (the xterm.js original: [§ Reference behaviour](#reference-behaviour));
+  since #507 the set is **unioned with what this crate draws itself**
+  ([built-in block glyphs](builtin-block-glyphs.md))
 - `justerm-renderer/src/webgl/grid_state.rs` — `set_palette`, `set_bg_alpha`, `set_bold_to_bright`,
   `set_minimum_contrast_ratio`, `set_selection_foreground`
 - `justerm-web/src/scrollbar.ts` — `thumbBackground`, `thumbState`, `SCROLLBAR_THUMB_ATTRIBUTE`: the
@@ -205,6 +206,13 @@ the row that lands in this territory — that xterm.js and ghostty both compute 
 xterm's `ensureContrastRatio`, and nothing checks the step-by-step behaviour against the source. A
 port is the strongest possible claim about a reference; #577 pinned what the function does about
 *alpha*, not that the nudge matches.
+
+**The glyph-class exception is xterm.js's, unpinned.** `treat_glyph_as_background_color` ports
+xterm.js's `treatGlyphAsBackgroundColor` (`src/browser/renderer/shared/RendererUtils.ts:63` at the
+pin); the webgl addon passes its answer down as `excludeFromContrastRatioDemands`, which skips the
+contrast nudge (`addons/addon-webgl/src/TextureAtlas.ts:423-424`), and paints such a glyph in the
+selection background under a selection (`addons/addon-webgl/src/CellColorResolver.ts:132-139`). Not
+yet a `reference-facts.md` row.
 
 **Provenance worth knowing (#504):** these modules cite justerm-web siblings they were ported from —
 `render-policy.ts`, `render-core.ts`, `glyph-class.ts` — and **those modules no longer exist.** The

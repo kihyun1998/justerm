@@ -400,11 +400,8 @@ Two things came out of it that are worth carrying rather than re-deriving:
   compiler's insistence — the same *unrepresentable rather than guarded* move `GridLease` made in
   #805, one issue earlier, in this same file.
 - **Hidden-ness is state the widget consults, never a command it issues once.** Both references keep
-  the same shape and neither issues a one-shot — xterm.js holds `_isPaused` and consults it in
-  `refreshRows` (`src/browser/services/RenderService.ts:156-160` at the pin; not yet a
-  `reference-facts.md` row), and ghostty's `flags.visible` is the
-  [registry rows](../../agents/reference-facts.md#a-terminal-registry-and-what-registered-but-not-drawn-is-made-of-770-verified-2026-08-19);
-  a cross-check, since the derivation below stands without it. Seven entry points
+  the same shape and neither issues a one-shot ([§ Reference behaviour](#reference-behaviour)); a
+  cross-check, since the derivation below stands without it. Seven entry points
   re-derive a placement — `onReapply` (a density change and a context restore), the four font and
   spacing setters, `resize` and `setViewportRect` — and all seven funnel into `applyGrid`, which
   holds this package's only `setViewport` call site. A `hide()` that merely called `clearViewport`
@@ -438,6 +435,11 @@ recorded SHA; a paraphrase drops the pin).
 - [A terminal registry, and what "registered but not drawn" is made of](../../agents/reference-facts.md#a-terminal-registry-and-what-registered-but-not-drawn-is-made-of-770-verified-2026-08-19)
 - [Drawing N views on one canvas — the mechanism reference, and the two places it does not reach](../../agents/reference-facts.md#drawing-n-views-on-one-canvas--the-mechanism-reference-and-the-two-places-it-does-not-reach-771-verified-2026-08-19)
 - [Sharing font machinery between terminals — how the one reference that does it refcounts, keys and invalidates](../../agents/reference-facts.md#sharing-font-machinery-between-terminals--how-the-one-reference-that-does-it-refcounts-keys-and-invalidates-772-verified-2026-08-19)
+
+**Hidden-ness as consulted state** (the `hide()` shape under § Code) has two references: xterm.js
+holds `_isPaused` and consults it in `refreshRows` (`src/browser/services/RenderService.ts:156-160`
+at the pin; not yet a `reference-facts.md` row), and ghostty's `flags.visible` is the
+[registry rows](../../agents/reference-facts.md#a-terminal-registry-and-what-registered-but-not-drawn-is-made-of-770-verified-2026-08-19).
 
 **three.js is now pinned** (#771 needed a fact from it, which is the condition #768 set for pinning
 one). **WezTerm still is not**, so a quarter of ADR-0021's prior art remains unverifiable at the
