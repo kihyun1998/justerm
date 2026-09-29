@@ -12,8 +12,9 @@
 //   3. nothing restates a value another artifact owns (a record's status)
 // Links and anchors are left to the batch gate, which already resolves them across the graph.
 
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
-import { join, extname } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
+import { extname } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const file = process.argv[2];
 if (!file || !existsSync(file)) {
@@ -40,13 +41,7 @@ const INVARIANT_SECTIONS = [
   '## Discovery history',
   '## Where it will recur',
 ];
-const SRC_ROOTS = [
-  'justerm-core/src',
-  'justerm-renderer/src',
-  'justerm-wasm-decode/src',
-  'justerm-web/src',
-  '.github',
-];
+// The tree is every git-tracked file with one of these extensions, under the working directory.
 const SRC_EXT = new Set(['.rs', '.ts', '.mjs', '.yml', '.toml']);
 
 const raw = readFileSync(file, 'utf8');
@@ -71,33 +66,16 @@ const codeSection = /^## Code\r?\n([\s\S]*?)^## /m.exec(raw)?.[1] ?? '';
 // the prose after it may name things that do not exist yet.
 const noCode = /^\s*\*\*None\.\*\*/.test(codeSection);
 if (codeSection.trim() && !noCode) {
-  const blob = [];
-  const walk = (dir) => {
-    if (!existsSync(dir)) return;
-    for (const e of readdirSync(dir)) {
-      const p = join(dir, e);
-      if (statSync(p).isDirectory()) walk(p);
-      else if (SRC_EXT.has(extname(p))) blob.push(readFileSync(p, 'utf8'));
-    }
-  };
-  SRC_ROOTS.forEach(walk);
-  for (const extra of ['Cargo.toml', 'justerm-facade/Cargo.toml', 'justerm-renderer/Cargo.toml']) {
-    if (existsSync(extra)) blob.push(readFileSync(extra, 'utf8'));
-  }
-  const tree = blob.join('\n');
+  const allPaths = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' })
+    .split('\0')
+    .filter((p) => p && existsSync(p));
+  const tree = allPaths
+    .filter((p) => SRC_EXT.has(extname(p)))
+    .map((p) => readFileSync(p, 'utf8'))
+    .join('\n');
 
   // Notes write a full path once and then bare siblings — `…/src/palette.rs` · `attrs.rs` · `color.rs`
-  // — so a basename that exists anywhere in the source roots resolves.
-  const allPaths = [];
-  const collect = (dir) => {
-    if (!existsSync(dir)) return;
-    for (const e of readdirSync(dir)) {
-      const p = join(dir, e);
-      if (statSync(p).isDirectory()) collect(p);
-      else allPaths.push(p.replace(/\\/g, '/'));
-    }
-  };
-  SRC_ROOTS.forEach(collect);
+  // — so a basename that exists anywhere in the tree resolves.
 
   const files = new Set([...codeSection.matchAll(/`([\w./-]+\.(?:rs|ts|mjs|yml|toml))`/g)].map((m) => m[1]));
   for (const f of files) {
@@ -108,14 +86,17 @@ if (codeSection.trim() && !noCode) {
   const syms = new Set([
     ...[...codeSection.matchAll(/`(?:[A-Za-z_]+::)?([a-z_][a-z0-9_]{2,})`/g)].map((m) => m[1]),
     ...[...codeSection.matchAll(/`([A-Z][A-Za-z0-9_]+)`/g)].map((m) => m[1]),
+    // camelCase — a TypeScript function, method or field, or a wasm-bindgen `js_name`
+    ...[...codeSection.matchAll(/`(?:[A-Za-z_]+\.)?([a-z][a-z0-9]*[A-Z][A-Za-z0-9]*)`/g)].map((m) => m[1]),
   ]);
   for (const s of syms) {
     if (files.has(s)) continue;
-    // declaration, call/field, enum variant, macro, or TOML key.
+    // declaration, wasm-bindgen export name, call/field, enum variant, macro, or TOML key.
     const pats = [
       // Rust and TypeScript declaration keywords; `impl` because a note may name a *foreign* trait
       // the tree implements but does not declare.
       new RegExp(`(?:fn|struct|enum|const|static|type|trait|mod|class|interface|let|var|impl)\\s+${s}\\b`),
+      new RegExp(`\\bjs_name\\s*=\\s*${s}\\b`),
       new RegExp(`\\b${s}\\s*[:(!]`),
       new RegExp(`^\\s*${s}\\s*,?\\s*$`, 'm'),
       new RegExp(`^\\s*${s}\\s*=`, 'm'),

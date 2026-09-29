@@ -328,8 +328,6 @@ default-cleared buffer is a hypothesis, not a citation.
   has the same shape one level down**: it lives in `demo.spec.ts` and `browser` is worker-scoped
   while `workers` defaults to 50% of the cores, so a *second spec file in the same package* runs in
   its own worker against its own cold browser and needs its own copy. Nothing warns whoever adds it.
-- **`check-map-note.mjs`'s `SRC_ROOTS` does not include any `e2e/`, `test/` or `demo/` tree**, so a
-  symbol this note names resolves only because it is written as a full path from the repo root.
 - **The #735 warm-up's stated reason and the boot gate's 30s timeout contradict each other, and
   nobody has decided which stands.** #735 rejected "a bigger `expect` timeout" because it hides a
   boot that is genuinely slowing, and warmed the process so the gate's 5s would hold; `dc85158` then

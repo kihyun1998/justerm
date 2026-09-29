@@ -62,9 +62,21 @@ Nothing governs the gate matrix itself — which checks exist, and what each is 
   notes written hours apart — checking after the third would have ended it. It checks sections per
   note kind (territory, invariant and aggregate have different schemas; applying the territory one to
   an invariant note reported three real notes broken), symbols under `## Code` (declarations *and*
-  call/field, enum variant, macro, TOML key, Rust and TS keywords including `impl` for a foreign
-  trait, a bare basename resolved anywhere in the source roots), and restated status. `**None.**`
-  under `## Code` is a legal state — a design recorded and not built — and stands the symbol check down.
+  call/field, enum variant, macro, TOML key, wasm-bindgen `js_name`, Rust and TS keywords including
+  `impl` for a foreign trait, a bare basename resolved anywhere in the tree), and restated status.
+  `**None.**` under `## Code` is a legal state — a design recorded and not built — and stands the
+  symbol check down.
+- **"The tree" is `git ls-files`, not a hand-written root list** (#1016). The list it replaced had
+  drifted the way every hand-written scope does
+  ([workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)):
+  no `e2e/`, `demo/` or `test/` tree, no `justerm-facade/src`, no `justerm-core/tests`. Names are
+  collected in three casings — snake_case, PascalCase, camelCase — and **a casing the collector does
+  not match is never checked at all**: until #1016 no camelCase name was, so a stale TypeScript name
+  (`viewport.md`'s `requestBottom`, fixed in #1015) passed. A symbol that belongs to a *reference*
+  rather than to this tree is named under `## Reference behaviour`, never under `## Code` — the gate
+  has no marker to exempt one. That is the maintainer's call (#1016, chosen over an exempting marker
+  and over dropping the backticks), made on the ground that a marker is also a way past the gate for
+  a stale name.
 - **`check-tool-pins.mjs` checks that pins agree, never that they are current.** Dependabot never
   edits a `run:` line (`git log -S "cargo install wasm-pack"` returned three commits, all human), so
   the realistic failure is one workflow bumped alone and CI building the artifact with a different
