@@ -185,8 +185,8 @@ export class Terminal {
    * rather than on every frame. */
   private textareaCell = "";
   /** The cursor cell the latest frame reported, retained so the anchor can be re-synced at a
-   * point of use without waiting for a frame. Written by {@link Terminal.track} on every frame, and
-   * not cleared when the cursor hides. Why:
+   * point of use without waiting for a frame. Written by {@link Terminal.track} on every frame that
+   * carries a cursor, and not cleared when the cursor hides. Why:
    * [`docs/map/invariant/composition-is-browser-owned-state.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/composition-is-browser-owned-state.md). */
   private cursorAnchor: TextareaAnchor | undefined;
   /** The `displayOffset` of the frame the renderer has actually been given — **not**
@@ -320,25 +320,18 @@ export class Terminal {
       this.repaintPreedit();
     });
     if (this.options?.element) this.attach(this.options);
-    // Consumer events (#117) — independent of the DOM group; wire whenever the
-    // source has an event channel and the consumer wants something off it.
-    //
-    // ONE subscription for two surfaces (#841): core produces a single event
-    // stream and a backend has a single channel to push it down, so the clipboard
-    // pair arrives here too. `dispatchTermEvent` ignores those and the controller
-    // ignores the notifications; wiring either alone still works.
+    // Consumer events — independent of the DOM group; wire whenever the source has an event
+    // channel and the consumer wants something off it. One subscription serves notifications and
+    // the clipboard pair (docs/map/territory/events-and-replies.md).
     const events = this.options?.events;
     const clipboard = this.options?.clipboard;
     const wantsClipboard = clipboard?.provider !== undefined || clipboard?.port !== undefined;
     if ((events || wantsClipboard) && this.source.subscribeEvents) {
-      // Held on `this`, not a local: an in-flight clipboard read is already past the
-      // subscription, so dropping `eventUnsub` cannot stop it landing. `dispose()`
-      // ends the controller, per the map's "a layer ends what it exclusively holds".
+      // Held on `this` so `dispose()` can end it.
       const controller = wantsClipboard ? new ClipboardController(clipboard) : undefined;
       this.clipboardController = controller;
       this.eventUnsub = this.source.subscribeEvents((e) => {
-        // Floating on purpose: `handle` never rejects, and the event channel is
-        // fire-and-forget — a clipboard round trip must not stall the stream.
+        // Floated, not awaited: `handle` never rejects.
         void controller?.handle(e);
         if (events) dispatchTermEvent(e, events);
       });

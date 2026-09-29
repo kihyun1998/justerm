@@ -126,8 +126,8 @@ directly.
 first time this territory was read against the pinned trees rather than argued from. It covers one
 moment only: what the references do to the viewport when the user provides input. The ownership split
 ADR-0013 assumes — who holds the scroll position at all — is still uncompared. The wheel's routing
-is cited against xterm.js at the pin inline, in § Design model (#993), and has no reference-facts
-row.
+and the snap's ordering against `onData` are cited against xterm.js at the pin inline, in § Design
+model (#993), and have no reference-facts row.
 
 ## Cross-cutting invariants
 
