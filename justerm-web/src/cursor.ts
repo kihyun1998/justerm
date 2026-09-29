@@ -1,3 +1,4 @@
+import type { DecodedFrame } from "./types";
 /** The cursor blink period, in ms (xterm `BLINK_INTERVAL`). */
 export const BLINK_INTERVAL = 600;
 
@@ -166,5 +167,43 @@ export class CursorBlink {
    */
   setReducedMotion(reduced: boolean): void {
     this.reducedMotion = reduced;
+  }
+}
+
+/** What a frame says to do with the cursor, as a pure decision (no blink/state): `none` = the
+ * frame carries no cursor info (leave it); `clear` = hidden (DECTCEM); `set` = place it. Extracted
+ * so the visible/hidden branch + the field defaults — the spot an off-by-one or wrong default would
+ * hide — are unit-testable without the blink loop. `shape` is the application's DECSCUSR shape
+ * (`0` block / `1` underline / `2` bar), `undefined` while it has set none (#927). */
+export type CursorCommand =
+  | { kind: "none" }
+  | { kind: "clear" }
+  | { kind: "set"; col: number; row: number; shape: number | undefined };
+
+export function cursorCommand(frame: DecodedFrame): CursorCommand {
+  if (frame.cursorRow === undefined && frame.cursorVisible === undefined) return { kind: "none" };
+  if (!(frame.cursorVisible ?? false)) return { kind: "clear" };
+  return {
+    kind: "set",
+    col: frame.cursorCol ?? 0,
+    row: frame.cursorRow ?? 0,
+    shape: frame.cursorShape,
+  };
+}
+
+/** The caret shape a consumer can choose as its default (#927). */
+export type CursorStyle = "block" | "underline" | "bar";
+
+/** The shape id to draw: the application's DECSCUSR shape, else the consumer's style (#927). A style
+ * outside the three draws a block. */
+export function resolveCursorShape(appShape: number | undefined, style: CursorStyle): number {
+  if (appShape !== undefined) return appShape;
+  switch (style) {
+    case "underline":
+      return 1;
+    case "bar":
+      return 2;
+    default:
+      return 0;
   }
 }

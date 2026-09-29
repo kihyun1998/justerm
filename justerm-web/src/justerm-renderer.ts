@@ -1,8 +1,8 @@
 import type { Palette } from "justerm-wasm-decode/colors.js";
-import { CursorBlink } from "./cursor";
+import { CursorBlink, type CursorStyle, cursorCommand, resolveCursorShape } from "./cursor";
 import { FrameLoop } from "./frame-loop";
-import type { DecorationRect } from "./decorations";
-import { MINIMUM_COLS, MINIMUM_ROWS } from "./fit";
+import { type DecorationRect, decorationWire } from "./decorations";
+import { MINIMUM_COLS, MINIMUM_ROWS, gridForBox } from "./fit";
 import {
   TerminalSurface,
   type FontWeight,
@@ -11,6 +11,14 @@ import {
 } from "./terminal-surface";
 
 import type { Renderer } from "./renderer";
+import {
+  asU16,
+  asU32,
+  blinkPhaseHeader,
+  carriesBlink,
+  damageHeader,
+  retainU32,
+} from "./renderer-wire";
 import { TextBlink } from "./text-blink";
 import type { DecodedFrame, FlagBits, UnderlineStyle, UnderlineStyles } from "./types";
 
@@ -344,15 +352,6 @@ export interface JustermRendererOptions {
   theme: Theme;
 }
 
-/** The wire sentinel for an absent decoration bg/fg override — mirrors the renderer's
- * `NO_REF` (`u32::MAX`). A decoration colour is a 24-bit `0xRRGGBB` (top byte `0`), so this
- * can never collide with a real colour. */
-const NO_REF = 0xffffffff >>> 0;
-
-/** `u32`s per decoration rect in the flat wire: `row, left, right, layer, bg, fg`
- * (mirrors the renderer's `DECORATION_STRIDE`). */
-const DECORATION_STRIDE = 6;
-
 /** The empty cell columns a phase-only re-issue passes (#576) — shared, since they are never
  * written and allocating them twice a second would be pure garbage. */
 const EMPTY_U32 = new Uint32Array(0);
@@ -524,232 +523,6 @@ export interface RendererBackend extends SurfaceBackend {
   cssCellWidth(grid: number): number;
   cssCellHeight(grid: number): number;
 }
-
-/** Assemble the flat `apply_damage` header from a decoded frame. Pure (no backend), so the
- * wire assembly — scroll presence, the negative `scrollCount` that rides a `u32` slot as
- * two's complement, the blink flag — is unit-testable. `blinkOn` gates SGR-blink cells (#282):
- * the adapter passes {@link TextBlink}'s current phase (#576), and the `true` default keeps a
- * caller that has no phase — a test, a hand-built fixture — showing blinking text rather than
- * hiding it. */
-export function damageHeader(frame: DecodedFrame, blinkOn = true): Uint32Array {
-  const hasScroll =
-    frame.scrollTop !== undefined &&
-    frame.scrollBottom !== undefined &&
-    frame.scrollCount !== undefined &&
-    frame.scrollCount !== 0;
-  const h = new Uint32Array(8);
-  h[0] = frame.cols;
-  h[1] = frame.rows;
-  h[2] = frame.kind;
-  h[3] = hasScroll ? 1 : 0;
-  h[4] = frame.scrollTop ?? 0;
-  h[5] = frame.scrollBottom ?? 0;
-  h[6] = frame.scrollCount ?? 0; // a negative shift wraps to u32; the renderer reads it `as i32 as i16`.
-  h[7] = blinkOn ? 1 : 0;
-  return h;
-}
-
-/**
- * The header for a **phase-only** re-issue: an empty damage that carries nothing but the new SGR-5
- * blink phase (#576).
- *
- * The renderer takes `blink_on` in the damage header and keeps it (`webgl.rs` `last_blink_on`), so
- * this is how a consumer flips the phase between frames — scatter no cells, re-pack the retained
- * grid at the new phase. No renderer or wire change is needed for text blink, which is why the
- * whole feature lands in the widget.
- *
- * `kind` is **Partial**, and that is the load-bearing value: a Full header wipes the grid *before*
- * scattering, and this damage scatters nothing, so a Full flip would blank the terminal instead of
- * re-drawing it. `cols`/`rows` must be the grid the renderer currently holds — a mismatch makes it
- * allocate a fresh (empty) grid, with the same result.
- */
-export function blinkPhaseHeader(cols: number, rows: number, blinkOn: boolean): Uint32Array {
-  const h = new Uint32Array(8);
-  h[0] = cols;
-  h[1] = rows;
-  h[2] = 1; // Partial — never Full; see above
-  h[7] = blinkOn ? 1 : 0;
-  return h;
-}
-
-/** Whether any cell in a frame's flag column carries `blinkBit` (#576). Pure, so the gate on the
- * phase re-pack is unit-testable without a backend — and separate from the frame it came from, so
- * a `number[]` fixture and the decoder's `Uint16Array` are the same code path. */
-export function carriesBlink(flags: ArrayLike<number>, blinkBit: number): boolean {
-  for (let i = 0; i < flags.length; i++) {
-    if (((flags[i] ?? 0) & blinkBit) !== 0) return true;
-  }
-  return false;
-}
-
-/** Flatten projected decoration rects into the renderer's stride-6 wire
- * `[row, left, right, layer(0=bottom/1=top), bg, fg]…`. `bg`/`fg` are absolute `0xRRGGBB`
- * used verbatim (the consumer already resolved its theme — #393); an absent override becomes
- * {@link NO_REF}. Pure, so the layer mapping + the `undefined → NO_REF` encoding are testable. */
-export function decorationWire(rects: readonly DecorationRect[]): Uint32Array {
-  const out = new Uint32Array(rects.length * DECORATION_STRIDE);
-  rects.forEach((r, i) => {
-    const o = i * DECORATION_STRIDE;
-    out[o] = r.row;
-    out[o + 1] = r.left;
-    out[o + 2] = r.right;
-    out[o + 3] = r.layer === "top" ? 1 : 0;
-    out[o + 4] = r.bg ?? NO_REF;
-    out[o + 5] = r.fg ?? NO_REF;
-  });
-  return out;
-}
-
-/** The `cols`×`rows` grid that fits a CSS-pixel box, given the cell's CSS size. Pixel→cell is
- * consumer policy (ADR-0017) and the renderer takes a *grid* (#331), so the adapter owns this
- * division — the same `floor(box / cell)` xterm's FitAddon does. Pure, so the fractional-DPR
- * rounding is testable.
- *
- * Floored at {@link MINIMUM_COLS}×{@link MINIMUM_ROWS}, not at one cell (#547). "A grid must have
- * a cell" was the old reason and it under-shot: the engine clamps `resize(1, r)` up to two
- * columns, so a 1-column proposal is a grid it can never be in. Driving the engine at 1 while it
- * holds 2 puts every span of the frame outside this grid and the surface silently stops updating.
- * The clamp is pull-only on the core side — a consumer reads the width back, it is not told — so
- * agreeing with the floor here is what keeps the two in step.
- *
- * `undefined` when there is nothing to propose, matching what `proposeDimensions` refuses (#632): an
- * **unmeasured cell** (either axis `0`) and a **non-finite box** (`NaN` from a detached or unlaid-out
- * element, `Infinity` from a degenerate one). Refusing is deliberate and is not the same as clamping —
- * a zero-sized *box* still yields the floors, because a container that measured as empty is a real
- * answer, while a non-finite one means *"not measured"*, exactly when the terminal must not be shrunk.
- * The floor agreement above and this refusal are two axes of the same invariant, and this axis was
- * missing: `Math.max(2, Math.floor(NaN / 8))` is `NaN`, so `backend.resize(NaN)` coerced to `0` and the
- * terminal came back 1×1 — through the path that actually reaches the renderer, while the guarded path
- * was the one nothing calls.
- *
- * **One check covers both conditions, and that is measured rather than assumed.** A separate
- * `cellCss* === 0` guard was written first, mirroring the sibling's, and a mutation test showed it
- * could not fail: a zero cell makes the quotient `±Infinity` (or `NaN` for a zero box over a zero
- * cell), so `Number.isFinite` already rejects every one of those inputs. It was removed rather than
- * kept for symmetry — a branch that cannot change an outcome is untestable by construction, and the
- * test below asserts the zero-cell *behaviour*, which is the part that must hold. (The sibling in
- * `fit.ts` carries the same redundancy, inherited from xterm's `cell.width === 0` guard; left alone
- * because it is working code and changing it would alter nothing.) */
-export function gridForBox(
-  cssWidth: number,
-  cssHeight: number,
-  cellCssWidth: number,
-  cellCssHeight: number,
-): { cols: number; rows: number } | undefined {
-  // A box with no area yields no proposal (#810) — the same answer `proposeDimensions` gives, and the
-  // two must not disagree, which is what #632 made them share arithmetic for.
-  //
-  // **Only one of the two callers can actually deliver a zero, and saying which is the point.**
-  // `resize()` passes a box the consumer measured, where `0` means *nobody measured* — an absent
-  // element, which is #810's whole subject and is reached on an ordinary path. `applyGrid`'s grant
-  // read-back passes `cssWidth()`/`cssHeight()`, and that is **not** reachable at zero through the
-  // supported API: `resize_surface` throws on `<= 0`, and `apply_surface_size` seeds its committed
-  // size from `global.requested` and **breaks without narrowing** when the drawing-buffer read-back
-  // is empty, so a failed grant preserves the request rather than zeroing it
-  // (`justerm-renderer/src/webgl/surface.rs`). The only remaining route is a canvas element authored at
-  // `width="0"` whose surface is never sized.
-  //
-  // So for that caller this guard is **defensive, not a repair**, and it is written down because two
-  // earlier drafts of this comment claimed the opposite — first that an empty grant commits `(0, 0)`,
-  // then that the README's multi-pane example reaches it. Neither survives reading
-  // `apply_surface_size`. What the guard does buy there is that the two callers cannot disagree about
-  // what a zero means, which is the property #632 made them share arithmetic for.
-  //
-  // The renderer refuses its own read-back for the neighbouring reason, and the sentence is the one
-  // this guard borrows: *"A buffer of no size is not a grant, it is the absence of an answer"*
-  // (#639). An unmeasured box and an ungranted buffer are different facts with the same shape.
-  //
-  // Left unguarded, the grant read-back was the worse of the two: `{2, 1}` satisfied
-  // `granted.cols < cols`, so an empty buffer silently clamped **every attached pane's grid** to the
-  // minimum. Nothing named that site until #810's completeness pass.
-  if (cssWidth <= 0 || cssHeight <= 0) return undefined;
-  const cols = Math.max(MINIMUM_COLS, Math.floor(cssWidth / cellCssWidth));
-  const rows = Math.max(MINIMUM_ROWS, Math.floor(cssHeight / cellCssHeight));
-  if (!Number.isFinite(cols) || !Number.isFinite(rows)) return undefined;
-  return { cols, rows };
-}
-
-/** What a frame says to do with the cursor, as a pure decision (no blink/state): `none` = the
- * frame carries no cursor info (leave it); `clear` = hidden (DECTCEM); `set` = place it. Extracted
- * so the visible/hidden branch + the field defaults — the spot an off-by-one or wrong default would
- * hide — are unit-testable without the blink loop. `shape` is the application's DECSCUSR shape
- * (`0` block / `1` underline / `2` bar), `undefined` while it has set none (#927). */
-export type CursorCommand =
-  | { kind: "none" }
-  | { kind: "clear" }
-  | { kind: "set"; col: number; row: number; shape: number | undefined };
-
-export function cursorCommand(frame: DecodedFrame): CursorCommand {
-  if (frame.cursorRow === undefined && frame.cursorVisible === undefined) return { kind: "none" };
-  if (!(frame.cursorVisible ?? false)) return { kind: "clear" };
-  return {
-    kind: "set",
-    col: frame.cursorCol ?? 0,
-    row: frame.cursorRow ?? 0,
-    shape: frame.cursorShape,
-  };
-}
-
-/** The caret shape a consumer can choose as its default (#927). */
-export type CursorStyle = "block" | "underline" | "bar";
-
-/** The shape id to draw: the application's DECSCUSR shape, else the consumer's style (#927). A style
- * outside the three draws a block. */
-export function resolveCursorShape(appShape: number | undefined, style: CursorStyle): number {
-  if (appShape !== undefined) return appShape;
-  switch (style) {
-    case "underline":
-      return 1;
-    case "bar":
-      return 2;
-    default:
-      return 0;
-  }
-}
-
-/** Coerce a decoder array to the exact typed array wasm-bindgen's `&[u32]`/`&[u16]` expect.
- * The decoder's getters already return the right typed array (fast path: identity — a real
- * `Uint32Array` passes through by reference, not copied); the fallback covers a plain-array
- * frame (test/demo fixtures, e.g. `demo/fake-search.ts`).
- *
- * The fallback `Uint32Array.from` REINTERPRETS an out-of-range value, it does not reject it:
- * a negative wraps to its two's-complement, `NaN`/±`Infinity` land as `0`, and `>= 2**32` wraps
- * mod 2**32 (#467, pinned in the renderer test — the same class as the #457 decoration wire). A
- * span source feeding this (`selectionSpans` / `matchSpans` / `activeMatchSpans`) MUST clip to
- * valid u32 range itself, as `decorationsForFrame` and the demo's span producers do; this
- * coercion knows nothing of a value's meaning or geometry and so cannot validate — the producer
- * owns validity. Deliberately not rejected here (#467): a per-frame coercion is the wrong layer.
- *
- * Exported for the seam test only; not re-exported from the package `index.ts`. */
-export const asU32 = (a: ArrayLike<number>): Uint32Array =>
-  a instanceof Uint32Array ? a : Uint32Array.from(a);
-/** The u16 sibling of {@link asU32} (feeds `flags` — and no longer `extra`, which widened to u32
- * at #621/#627), with the same contract: the
- * fallback `Uint16Array.from` REINTERPRETS an out-of-range value (a negative or `>= 2**16` wraps
- * mod 2**16, `NaN`/±`Infinity` → `0`), it does not reject — the producer must clip, this cannot
- * validate (#467). Exported for the seam test only; not re-exported from `index.ts`. */
-export const asU16 = (a: ArrayLike<number>): Uint16Array =>
-  a instanceof Uint16Array ? a : Uint16Array.from(a);
-/**
- * Like {@link asU32}, but for a column this object **keeps past the current frame** — always a copy,
- * never the argument.
- *
- * The opposite rule from {@link asU32}, and not a contradiction: a column that is forwarded and
- * forgotten wants the zero-copy view (#627), while a column that is *retained* cannot have one. A
- * decoded frame's columns view WASM memory directly and are invalidated when that memory grows —
- * the decoder states it as a contract — so a retained view survives exactly until the next decode
- * large enough to reallocate. Measured (#657): a held view detaches after **one** decode of a
- * 300x220 frame, or 109 small ones held at once, and passing the detached array to any wasm entry
- * point throws `TypeError: … on a detached or out-of-bounds ArrayBuffer` rather than degrading.
- *
- * That throw would land in {@link JustermRenderer.issueOverlay}, which by design runs on a **focus
- * flip with no new frame** — so the visible failure is that clicking away from a terminal with a
- * live selection raises, after the viewport has grown at some earlier point.
- *
- * Cheap: overlay spans are `(row, left, right)` triples for the highlighted rows only, copied once
- * per frame — not a cell column.
- */
-export const retainU32 = (a: ArrayLike<number>): Uint32Array => Uint32Array.from(a);
 
 /** Monotonic clock for the blink phase (ms). */
 const now = (): number => performance.now();

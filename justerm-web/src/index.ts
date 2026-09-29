@@ -58,10 +58,10 @@ export type { LocalPointer } from "./pointer";
 export { JustermRenderer } from "./justerm-renderer";
 export type {
   AttachedRendererOptions,
-  CursorStyle,
   JustermRendererOptions,
   Theme,
 } from "./justerm-renderer";
+export type { CursorStyle } from "./cursor";
 // TerminalSurface (#775, Epic #287 S7) — one canvas, one WebGL2 context, N attached terminals.
 // The only new noun: `JustermRenderer.create` composes one internally for the single-terminal
 // arrangement, so a consumer that wants one terminal never names it. A host that wants several
