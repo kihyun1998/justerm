@@ -98,6 +98,14 @@ composition it never saw, so nothing throws and no test on the core side can fai
   composition in its causal chain. Measured in a browser rather than traced: with the cursor moved
   four cells during the excursion, the composition's caret landed at the cell the view left rather
   than the cell the cursor holds, while the same sequence without the excursion landed correctly.
+- **The caret column is retained, not re-derived per frame** (`JustermRenderer.setPreedit`,
+  `preeditCaret`). ADR-0028 D5 is a rule about every frame: frames keep arriving while a composition
+  is open, each describing the engine's cursor, which knows nothing of the preedit — so without the
+  retained column the caret snaps back under the composed text on the next output frame, #637's harm
+  in the cursor's clothes. It re-pushes at the *current* blink phase, not the last one pushed:
+  `setComposing(true)` has already told the blink to hold the caret on (#592), and re-pushing the
+  loop's last value landed a cleared cursor for the whole composition whenever it began on an off
+  phase — caught by #592's own probe once it sampled where the caret had moved.
 - **Writing a grid coordinate where a viewport one is required (#921).** `setPreedit`'s `row` is a
   viewport row, not the grid row core reports the cursor at; the widget once passed the origin's
   grid row straight through, and with the view scrolled up 2 the run was drawn on row 33 while row

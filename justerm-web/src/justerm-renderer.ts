@@ -1242,23 +1242,16 @@ export class JustermRenderer implements Renderer {
   }
 
   applyFrame(frame: DecodedFrame): void {
-    // Set the retained overlay/decoration/cursor state FIRST, then apply_damage packs the grid
-    // once with it (setOverlay's re-pack is a no-op until the first apply_damage, so the first
-    // frame is a single pack). The renderer composites them in wasm — no consumer-side overlay
-    // walk (the beamterm adapter's composeOverlayDraws) survives the pivot.
-    // `retainU32`, not `asU32`: these three outlive the frame (a focus flip re-issues them with no
-    // new frame), and a decoder column is a view into WASM memory that the next large decode
-    // detaches (#657).
+    // Set the retained overlay/decoration/cursor state first, so `apply_damage` packs once with it.
+    // `retainU32`: these three outlive the frame (a focus flip re-issues them) (#657).
     this.lastSelectionSpans = retainU32(frame.selectionSpans ?? new Uint32Array(0));
     this.lastMatchSpans = retainU32(frame.matchSpans ?? new Uint32Array(0));
     this.lastActiveMatchSpans = retainU32(frame.activeMatchSpans ?? new Uint32Array(0));
     this.issueOverlay();
     this.backend.setDecorations(this.lease.id, decorationWire(this.decorationSource?.(frame) ?? []));
     this.updateCursor(frame);
-    // Pack at the CURRENT text-blink phase, not forced-on — same reason `updateCursor` draws at
-    // the cursor's current phase: a content frame arriving during the off phase must not flash the
-    // blinking cells back on until the loop's next flip. `apply_damage` stores this as the
-    // renderer's `last_blink_on`, so the two stay in step by construction.
+    // Pack at the current text-blink phase, not forced on, so a frame arriving in the off phase does
+    // not flash blinking cells back on.
     const textBlinkOn = this.textBlink.isVisible(now());
     this.backend.apply_damage(this.lease.id,
       damageHeader(frame, textBlinkOn),
@@ -1267,61 +1260,26 @@ export class JustermRenderer implements Renderer {
       asU32(frame.fg),
       asU32(frame.bg),
       asU16(frame.flags),
-      // #627: `asU32`, not `asU16` — renderer >= 0.9.0 takes this column as u32, and narrowing it
-      // back truncated silently above `u16::MAX` while copying every frame.
-      //
-      // Whether the identity branch is taken is **the frame producer's** business, not this
-      // package's. `frame` arrives through `FrameSource.push`, so the width of `extra` is decided by
-      // whoever decoded it — a consumer on `justerm-wasm-decode` >= 0.12.0 hands a `Uint32Array`
-      // (identity, zero JS allocation); one still on 0.11.0 hands a `Uint16Array` and pays one
-      // widening copy, correct for every value a u16 can hold. This package's own dependency on the
-      // decoder does **not** decide it: the only thing web imports from there is `buildPalette` plus
-      // the `Palette` type — `decodeFrame` is called nowhere in `src/`. An earlier version of this
-      // comment tied the copy to *our* pin moving at #633 step 5; that was wrong, and the pin bump
-      // it predicted has now landed without changing anything here.
+      // #627: u32. Whether this is a zero-copy identity is the frame producer's decoder version
+      // (docs/map/territory/frame-adapter.md § The widget's wire encoders).
       asU32(frame.extra),
       Array.from(frame.sideTable),
-      // #520: the underline colour column (SGR 58). Trailing arg on the renderer's apply_damage;
-      // the renderer packs it as the base ink of the line channel so an underline draws in its
-      // own colour. All compositing stays in the renderer (post-#273/#504) — this is pure forwarding.
-      // Optional on the frame (a fixture may omit it) → empty scatters as all-Default.
+      // #520: the underline colour column (SGR 58), forwarded; omitted → all Default.
       asU32(frame.underlineColor ?? new Uint32Array(0)),
     );
-    // Everything below records what the renderer NOW holds, so it is committed only after
-    // `apply_damage` returns: that call refuses a malformed span directory (`webgl.rs` `GridTier::apply_damage`, #355) and
-    // returns *before* it stores the phase, so recording first would leave this side believing it
-    // pushed a phase the renderer never took — and the loop, seeing no flip, would not correct it.
+    // Recorded only after `apply_damage` returns: it refuses a malformed frame before storing the
+    // phase (#355), and recording first would leave the loop believing a flip it never made.
     this.lastTextBlinkOn = textBlinkOn;
     this.lastFrameGrid = { cols: frame.cols, rows: frame.rows };
     this.trackBlinkCells(frame);
-    // A frame is the only thing that establishes a grid to re-pack, so the loop starts here as
-    // well as at the cursor — a terminal with a hidden cursor still blinks its SGR 5 text.
+    // Started here too: a terminal with a hidden cursor still blinks its SGR 5 text.
     if (this.textBlink.enabled) this.startBlinkLoop();
   }
 
   /**
-   * Track whether the renderer's grid may hold a `BLINK` cell — xterm.js's `needsBlinkInViewport`
-   * (`TextBlinkStateManager.ts:67`), adapted to frame mode.
-   *
-   * xterm.js answers this exactly, by scanning the viewport it owns. A frame-mode consumer holds
-   * damage, not the grid, so the exact question is not answerable here — but the gate only needs to
-   * be **conservative**, because a false positive costs one redundant re-pack while a false
-   * negative would freeze blinking text. So: a Full frame *replaces* the answer, and a Partial
-   * frame can only *add* to it. The result decays only at the next Full frame, which is the safe
-   * direction.
-   *
-   * **What the exactness of the Full case rests on**, cited at the layer that owns it rather than
-   * at the renderer's paraphrase of it: core emits full damage as every row at full width
-   * (`justerm-core/src/term.rs`, `TermDamage::Full` → `(0..rows).map(|l| (l, 0, cols - 1))`), which
-   * `FrameKind::Full` states as its contract (*"Every row is present"*, `serialize.rs`). If a Full
-   * frame ever became a subset, this gate would start producing the one error it must not.
-   *
-   * Without this, a consumer that opts in pays a full re-pack per half-period on every terminal —
-   * `resolve_and_pack` walks every cell and `plan_upload` diffs the result — even where no cell has
-   * ever carried SGR 5, and the produced buffer is byte-identical. **Measured** (demo, 600ms
-   * interval, 3.0s, presenting rAF turns, identical conditions either side): 16 with three blinking
-   * cells on screen, 11 with none — a delta of 5, which is exactly the 5 phase flips in that window.
-   * The work behind each is proportional to `cols × rows`.
+   * Track whether the renderer's grid may hold a `BLINK` cell — conservatively: a Full frame
+   * replaces the answer and a Partial one can only add to it, so it decays only at the next Full
+   * frame. Why: [`docs/map/territory/widget-lifecycle.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/widget-lifecycle.md) § The blink loop and the present.
    */
   private trackBlinkCells(frame: DecodedFrame): void {
     const here = carriesBlink(frame.flags, this.flagBits.blink);
@@ -1330,26 +1288,11 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Present the canvas — and **which of the two ways follows from whether this terminal is alone on
-   * it**, because `render()` takes no grid: one call presents the whole canvas, every registered grid
-   * included.
-   *
-   * - **Sole tenant** (the {@link create} path): synchronous, exactly as before #775. One terminal
-   *   means one present per frame either way, so coalescing buys nothing and would only add a frame
-   *   of latency — and the whole e2e suite drives a frame and reads pixels in the same turn, so
-   *   deferring here would silently change what a large number of unrelated assertions mean.
-   * - **Sharing a surface** (the {@link attach} path): a *request* on the surface's loop, coalesced
-   *   with every sibling's into one present per frame. N terminals presenting synchronously would
-   *   redraw the whole canvas N times a frame — a cost that grows with the number of terminals while
-   *   the pixels do not.
-   *
-   * The two are the same behaviour at N=1, which is what makes this a derivation rather than a mode
-   * switch. `Terminal` calls this on every decoded frame and has no way to choose, so a widget on a
-   * shared surface would otherwise be unable to reach the loop the surface exists to run — the
-   * advice "call `requestRender` instead" was unfollowable while `Terminal.mount` drove this one.
-   *
-   * A host that needs the canvas drawn *before* it returns — reading pixels, a screenshot — calls
-   * {@link TerminalSurface.present} directly.
+   * Present the canvas. `render()` takes no grid, so one call presents the whole canvas: a sole
+   * tenant ({@link create}) presents synchronously, and a terminal sharing a surface ({@link attach})
+   * requests a present coalesced with its siblings' into one per frame. A host that needs the canvas
+   * drawn *before* it returns — reading pixels, a screenshot — calls {@link TerminalSurface.present}
+   * directly. Why: [`docs/map/territory/widget-lifecycle.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/widget-lifecycle.md) § The blink loop and the present.
    */
   render(): void {
     if (this.composedSurface) this.surface.present();
@@ -1377,15 +1320,11 @@ export class JustermRenderer implements Renderer {
     this.backend.setActiveMatch(this.lease.id, this.lastActiveMatchSpans, this.activeMatchBg);
   }
 
-  /** Push the frame's cursor to the renderer (native cursor — #270), or clear it when hidden.
-   * The renderer draws the shape (block/underline/bar/hollow) itself: unlike beamterm (which had
-   * no cursor and fell a bar back to a block), a bar renders as a real bar. Blink phase stays
-   * consumer policy — the blink loop calls `clearCursor`/`setCursor` on the off/on flip. */
+  /** Push the frame's cursor to the renderer (native cursor — #270), or clear it when hidden. The
+   * renderer draws the shape; the blink phase stays consumer policy — the blink loop calls
+   * `clearCursor`/`setCursor` on the off/on flip. */
   private updateCursor(frame: DecodedFrame): void {
-    // The application's blink mode rides every frame (wire v4, #81) — core writes it from both
-    // DECSCUSR and `CSI ?12 h/l`. Applied only when the frame actually carries it, so a frame that
-    // omits the field (an older backend, a hand-built fixture) leaves the last known mode alone
-    // rather than silently forcing steady. `CursorBlink` resolves it against the consumer override.
+    // The application's blink mode (wire v4, #81), applied only when the frame carries it.
     if (frame.cursorBlink !== undefined) this.blink.setAppBlink(frame.cursorBlink);
     const cmd = cursorCommand(frame);
     if (cmd.kind === "none") return;
@@ -1405,10 +1344,8 @@ export class JustermRenderer implements Renderer {
       this.blink.restart(now());
     }
     this.cursor = { col, row, shape: cmd.shape };
-    // Draw at the CURRENT blink phase, not forced-on: the decoder emits cursor fields on every
-    // frame, so a content frame streaming during blink-off must leave the cursor off (a `restart`
-    // above already forces phase-on for a move). Forcing on here would pin the cursor solid and
-    // flicker against the rAF loop during output — the beamterm adapter drew at `isVisible` too.
+    // Draw at the current blink phase, not forced on: cursor fields ride every frame, so forcing on
+    // would pin the caret solid during output.
     this.pushCursor(this.blink.isVisible(now()));
     this.startBlinkLoop();
   }
@@ -1439,9 +1376,7 @@ export class JustermRenderer implements Renderer {
   /** Show the cursor and reset its blink phase (#107) — the widget calls this on a key intent so
    * the caret stays solid while typing rather than blinking off right after a keystroke. */
   restartCursorBlink(): void {
-    // The INPUT path — this is the only caller that means "the user did something", so it is the one
-    // that resets the idle clock (#593). `updateCursor`'s move branch calls the phase-only
-    // `restart()`, because a cursor move is application output.
+    // The input path resets the idle clock (#593); a cursor move is output and restarts the phase only.
     this.blink.restartFromInput(now());
     this.redrawCursor();
   }
@@ -1450,8 +1385,7 @@ export class JustermRenderer implements Renderer {
    * How long the cursor keeps blinking with no user input before parking solid, in ms.
    * `0` disables it. Defaults to {@link BLINK_IDLE_TIMEOUT} (5 minutes, xterm.js's value).
    *
-   * Consumer policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), so it is injected rather than assumed — the two references disagree
-   * on the number by 60x. The live counterpart of
+   * The live counterpart of
    * {@link JustermRendererOptions.cursorBlinkTimeout}.
    */
   setCursorBlinkTimeout(ms: number): void {
@@ -1478,22 +1412,15 @@ export class JustermRenderer implements Renderer {
    * keeps it hidden, #592's boundary).
    */
   setPreedit(col: number, row: number, codepoints: Uint32Array): number {
-    // A renderer published before #249 has no such binding: report the anchor cell unchanged, so
-    // the widget's anchor logic still works and only the drawing is missing.
+    // A renderer without the binding: report the anchor cell unchanged, so only the drawing is missing.
     if (!this.backend.setPreedit) return col;
     const caretCol = this.backend.setPreedit(this.lease.id, col, row, codepoints);
-    // Retained, because D5 is a rule about every frame and not about this call. Frames keep arriving
-    // while a composition is open and each one describes the ENGINE's cursor, which knows nothing
-    // about the preedit — so without this the caret snaps back under the composed text on the next
-    // output frame, which is #637's harm wearing the cursor's clothes.
+    // Retained: every later frame re-asserts the engine's cursor, which knows nothing of the preedit
+    // (docs/map/invariant/composition-is-browser-owned-state.md).
     this.preeditCaret = codepoints.length > 0 ? { col: caretCol, row } : undefined;
     if (this.cursor) {
       this.cursor = { ...this.cursor, col: caretCol, row };
-      // The CURRENT phase, not the last one pushed. `setComposing(true)` has already told the blink
-      // to hold the caret on (#592), and `lastBlinkOn` is whatever the loop happened to push before
-      // the composition opened — so re-pushing that lands a *cleared* cursor for the whole
-      // composition whenever it began on an off phase. Caught by #592's own probe once it sampled
-      // where the caret had moved to.
+      // The current phase, not the last one pushed (#592).
       this.pushCursor(this.blink.isVisible(now()));
     }
     this.render();
@@ -1552,9 +1479,8 @@ export class JustermRenderer implements Renderer {
    * The half-period of the SGR 5 text blink in ms; `0` disables it (the default). The live
    * counterpart of {@link JustermRendererOptions.textBlinkInterval}.
    *
-   * Re-syncs immediately: no frame carries this, so disabling while the phase is off would leave
-   * that text invisible until the next output — the failure xterm.js avoids by forcing `blinkOn`
-   * true and re-rendering when its interval stops (`TextBlinkStateManager._updateIntervalState`).
+   * Re-syncs immediately: no frame carries this, so disabling while the phase is off would otherwise
+   * leave that text invisible until the next output.
    */
   setTextBlinkInterval(ms: number): void {
     this.textBlink.setIntervalMs(ms, now());
@@ -1602,36 +1528,16 @@ export class JustermRenderer implements Renderer {
    * No frame changed on a focus flip, so re-issue `setOverlay` with the retained spans + the new
    * tint (the renderer re-packs the retained grid) and redraw the cursor.
    *
-   * **This setter is the one that changes something other than the cursor, and the present is
-   * therefore not the cursor's to own**. `issueOverlay` only *retains* spans and re-packs —
-   * `redrawCursor` is what calls `backend.render()`, which is why {@link setTheme} pairs the two and
-   * says so. Guarding the redraw on there being a cursor, the way {@link setCursorBlink} and
-   * {@link setComposing} legitimately do, therefore drops the tint flip on the floor whenever the
-   * application has hidden the caret (`cursorCommand` → `clear`): the retained spans exist exactly
-   * so a focus flip with **no new frame** can be drawn, and on an idle hidden-caret terminal there
-   * may be no next present at all — `updateCursor`'s clear branch returns before `startBlinkLoop`.
-   * So: redraw the caret when there is one, and otherwise present iff the tint actually moved.
-   *
-   * The guard is still worth having for the mount-time call, which lands before the first frame and
-   * before the first fit; there it takes neither branch, because `focused` starts `false` and so the
-   * tint does not move either. */
+   * It presents even with no caret on screen when the tint moved — the retained spans exist so a
+   * focus flip with no new frame can be drawn. Why: [`docs/map/territory/widget-lifecycle.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/widget-lifecycle.md) § The blink loop and the present. */
   setFocused(focused: boolean): void {
     this.blink.setFocused(focused);
     const changed = this.focused !== focused;
     if (changed) {
       this.focused = focused;
       this.issueOverlay();
-      // **Arriving at a terminal must not hide its caret** (#912). While unfocused the caret is
-      // parked solid, but the phase clock has been free-running since the last cursor move — so
-      // without this, focus-in flips straight to whichever half of the 600ms cycle it happens to
-      // land on, and half the time that is OFF: the caret vanishes at the moment you arrive. Before
-      // #912 the renderer assumed focus, so this transition was not reachable on a FIRST focus and
-      // the pointer path hid the rest (`onDown` restarts the blink right after focusing). Tab and
-      // the public `Terminal.focus()` do not.
-      //
-      // Phase only — focus is not typing, so the idle clock (#593) is deliberately untouched, which
-      // is the `restart` / `restartFromInput` split. xterm.js re-shows the caret from its own focus
-      // handler for the same reason (`browser/CoreBrowserTerminal.ts:309`, `_showCursor()`).
+      // Arriving must not hide the caret (#912): re-anchor the phase, not the idle clock
+      // (docs/map/territory/caret-drawing.md § Focus-in re-anchors the blink phase).
       if (focused) this.blink.restart(now());
     }
     if (this.cursor) this.redrawCursor();
@@ -1645,11 +1551,8 @@ export class JustermRenderer implements Renderer {
    * The two phases are separate clocks but share one loop and, when they flip together, **one
    * present** — the same "pack once, present once" rule `applyFrame` follows.
    *
-   * rAF stops firing for a hidden *document*, so a backgrounded tab costs nothing. That is **not**
-   * the same guarantee as xterm.js's `setViewportVisible`, which is fed by an `IntersectionObserver`
-   * on the screen element: a terminal scrolled out of view inside a visible page keeps ticking here.
-   * The gap applies equally to the cursor half of this loop, so it is a widget-level decision rather
-   * than a text-blink one, and is left as it was.
+   * rAF stops firing for a hidden *document*, so a backgrounded tab costs nothing; a terminal
+   * scrolled out of view inside a visible page keeps ticking. Why: [`docs/map/territory/widget-lifecycle.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/widget-lifecycle.md) § The blink loop and the present.
    */
   private startBlinkLoop(): void {
     this.blinkLoop.start();
@@ -1658,36 +1561,20 @@ export class JustermRenderer implements Renderer {
   /**
    * One blink iteration. Called by {@link FrameLoop}, which owns the scheduling — including the
    * part that matters here: if this throws, the loop stops with no handle left behind, so the next
-   * `startBlinkLoop` (which `updateCursor` issues on every decoded frame) restarts it. Before #696
-   * the re-arm lived at the bottom of this body and a throw latched the loop off permanently.
+   * `startBlinkLoop` (which `updateCursor` issues on every decoded frame) restarts it.
    *
    * Must not call {@link JustermRenderer.startBlinkLoop} — see `FrameLoop`'s `run` doc.
    */
   private blinkTick(): void {
-    // **A terminal nobody is drawing has no phase worth flipping** (#801). Both halves of this tick
-    // end in `backend.render()`, which presents the WHOLE canvas — so on a shared surface a hidden
-    // pane's blink drives a full redraw of its siblings, twice a second, for pixels that are not on
-    // screen. The re-pack itself is already gated one layer down (the renderer's draw loop skips an
-    // unplaced grid), which is exactly why this was invisible: what is wasted is the present, not
-    // the pack, and no counter at this layer reports presents.
-    //
-    // The cursor half self-gated on the ordinary path and that is what made this look narrower than
-    // it is: `CursorBlink.isVisible` returns solid when `!focused`, and `display: none` blurs the
-    // focused textarea. But `TextBlink.isVisible` has no focus gate at all, and `hide()` called
-    // without a DOM change — which this package's README recommends for `visibility: hidden`, since
-    // no observer fires there — leaves the terminal focused. So the path that needed this is the one
-    // the documentation points at.
-    //
-    // Skipping the work is what makes the phase drift; `setHidden` re-syncs on the way back.
+    // A hidden terminal flips no phase (#801): both halves end in a whole-canvas present
+    // (widget-lifecycle.md § The blink loop and the present). `setHidden` re-syncs on the way back.
     if (this.hidden) return;
     const t = now();
     const cursorOn = this.blink.isVisible(t);
     const cursorFlip = cursorOn !== this.lastBlinkOn;
     const textOn = this.textBlink.isVisible(t);
-    // Gated on there being something to conceal: the flip is a full re-pack, and running it over
-    // a grid with no BLINK cell produces a byte-identical buffer at the cost of a walk over every
-    // cell. The two orders below are interchangeable (the cursor is a shader uniform, not an
-    // instance — `webgl/grid_state.rs` `set_cursor` sets no `needs_repack`), so this one is only convention.
+    // Gated on there being a BLINK cell: the flip is a full re-pack. The order of the two halves is
+    // convention (the cursor is a uniform, not an instance).
     const textFlip = this.mayHaveBlinkCells && textOn !== this.lastTextBlinkOn;
     const repacked = textFlip && this.repackAtTextBlinkPhase(textOn);
     if (cursorFlip) this.pushCursor(cursorOn);
@@ -1699,62 +1586,25 @@ export class JustermRenderer implements Renderer {
    * listener re-packs and presents, so a widget that kept it would still repaint its canvas after
    * being disposed.
    *
-   * **Called by `Terminal.dispose()` since #606** — the sentence that stood here until then said
-   * *"nothing calls this yet"*, which was the defect, not a caveat. Idempotent, as the `Renderer`
-   * port requires: `cancelAnimationFrame` is guarded and `removeEventListener` is a no-op the
-   * second time, so a consumer that also calls it is not punished.
+   * Called by `Terminal.dispose()`. Idempotent, as the `Renderer` port requires.
    *
-   * **It releases this widget's grid, and with it the GPU memory that grid was holding.** The wasm
-   * instance itself, the GL context and the canvas context-loss listeners the Rust side owns still
-   * survive — those go with the binding's `free()`, which cannot be called while the consumer holds
-   * this object.
-   *
-   * This paragraph said *"stops work, does not release memory"* until #773's follow-up, and its
-   * stated reason — that `free()` is the only release and is unreachable — **stopped being true at
-   * #770**, which added `removeGrid`. A promise whose grounds have gone is a thing to fix rather
-   * than to keep. What it costs to keep it is measured: the glyph atlas is a fixed
-   * `tex_storage_3d(RGBA8, paddedW, paddedH * 32, 192)` allocation whose size does not depend on how
-   * many glyphs were ever used — **4.2 MiB** at a 8x16 cell and **12.8 MiB** at the 15x30 cell
-   * measured at dpr 2 — plus a VAO, an instance buffer, and the rasteriser and glyph cache on the
-   * wasm heap. A tabbed application that closes terminals while the page lives (which is the first
-   * consumer's shape) held all of it, per closed terminal, until the tab went away.
+   * **It releases this widget's grid**, and with it the GPU memory that grid holds (its VAO, its
+   * instance buffer and its share of its font configuration's atlas); a terminal that composed its
+   * surface ({@link create}) also ends the surface, and with it the context-loss notification.
    *
    * **So a disposed widget has no grid, and every method that acts on one throws afterwards** —
    * `cellSize`, `terminalSize`, `resize`, the font and spacing setters, the frame and cursor paths.
-   * That is the honest answer rather than a regression: they would otherwise report or mutate a
-   * terminal that has ended. The surface-level readers below keep answering, because the surface is
-   * still there.
-   *
-   * **That is exactly why the context-loss channel is closed here by hand**. It is the one
-   * piece of ambient work whose teardown the renderer *does* own but at the wrong end of the
-   * object's life: `ContextLossHandler`'s `Drop` clears the callback slot, and `Drop` runs at
-   * `free()`, which the sentence above says never happens. So a restore deadline armed moments
-   * before disposal would otherwise still deliver to a widget that has ended. The observable
-   * contract this restores is the reference's — xterm.js's disposable clears its pending restore
-   * timeout (`addons/addon-webgl/src/WebglRenderer.ts:161-163`) — and the renderer's own `Drop`
-   * comment names that same behaviour as what it matches.
-   *
-   * `isContextLost()` / `isRestoreOverdue()` keep answering afterwards; only the *push* stops. They
-   * read the state machine the surviving canvas listeners still feed, so silencing them would mean
-   * lying about the context rather than ending work.
+   * `isContextLost()` / `isRestoreOverdue()` keep answering, because the surface is still there. Why
+   * each: [`docs/map/territory/widget-lifecycle.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/widget-lifecycle.md) § The blink loop and the present.
    */
   dispose(): void {
     this.blinkLoop.stop();
     this.motionQuery.removeEventListener("change", this.onMotionChange);
-    // No flag here any more (#805). This widget used to carry a `gridReleased` boolean whose stated
-    // reason was that `removeGrid` throws on an id it does not know — true when it was written, and
-    // false by the time #775 merged, because the guard had moved into the surface. It survived on a
-    // reason that had gone, which is exactly what a lease removes: `release` is idempotent because
-    // the lease knows its own state, so a second `dispose()` needs nothing to remember for it.
-    //
-    // It releases THIS grid and nothing else — a sibling on the same surface keeps its cells, its
-    // atlas and its viewport (#775).
+    // Idempotent because the lease knows its own state (#805); it releases this grid only — a sibling
+    // keeps its cells, its atlas and its viewport (#775).
     this.lease.release();
-    // What this object exclusively holds, this object ends — the rule in
-    // `docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md`, which is where it is written
-    // down rather than here. On the `create` path this object is the surface's only holder; on the
-    // `attach` path it is not, and ending a shared surface would take down every sibling drawing on
-    // it.
+    // What this object exclusively holds, it ends
+    // (docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md).
     if (this.composedSurface) this.surface.dispose();
   }
 }
