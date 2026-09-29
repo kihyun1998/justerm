@@ -353,7 +353,11 @@ Two things came out of it that are worth carrying rather than re-deriving:
   clamp is what turned it into a plausible wrong one. The union makes the caller decide at the
   compiler's insistence — the same *unrepresentable rather than guarded* move `GridLease` made in
   #805, one issue earlier, in this same file.
-- **Hidden-ness is state the widget consults, never a command it issues once.** Seven entry points
+- **Hidden-ness is state the widget consults, never a command it issues once.** Both references keep
+  the same shape and neither issues a one-shot — xterm.js holds `_isPaused` and consults it in
+  `refreshRows` (`src/browser/services/RenderService.ts:140-153`), ghostty holds `flags.visible` and
+  consults it at draw (`src/renderer/Thread.zig:528`); a cross-check, since the derivation below stands
+  without it. Seven entry points
   re-derive a placement — `onReapply` (a density change and a context restore), the four font and
   spacing setters, `resize` and `setViewportRect` — and all seven funnel into `applyGrid`, which
   holds this package's only `setViewport` call site. A `hide()` that merely called `clearViewport`
