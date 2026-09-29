@@ -67,11 +67,27 @@ a coherent full viewport.
   the scatter reads it tolerantly — omitted means every cell's underline colour is Default.
   `apply_frame` takes its dense frame the same way, and its underline column is likewise not grouped
   with the colour columns, because that would shift every existing call.
+- **The widget's wire encoders** (`justerm-web/src/renderer-wire.ts`). Pure functions, so the wire
+  assembly is unit-testable with no backend. `damageHeader` builds the eight-slot `apply_damage`
+  header: a negative `scrollCount` rides its `u32` slot as two's complement and the renderer reads
+  it back `as i32 as i16`; `blinkOn` defaults to `true` so a caller with no phase — a test, a
+  hand-built fixture — shows blinking text rather than hiding it, while the adapter passes
+  `TextBlink`'s current phase (#576). `blinkPhaseHeader` is the **phase-only** re-issue: the
+  renderer keeps `blink_on` from the damage header (`last_blink_on`), so an empty damage carrying
+  only the new phase makes it re-pack its retained grid — no renderer or wire change was needed for
+  text blink, which is why the whole feature lands in the widget. Its `kind` is **Partial**, and
+  that is the load-bearing value: a Full header wipes the grid *before* scattering, and this damage
+  scatters nothing, so a Full flip would blank the terminal; `cols`/`rows` must be the grid the
+  renderer holds, since a mismatch allocates a fresh empty grid with the same result. `carriesBlink`
+  gates that re-pack, and takes the flag column rather than the frame so a `number[]` fixture and the
+  decoder's `Uint16Array` are the same code path.
 
 ## Code
 
 - `justerm-renderer/src/frame_grid.rs` — `FrameGrid`, the persistent dense grid and the scatter
 - `justerm-renderer/src/webgl/draw.rs` — `apply_frame`, which consumes the dense result
+- `justerm-web/src/renderer-wire.ts` — `damageHeader`, `blinkPhaseHeader`, `carriesBlink`: the
+  widget's `apply_damage` header encoders
 
 ## Reference behaviour
 

@@ -23,7 +23,7 @@ Measured on a real decoded frame (#657): 10 000 reads of `frame.sideTable[0]` co
 against **0.061 ms** through a local — ~170×, on a table with a *single* entry. The gap grows with
 the table, because the cost is the rebuild rather than the index.
 
-Two consequences that are easy to state wrong:
+Three consequences that are easy to state wrong:
 
 1. **The allocation cost and the lifetime contract are different facts, and both bite.** The decoder
    documents columns as views into WASM memory, invalidated when that memory grows
@@ -34,11 +34,23 @@ Two consequences that are easy to state wrong:
    not creep in gradually; it arrives the moment a bigger frame does, which for a terminal means a
    viewport resize. Passing the detached array on **throws** (`TypeError: … on a detached or
    out-of-bounds ArrayBuffer`) rather than degrading.
+   A retained copy is cheap where it is needed: overlay spans are `(row, left, right)` triples for the
+   highlighted rows only, copied once per frame (`retainU32`).
 2. **The identity fast path still works — measured through a single read.** `asU32` returns its
    argument untouched when the width already matches, which is what makes the seam zero-copy at all
    (#627). A test that writes `expect(asU32(frame.extra)).toBe(frame.extra)` reads the getter twice
    and fails against code that is doing exactly the right thing. The identity that matters is
    between what a reader received and what it forwards.
+3. **The coercion does not validate** (#467). `asU32` / `asU16` pass a real typed array through by
+   reference and convert a plain one — a test or demo fixture such as `demo/fake-search.ts`. The
+   conversion **reinterprets** an out-of-range value rather than rejecting it: a negative wraps to its
+   two's complement, `NaN` / ±`Infinity` land as `0`, and a value past the type's range wraps mod
+   2³² (or 2¹⁶) — pinned in the renderer test, the same class as the #457 decoration wire. So a span
+   source feeding it (`selectionSpans` / `matchSpans` / `activeMatchSpans`) must clip to a valid
+   range itself, as `decorationsForFrame` and the demo's span producers do: the coercion knows nothing
+   of a value's meaning or geometry, and a per-frame coercion is the wrong layer to validate at. `asU16`
+   feeds `flags` only; `extra` widened to `u32` at #621/#627. The wraps are pinned in
+   `justerm-web/test/justerm-renderer.test.ts` ("asU32 span coercion (#467)").
 
 ## Why it is cross-cutting
 
