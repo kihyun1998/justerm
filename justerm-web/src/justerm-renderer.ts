@@ -259,8 +259,8 @@ export interface JustermRendererOptions {
    * blank canvas, and nothing else tells a consumer to dim the terminal, show a message, or fall back.
    * What to do is consumer policy, so the widget forwards the signal and applies none itself.
    *
-   * **Fires at most once per loss**, and never after {@link JustermRenderer.dispose} on a terminal that
-   * composed its surface — on {@link JustermRenderer.attach} the handler belongs to the surface and
+   * **Fires at most once per loss**, and never after {@link JustermRenderer.dispose} on a terminal that
+   * composed its surface — on {@link JustermRenderer.attach} the handler belongs to the surface and
    * outlives the widget. Change it at
    * runtime with
    * {@link JustermRenderer.setOnContextLoss}.
@@ -1596,7 +1596,7 @@ export class JustermRenderer implements Renderer {
    *
    * **So a disposed widget has no grid, and every method that acts on one throws afterwards** —
    * `cellSize`, `terminalSize`, `resize`, the font and spacing setters, the frame and cursor paths.
-   * `isContextLost()` / `isRestoreOverdue()` keep answering: they read the state machine the canvas
+   * `isContextLost()` / `isRestoreOverdue()` keep answering: they read the state machine the canvas
    * listeners still feed. Why
    * each: [`docs/map/territory/widget-lifecycle.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/widget-lifecycle.md) § The blink loop and the present.
    */
