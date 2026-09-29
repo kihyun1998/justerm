@@ -442,25 +442,13 @@ const now = (): number => performance.now();
 
 /**
  * The real {@link Renderer}: wraps the first-party `justerm-renderer` (WASM + WebGL2) and pushes
- * each decoded frame's cells + overlay + cursor + decorations to it, letting the renderer do all
- * compositing **in wasm** (colour resolve, highlight blend, cursor, decorations). This is the
- * pivot's payoff ([ADR-0018](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0018-justerm-renderer.md)): the beamterm adapter did that compositing in TypeScript
- * (CellMirror + makeRenderPolicy + composeOverlayDraws) because beamterm has no such concepts;
- * this adapter is a thin translator because the renderer owns them.
+ * each decoded frame's cells, overlay, cursor and decorations to it; the renderer does all
+ * compositing in wasm. Overlay, cursor and decoration state is consumer-pushed every frame and set
+ * before the frame's damage, so a frame packs once.
  *
- * The overlay/cursor/decoration state is **consumer-pushed every frame** (the renderer retains
- * it as state, exactly like `setCursor` — #273 wiring note): the adapter sets that state *before*
- * `apply_damage`, so the frame packs once with the current overlay, avoiding a redundant re-pack.
- *
- * The wasm modules are loaded with **dynamic `import()`**: the renderer's by
- * {@link TerminalSurface.open} (constructing it is what binds the context to a canvas) and the
- * decoder's here. Two top-level
- * wasm-bindgen "bundler" imports race their init and the second fails (`__wbindgen_externrefs`
- * undefined), so deferring to runtime lets vite instantiate each cleanly (same reason as the
- * beamterm adapter). Not exercised by the vitest suite — it needs a GL context + the WASM; the
- * pure wire logic ({@link damageHeader}/{@link decorationWire}/{@link gridForBox}) is unit-tested,
- * and the whole path is proven by the demo's headless e2e (a real WebGL boot) + the renderer's
- * own GL proofs.
+ * Build one with {@link JustermRenderer.create} — a terminal on its own canvas — or
+ * {@link JustermRenderer.attach} — a terminal on a shared {@link TerminalSurface}. Why it is built
+ * this way: [`docs/map/territory/widget-lifecycle.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/widget-lifecycle.md) § How a `JustermRenderer` is built.
  */
 export class JustermRenderer implements Renderer {
   private readonly blink = new CursorBlink();
@@ -499,49 +487,22 @@ export class JustermRenderer implements Renderer {
   private readonly onMotionChange: (e: MediaQueryListEvent) => void;
   /**
    * Where this grid sits on the shared drawing buffer, in **device px**, top-left origin — the
-   * origin half of the rect {@link setViewportRect} sets; the extent half is always re-derived from
-   * the grid and the cell, so it is not stored beside it.
-   *
-   * `(0, 0)` for a sole tenant, which is what makes the single-terminal arrangement the special case
-   * of the general one rather than a second code path. For a shared surface it is the terminal's DOM
-   * overlay measured against the canvas — and it has to be re-supplied whenever that box moves,
-   * because WebGL binds one context to one canvas, so a terminal is a transparent overlay over its
-   * viewport and nothing inside the GL layer can observe the overlay drifting away from it.
+   * origin half of the rect {@link setViewportRect} sets; the extent is re-derived from the grid and
+   * the cell. `(0, 0)` for a sole tenant; for a shared surface it is the terminal's DOM overlay
+   * measured against the canvas, re-supplied whenever that box moves.
    */
   private rect = { x: 0, y: 0 };
   /**
-   * Whether the host has taken this terminal off the surface — **state consulted at every placement,
-   * not a command issued once**.
-   *
-   * The distinction is the whole of this field's justification, and it is measured rather than
-   * chosen. Seven entry points re-derive this grid's placement — a density change or context
-   * restore through `onReapply`, all four font/spacing setters, {@link resize} and
-   * {@link setViewportRect} — and every one funnels into {@link applyGrid}, which holds the only
-   * `setViewport` call site in this package. A hide implemented as a single `clearViewport` would
-   * therefore be undone by the next density change, silently and with no consumer call behind it.
-   *
-   * Both references keep the same shape for the same reason and neither issues a one-shot: xterm.js
-   * holds `_isPaused` and consults it in `refreshRows`
-   * (`src/browser/services/RenderService.ts:140-153`), ghostty holds `flags.visible` and consults it
-   * at draw (`src/renderer/Thread.zig:528`, *"If we're invisible, we do not draw"*). The convergence
-   * is a cross-check; the derivation above stands without it.
+   * Whether the host has taken this terminal off the surface — **state consulted at every placement**
+   * ({@link applyGrid}), not a command issued once. Why: [`docs/map/territory/multi-viewport.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/multi-viewport.md) § Hidden-ness is state the widget
+   * consults.
    */
   private hidden = false;
   /** Focus gates the selection colour (focused → `selectionBg`, blurred → the dimmer
    * `selectionInactiveBg`) and the blink (blurred → solid). xterm's two selection colours.
    *
-   * **Starts unfocused**. A renderer is told about focus *changes*, so a terminal that is
-   * never focused is never told anything — and the previous `true` therefore stood for the life of
-   * every pane the user had not clicked.
-   *
-   * The default is only half of it: {@link Terminal} also reports once at mount, and the reference
-   * tally says why both are needed rather than either — the corpus splits 2-1 and what the three
-   * share is a *correction path*, not a value. See
-   * [`docs/agents/reference-facts.md`](https://github.com/kihyun1998/justerm/blob/master/docs/agents/reference-facts.md) § "The INITIAL focus state — who establishes it".
-   *
-   * It also fails safe in the direction the old default did not: a focused terminal that reads as
-   * blurred recovers on the first keystroke, while a blurred one that reads as focused never
-   * recovered. */
+   * **Starts unfocused**, and {@link Terminal} also reports once at mount. Why both:
+   * [`docs/map/territory/widget-lifecycle.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/widget-lifecycle.md) § How a `JustermRenderer` is built. */
   private focused = false;
   /** The current frame's overlay spans, retained so a focus flip (no new frame) can re-issue
    * `setOverlay` with the active/inactive tint. Empty ⇔ nothing highlighted. */
@@ -556,13 +517,8 @@ export class JustermRenderer implements Renderer {
     private readonly backend: RendererBackend,
     /**
      * The surface this terminal draws on — the canvas, the context, the grid registry, the display
-     * density and context-loss recovery. **Everything the renderer scopes to the surface
-     * rather than to a grid now lives there**, which is what lets N terminals share one context.
-     *
-     * Before #775 this object held all of it directly, and that was the defect rather than a
-     * simplification: `dispose()` stopped the density watcher, detached the restore listener and
-     * closed the loss channel — all three surface-scoped — so the *first* terminal to end would have
-     * taken density tracking and context recovery away from every sibling sharing its canvas.
+     * density and context-loss recovery: everything the renderer scopes to the surface rather than to
+     * a grid, which is what lets N terminals share one context.
      */
     private readonly surface: TerminalSurface<RendererBackend>,
     /**
@@ -582,19 +538,9 @@ export class JustermRenderer implements Renderer {
      * | presents | synchronously — one tenant, nothing to coalesce | through the surface's loop, coalesced with siblings |
      * | ends the surface on dispose | yes | no — ending a shared surface takes down its siblings |
      *
-     * The last row is the general rule, written down once in
-     * [`docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md): a layer ends what it
-     * exclusively holds. Composing is simply how this object comes to be the only holder.
-     *
-     * **"Sole tenant" throughout this file means exactly this flag being true** — a terminal that
-     * composed its surface and is therefore the only one on it. The term used to be defined by the
-     * `ownsExtent` option and its guard; #802 deleted both, so it is anchored here instead. It
-     * describes a state that holds **by construction**, not one anything checks at runtime.
-     *
-     * **This used to be mirrored on the surface** as an `ownsExtent` option, with a guard refusing a
-     * second tenant. #802 deleted both: the guard defended a state that cannot be constructed, since
-     * the surface it protected is unreachable. `test/published-seam.types.ts` §3 pins that
-     * unreachability, so the deletion is falsifiable rather than assumed.
+     * **"Sole tenant" throughout this file means exactly this flag being true** — a state that holds by
+     * construction, not one anything checks at runtime. Why: [`docs/map/territory/widget-lifecycle.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/widget-lifecycle.md) § How a `JustermRenderer` is
+     * built.
      */
     private readonly composedSurface: boolean,
     /**
@@ -602,10 +548,8 @@ export class JustermRenderer implements Renderer {
      * for the object's life — what changed at renderer 0.15.0 is that the grid has to be *named* on
      * every call that acts on a terminal rather than on the surface.
      *
-     * **A lease rather than the bare id**, and the difference is what happens after teardown: an id
-     * can outlive the grid it names, so holding one meant every registry call had to cope with a
-     * stale one, silently. A lease knows whether it is still valid, so the question does not arise —
-     * see {@link GridLease}, which carries why that matters rather than being a preference.
+     * A lease rather than the bare id, so no registry call has to cope with a stale id — see
+     * {@link GridLease}.
      */
     private readonly lease: GridLease,
     // Retained so `setTheme` (#420) can rebuild the 256-colour table from a new ANSI scheme.
@@ -616,11 +560,8 @@ export class JustermRenderer implements Renderer {
     /**
      * The decoder's underline-style accessor and its named values (#862, #827 story 15).
      *
-     * Held the way `buildPalette` above is held, and for the same reason: the decoder is loaded
-     * with `await import(...)` to keep its wasm init off this module's graph, so anything of its
-     * that a consumer needs has to be *carried* here rather than re-imported. A static
-     * `export { UnderlineStyle } from "justerm-wasm-decode"` would have been the obvious shape and
-     * would have undone that.
+     * Carried, like `buildPalette`, because the decoder is loaded with a dynamic `import()` — a
+     * static re-export would put its wasm init on this module's graph.
      */
     private readonly underlineStyleOf: (flags: number) => UnderlineStyle,
     private readonly styleValues: UnderlineStyles,
@@ -647,45 +588,17 @@ export class JustermRenderer implements Renderer {
     };
     this.motionQuery.addEventListener("change", this.onMotionChange);
 
-    /**
-     * **The two events that move this grid's cell with no consumer call behind them** — a density
-     * change and a context restore — reach this terminal through one registration, because from
-     * here they are the same obligation: re-ask for the geometry at whatever the cell has just
-     * become. The surface owns the *when* (both signals are surface-scoped and it holds both); only
-     * this object knows the *what*, which is its own grid.
-     *
-     * **Why a restore is one of them** (#325). `restore()` re-reads the **live** device pixel ratio
-     * and re-bakes at it (`webgl/context.rs`, #269) — deliberately, because a DPR notification arriving
-     * while the context is lost is *dropped* rather than queued. So a density that moved while the
-     * context was dead is adopted there, with no setter behind it and no other signal that it
-     * happened.
-     *
-     * **Since renderer 0.15.0 that adoption moves the CELL and not the buffer** (#773), so this
-     * re-derivation is owed rather than optional. Caught by the #325 e2e rather than by reading: on
-     * 0.14.0 the renderer re-derived the buffer from the grid it was holding, so only the box had to
-     * be re-read; on 0.15.0 the buffer belongs to no grid, and dpr 1 -> 2 across a loss left a
-     * `1369`-tall grid inside a `703`-tall buffer.
-     *
-     * Measured on the older shape, for the failure this originally fixed: dpr 1 -> 2 across a loss
-     * left the buffer at `2556x1369` under a canvas still styled `1278x703`; the width was
-     * accidentally right (the cell doubled exactly) and the height was `703` against a correct
-     * `684.5`, so the browser stretched the terminal ~2.7% vertically.
-     *
-     * The present-before and present-after that make the cell readable and the resized buffer
-     * non-blank are the **surface's**, since they present every grid at once — see
-     * {@link TerminalSurface}'s restore handler for why that order is load-bearing.
-     */
+    // A density change and a context restore both move this grid's cell with no consumer call behind
+    // them; the surface owns *when*, this object re-derives its own geometry (#325, #773 —
+    // docs/map/territory/gl-context-lifecycle.md holds the measurement).
     this.lease.onReapply(() => this.reapplySurface());
-    // And how to END this terminal, so a host that disposes the SURFACE ends the widgets on it rather
-    // than retiring their grids under them. Without it this object keeps its blink loop and its
-    // reduced-motion listener while holding an id the renderer has retired, and every per-grid call
-    // then throws `UnknownGrid` on a timer.
+    // And how to END this terminal, so a host that disposes the surface ends the widgets on it rather
+    // than retiring their grids under them.
     this.lease.onEnd(() => this.dispose());
   }
 
   /**
-   * Attach a terminal to an existing {@link TerminalSurface} — the multi-terminal entry point
-   * (Epic #287 S7, #775).
+   * Attach a terminal to an existing {@link TerminalSurface} — the multi-terminal entry point.
    *
    * **What differs from {@link create}, and all of it follows from who composed the surface.** This
    * terminal claims no sole tenancy, so it neither sizes the shared drawing buffer nor ends the
@@ -696,11 +609,9 @@ export class JustermRenderer implements Renderer {
    *
    * Everything else is identical, deliberately: the widget experience is unchanged and the only new
    * noun is the surface ([ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)).
-   *
-   * The consumer still owns the DOM overlay — the hidden IME textarea, the a11y tree, the scrollbar
-   * — and one canvas means every terminal shares one stacking plane, so arbitrary DOM cannot be
-   * interleaved between two of them. Accepted knowingly: it is what one context binding to one
-   * canvas costs.
+   * The consumer still owns the DOM overlay — the hidden IME textarea, the a11y
+   * tree, the scrollbar — and one canvas means every terminal shares one stacking plane, so arbitrary
+   * DOM cannot be interleaved between two of them.
    */
   static async attach(
     surface: TerminalSurface<RendererBackend>,
@@ -710,23 +621,15 @@ export class JustermRenderer implements Renderer {
   }
 
   static async create(opts: JustermRendererOptions): Promise<JustermRenderer> {
-    // The surface is composed HERE, which is what makes this the single-terminal convenience path
-    // rather than the general one (#775): a host wanting two terminals builds the surface itself
-    // with `TerminalSurface.open` and attaches to it with `attach` above. What this method composes,
-    // the object it returns ends — see the `composedSurface` constructor parameter.
-    // **Both wasm modules load in parallel**, as they did before the surface existed. Splitting the
-    // old `Promise.all` across two objects made them serial, which is pure startup latency: the
-    // decoder's import is started here and `build`'s `await` on it then resolves out of the module
-    // registry. Stated because the parallelism is invisible at `build`'s call site.
+    // The surface is composed here, so this object ends it (the `composedSurface` parameter). Both
+    // wasm modules load in parallel: the decoder's import starts here and `build`'s own `await` on it
+    // resolves from the module registry.
     const [surface] = await Promise.all([
       TerminalSurface.open(opts.canvasSelector),
       import("justerm-wasm-decode"),
     ]);
-    // What this method composes, this method ends — including on the failure path, which is the only
-    // place the rule needs saying. A throw after the surface exists would otherwise strand a bound
-    // WebGL2 context, a running density watcher and a canvas listener with no handle to any of them;
-    // a retry on the same canvas gets the same context back and the orphan's listeners fire beside
-    // the new surface's.
+    // What this method composes, it ends — on the failure path too, or a throw strands a bound
+    // context, a density watcher and a canvas listener.
     try {
       return await JustermRenderer.build(surface, true, opts);
     } catch (e) {
@@ -744,20 +647,14 @@ export class JustermRenderer implements Renderer {
     composedSurface: boolean,
     opts: AttachedRendererOptions,
   ): Promise<JustermRenderer> {
-    // Dynamic import (see class doc for the init-race reason). Only the decoder now — the renderer
-    // module is the surface's, since constructing it is what binds the context to a canvas.
+    // Dynamic import (docs/map/territory/widget-lifecycle.md § How a `JustermRenderer` is built). Only
+    // the decoder — the renderer module is the surface's.
     const decoder = await import("justerm-wasm-decode");
     const t = opts.theme;
     const paletteColors = decoder.buildPalette(Uint32Array.from(t.ansi));
     const backend = surface.rendererBackend();
-    // A renderer arrives holding no terminal since 0.15.0, so this widget's single grid is created
-    // here — and its font is named at birth rather than pushed by setters afterwards. The seven
-    // selectors key the atlas, so this is **one** bake where the setter route was up to eight, each
-    // of the first seven freed again by the next (#773, #928, #961).
-    //
-    // The values are the same ones the setters used, defaults included, so the initial fit is still
-    // computed at the consumer's final cell.
-    //
+    // This widget's one grid, with its font named at birth: one bake, where pushing the selectors by
+    // setter afterwards could bake up to eight (#773, #928, #961).
     const lease = surface.addGrid({
       paletteColors,
       defaultFg: t.defaultFg,
@@ -773,9 +670,7 @@ export class JustermRenderer implements Renderer {
     try {
       return await JustermRenderer.assemble(surface, composedSurface, opts, lease, decoder, paletteColors);
     } catch (e) {
-      // A grid is GPU memory — a VAO, an instance buffer and a refcount on its configuration's atlas
-      // (4.2 MiB at an 8x16 cell, 12.8 MiB at 15x30 on a dpr-2 display, measured for #773's follow-up).
-      // Nothing holds it if assembly throws, and only `removeGrid` gives it back.
+      // A grid is GPU memory; nothing holds it if assembly throws, and only `removeGrid` gives it back.
       lease.release();
       throw e;
     }
@@ -803,31 +698,16 @@ export class JustermRenderer implements Renderer {
     backend.setBoldToBright(lease.id, t.boldToBright ?? true);
     backend.setMinimumContrastRatio(lease.id, t.minimumContrastRatio ?? 1);
     backend.setSelectionForeground(lease.id, t.selectionForeground);
-    // Unconditional, and with the default named (#580): a `Theme` is a complete description, so
-    // this has to push the same value `setTheme` pushes for an unset field — see
-    // `DEFAULT_CURSOR_CONTRAST` for why that obliges this file to own a number the renderer already
-    // has one of. No cursor exists yet, so there is nothing to redraw.
+    // Unconditional, with the default named (#580): a `Theme` is a complete description
+    // (docs/map/territory/colour-policy.md § `Theme` is colours plus the two colour policies).
     backend.setCursorContrast(lease.id, t.cursorContrast ?? DEFAULT_CURSOR_CONTRAST);
     // Background opacity (#577). Set unconditionally at the renderer's own default, so the value the
     // renderer holds is the one this object states rather than one nobody wrote down. No `render`
     // here — nothing has been drawn yet, and the first frame presents it.
     backend.setBgAlpha(lease.id, opts.bgAlpha ?? 1);
-    // Font family, size and both spacing options (#406/#413/#578) went into `addGrid` above.
-    //
-    // **The ordering question this block used to answer is gone with the four calls**, and the
-    // answer is worth keeping because it is why moving them was safe. It once claimed font had to
-    // precede spacing ("both derive the cell from the glyph metrics those establish") — a dependency
-    // the renderer had already removed: every path that changes the glyph box, the DPR or either
-    // spacing value funnels through one function reading all four together (`recompute_cell` up to
-    // renderer 0.14.x, `bake_config` after, which builds a whole font *configuration* rather than a
-    // cell, #772). Since 0.15.0 those four are simply the key that function is called with, so there
-    // is no order left to get wrong — they arrive together or not at all.
-    // Cursor stroke thickness (#580) — conditional, unlike the four pushes above, and for the same
-    // reason `contextRestoreTimeout` is: their defaults are neutral identities (`0` / `1`) this file
-    // costs nothing to restate, while `0.15` is a value borrowed from alacritty with a rationale the
-    // renderer documents. Naming it here would make this the second owner of a number nothing
-    // reconciles. An option can afford that where `cursorContrast` above cannot, because options are
-    // read once here and never re-applied — there is no reset for an unset one to get wrong.
+    // Font family, size and both spacing options (#406/#413/#578) went into `addGrid` above, together.
+    // Cursor stroke thickness (#580) — conditional: an option is read once, so an unset one can leave
+    // the renderer's default in place (colour-policy.md, as above).
     if (opts.cursorThickness !== undefined) {
       backend.setCursorThickness(lease.id, opts.cursorThickness);
     }
@@ -876,9 +756,7 @@ export class JustermRenderer implements Renderer {
     // and exactly once (#579) — it is surface-scoped, since one context means one loss. This only
     // installs the consumer's handler behind it.
     if (opts.onContextLoss !== undefined) instance.setOnContextLoss(opts.onContextLoss);
-    // The renderer's own default is 3000 (xterm parity), so this is a no-op unless the consumer
-    // states one — unlike `setBgAlpha`, because a duration the consumer did not choose is better
-    // left where the renderer documents it than restated here at a value this file would then own.
+    // Conditional for the same reason: the renderer's default (3000) stays its own.
     if (opts.contextRestoreTimeout !== undefined) {
       instance.setContextRestoreTimeout(opts.contextRestoreTimeout);
     }
@@ -917,8 +795,7 @@ export class JustermRenderer implements Renderer {
 
   /**
    * The named style values, so a consumer writes `styles.Curly` rather than `3` and never
-   * imports `justerm-wasm-decode` to do it — #827's story 15, which asks for the style on the
-   * surface already being read rather than through a second mechanism.
+   * imports `justerm-wasm-decode` to do it.
    *
    * Frozen by the decoder; read once and cache, as with {@link cellFlags}.
    */

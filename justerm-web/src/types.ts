@@ -318,7 +318,8 @@ export type UnderlineStyle = import("justerm-wasm-decode").UnderlineStyle;
  * Written as a **type-level** module reference on purpose. `import type` cannot carry an enum's
  * value side, and a real `import { UnderlineStyle }` would make the decoder a *static* runtime
  * dependency of `src/` — which the widget deliberately avoids, loading it with `await import(...)`
- * to keep the wasm init off the module graph (see `JustermRenderer`'s class doc). `typeof
+ * to keep the wasm init off the module graph ([`docs/map/territory/widget-lifecycle.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/widget-lifecycle.md)
+ * § How a `JustermRenderer` is built). `typeof
  * import(...)` in type position is erased at emit and adds no edge; `test/published-seam.types.ts`
  * uses the same form.
  *

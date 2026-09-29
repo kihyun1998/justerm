@@ -121,6 +121,60 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
 - **Why #606 was separable from that.** The renderer's was the only row a consumer could not close by
   discipline: `dispose` was not on the port, a **type-level** obstacle rather than a missing call.
   The rest are callable and uncalled, which is a different question — tracked on the spine #605.
+- **How a `JustermRenderer` is built** (`create`, `attach`, `build`, `assemble`). It is a thin
+  translator because the renderer owns the compositing — the full-stack pivot's payoff: the beamterm
+  adapter composited in TypeScript (`CellMirror` + `makeRenderPolicy` + `composeOverlayDraws`) because
+  beamterm had no such concepts. Overlay, cursor and decoration state is consumer-pushed every frame
+  and retained by the renderer, exactly like the cursor (#273), and set before the frame's damage so
+  the frame packs once.
+  - *Both entry points take one construction path*, so a sole tenant and a shared one differ by a
+    parameter (`composedSurface`) rather than by a second body that can drift. `create` composes the
+    surface and keeps it in a private field, so it is the surface's only possible tenant; `attach`
+    receives a surface a host opened, which may have siblings. Composing it sizes the buffer to the
+    one grid (#331's exactness), presents synchronously, and ends the surface on dispose — the last
+    being [a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md).
+    This used to be mirrored on the surface as an `ownsExtent` option with a guard refusing a second
+    tenant; #802 deleted both, since the guard defended a state that cannot be constructed, and
+    `test/published-seam.types.ts` §3 pins that unreachability. "Sole tenant" is anchored on the flag
+    for the same reason.
+  - *The wasm modules load with dynamic `import()`.* Two top-level wasm-bindgen "bundler" imports race
+    their init and the second fails (`__wbindgen_externrefs` undefined), so deferring to runtime lets
+    vite instantiate each cleanly — the beamterm adapter's reason too. The renderer's module is the
+    surface's (constructing it binds the context to a canvas); `create` starts the decoder's import
+    in parallel with opening the surface, because splitting the old `Promise.all` across two objects
+    made them serial — pure startup latency. The adapter is not exercised by vitest (it needs a GL
+    context and the wasm); its pure wire logic is unit-tested and the whole path is proven by the
+    demo's headless e2e and the renderer's own GL proofs.
+  - *The grid is named at birth* (#773, #928, #961): the seven selectors go into `addGrid`, one bake,
+    where pushing them by setter afterwards baked up to eight, each of the first seven freed by the
+    next. The values are the ones the setters used, defaults included, so the initial fit is still
+    computed at the consumer's final cell. That also retired an ordering question — font had once to precede spacing, a dependency the
+    renderer had already removed, since every path that changes the glyph box, the DPR or either
+    spacing funnels through one function (`recompute_cell` up to 0.14.x, `bake_config` after, #772).
+  - *`build` and `assemble` are an error boundary.* A grid is GPU memory — a VAO, an instance buffer and
+    a refcount on its configuration's atlas (4.2 MiB at an 8x16 cell, 12.8 MiB at 15x30 on a dpr-2
+    display, measured for #773's follow-up) — and nothing holds it if assembly throws, so `build`
+    releases it on a throw, and `assemble` is split out so that `try` stays readable. `create` does the
+    same for the surface: a throw after it exists would strand a bound WebGL2 context, a running
+    density watcher and a canvas listener, and a retry on the same canvas would get the same context
+    back with the orphan's listeners firing beside the new surface's.
+  - *A density change and a context restore reach a terminal through one registration* (`onReapply`),
+    because from the terminal they are one obligation: re-derive its geometry at whatever the cell
+    became. The surface owns *when*; only the terminal knows *what*. The terminal registers `onEnd`
+    too, so a host that disposes the surface ends the widgets on it — otherwise each keeps its blink
+    loop and reduced-motion listener while holding an id the renderer has retired, and every per-grid
+    call throws `UnknownGrid` on a timer.
+  - *A terminal starts unfocused*, and `Terminal` also reports focus once at mount. A renderer is told
+    about focus *changes*, so a never-focused pane is never told anything, and the old `true` stood for
+    the life of every pane the user had not clicked. The corpus splits 2-1 on the initial value and
+    what the three share is a correction path
+    ([the INITIAL focus state](../../agents/reference-facts.md#the-initial-focus-state--who-establishes-it-912-verified-2026-09-16)). It also fails safe: a focused
+    terminal that reads as blurred recovers on the first keystroke, a blurred one reading as focused
+    never did.
+  - *The rect's origin is stored and its extent re-derived*: the extent follows from the grid and the
+    cell, while the origin is the host's measurement. The host re-supplies the origin whenever the box
+    moves because WebGL binds one context to one canvas — a terminal is a transparent overlay over its
+    viewport, and nothing inside the GL layer can observe the overlay drifting from it.
 
 ## Code
 
