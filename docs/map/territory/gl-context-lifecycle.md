@@ -85,7 +85,10 @@ machine that decides what the renderer does in between.
   holds the dead context's objects. The flag is not free there — it is the channel a guard listens
   on, which is why `restore` deletes nothing it displaces (the #793 bullet above). (The comments
   this replaced said "measured, #770 — an error flag, not a no-op" without naming the window; the
-  measurement above is what that claim resolves to.)
+  measurement above is what that claim resolves to.) `gl.viewport` is silent during a
+  loss too (measured 2026-09-29, same harness, both windows): on a lost context it raises nothing
+  even with a negative width, which a live context answers with `INVALID_VALUE` — so `apply_surface_size`'s viewport
+  call during a loss is a silent no-op.
 - **Construction is the one entry point that refuses instead of deferring, and it is the only one
   where the *binding* decides the failure shape.** The five below can defer because there is a
   renderer to defer *into*; a constructor has no state machine yet, nothing to replay at `restore`,
