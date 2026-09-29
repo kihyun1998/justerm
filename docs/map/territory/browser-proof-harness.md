@@ -171,7 +171,10 @@ a justerm shape here wrong, only corroborate one.
   most needs to show.
 - **A red proof names its failing checks and prints the page's `measured`** (#791). Several pages
   derive their expectations from the host's fonts (#578), so a CI-only red is otherwise
-  undiagnosable without reproducing the runner's font stack.
+  undiagnosable without reproducing the runner's font stack. WSL Ubuntu 24.04 reproduces it: #1026's
+  two reds came back with CI's `measured` byte-identical (`monospace` is DejaVu Sans Mono there).
+  Unset `DISPLAY` first — with WSLg's X server gone, ANGLE's SwiftShader display fails
+  `xcb_connect` and no page gets a WebGL2 context; CI has no `DISPLAY` at all.
 - **A proof never re-derives the device cell, and never sizes its geometry from a constant.**
   Neither `cssCellWidth() * dpr` nor `drawingBufferWidth / COLS` recovers the integer the rasteriser
   ink-scans; both were in use before #328 and misread the buffer at `devicePixelRatio !== 1`, and
@@ -179,6 +182,19 @@ a justerm shape here wrong, only corroborate one.
   fails on a font that scans differently: `cursor.html`'s fixed `letterSpacing(120)` cleared the cell
   height by ~2 device px and went red at dpr 1.1/1.5 on CI only (#374), so `spacingForThickBar`
   sizes it from the measured cell.
+- **A page that asks "does this ink leave the glyph box" draws its reference at the renderer's
+  sub-pixel phase.** The rasteriser bakes at a whole-row box top plus an *unrounded* ascent
+  (`metrics::line_box`, `y = origin + ascent`), so `neighbour-ink.html` and `side-ink.html` draw
+  their 2D-canvas reference the same way and compare against `ascent` / `ch - 1 - ascent` unrounded.
+  #1026 compared a reach measured from a fractional baseline (`16 * dpr * 2` = 35.2 at dpr 1.1)
+  against a rounded box: `À` measured 16.2 rows above a 16-row box, qualified as an overflow the
+  renderer correctly never drew, and four checks went red on CI only.
+- **A window a page requires is a property of the face, so its sweep is too.** `line-box-cell.html`
+  requires a size where the ink-scan baseline and xterm's disagree. On DejaVu Sans Mono at dpr 1
+  none of the sweep's 17 sizes (10–20 CSS px) does — the nearest that do are 16.5, 17.5, 21 and
+  22 — so the sweep runs on to 22.
+  That check is the page's own precondition, not the mutation's catcher: the renderer with its
+  baseline put back on the ink scan is red at every ratio with or without 21 and 22.
 - **Neither suite adopts a server already on its port** (`reuseExistingServer: false`, #945). A
   listener there may be another worktree's, and adopting it tests that checkout's sources — red
   when a probe is missing, and **green** when the foreign tree happens to behave the same, which is
