@@ -205,8 +205,9 @@ impl JustermRenderer {
         })?;
 
         // `pack_instances` would read a short `bg`/`fg` as Default rather than refuse it, so they are
-        // bounded here (#355) — after `resolve_frame`, which bounds the other two columns, so a frame
-        // short in every column reports `FrameShorterThanGrid`, the more useful diagnosis.
+        // bounded here (#355) — after `resolve_frame`, which bounds the other two columns and
+        // allocates no more cells than `codepoints` holds, so a frame short in every column reports
+        // `FrameShorterThanGrid`, the more useful diagnosis.
         if bg.len() < count || fg.len() < count {
             return Err(JsValue::from_str(&format!(
                 "justerm-renderer: grid claims {count} cells but bg/fg carry {}/{}",
