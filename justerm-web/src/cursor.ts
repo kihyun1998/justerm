@@ -173,7 +173,8 @@ export class CursorBlink {
 /** What a frame says to do with the cursor, as a pure decision (no blink/state): `none` = the
  * frame carries no cursor info (leave it); `clear` = hidden (DECTCEM); `set` = place it. `shape`
  * is the application's DECSCUSR shape (`0` block / `1` underline / `2` bar), `undefined` while it
- * has set none (#927). */
+ * has set none (#927). Pure, so the visible/hidden branch and the field defaults are testable
+ * without the blink loop. */
 export type CursorCommand =
   | { kind: "none" }
   | { kind: "clear" }

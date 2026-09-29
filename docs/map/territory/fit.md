@@ -51,17 +51,20 @@ a CSS box and reads the grid back, rather than asking for 80×24 and being given
     outside the grid — the surface silently stops updating. The clamp is pull-only on the core side
     (a consumer reads the width back, it is not told), so agreeing with the floor is what keeps the
     two in step.
-  - *`undefined` for an unmeasured cell or a non-finite box* (#632). A non-finite box means "not
-    measured", exactly when the terminal must not be shrunk. This axis was missing:
+  - *`undefined` for an unmeasured cell or a non-finite box* (#632). A non-finite box — `NaN` from
+    a detached or unlaid-out element, `Infinity` from a degenerate one — means "not measured", exactly
+    when the terminal must not be shrunk. This axis was missing:
     `Math.max(2, Math.floor(NaN / 8))` is `NaN`, so `backend.resize(NaN)` coerced to `0` and the
     terminal came back 1×1 — through the path that reaches the renderer, while the guarded path was
     the one nothing called. One `Number.isFinite` check covers both conditions, **measured**: a
     separate `cellCss* === 0` guard, mirroring `proposeDimensions`'s, was written first and a mutation
-    showed it could not fail, since a zero cell makes the quotient `±Infinity` (or `NaN` for a zero
-    box over a zero cell). It was removed rather than kept for symmetry — a branch that cannot change
-    an outcome is untestable by construction. `proposeDimensions` keeps the same redundancy,
-    inherited from xterm's `cell.width === 0` guard, and is left alone because changing it would
-    alter nothing.
+    showed it could not fail: behind #810's guard only a positive box is divided, so a zero cell makes
+    the quotient `+Infinity`, which `Number.isFinite` rejects. It was removed rather than kept for
+    symmetry — a branch that cannot change an outcome is untestable by construction; the test
+    (`justerm-web/test/justerm-renderer.test.ts`) asserts the zero-cell *behaviour*. `proposeDimensions`
+    keeps its `cell === 0` guard, and there it is **not** redundant: its divisor runs after padding and
+    the scrollbar are subtracted, so a negative remainder over a zero cell gives `-Infinity`, which the
+    `MINIMUM_COLS` floor turns into a finite `2`.
   - *`undefined` for a box with no area* (#810), the same answer `proposeDimensions` gives. Of
     `gridForBox`'s two callers only `resize()` can deliver a zero on an ordinary path (see [an absent
     element box measures as zero](../invariant/an-absent-box-measures-as-zero.md)); for `applyGrid`'s
@@ -133,9 +136,9 @@ names as its model — exactly the kind of detail that diverges quietly.
 ## Known holes / open
 
 - **Zero governing records** for a contract that inverts the usual direction of a terminal API.
-- **The silent `MIN_COLUMNS` clamp is invisible here.** Fit can propose one column; the engine
-  returns two, and nothing in this territory says so — a consumer must read the width back from the
-  frame.
+- **The engine's column clamp is invisible to a consumer that bypasses fit.** Fit itself floors at
+  `MINIMUM_COLS` (#547, above), but a consumer that sizes the engine directly and asks for one column
+  gets two, and nothing tells it — it must read the width back from the frame.
 - ~~`setLetterSpacing` / `setLineHeight` are unreachable from the widget.~~ Closed by **#578** — both
   are wired, which is what took the count of setters that can move the cell from two to four and made
   the two stale readers below reachable.

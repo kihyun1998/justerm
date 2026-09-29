@@ -86,6 +86,8 @@ a coherent full viewport.
 
 - `justerm-renderer/src/frame_grid.rs` — `FrameGrid`, the persistent dense grid and the scatter
 - `justerm-renderer/src/webgl/draw.rs` — `apply_frame`, which consumes the dense result
+- `justerm-web/src/renderer-wire.ts` — `damageHeader`, `blinkPhaseHeader`, `carriesBlink`: the
+  widget's `apply_damage` header encoders
 
 ## Reference behaviour
 
