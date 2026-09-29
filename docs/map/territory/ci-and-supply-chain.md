@@ -69,10 +69,12 @@ Nothing governs the gate matrix itself — which checks exist, and what each is 
 - **"The tree" is `git ls-files`, not a hand-written root list** (#1016). The list it replaced had
   drifted the way every hand-written scope does
   ([workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)):
-  no `e2e/`, `demo/` or `test/` tree, no `justerm-facade/src`, no `justerm-core/tests`. Names are
-  collected in three casings — snake_case, PascalCase, camelCase — and **a casing the collector does
-  not match is never checked at all**: until #1016 no camelCase name was, so a stale TypeScript name
-  (`viewport.md`'s `requestBottom`, fixed in #1015) passed. A symbol that belongs to a *reference*
+  no `e2e/`, `demo/` or `test/` tree, no `justerm-facade/src`, no `justerm-core/tests`. **A token
+  shape the collector does not match is never checked at all**, and passes exactly like a resolved
+  one: until #1016 the collector took three casing patterns, so no camelCase name, no `name()` call
+  form and no member of a dotted or `::` path was checked, and a stale TypeScript name
+  (`viewport.md`'s `requestBottom`, fixed in #1015) passed. It now takes every identifier segment of
+  a backticked name of any shape, minus a token the file check already owns. A symbol that belongs to a *reference*
   rather than to this tree is named under `## Reference behaviour`, never under `## Code` — the gate
   has no marker to exempt one. That is the maintainer's call (#1016, chosen over an exempting marker
   and over dropping the backticks), made on the ground that a marker is also a way past the gate for
