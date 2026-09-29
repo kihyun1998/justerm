@@ -112,7 +112,9 @@ composition it never saw, so nothing throws and no test on the core side can fai
   rest of the retained frame state, and never inside a writer that can decline (`positionTextarea`):
   if hiding must not take the anchor away, it must not take its freshness away either, and a
   *drawing* guard in front of the *data* assignment does exactly that one step further in.
-  Retention is unconditional and the DOM write is not.
+  Retention is unconditional and the DOM write is not. `positionTextarea` builds its cell from the
+  frame rather than reading the retained one back, so it acquires no ordering condition against
+  `track`; the retained cell keeps exactly one writer either way.
 - **Re-deriving the caret column per frame snaps it back under the run** (`JustermRenderer.setPreedit`,
   `preeditCaret`). ADR-0028 D5 is a rule about every frame: frames keep arriving while a composition
   is open, each describing the engine's cursor, which knows nothing of the preedit — so without the
@@ -134,6 +136,18 @@ composition it never saw, so nothing throws and no test on the core side can fai
   IME-swallowed key asks for the bottom, while the screen still shows the scrolled frame. **The
   sibling writer still has it**: `syncTextareaAnchor` at `compositionstart` writes the raw grid row,
   overwritten one event later by the first update, which is #917's window and its measurement.
+  The run is drawn at the viewport row its origin is shown at, or not at all (`paintPreedit`). Off
+  the bottom it clears what is drawn — a view scrolled away mid-composition must not leave the run
+  on scrollback — and waits, because `repaintPreedit` re-asserts it on the next frame that can
+  place it: D5's every-frame rule, applied to the run as well as the caret, and cheap because it
+  compares the row it would paint with the one it did. Both references wait rather than suppress
+  (xterm.js re-runs `updateCompositionElements` every render and once through `setTimeout(0)`;
+  alacritty maps the point through the display offset and drops it only while that line is off
+  screen). The run's end stays a GRID row and scrolling leaves it alone — the viewport is a
+  property of the moment the run is drawn, not of where the text was typed. So a composition that
+  spends its whole life off screen hands on no end and the next one falls back to the frame stream:
+  ADR-0028 D4's "a composition that draws nothing leaves no run end", reached by a second route,
+  which needs a view that never returns to the bottom — a consumer that did not wire `onScroll`.
 - **Reading a two-question predicate as one question.** The guard is keyed on
   `CompositionController.composing` (`isComposing`), *not* `active` (`isComposing ||
   isSendingComposition`). `active` outlives the candidate window by one deferred commit read, and a
@@ -172,6 +186,12 @@ composition it never saw, so nothing throws and no test on the core side can fai
   #649 ever measured. xterm has exactly this shape and it was visible the whole time
   (`updateCompositionElements` never goes through `_syncTextArea`); reading it as "suppression vs
   re-aiming" hid it.
+  The preedit writer also leaves `textareaCell` alone: that cache describes where the frame stream
+  last put the anchor, and a composition's own re-aim is not an answer to that question. And it
+  earns its bypass only by knowing *both* halves of where the composition is — the extent, live from
+  the run, and the origin, fixed at `compositionstart` — which is why `showPreedit` never re-reads
+  the origin from the frame stream: with unsolicited output running, a per-update re-read held the
+  anchor at row 5 and then jumped it to row 9 on the next keystroke (ADR-0028).
 - **A measurement destroyed by the act of observing it.** Screen-capturing a live composition moves
   focus, which commits it and clears the textarea — so the artifact under observation disappears exactly
   when it is recorded. #637 drew a wrong conclusion from such a capture once (*"Hanja conversion happens

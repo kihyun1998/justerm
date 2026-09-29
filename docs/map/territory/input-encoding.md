@@ -204,14 +204,20 @@ Nothing governs the encoding itself.
   column instead of leaving the consumer to add: the consumer has no `wcwidth`, and after a shift the
   answer is not `col + len`. Feeding it back to `setCursor` is ADR-0028 D5's position rule; feeding
   it to the hidden textarea is D4's voluntary writer — and it is the value **A composition's origin
-  comes from the composition before it** (above) reads.
+  comes from the composition before it** (above) reads. A consumer-supplied renderer without
+  `setPreedit` draws nothing and aims nothing; the shipped adapter instead returns `col` when its
+  backend lacks the binding, so against a renderer older than #249 the run end becomes the origin
+  and #911's handoff degrades silently to the frame stream's answer — benign (what the widget did
+  before #911), and the two packages release on separate tracks (#918, closed `not_planned`).
   The widget's half of the push is `preeditIntent` (`composition.ts`), which answers *nothing* or
   *these codepoints at this origin*. Besides the unchanged-data skip it pushes nothing without an
   origin: the origin is latched at `compositionstart`, so a composition that somehow runs before any
   frame has reported a cursor has nowhere to draw, and guessing a cell is worse than drawing nothing.
   It splits the text by **code point**, not by UTF-16 unit, because a preedit can carry astral
   scalars — `Array.from`'s iterator is what makes `"\u{1F600}"` one cell rather than two halves of a
-  surrogate pair. It and `preeditLatch` are pure so that the two decisions are testable at all: the
+  surrogate pair. The no-origin rule is also what keeps a run from being drawn before the first
+  frame, when `rows` is still `0` and every row would read as off screen — so giving the origin a
+  default would quietly turn that into a preedit that never draws. It and `preeditLatch` are pure so that the two decisions are testable at all: the
   widget half that acts on them needs a DOM, and the unit suite runs in `environment: "node"`, the
   blind spot #649 measured.
   The drawn run is cleared at `compositionend`, before the commit is anywhere near the grid: the

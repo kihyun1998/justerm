@@ -143,7 +143,13 @@ because every value involved is finite and in range. The four measured shapes:
 - [selection](../territory/selection.md) — `CellGeometry`'s two unconstrained fields, **repaired in
   #819**, and the only site whose repair crosses a *published* seam: the consumer took the
   measurement, so `getGeometry` is where absence had to become representable. It is also the only
-  one with state to unwind — see the row above
+  one with state to unwind — see the row above. Two of `Terminal`'s readers carry their own reason:
+  `onWheel` reads it **once** per notch, because two calls could answer differently and an
+  unmeasured box leaves the notch no cell size — feeding the scroller a `0` cell latches its
+  accumulator (#675); `writeTextareaAnchor` keeps the last anchor, which is the right answer rather
+  than merely the safe one — the textarea is positioned relative to the element, so while the
+  element has no box the anchor is not on screen either, and the next frame that moves the cursor
+  re-aims it
 - [viewport](../territory/viewport.md) — the scrollbar's track ratio, **repaired in #814**, and the
   one site where a finiteness test *nearly* worked — on the quotient, not on the clamped result
 
