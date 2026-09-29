@@ -45,6 +45,12 @@ directly.
   non-finite offset snaps rather than being refused, unlike `wheelScrollTarget`: the requested offset
   is the constant `0`, not a value computed from the argument
   ([an absent box measures as zero](../invariant/an-absent-box-measures-as-zero.md)).
+  - **The snap wraps the consumer's sink, and fires before the intent is forwarded** — as xterm.js
+    fires its scroll request before `onData` (`src/common/services/CoreService.ts:82-94` @ `699f553`).
+    Wrapping means everything reaching it has already survived the IME gate and `beforeKey`. It is
+    not every intent the consumer receives: `onWheel` sends its application report and its
+    alt-screen cursor keys straight to `TerminalOptions.input`, past both wrappers. Unreachable for
+    the snap, since an alt screen is always at offset 0, but the bypass is real.
   - **The gate is a mirror, and three siblings write past it.** The predicate reads the widget's
     `displayOffset`, refreshed only by `track()` on each frame and by the two optimistic sites. The
     scrollbar drag, the selection drag auto-scroll and the accessible-view line nav all move the
@@ -76,6 +82,10 @@ directly.
     `MouseService.ts:420-427`). A frame that omits the field routes locally.
   - **Each step is total** (#675) — the guards and why they sit on the inputs are in
     [pointer coordinates are bounded by their producer](../invariant/pointer-coordinates-are-bounded-by-their-producer.md).
+  - **A buffer switch drops the sub-line remainder** (`Terminal.track`), so a fresh screen does not
+    inherit a stale trackpad fraction. This one is ours, not xterm.js's: its `MouseService.reset()`
+    runs only on a terminal reset (`src/browser/CoreBrowserTerminal.ts:1109` @ `699f553`), never on
+    a buffer switch.
 - **Wheel sensitivity is the one option a mounted `Terminal` changes** (#959). In xterm.js a
   Settings change applies at once — the mouse-report path reads `scrollSensitivity` per event, and
   the local scroll path picks it up through an option-change subscription; before this a consumer
@@ -116,8 +126,8 @@ directly.
 first time this territory was read against the pinned trees rather than argued from. It covers one
 moment only: what the references do to the viewport when the user provides input. The ownership split
 ADR-0013 assumes — who holds the scroll position at all — is still uncompared. The wheel's routing
-is cited against xterm.js at the pin inline, in § Design model (#993), and has no reference-facts
-row.
+and the snap's ordering against `onData` are cited against xterm.js at the pin inline, in § Design
+model (#993), and have no reference-facts row.
 
 ## Cross-cutting invariants
 

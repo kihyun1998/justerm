@@ -116,7 +116,10 @@ Nothing governs the encoding itself.
   instant — the committed text has not been sent yet — so the value read is the previous composition's
   own run end, which is `setPreedit`'s returned caret column and not an advance computed here (the
   widget has no `wcwidth`). The predicate is `active`, the mirror of the bullet above: the window
-  #649 had to keep the guard OUT of is exactly the window this has to act IN.
+  #649 had to keep the guard OUT of is exactly the window this has to act IN. `composition.test.ts`
+  pins the controller's value at that instant; which getter `onStart` actually passes needs a DOM, so
+  the only gate on it is the #911 e2e ("a continuous burst starts each syllable where the last one
+  ended").
 - **An IME confirmation is a raw text intent**, not a paste — bracketed-paste markers would tell the
   application something untrue about where the text came from.
 - **A consumer claims a key through `TerminalOptions.beforeKey`, asked after the IME gate** (#901).
@@ -211,6 +214,10 @@ Nothing governs the encoding itself.
   surrogate pair. It and `preeditLatch` are pure so that the two decisions are testable at all: the
   widget half that acts on them needs a DOM, and the unit suite runs in `environment: "node"`, the
   blind spot #649 measured.
+  The drawn run is cleared at `compositionend`, before the commit is anywhere near the grid: the
+  committed text leaves as an intent one deferred read later, by which time the next composition has
+  already started, so there is no frame to hand the job to, and waiting for one would leave the last
+  syllable drawn twice. The timing is measured (#249).
 
 ## Code
 
