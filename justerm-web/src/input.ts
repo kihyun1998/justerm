@@ -513,12 +513,10 @@ function isBareModifier(key: Key): boolean {
 }
 
 /**
- * Whether this signal is the user providing input at all — the question the snap and the
- * selection drop share, and **all** they share. Only the snap asks where the view is; a selection
- * is dropped wherever it was, which is what both references do (xterm.js fires `onUserInput`
- * outside its `scrollOnUserInput` guard; alacritty's `on_terminal_input_start` clears before it
- * tests `display_offset`). Splitting them is not a refactor — bundling the offset guard would
- * leave a selection alive exactly when the user is already at the bottom, which is most of the time.
+ * Whether this signal is the user providing input at all: a key or an IME-swallowed keydown that is
+ * not a bare modifier, committed IME text, or a paste. The question the scroll snap and the
+ * selection drop share — and only that: the snap also asks where the view is, the drop does not.
+ * Why: [`docs/map/territory/selection.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/selection.md).
  */
 export function isUserInput(signal: InputScrollSignal): boolean {
   switch (signal.kind) {

@@ -19,22 +19,18 @@ import { dispatchTermEvent, type EventHandlers } from "./events";
 import { hoverSpans, LinkTracker } from "./link-tracker";
 import type { Link, LinkOptions } from "./links";
 
-/**
- * Wrap an {@link InputSink} so the renderer's local cursor/selection state tracks
- * input before each intent forwards: a KEY intent restarts the cursor blink (the
- * S5 #107 deferral — the caret must show at once on a keystroke, before the echo
- * frame), a FOCUS intent drives the renderer's focus state (a blurred terminal
- * stops blinking + shows the inactive selection tint). Both renderer hooks are
- * optional; a cursorless renderer is left untouched. Other intents pass through.
- */
 /** The clearing call's payload — a run of no cells. Named because `new Uint32Array(0)` at a call
  * site reads as an accident rather than as "stop drawing this". */
 const EMPTY_PREEDIT = new Uint32Array(0);
 
+/**
+ * Wrap an {@link InputSink} so the renderer tracks input before each intent forwards: a key or
+ * committed IME text restarts the cursor blink, and a focus intent sets the renderer's focus
+ * state. Both renderer hooks are optional; other intents pass through.
+ */
 export function rendererNotifyingSink(sink: InputSink, renderer: Renderer): InputSink {
   return {
     send(intent) {
-      // Typed text — a key OR committed IME text — keeps the caret solid (#116).
       if (intent.kind === "key" || intent.kind === "text") renderer.restartCursorBlink?.();
       else if (intent.kind === "focus") renderer.setFocused?.(intent.focused);
       sink.send(intent);
@@ -961,16 +957,10 @@ function onScrollbar(e: MouseEvent): boolean {
 /** How often a held local drag is asked to auto-scroll past an edge, in ms. */
 const SELECTION_TICK_MS = 50;
 
-/** The hidden `<textarea>` input proxy (#116). Positioned over the cursor so the
- * IME candidate window appears there, but visually invisible and click-through
- * (`pointer-events: none`) so the canvas owns the pointer; focus is programmatic.
- *
- * It is a LABELED accessible input (xterm's helper textarea), NOT `aria-hidden`
- * (#248): it's programmatically focused to type, and focusing an aria-hidden element
- * is a WCAG 4.1.2 violation (a screen reader lands on it and announces "blank"). The
- * #119 row-tree is the separate review/announce surface — the two coexist as they do
- * in xterm (no `aria-owns`); typed-echo dedup (#119 onKey) keeps output from
- * double-reading what the AT already announced on input. */
+/** The hidden `<textarea>` input proxy (#116): positioned over the cursor so the IME candidate
+ * window appears there, invisible and click-through (`pointer-events: none`) so the canvas owns the
+ * pointer, and focused programmatically. A labelled accessible input, not `aria-hidden` (#248) —
+ * why: `docs/map/territory/accessibility.md`. */
 function makeHiddenTextarea(): HTMLTextAreaElement {
   const ta = document.createElement("textarea");
   ta.setAttribute(INPUT_ATTRIBUTE, "");

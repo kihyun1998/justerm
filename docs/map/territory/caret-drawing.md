@@ -42,6 +42,11 @@ about *how the caret looks* is decided here.
   xterm's `dpr * cursorWidth` in CSS px, which gives a 32-px font the same hairline as a 12-px one.
   `cell_under` is `#[cfg(test)]` (#465): the real test runs in GLSL, and this is its executable
   statement, where `col < c.col + span` would overflow at the far edge.
+- **Typing restarts the blink before the intent leaves the widget** (`rendererNotifyingSink`, #107;
+  committed IME text counts as typing since #116). The caret has to show at once on a keystroke, and
+  the echo frame that would move it arrives a round-trip later — so the restart rides the input
+  path, not the output. The same wrapper drives the renderer's focus state from a focus intent — a
+  blurred terminal stops blinking and shows the inactive selection tint.
 - **Focus-in re-anchors the blink phase, because an unfocused caret is parked rather than stopped**
   (#912). The gate makes `isVisible` return solid while blurred, but the phase clock keeps running
   underneath it from the last cursor move — so a focus that does not re-anchor flips straight to

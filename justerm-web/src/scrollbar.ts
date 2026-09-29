@@ -126,9 +126,10 @@ export function scrollbarMetrics(pos: ScrollPosition): ScrollbarMetrics {
  * `Math.max(0, Math.min(1, Infinity))` is `1`, and `1` is finite, so an all-zero rect sails
  * through and `dragToDisplayOffset(1, …)` is that slam to the live bottom. Only a finiteness test
  * on the **un-clamped quotient** is equivalent to this guard, and then only up to a negative
- * height. `wheelScrollTarget` had already recorded the general form (`scroll-control.ts`): *"a result
- * check is not a substitute … the clamp rescues an infinite request into a finite, wrong one …
- * guarding there would fix half the cases and read as if it had fixed all of them."*
+ * height. `wheelScrollTarget`'s guard already followed the general form, recorded in
+ * [`docs/map/invariant/pointer-coordinates-are-bounded-by-their-producer.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/pointer-coordinates-are-bounded-by-their-producer.md):
+ * the clamp rescues an infinite request into a finite, wrong one, so a guard on the result fixes
+ * half the cases and reads as if it had fixed all of them.
  *
  * Given that, `<= 0` is preferred over the quotient form because it says what is true — the box
  * was never measured — rather than that the arithmetic went odd, and because it matches
@@ -163,7 +164,7 @@ export function dragTrackRatio(clientY: number, track: { top: number; height: nu
  * cases and read as if it had fixed all of them.
  *
  * The guard is here rather than at the one in-repo caller because this function is **exported**: it
- * owes its own totality, which is the reason `wheelScrollTarget` gives for its own. `displayOffset`
+ * owes its own totality, the same reason `wheelScrollTarget` checks its own inputs. `displayOffset`
  * is deliberately not checked — this function does not read it.
  */
 export function dragToDisplayOffset(topRatio: number, pos: ScrollPosition): number | undefined {

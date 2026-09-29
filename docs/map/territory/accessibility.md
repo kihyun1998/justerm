@@ -137,7 +137,13 @@ an editor rather than a terminal.
   composition entering the echo-dedup as a single entry would mismatch and be announced twice. And the
   hidden textarea is a *labelled accessible input* rather than `aria-hidden` (#248), so it is a real
   focus target in the AT tree — which is what makes *"does an AT tool or magnifier read the position we
-  anchor it at?"* an open question with a11y consequences rather than an IME-only one (#640 Q4)
+  anchor it at?"* an open question with a11y consequences rather than an IME-only one (#640 Q4).
+  It cannot be `aria-hidden` because it is programmatically focused to type, and focusing an
+  `aria-hidden` element violates WCAG 4.1.2 — a screen reader lands on it and announces "blank". The
+  #119 row tree stays the separate review/announce surface, and the two coexist as xterm.js's helper
+  textarea and its accessibility rows do, with no `aria-owns` between them (`CoreBrowserTerminal.ts:488-489`
+  @ `699f553` labels the textarea; `src/browser` sets no `aria-owns`). Typed-echo dedup (#119
+  `onKey`) is what keeps output from double-reading what the AT already announced on input
 
 ## Blast radius
 

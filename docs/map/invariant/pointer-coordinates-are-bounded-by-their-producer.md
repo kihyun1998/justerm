@@ -160,13 +160,27 @@ fix mentions a shared rule.
   one layer out: **a producer owes its consumer a value the consumer's type can mean.** Where this
   note is about a coordinate that must be in range, that one is about a number that must be a
   number — and `Math.max`/`Math.min` no more produce it than they produce a bound.
+  **The wheel's two routing functions were made total in the same change** (`scroll-control.ts`).
+  `wheelScrollTarget` had the propagation `clampTo` had at the pointer seam (#672) —
+  `Math.max(0, Math.min(len, NaN))` is `NaN` — and it answers `null` ("no request") rather than a
+  nonsense offset. It is exported, so it owes its own totality rather than trusting its one in-repo
+  caller, and any of its three arguments can arrive poisoned. It checks the **inputs**, because the
+  clamp *rescues* an infinite request into a finite, wrong one: `Math.max(0, Math.min(100, 10 -
+  Infinity))` is `0`, a silent jump to the live edge, and only `NaN` survives to the output — so a
+  guard on the result fixes half the cases and reads as if it had fixed all of them. `routeWheel`
+  refuses a non-finite line count before any branch, because `NaN === 0` is false and the application
+  branch is the one that fails *quietly*: `direction` comes from `lines < 0`, false for `NaN`, so a
+  poisoned scroller reported a fabricated `down` to the application instead of nothing. And it does
+  not assert `wheelScrollTarget`'s result non-null: a poisoned `displayOffset` coming back from a
+  frame really makes it `null`, and asserting that away is how a non-finite offset reached the
+  consumer's `onScroll` in the first place.
   **#814 found a third producer of the same callback and made it total too**, and it is the one that
   shows why the rule has to be applied at the *inputs*. `dragToDisplayOffset` is exported, so it owes
   its own totality; measured across its four poisoned positions, three surfaced as `NaN` and
   `rows: Infinity` surfaced as **`0`** — `Math.round(60 - ∞)` is `-Infinity` and the clamp rescues it
   into a finite, plausible jump to the live edge. A finiteness test on the *result* therefore fixes
-  three of four and reads as if it fixed all four, which `wheelScrollTarget` had already stated in
-  prose (`scroll-control.ts`) and which a mutation now pins: moving the guard to the result reddens exactly
+  three of four and reads as if it fixed all four — the rule `wheelScrollTarget`'s guard already
+  followed (above) — and a mutation now pins it: moving the guard to the result reddens exactly
   the `rows: Infinity` assertion and nothing else. Note that this producer is **not** a member of the
   note's own rule — it computes a ratio, not a cell, exactly as the exclusion below says.
   **A fourth producer in the same file came with it, and finding it is the transferable part.**

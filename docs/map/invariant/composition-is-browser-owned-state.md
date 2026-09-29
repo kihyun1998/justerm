@@ -77,7 +77,15 @@ composition it never saw, so nothing throws and no test on the core side can fai
   (`element` mousedown → `Terminal.focus()`, and `focus()` is public, so also a consumer restoring
   focus after a dialog) delivered exactly the superseded cell the guard existed to withhold (#649).
   The lesson generalises past this anchor: **a guard placed on one writer is not a rule about the
-  state.** Both entrances are now closed at the single seam they share.
+  state.** Both entrances are now closed at the single seam they share, `textareaMove`, where
+  `composing` suppresses every path, forced or not. `force` had been exempt so that #631's
+  `compositionstart` re-sync could not be gated by its own guard — which it never needed, since
+  `onStart` re-anchors *before* telling the controller and so reads `composing === false` either
+  way. What the exemption bought was the second entrance. So `force` now means only *override the
+  coordinate cache*, and says nothing about the composition rule. A suppressed move answers
+  `undefined`, which the caller treats as a decided no-op that **leaves the cache alone**: the move is
+  not recorded as applied, so the anchor catches up on the first frame after the composition ends
+  rather than waiting for the cursor to move again.
 - **A surface acting on the widget's OWN unsent state, not merely on a late frame.** The three above
   are all "the frame is behind"; this one is sharper. At `compositionstart` in continuous CJK the
   committed text has not left the widget at all — it goes out one deferred read later (#116) — so
@@ -125,7 +133,9 @@ composition it never saw, so nothing throws and no test on the core side can fai
   continuous-CJK `compositionstart` lands inside precisely that window — so the broader predicate
   would swallow the re-sync that exists to place the candidate window, in ordinary Korean/Japanese
   typing. Measured cost of the confusion: swapping the two leaves **all 398 unit tests green**,
-  because the wiring needs a DOM; only the e2e control discriminates them.
+  because the wiring needs a DOM; only the e2e control discriminates them. (`composition.test.ts`
+  pins the two getters diverging in that window; what it cannot see is which one the call site
+  passes.)
 - **A rule inferred from engine state where no engine state exists.** A composition has no
   representation to consult, so *"what should happen during one"* can only be decided, never derived
   from a frame. Writing such a rule as if it followed from the frame is how it ends up decided once per
