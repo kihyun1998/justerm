@@ -202,8 +202,8 @@ struct GlobalTier {
 /// `cell_size` — see `docs/map/invariant/cell-size-is-derived-state.md` for what such a copy owes.
 struct ConfigTier {
     atlas: glow::Texture,
-    /// The glyph box in device px — the face's floored advance wide and the ink box of its `█` tall
-    /// (ADR-0022). Equal to `cell_size` only
+    /// The glyph box in device px — the face's floored advance wide and its line box tall
+    /// (ADR-0022, #962, #986). Equal to `cell_size` only
     /// while both spacing options are at their defaults (#338).
     char_size: (u32, u32),
     /// Where the glyph box sits inside the cell, device px from its top-left (#338).
@@ -211,7 +211,7 @@ struct ConfigTier {
     rasterizer: Rasterizer,
     cache: GlyphCache,
     /// Physical (content) cell size in **device pixels** — the on-screen grid cell, and the exact
-    /// `u_cell_size` the shader lays it out with. Integral by construction (a floored advance and an ink scan).
+    /// `u_cell_size` the shader lays it out with. Integral by construction (a floored advance and a ceiled line box).
     cell_size: (u32, u32),
     /// Padded atlas cell size in device pixels (physical + `2*PADDING`) — glyph upload dims.
     atlas_cell: (u32, u32),

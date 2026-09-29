@@ -8,7 +8,7 @@
 <!--
   ADR-0022 as amended by #962: the cell's WIDTH is the face's advance at the drawn size, floored —
   `measureText('W')`, as xterm.js's `CharSizeService` reads it and `WebglRenderer` floors it — while
-  its HEIGHT is still the ink box of the face's `█`. The two used to share one measurement, the ink
+  its HEIGHT was the ink box of the face's `█` until #986 (`line-box-cell.html`). The two used to share one measurement, the ink
   box, and on most faces that box is a pixel or two wider than the advance, so the grid came out
   wider than xterm.js's for the same font and size.
 
@@ -75,7 +75,6 @@
     // The window: a size where the old measurement and the new one disagree. Without one, the
     // check above could not tell the two methods apart.
     aSizeWhereInkAndAdvanceDisagree: rows.some((x) => x.ink[0] !== x.advance),
-    everyCellIsStillTheBlockInkTall: rows.every((x) => x.cell[1] === x.ink[1]),
     spacingLandsOnTopOfTheAdvance: spaced === plain + Math.round(2 * dpr),
   };
   window.__proof = { ok: Object.values(checks).every(Boolean), checks, measured: { rows, spaced, plain }, dpr };

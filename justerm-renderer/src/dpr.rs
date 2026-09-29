@@ -1,7 +1,7 @@
 //! Device-pixel arithmetic (#265, #331).
 //!
 //! **Device pixels are the source of truth.** The cell is measured in them (the rasteriser reads the
-//! face's advance and ink-scans its `█` at `FONT_SIZE * dpr`), the shader lays the grid out in them (`u_cell_size`), and the drawing
+//! face's advance at `FONT_SIZE * dpr` and its line box at `FONT_SIZE`, scaled by `dpr`), the shader lays the grid out in them (`u_cell_size`), and the drawing
 //! buffer is sized in them (`resize_surface` takes them as given). The CSS view ([`css_px`]) is
 //! *derived*, and is a float precisely so that the derivation can be undone — a consumer's
 //! `cols * cssCellWidth()` box scales back to `cols * cell` device px, which is how it sizes a
@@ -67,7 +67,8 @@ mod tests {
         // the CSS view is derived from it. Rounding that view to a whole CSS pixel destroys the
         // cell. 33 device px at dpr 2 is 16.5 CSS px — reporting 17 loses half a device pixel per
         // cell, which is how a grid ends up wider than the buffer holding it.
-        // (33 is measured, not invented: the ink-scan of `█` at FONT_SIZE * 2 in Chromium.)
+        // (33 is measured, not invented: the ink-scan of `█` at FONT_SIZE * 2 in Chromium, which was the
+        // cell's height until #986.)
         assert_eq!(css_px(33, 2.0), 16.5);
     }
 

@@ -369,7 +369,7 @@
       // ...and the atlas still works: `M` is a letter, not a solid rectangle.
       andTheAtlasStillHoldsRealGlyphs: letterCoverage < 0.5,
 
-      // AC 4: at the defaults the builtin `█` covers exactly the cell the rasteriser ink-scanned it
+      // AC 4: at the defaults the builtin `█` covers exactly the cell the rasteriser measured it
       // to be. That is why the other 46 proofs' pixels are unchanged.
       theDefaultCellIsTheBlockGlyph:
         blockBase.w === charW && blockBase.h === charH &&
@@ -432,8 +432,8 @@
       aSpacingSetterOnALostContextDefersItsBake:
         cellWhileLost[0] === cellBeforeLoss[0] && cellWhileLost[1] === cellBeforeLoss[1],
       // …and the restore's reconcile pass applies it: lineHeight 2 and letterSpacing 1 both widen
-      // and heighten the cell, so BOTH axes must have grown. Direction only — the cell is a font
-      // ink-scan and differs between this machine and CI's software GL.
+      // and heighten the cell, so BOTH axes must have grown. Direction only — the cell is a font's
+      // metrics and differs between this machine and CI's software GL.
       andTheRestoreAppliesIt:
         cellAfterRestore[0] > cellBeforeLoss[0] && cellAfterRestore[1] > cellBeforeLoss[1],
       contextSurvived: !gl.isContextLost(),

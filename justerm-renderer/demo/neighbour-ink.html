@@ -19,8 +19,8 @@
     - `g`, `M` and the full block — which always fitted — are unchanged, so the instrument is not
       merely counting more pixels everywhere.
 
-  **The probe glyph is chosen at runtime, never hard-coded.** The cell is the ink box of this font's
-  block glyph (ADR-0022), so which codepoints overflow is a property of the font the machine happens
+  **The probe glyph is chosen at runtime, never hard-coded.** The cell is this font's advance and
+  line box (ADR-0022), so which codepoints overflow is a property of the font the machine happens
   to have: locally `monospace` resolves to a face where combining marks spill, on CI it is something
   else (#578 — no absolute cell dimension is portable). The page measures the cell, then picks a
   candidate the cell provably cannot hold. If none of them overflows, the page reports `skipped`
@@ -80,14 +80,19 @@
     off.fillText(text, base, base);
     const d = off.getImageData(0, 0, big, big).data;
     let n = 0;
-    for (let y = base - blockInk.above; y <= base + blockInk.below; y++)
+    for (let y = base - cellInk.above; y <= base + cellInk.below; y++)
       for (let x = blockInk.minX; x <= blockInk.maxX; x++)
         if (d[(y * big + x) * 4 + 3] >= 128) n++;
     return n;
   };
 
-  // The cell's own reach, from the glyph it is measured by.
   const blockInk = freeInk("█");
+  // The cell's reach: vertically the glyph box (ADR-0022, #986) — `ch` tall, its alphabetic
+  // baseline the face's ideographic baseline above the bottom, as xterm draws it; horizontally the
+  // block's ink, which the #966 band still sizes.
+  off.font = FONT;
+  const ideoBelow = -off.measureText("W").ideographicBaseline;
+  const cellInk = { ...blockInk, above: Math.round(ch - ideoBelow), below: Math.round(ideoBelow) - 1 };
 
   // Candidates that stack marks or drop tails past a block's box in SOME face. Ordered widest-reach
   // first so the strongest available case is the one taken.
@@ -121,11 +126,11 @@
   };
   const blockMetric = metricBox("█");
   const qualifies = (b) =>
-    (b.above > blockMetric.above || b.below > blockMetric.below) &&
+    (b.above > cellInk.above || b.below > cellInk.below) &&
     b.minX >= blockMetric.minX &&
     b.maxX <= blockMetric.maxX;
   const confirms = (i) =>
-    (i.above > blockInk.above || i.below > blockInk.below) &&
+    (i.above > cellInk.above || i.below > cellInk.below) &&
     i.minX >= blockInk.minX &&
     i.maxX <= blockInk.maxX;
 
@@ -239,7 +244,7 @@
     //    Without this, flipping the shader's `+ u_cell_uv.w` to `-` still passes every other check
     //    here — the host tests that pin direction run against `ink_rows`, and the shader is only
     //    ever executed in a browser.
-    const overAbove = free.above > blockInk.above;
+    const overAbove = free.above > cellInk.above;
     checks.theInkLandsOnTheCorrectSide = overAbove
       ? own.perRow[0] > 0 && own.perRow[2] === 0
       : own.perRow[2] > 0 && own.perRow[0] === 0;
@@ -289,13 +294,13 @@
   // a glyph does on the author's font. Both forms of that mistake were caught by CI (#791):
   //
   //   - `g` and `M` are controls only where they FIT. On a face whose cell is tight — DejaVu Sans
-  //     Mono, where the `█` ink box sits 3 px inside the declared line box — ordinary letters
+  //     Mono, where the `█` ink box, the cell's height until #986, sits 3 px inside the declared line box — ordinary letters
   //     overflow and *should* now spill, so asserting they do not is asserting the defect back.
   //   - `█` is not compared against the font at all. It is drawn by `builtin` to the CELL (#359),
   //     never through the font, so its reference is `cw * ch` exactly. Measured: the font's own `█`
   //     ink is 399 px where the cell is 400, and on the author's face the two coincided at 288.
   const fitsInCell = (i) =>
-    i.above <= blockInk.above && i.below <= blockInk.below &&
+    i.above <= cellInk.above && i.below <= cellInk.below &&
     i.minX >= blockInk.minX && i.maxX <= blockInk.maxX;
 
   const controls = {};
@@ -328,7 +333,7 @@
     measured: probe ? { probeFree: probe.ink.lit, probeDrawn: drawnProbe, controls } : { controls },
     probe: probe ? probe.t : null,
     cell: [cw, ch],
-    blockReach: blockInk,
+    blockReach: blockInk, cellReach: cellInk,
     probeReach: probe ? probe.ink : null,
     dpr,
   };

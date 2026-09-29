@@ -15,9 +15,9 @@
     (b) the DEVICE cell scales with the DPR while the CSS cell stays put → the atlas is rasterised at
         device px (a CSS-px atlas would show the opposite: a fixed device cell and a cell that
         HALVES at dpr 2)  ← needs two densities, so the runner asserts it
-    (c) the CSS view is the device cell divided by the DPR, UNROUNDED. The ink-scanned cell is 16
-        device px tall at dpr 1 and 33 at dpr 2, i.e. 16.5 CSS px — and 16.5 * 2 is 33 again, which
-        a rounded 17 would not be. That round trip is what lets a consumer lay out in CSS.
+    (c) the CSS view is the device cell divided by the DPR, UNROUNDED. The cell is 18 device px
+        tall at dpr 1.1, i.e. 16.36 CSS px — and 16.36 * 1.1 is 18 again, which a rounded 16 would
+        not be. That round trip is what lets a consumer lay out in CSS.
     (d) putting cssWidth()/cssHeight() on the element lands the box on the device grid — measured
         with getBoundingClientRect(), so the browser's own layout answers, not our arithmetic (#337).
   Build: wasm-pack build --target web --dev --out-dir pkg

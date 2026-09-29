@@ -9,9 +9,14 @@ neither. Scoped to **cell geometry and what derives from it**; cell *composition
 *ownership* is ADR-0021.
 
 **Amended 2026-09-22 (#962): the cell's WIDTH is no longer the ink box.** It is the face's advance,
-floored — alternative (A) adopted on the width axis, see *Amendment* below. The HEIGHT is still the ink
-box of `█`, and the title keeps describing that half. Read every "the cell is the ink box" below as
-true of the height and, before #962, of the width.
+floored — alternative (A) adopted on the width axis, see *Amendment* below.
+
+**Amended 2026-09-29 (#986): the cell's HEIGHT is no longer the ink box either.** It is the face's
+line box read at the CSS size, scaled by the DPR and ceiled, as xterm.js sizes it — see *Amendment
+(#986)*. Neither axis is the ink box now; the title records the decision as it was made. Read every
+"the cell is the ink box" below as true of the height before #986 and of the width before #962. The ink
+scan of `█` still runs: it sizes the horizontal bleed band (#966), and the invariant below now guards
+that.
 
 ## Context
 
@@ -140,7 +145,77 @@ obligation exactly as stated.
 
 **What this did not decide:** the vertical axis. Alternative (A) on the height — the line box — stays
 as open as the evidence above leaves it. #962 excluded it (justerm 26 against xterm.js 27 there), and
-the clipping it would address belongs to #791.
+the clipping it would address belongs to #791. *(Decided by #986, next section.)*
+
+### Amendment (2026-09-29, #986): the height is xterm.js's line box
+
+**The glyph box's height is `ceil((fontBoundingBoxAscent + fontBoundingBoxDescent) × dpr)`, with both
+metrics read at the CSS size** (`metrics::line_box`), and the alphabetic baseline sits the face's
+`ideographicBaseline` *at the drawn size* above the box's bottom. That is xterm.js's rule:
+`CharSizeService` reads the line box at `rawOptions.fontSize` (`CharSizeService.ts:121-125`),
+`WebglRenderer` scales and ceils it (`WebglRenderer.ts:659`), and the atlas draws with an
+`ideographic` baseline at the box's bottom (`TextureAtlas.ts:735`, `Constants.ts:12`), and an
+alphabetic draw that far above the bottom is the same line. For most faces that distance is simply
+`fontBoundingBoxDescent` — 690 of 690 probes over the six faces measured above — but not for a face
+that declares its own ideographic baseline: Yu Gothic's is 1.68 px below the alphabetic one at 14 px,
+where its descent is 4, and a `box − descent` rule drew its text 2–5 device px above xterm.js's
+(measured at 14/21/28 px; the lens over this change caught it). `web_sys` does not bind
+`ideographicBaseline`, so it is read by name, and a browser that does not report it falls back to the
+descent. xterm.js itself draws with a `bottom` baseline on Firefox (`Constants.ts:12`); this
+renderer does not follow that split. The product is taken in double
+precision, as JS takes it: in single precision a line box of 10 at dpr 1.1 is 11, where xterm.js gets
+12.
+
+**What the measurement showed, and why the rule is xterm's rather than "the font's line box".**
+Chromium rounds `fontBoundingBox{Ascent,Descent}` to whole pixels *at the size it is asked for*.
+Measured in headless Chromium over 6 faces × 7 CSS sizes × 4 densities (168 rows), the line box read
+at the drawn size agrees with xterm.js's cell in only 12 of Consolas's 28 rows — fewer than the ink
+box did (14). At #986's own setting, Consolas 14 CSS px × 1.5, the drawn-size line box is 19 + 5 = 24,
+**the same as the ink box**; xterm.js's 26 is 13 + 4 = 17 read at 14 px, times 1.5, ceiled. So the
+2 px #986 measured is not `█` falling short of the face's line box — it is xterm's CSS-size rounding
+amplified by the DPR. Across the 168 rows xterm.js's height minus the ink box runs from −2 to +5: the
+ink box was sometimes the *taller* cell.
+
+| Face (headless Chromium) | 12.6 × 1.5: ink → now | 14 × 1.5: ink → now | 16 × 1: ink → now | rows in 900 device px at 14 × 1.5 |
+|---|---|---|---|---|
+| Consolas | 22 → 23 | 24 → 26 | 19 → 19 | 37 → 34 |
+| Cascadia Mono | 23 → 23 | 25 → 24 | 19 → 19 | 36 → 37 |
+| Courier New | 20 → 21 | 23 → 24 | 18 → 18 | 39 → 37 |
+| Lucida Console | 19 → 20 | 21 → 21 | 16 → 16 | 42 → 42 |
+| DejaVu Sans Mono | 20 → 23 | 21 → 24 | 16 → 19 | 42 → 37 |
+
+**The choice between the two was the maintainer's (2026-09-29), and it is a judgement, not a
+derivation.** Shown the 168-row table and three options — (X) xterm.js's rule, (D) the line box at the
+drawn size, (K) no change and a corrected issue — with their consequences, they chose (X): the defect
+#986 reports is that one consumer setting means two row counts across two engines, and only (X)
+removes it, as #962 removed it for the width. What (X) accepts, knowingly: the height is not a
+function of the device size alone (14 × 1.5 and 10.5 × 2 are both 21 device px and need not be the
+same height), and it inherits xterm.js's rounding rather than any property of the face. A better
+derivation does not reopen it; the maintainer can.
+
+**What it did not cover.** The #791 clipping counts in the table above were measured against the
+drawn-size line box, not this one; the vertical band still covers the gap (next paragraph), but the
+counts were not re-run. The WebView2 app #986 measured in was not re-measured; headless Chromium
+reproduced its Consolas 14 × 1.5 pair exactly (24 → 26; `floor(26 × 1.2)` = 31, #986's xterm.js
+cell). The renderer holds the DPR in single precision, so the product matches JS exactly when the DPR
+the browser reports is representable in `f32` — true of Windows' scale factors and Chromium's zoom
+factors, not of an arbitrary double such as Playwright's synthetic 1.1, where it matched on every size
+the proof sweeps.
+
+**The vertical band still covers the face's own extent.** It is the gap between this box and the line
+box the face declares at the drawn size, plus the headroom (`metrics::vertical_bleed`); when xterm's
+rounding lands the box below the drawn line box (Courier New at 12.6 × 1.5: 21 against 22) the band
+takes the difference. `█` is drawn by `builtin` to the cell and never through the font, so a box
+shorter than the font's `█` does not open a seam.
+
+**The invariant now guards only the horizontal band.** The height is a `measureText` read and draws
+nothing. The ink scan of `█` still sizes `bleed_x` (#966), so `block_glyph` must still never reach
+`Rasterizer::new`.
+
+**beamterm's comment, re-read.** *"Text metrics can have rounding issues"* turns out to describe a
+real mechanism: Chromium does round them. What it did not establish is that the ink box is the better
+cell, and #986 does not choose on accuracy at all — it chooses to round the way the other engine the
+consumer runs rounds.
 
 ### Grade of evidence, stated because it is uneven
 
@@ -239,8 +314,9 @@ takes, and it compensates in the atlas rather than in the cell.
 ## Consequences
 
 - ~~**Our grid can differ from alacritty's and xterm's for the same font and size.**~~ — **on the
-  width axis, no longer (#962)**: the width is the floored advance, as theirs is. The height still can,
-  and the rest of this bullet now describes the height only. If a font's `█`
+  width axis, no longer (#962)**: the width is the floored advance, as theirs is. **On the height, no
+  longer against xterm.js (#986)** — the height is its rule; against alacritty it has not been
+  compared. The rest of this bullet is the record of how it stood. If a font's `█`
   under- or over-fills its advance, the cell differs, and with it cols × rows for a given pixel box. This
   is a real, user-visible divergence with no test pinning it; it has simply never been compared.
 - **The invariant is enforced by call-site discipline only.** Nothing fails if someone calls
@@ -258,7 +334,8 @@ takes, and it compensates in the atlas rather than in the cell.
 ## Alternatives considered
 
 - **(A) Size the cell from font metrics, as both references do.** **Adopted for the width on 2026-09-22
-  (#962); still open for the height** — see *Amendment*. The text below is the record of how it stood
+  (#962) and for the height on 2026-09-29 (#986)**, the height in xterm.js's form — see the two
+  *Amendment* sections. The text below is the record of how it stood
   before that. **Not rejected — deferred pending
   measurement.** It is the majority practice and it removes the feedback hazard outright by making
   measurement a metrics read rather than a rasterisation. What stops it being adopted here is that

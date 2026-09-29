@@ -60,15 +60,19 @@
         }
     return { lit, above: base - minY, below: maxY - base, left: pen - minX, right: maxX + 1 - (pen + cw) };
   };
-  // The cell's vertical reach is the block's ink (ADR-0022); its horizontal reach is the box.
   const blockInk = freeInk("█");
+  // The cell's reach: vertically the glyph box (ADR-0022, #986) — `ch` tall, its alphabetic
+  // baseline the face's ideographic baseline above the bottom, as xterm draws it; horizontally the box.
+  off.font = FONT;
+  const ideoBelow = -off.measureText("W").ideographicBaseline;
+  const cellInk = { ...blockInk, above: Math.round(ch - ideoBelow), below: Math.round(ideoBelow) - 1 };
 
   const metric = (t) => {
     off.font = FONT;
     const m = off.measureText(t);
     return { left: m.actualBoundingBoxLeft, right: m.actualBoundingBoxRight - cw, width: m.width };
   };
-  const insideVertically = (i) => i.above <= blockInk.above && i.below <= blockInk.below;
+  const insideVertically = (i) => i.above <= cellInk.above && i.below <= cellInk.below;
   // One side only, by 1..3 px, and STRADDLING that edge — at least 2 px of the ink inside the box —
   // which is the case #966 is about: a glyph a pixel wider than its advance, not one a face happens
   // to place wholly outside its own box.
