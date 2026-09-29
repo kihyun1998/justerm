@@ -45,6 +45,13 @@ const INVARIANT_SECTIONS = [
 // extensions, under the working directory.
 const SRC_EXT = new Set(['.rs', '.ts', '.mjs', '.yml', '.toml']);
 
+// A name only a comment mentions is not in the code. Line-based and string-unaware, except that
+// `://` (a URL) does not open a comment.
+const stripComments = (path, text) =>
+  /\.(yml|toml)$/.test(path)
+    ? text.replace(/(^|\s)#.*$/gm, '$1')
+    : text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+
 const raw = readFileSync(file, 'utf8');
 const isAggregate = raw.startsWith('# Aggregate');
 const problems = [];
@@ -74,7 +81,7 @@ if (codeSection.trim() && !noCode) {
     .filter((p) => p && existsSync(p));
   const tree = allPaths
     .filter((p) => SRC_EXT.has(extname(p)))
-    .map((p) => readFileSync(p, 'utf8'))
+    .map((p) => stripComments(p, readFileSync(p, 'utf8')))
     .join('\n');
 
   // Notes write a full path once and then bare siblings — `…/src/palette.rs` · `attrs.rs` · `color.rs`

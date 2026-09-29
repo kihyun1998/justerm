@@ -75,7 +75,8 @@ the decision has to be made per scalar, with no lookahead, against a cluster tha
 ## Code
 
 - `justerm-core/src/grapheme.rs` — the incremental segmentation
-- `justerm-core/src/cell.rs` — `COMBINED_PRESENT`, and the inline primary code point
+- `justerm-core/src/cell.rs` — `C_COMBINED` (the bit the docs call COMBINED_PRESENT), and the inline
+  primary code point
 - `justerm-core/src/grid.rs` — `Combining`, the row's column-keyed cluster map
 - `justerm-core/src/term.rs` — `Term::grapheme_clustering` (the mode), and the print path that
   extends or breaks
