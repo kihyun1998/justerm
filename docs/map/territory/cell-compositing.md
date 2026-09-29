@@ -574,6 +574,8 @@ What the packer's own comments carried before #991. The decoration stages are in
   (#972), applied only when no composition is open
 - `justerm-web/src/terminal.ts` — `Terminal.setSuggestion`, `paintSuggestion`: the anchor and the
   alternate-screen drop
+- `justerm-web/src/suggestion.ts` — `suggestionCell` (the viewport cell, and the `composing` gate),
+  `suggestionColorRef`, `SuggestionOptions`
 - `justerm-renderer/src/render_policy.rs` — `ColorPolicy`, `resolve_cell`, `dim_foreground`
 - `justerm-renderer/src/overlay.rs` — `HighlightKind`, `composite_bg`, `blend_over`,
   `should_blend_kind`

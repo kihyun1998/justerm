@@ -1,17 +1,14 @@
 import { describe, it, expect, vi } from "vitest";
+import { Terminal, rendererNotifyingSink } from "../src/terminal";
 import {
-  Terminal,
-  rendererNotifyingSink,
   routeWheel,
-  textareaMove,
   wheelGoesToApp,
   isUserInput,
   scrollsToBottomOnInput,
   wheelScrollTarget,
-  preeditIntent,
-  preeditLatch,
-  suggestionCell,
-} from "../src/terminal";
+} from "../src/scroll-control";
+import { textareaMove, preeditIntent, preeditLatch } from "../src/composition";
+import { suggestionCell } from "../src/suggestion";
 import { StubFrameSource } from "../src/frame-source";
 import { MouseEvents, StubInputSink } from "../src/input";
 import type { Intent } from "../src/input";

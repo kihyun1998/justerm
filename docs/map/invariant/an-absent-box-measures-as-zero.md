@@ -175,8 +175,8 @@ because every value involved is finite and in range. The four measured shapes:
 - **#814** (2026-08-25) — repaired the third site, and is the first of the four to be **run** rather
   than read. Two things it added that reading could not: the defect is **self-concealing** through the
   library's own `update()` when the wrong element is hidden (above), and the repair's real ground is
-  not this note at all but a **sibling guard one module over** — `wheelAction`'s
-  `!Number.isFinite(lines)` refusal (`justerm-web/src/terminal.ts`, #675) already decided that a
+  not this note at all but a **sibling guard one module over** — `routeWheel`'s
+  `!Number.isFinite(lines)` refusal (`justerm-web/src/scroll-control.ts`, #675) already decided that a
   non-finite scroll request must not reach the consumer's `onScroll`, while
   `TerminalOptions.onScroll`'s own doc says the scrollbar drag *"funnels to the SAME callback"*. The
   scrollbar was the one producer of that callback not on the guard's path — a statement that needs no
