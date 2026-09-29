@@ -126,7 +126,7 @@ export function scrollbarMetrics(pos: ScrollPosition): ScrollbarMetrics {
  * `Math.max(0, Math.min(1, Infinity))` is `1`, and `1` is finite, so an all-zero rect sails
  * through and `dragToDisplayOffset(1, …)` is that slam to the live bottom. Only a finiteness test
  * on the **un-clamped quotient** is equivalent to this guard, and then only up to a negative
- * height. `wheelScrollTarget` had already recorded the general form (`terminal.ts`): *"a result
+ * height. `wheelScrollTarget` had already recorded the general form (`scroll-control.ts`): *"a result
  * check is not a substitute … the clamp rescues an infinite request into a finite, wrong one …
  * guarding there would fix half the cases and read as if it had fixed all of them."*
  *
@@ -156,7 +156,7 @@ export function dragTrackRatio(clientY: number, track: { top: number; height: nu
  * back to an offset, clamped to `[0, scrollbackLen]`. The backend scrolls to it.
  *
  * **Checked on the inputs, and a result check would not do** — the same rule `wheelScrollTarget`
- * carries on the other producer of this consumer callback (`terminal.ts`, #675). Three of the four
+ * carries on the other producer of this consumer callback (`scroll-control.ts`, #675). Three of the four
  * poisoned positions surface as `NaN`, but `rows: Infinity` gives **`0`**: `Math.round(60 - ∞)` is
  * `-Infinity`, and the clamp rescues that into a perfectly finite, perfectly plausible *jump to the
  * live edge*. Measured, all four, before this guard existed. So guarding the result would fix three

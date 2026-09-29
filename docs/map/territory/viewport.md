@@ -80,10 +80,11 @@ directly.
   `screen_underline_color_at` / `viewport_link_at`
 - `justerm-core/src/term.rs` — `Term::scroll_delta`, `Term::scrollback_len`
 - `justerm-core/src/serialize.rs` — `Frame`'s `display_offset` / `scrollback_len`
-- `justerm-web/src/terminal.ts` — `scrollsToBottomOnInput` (the input→bottom predicate),
-  `InputScrollSignal`, and `Terminal`'s `scrollOnUserInput` / `requestBottom` wiring;
+- `justerm-web/src/terminal.ts` — `Terminal`'s `scrollOnUserInput` / `onUserInput` wiring;
   `Terminal.setScrollOptions`
-- `justerm-web/src/scroll-control.ts` — `WheelScroller` (`consumeWheelEvent`, `setOptions`, `reset`)
+- `justerm-web/src/scroll-control.ts` — `WheelScroller` (`consumeWheelEvent`, `setOptions`, `reset`);
+  `routeWheel`, `wheelScrollTarget`; `scrollsToBottomOnInput` (the input→bottom predicate)
+- `justerm-web/src/input.ts` — `isUserInput` and the `InputScrollSignal` it classifies
 
 ## Reference behaviour
 

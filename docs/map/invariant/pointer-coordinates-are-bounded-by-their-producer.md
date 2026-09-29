@@ -166,7 +166,7 @@ fix mentions a shared rule.
   `rows: Infinity` surfaced as **`0`** — `Math.round(60 - ∞)` is `-Infinity` and the clamp rescues it
   into a finite, plausible jump to the live edge. A finiteness test on the *result* therefore fixes
   three of four and reads as if it fixed all four, which `wheelScrollTarget` had already stated in
-  prose (`terminal.ts`) and which a mutation now pins: moving the guard to the result reddens exactly
+  prose (`scroll-control.ts`) and which a mutation now pins: moving the guard to the result reddens exactly
   the `rows: Infinity` assertion and nothing else. Note that this producer is **not** a member of the
   note's own rule — it computes a ratio, not a cell, exactly as the exclusion below says.
   **A fourth producer in the same file came with it, and finding it is the transferable part.**

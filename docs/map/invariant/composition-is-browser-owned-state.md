@@ -47,8 +47,8 @@ reading that one. The same shape as an absolute-index walk being rediscovered th
   reads it (composition start #631, focus), and frozen for **every** writer while a composition is open
   (#637 the frame stream, #649 the forced re-sync) — while the *retained cell* those writers place
   from is kept on every frame regardless, in `Terminal.track` with the rest of the frame state
-  (#921). `Terminal.focus`, `syncTextareaAnchor`, `positionTextarea`, `textareaMove`, `track` in
-  `justerm-web/src/terminal.ts`
+  (#921). `Terminal.focus`, `syncTextareaAnchor`, `positionTextarea`, `track` in
+  `justerm-web/src/terminal.ts`; `textareaMove` in `justerm-web/src/composition.ts`
 - [accessibility](../territory/accessibility.md) — `AccessibilityController.onKey` must push a
   committed IME text intent **per code point**, because one commit arrives as a single multi-unit
   intent while `dedupTyped` drains one code point per echoed output char (#153 G9). And the textarea is

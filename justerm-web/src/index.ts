@@ -42,17 +42,13 @@ export type {
 // routes the wheel (app / alt-cursor-keys / scrollback, #129 mask) and pointer presses (#902), returns
 // the view to the bottom on user input (#913), restarts the cursor blink on typing, and tracks focus
 // (S16 #133). The routing/notify decisions are pure + exported for reuse.
-export {
-  INPUT_ATTRIBUTE,
-  rendererNotifyingSink,
-  routeWheel,
-  isUserInput,
-  scrollsToBottomOnInput,
-  Terminal,
-  wheelGoesToApp,
-  wheelScrollTarget,
-} from "./terminal";
-export type { InputScrollSignal, SuggestionColor, SuggestionOptions, TerminalOptions, WheelAction } from "./terminal";
+export { INPUT_ATTRIBUTE, rendererNotifyingSink, Terminal } from "./terminal";
+export type { TerminalOptions } from "./terminal";
+export { routeWheel, scrollsToBottomOnInput, wheelGoesToApp, wheelScrollTarget } from "./scroll-control";
+export type { WheelAction } from "./scroll-control";
+export { isUserInput } from "./input";
+export type { InputScrollSignal } from "./input";
+export type { SuggestionColor, SuggestionOptions } from "./suggestion";
 // `LocalPointer` is the shape `TerminalOptions.selection` takes (#902) — a SelectionController has it.
 export type { LocalPointer } from "./pointer";
 export { JustermRenderer } from "./justerm-renderer";

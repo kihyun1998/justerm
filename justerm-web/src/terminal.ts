@@ -2,263 +2,22 @@ import type { FrameSource, Unsubscribe, DecodedFrame } from "./types";
 import type { Renderer } from "./renderer";
 import {
   captureInput,
-  MouseEvents,
+  isUserInput,
   wheelMouseFromDom,
   type CellGeometry,
-  type Intent,
+  type InputScrollSignal,
   type InputSink,
-  type Key,
   type NamedKey,
 } from "./input";
 import { PointerRouter, type LocalPointer } from "./pointer";
 import { SCROLLBAR_ATTRIBUTE } from "./scrollbar";
-import { WheelScroller, type ScrollOptions } from "./scroll-control";
-import { CompositionController } from "./composition";
+import { routeWheel, scrollsToBottomOnInput, WheelScroller, type ScrollOptions } from "./scroll-control";
+import { CompositionController, preeditIntent, preeditLatch, textareaMove, type TextareaAnchor } from "./composition";
+import { suggestionCell, suggestionColorRef, type SuggestionOptions } from "./suggestion";
 import { ClipboardController, type ClipboardOptions } from "./clipboard";
 import { dispatchTermEvent, type EventHandlers } from "./events";
 import { hoverSpans, LinkTracker } from "./link-tracker";
 import type { Link, LinkOptions } from "./links";
-
-/**
- * Whether a wheel notch reports to the app rather than scrolling scrollback
- * locally — true only when the app tracks the wheel (the WHEEL bit of the frame's
- * `mouseWantedEvents` mask, #129). `undefined` (frame omitted the field) → local.
- * Per-category (not "any mouse mode"): an X10 app (`?9`, DOWN only) keeps the
- * wheel local, matching xterm's per-protocol wheel gate.
- */
-export function wheelGoesToApp(mouseWantedEvents: number | undefined): boolean {
-  return ((mouseWantedEvents ?? 0) & MouseEvents.Wheel) !== 0;
-}
-
-/**
- * The display offset a local wheel scroll requests, or `null` when the notch
- * moved no whole line. `lines` is the {@link WheelScroller} result (positive =
- * down/newer); `displayOffset` is lines UP from the bottom (0 = following), so
- * scrolling newer LOWERS it. Clamped to `[0, scrollbackLen]` — can't scroll past
- * the live edge or before the oldest history line. The backend scrolls to it.
- */
-export function wheelScrollTarget(
-  lines: number,
-  displayOffset: number,
-  scrollbackLen: number,
-): number | null {
-  if (lines === 0) return null;
-  // `Math.max(0, Math.min(len, NaN))` is `NaN` — the same propagation `clampTo`
-  // had at the pointer seam (#672), here at the scroll seam. A non-finite result
-  // is "no request", not a request for a nonsense offset: this function is
-  // exported, so it owes its own totality rather than trusting its one in-repo
-  // caller, and any of the three arguments can arrive poisoned (#675).
-  //
-  // Checked on the **inputs**, and a result check is not a substitute for it —
-  // the clamp *rescues* an infinite request into a finite, wrong one:
-  // `Math.max(0, Math.min(100, 10 - Infinity))` is `0`, a silent jump to the
-  // live edge. Only `NaN` survives to the output, so guarding there would fix
-  // half the cases and read as if it had fixed all of them.
-  if (!Number.isFinite(lines) || !Number.isFinite(displayOffset) || !Number.isFinite(scrollbackLen)) {
-    return null;
-  }
-  return Math.max(0, Math.min(scrollbackLen, displayOffset - lines));
-}
-
-/**
- * What a wheel notch does, once {@link WheelScroller} has turned it into whole
- * `lines`. Three destinations, mirroring xterm: `app` (the app tracks the wheel —
- * a wheel-button report), `altKeys` (the alt buffer has no scrollback, so a
- * non-tracking app gets cursor keys — xterm's `_handlePassiveWheel`), and `scroll`
- * (normal-buffer local scrollback). `none` = a sub-line/zero notch (nothing yet).
- */
-export type WheelAction =
-  | { kind: "app"; direction: "up" | "down" }
-  | { kind: "altKeys"; direction: "up" | "down" }
-  | { kind: "scroll"; displayOffset: number }
-  | { kind: "none" };
-
-/**
- * Decide where a wheel notch goes. Gate on the accumulated `lines` first (a
- * sub-line trackpad notch or a shift/zero wheel is `none` — the {@link
- * WheelScroller} already returned 0), so the app never gets hyper-sensitive
- * per-pixel reports (xterm routes its wheel report through the SAME accumulator).
- * Precedence: a wheel-tracking app wins even on the alt screen; else the alt
- * buffer (no scrollback) takes cursor keys; else local scrollback.
- */
-export function routeWheel(
-  mouseWantedEvents: number | undefined,
-  lines: number,
-  altScreen: boolean,
-  displayOffset: number,
-  scrollbackLen: number,
-): WheelAction {
-  // `NaN === 0` is false, so a non-finite count reaches every branch below. The
-  // app branch is the one that fails *quietly*: `direction` comes from
-  // `lines < 0`, which is false for `NaN`, so a poisoned scroller would report a
-  // fabricated `down` to the application instead of reporting nothing (#675).
-  if (lines === 0 || !Number.isFinite(lines)) return { kind: "none" };
-  const direction = lines < 0 ? "up" : "down";
-  if (wheelGoesToApp(mouseWantedEvents)) return { kind: "app", direction };
-  if (altScreen) return { kind: "altKeys", direction };
-  // No `!`: the target really can be null now (a poisoned `displayOffset` coming
-  // back from a frame), and asserting it away is how a non-finite offset reached
-  // the consumer's `onScroll` in the first place.
-  const target = wheelScrollTarget(lines, displayOffset, scrollbackLen);
-  if (target === null) return { kind: "none" };
-  return { kind: "scroll", displayOffset: target };
-}
-
-/**
- * DOM `KeyboardEvent.key` values that name a modifier. `keyOf` maps every key it does
- * not recognise to a `char`, so a bare modifier press arrives as `Char("Shift")` and is
- * indistinguishable from typing without this list.
- */
-const MODIFIER_KEYS: ReadonlySet<string> = new Set([
-  "Alt",
-  "AltGraph",
-  "CapsLock",
-  "Control",
-  "Fn",
-  "FnLock",
-  "Hyper",
-  "Meta",
-  "NumLock",
-  "ScrollLock",
-  "Shift",
-  "Super",
-  "Symbol",
-  "SymbolLock",
-]);
-
-/**
- * What the input path saw, for the scroll-on-user-input decision: an {@link Intent} on its
- * way to the application, or `imeKey` — a keydown the IME gate swallowed, which produces no
- * intent at all. `imeKey` carries its DOM `KeyboardEvent.key` because the gate swallows bare
- * modifiers too, and they are not input on either path.
- */
-export type InputScrollSignal = Intent | { kind: "imeKey"; key: string };
-
-/** A bare modifier press. `keyOf` maps it to a `char` carrying the DOM key name. */
-function isBareModifier(key: Key): boolean {
-  return key.type === "char" && MODIFIER_KEYS.has(key.char);
-}
-
-/**
- * Whether user input should bring the viewport back to the bottom.
- *
- * Counts: a key, committed IME text, a paste, and a keydown the IME gate swallowed — a bare
- * modifier on either of the two key paths excepted. Does not: focus and mouse intents. A key
- * vetoed by `TerminalOptions.beforeKey` never becomes an {@link Intent}, so it cannot reach
- * here as one.
- *
- * `displayOffset` is the only state this needs — `0` already means the live edge, on the
- * alt screen included, so there is no screen to ask about. A non-finite offset snaps:
- * unlike {@link wheelScrollTarget}, the requested offset is the constant `0` rather than
- * something computed from the argument.
- */
-export function scrollsToBottomOnInput(signal: InputScrollSignal, displayOffset: number): boolean {
-  return isUserInput(signal) && displayOffset !== 0;
-}
-
-/**
- * Whether this signal is the user providing input at all — the question the snap and the
- * selection drop share, and **all** they share. Only the snap asks where the view is; a selection
- * is dropped wherever it was, which is what both references do (xterm.js fires `onUserInput`
- * outside its `scrollOnUserInput` guard; alacritty's `on_terminal_input_start` clears before it
- * tests `display_offset`). Splitting them is not a refactor — bundling the offset guard would
- * leave a selection alive exactly when the user is already at the bottom, which is most of the time.
- */
-export function isUserInput(signal: InputScrollSignal): boolean {
-  switch (signal.kind) {
-    case "key":
-      return !isBareModifier(signal.event.key);
-    case "imeKey":
-      return !MODIFIER_KEYS.has(signal.key);
-    case "text":
-    case "paste":
-      return true;
-    default:
-      return false;
-  }
-}
-
-/** Where the hidden textarea is anchored, in cells — the cursor cell a frame reported. */
-export interface TextareaAnchor {
-  col: number;
-  row: number;
-}
-
-/**
- * Whether the hidden textarea must move, and the cache key to remember (#631).
- *
- * The key is the cursor's **cell coordinate**, but the anchor is computed from the **geometry** —
- * so a cell-size change (`setFontSize`, `setFontFamily`, `setLetterSpacing`, `setLineHeight`, and
- * `setDevicePixelRatio` once it is wired) moves what the anchor should be while leaving the
- * coordinate identical. A coordinate-keyed cache structurally cannot express "the geometry moved",
- * which is why `force` exists: the callers that sit at a moment something actually *reads* the
- * anchor override the cache instead of trying to keep it fresh at all times.
- *
- * Why not simply drop the cache and re-read every frame, which is what all three references do
- * (xterm.js `_syncTextArea`, ghostty `imePoint`, alacritty `update_ime_position` — none of them
- * caches)? Because their cell is a **stored field** they push to (`dimensions.css.cell`,
- * `size.cell`, `size_info`), while ours arrives through a consumer-supplied
- * {@link TerminalOptions.getGeometry} callback whose cost we do not control — the demo's and the
- * README's both do a `getBoundingClientRect()`. Per-frame is cheap for them and a forced layout
- * read per output flush for us. Valid only as long as `getGeometry` stays a pull-based consumer
- * callback; if the widget ever holds a pushed cell, prefer the reference's no-cache shape.
- *
- * `composing` suppresses **every** path, forced or not (#637 established the rule, #649 closed the
- * `force` exemption). While a composition is open the OS re-reads the anchor to keep its candidate
- * window placed — measured with a real Korean IME: the Hanja window follows the anchor down as
- * unsolicited output moves the cursor, walking away from the text being composed.
- *
- * `force` originally won over `composing` so that #631's `compositionstart` re-sync could not be
- * gated by its own guard. It never needed that: `onStart` re-anchors *before* telling the controller,
- * so it sees `composing === false` either way. What the exemption actually bought was a second
- * entrance to the same harm — `element` mousedown → `onDown` → `Terminal.focus()` → a forced re-sync
- * onto the superseded cursor cell, reachable through the public `focus()` from any consumer, not only
- * a pointer (#649). So `force` now means one thing and one thing only: *override the coordinate
- * cache*. It says nothing about the composition rule.
- *
- * **`composing` is `isComposing`, never `active`.** `active` stays true through the deferred commit
- * read, and a continuous-CJK `compositionstart` lands inside exactly that window — so keying this on
- * `active` would swallow #631's re-sync in the ordinary Korean/Japanese typing pattern, while looking
- * equivalent at the call site. `composition.test.ts` pins the two diverging there.
- *
- * Suppression returns `undefined`, which the caller treats as a decided no-op that leaves the cache
- * alone — so the move is not recorded as applied and the anchor catches up on the first frame after
- * the composition ends, rather than waiting for the cursor to move again.
- *
- * **Freezing is this codebase's form of the rule, not the rule itself.** All three references converge
- * on *the anchor tracks where the user's composition is, never where the output cursor went* — and two
- * of the three do that by **actively re-aiming during the composition**, not by suppressing:
- *
- * - ghostty folds the preedit's width into the IME rect it pushes on every key event
- *   (`src/Surface.zig:2108`, used at `:2151`) — no gate at all
- * - alacritty picks the point *from* the preedit when there is one and from the cursor when there is
- *   not (`alacritty/src/display/mod.rs:1136-1142`, `:1215`) — also no gate
- * - xterm.js is the only one that suppresses, and only the **involuntary** writer: `_syncTextArea`
- *   bails while composing (`browser/CoreBrowserTerminal.ts:338`, gating all three of its callers) while
- *   `CompositionHelper.updateCompositionElements` deliberately rewrites `left`/`top` every render
- *   (`browser/input/CompositionHelper.ts:273-274`)
- *
- * **justerm-web now re-aims too, and this guard is unchanged — which is the part worth reading.**
- * Until #249 there was no preedit view here, so *"where the composition is"* collapsed to *"where it
- * started"* and freezing was the only available expression of the shared rule. #249 supplied the
- * missing representation, and the prediction recorded here was that this guard *"is what has to
- * give"*. It did not, and the reason is ADR-0028 D4: the writer that knows where the composition is
- * does not pass through the guard that exists for the writers that do not. The preedit's re-aim goes
- * straight to {@link Terminal.writeTextareaAnchor}, exactly as xterm's `updateCompositionElements`
- * never goes through `_syncTextArea`. So this stays a rule about the **involuntary** writers — the
- * frame stream (#637) and the focus path (#649) — which is what both of them actually measured.
- */
-export function textareaMove(
-  cursor: TextareaAnchor | undefined,
-  lastKey: string,
-  force: boolean,
-  composing: boolean,
-): { col: number; row: number; key: string } | undefined {
-  if (!cursor) return undefined;
-  const key = `${cursor.col},${cursor.row}`;
-  if (composing || (!force && key === lastKey)) return undefined;
-  return { col: cursor.col, row: cursor.row, key };
-}
 
 /**
  * Wrap an {@link InputSink} so the renderer's local cursor/selection state tracks
@@ -268,61 +27,9 @@ export function textareaMove(
  * stops blinking + shows the inactive selection tint). Both renderer hooks are
  * optional; a cursorless renderer is left untouched. Other intents pass through.
  */
-/**
- * What a `compositionupdate` should do to the drawn run: nothing, or push these codepoints (#249).
- *
- * Pure so the two decisions are testable at all — the widget half that acts on them needs a DOM and
- * the unit suite runs in `environment: "node"`, which is the blind spot #649 measured.
- *
- * - **Unchanged text is dropped.** A real IME emits one settling `compositionupdate` per syllable
- *   carrying the data it already sent (measured on a Windows Korean IME), and each one would
- *   otherwise cost a full re-pack.
- * - **No origin, no push.** The origin is latched at `compositionstart`; a composition that somehow
- *   runs before any frame has reported a cursor has nowhere to draw, and guessing a cell is worse
- *   than drawing nothing.
- *
- * The text itself is split by **code point**, not by UTF-16 unit: a preedit can carry astral
- * scalars, and `Array.from`'s iterator is what makes `"\u{1F600}"` one cell rather than two halves
- * of a surrogate pair.
- */
-export function preeditIntent(
-  text: string,
-  lastText: string,
-  origin: TextareaAnchor | undefined,
-): { codepoints: Uint32Array; origin: TextareaAnchor } | undefined {
-  if (text === lastText || !origin) return undefined;
-  return { codepoints: Uint32Array.from(text, (c) => c.codePointAt(0) ?? 0), origin };
-}
-
-/**
- * Where a composition that is starting should draw, given what the widget is still holding (#911).
- *
- * `cursorAnchor` is written only by the frame stream, so it can never be fresher than the last frame
- * the engine sent. `lastRunEnd` is where the previous composition's run finished — the renderer's own
- * caret column, one past its last cell.
- *
- * **When a commit is in flight the frame stream is known to be stale, not merely possibly stale.**
- * The committed text leaves one deferred read after `compositionend` (#116) and a continuous-CJK
- * `compositionstart` lands inside that window, so at the latch the engine has not been handed the
- * previous syllable at all — `cursorAnchor` still points at the cell that syllable is about to take.
- * The previous run's end is the one coordinate that does account for it.
- *
- * Pure so the choice is testable at all: the wiring needs a DOM and the unit suite runs in
- * `environment: "node"`. It is the run's END rather than a width because the widget has no
- * `wcwidth` — see {@link Renderer.setPreedit}, whose return exists for that reason.
- */
 /** The clearing call's payload — a run of no cells. Named because `new Uint32Array(0)` at a call
  * site reads as an accident rather than as "stop drawing this". */
 const EMPTY_PREEDIT = new Uint32Array(0);
-
-export function preeditLatch(
-  cursorAnchor: TextareaAnchor | undefined,
-  lastRunEnd: TextareaAnchor | undefined,
-  commitPending: boolean,
-): TextareaAnchor | undefined {
-  if (commitPending && lastRunEnd) return lastRunEnd;
-  return cursorAnchor;
-}
 
 export function rendererNotifyingSink(sink: InputSink, renderer: Renderer): InputSink {
   return {
@@ -333,41 +40,6 @@ export function rendererNotifyingSink(sink: InputSink, renderer: Renderer): Inpu
       sink.send(intent);
     },
   };
-}
-
-/** The colour a suggestion draws in. `"default"` and `indexed` follow a theme change. */
-export type SuggestionColor = "default" | { readonly indexed: number } | { readonly rgb: number };
-
-/** How {@link Terminal.setSuggestion} draws its text. */
-export interface SuggestionOptions {
-  /** Default `"default"`: the theme's foreground. */
-  readonly color?: SuggestionColor;
-  /** Draw with the SGR 2 (dim) treatment. Default `true`. */
-  readonly dim?: boolean;
-}
-
-/** `color` as a frame's tagged colour reference: high byte `0` Default, `1` Indexed, `2` Rgb. */
-function suggestionColorRef(color: SuggestionColor | undefined): number {
-  if (color === undefined || color === "default") return 0;
-  if ("indexed" in color) return (1 << 24) | (color.indexed & 0xff);
-  return ((2 << 24) | (color.rgb & 0xffffff)) >>> 0;
-}
-
-/**
- * The viewport cell a suggestion is drawn from — the engine cursor's cell mapped through the
- * display offset — or `undefined` when nothing should be drawn: no text, no cursor yet, the cursor's
- * row off screen, or an IME composition open ([justerm#972](https://github.com/kihyun1998/justerm/issues/972)).
- */
-export function suggestionCell(
-  cursor: TextareaAnchor | undefined,
-  displayOffset: number,
-  rows: number,
-  text: string,
-  composing: boolean,
-): TextareaAnchor | undefined {
-  if (!cursor || text === "" || composing) return undefined;
-  const row = cursor.row + displayOffset;
-  return row < rows ? { col: cursor.col, row } : undefined;
 }
 
 /**
