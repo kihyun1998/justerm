@@ -130,6 +130,14 @@ for the tier and its lifetime.
   down), from `metrics::horizontal_bleed` and `metrics::vertical_bleed`. Both floor at their
   headroom, so 0 does not reach the shader in practice: the fragment stage's `armed` guards defend a
   value the pipeline does not currently produce, not a mode anything selects.
+- **A spacing change is a new configuration** (`setLetterSpacing`, `setLineHeight`). The atlas slot
+  is the padded cell, so a spacing change is a different configuration rather than an edit to the
+  current one — which is why it costs an atlas bake rather than a uniform, and why two grids can hold
+  two spacings at once. Both setters **clamp rather than reject**: xterm.js throws from its option
+  setter for a `lineHeight` below 1 ([who re-fits after a spacing change](../../agents/reference-facts.md#who-re-fits-after-a-spacing-change-578-verified-2026-07-29)),
+  and throwing across the wasm boundary is a worse contract than reporting what was adopted — the
+  consumer reads the result back from the cell. The letter-spacing unit is ADR-0023's (CSS px, where
+  both references take device px).
 
 ## Code
 

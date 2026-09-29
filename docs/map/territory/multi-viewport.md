@@ -163,6 +163,34 @@ warns about, so prefer `## Code` over it if the two ever disagree again.)
     bakes — a rebuild that fails part-way leaves it where it was — so the number tracks
     configurations the renderer is drawing through rather than rasterising work it performed, which
     is what a delta is read for and what keeps the delta deterministic.
+- **The selector funnel** (`adopt_selectors`, and `setDevicePixelRatio` beside it). All seven
+  selector setters — size, family, both weights, the subpixel setting, and the two spacings through
+  `adopt_spacing` — go through one site, so none of them can decide any of this differently. It owes
+  three properties, and each is a bug that has been paid for here before:
+  - *Atomic.* A rasterise can fail — it draws through the browser's 2D engine — and a half-applied
+    change is worse than a rejected one. On failure the selectors are put back, so the grid and the
+    entry it names still agree and the consumer can retry (#338/#359).
+  - *Deferred while the context is dead.* An atlas built on a lost context comes back invalidated.
+    The selectors still advance — they are CPU state and outlive the loss — and `restore` re-selects
+    from them, which is where a mid-loss `setFontSize` has always landed (#269/#406). What changed at
+    #772 is that the *cell* no longer moves ahead of the atlas either: the cell belongs to a
+    configuration, and no configuration moved.
+  - *It never edits the entry it is leaving* — the immutability rule above; `select_config` carries
+    it out. That is what ADR-0021 D1 means by a selector being per-grid, and what makes two
+    terminals in two fonts drawable side by side.
+
+  **Neither the funnel nor a density change touches the drawing buffer**, and both did until #773.
+  The selector path re-sized it from the grid's cell; `setDevicePixelRatio` re-derived it from the
+  implicit grid's `cols` / `rows`, a density-independent quantity that stayed meaningful across the
+  change. A surface has no such quantity — its size is the consumer's device-px measurement, and
+  re-deriving it would mean converting through the renderer's copy of the density, which is stale in
+  exactly that window (see `## Blast radius`). So the buffer holds and the consumer re-issues it and
+  every rect, which it must anyway since the cell just moved. The consumer re-fits after any selector
+  that moves the cell — every one but the two weights and the subpixel setting.
+  A density change re-bakes **every** configuration in place (the rebuild-all path above), and
+  atomically across the whole registry: every replacement is built before any is committed. That
+  matters more with several entries than it did with one — a half-applied density would leave two
+  grids drawing through atlases baked at different densities, with one shared `dpr` describing both.
 - **"Surface" means one thing here and the opposite in the references — the single most reliable way
   to get this territory wrong.** ADR-0021's `TerminalSurface` is **one per app**: the canvas, the
   context, the atlas registry and the single frame loop. Ghostty's `Surface` is **one per terminal**,

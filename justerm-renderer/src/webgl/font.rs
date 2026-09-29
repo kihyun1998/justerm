@@ -22,8 +22,8 @@ impl JustermRenderer {
     /// `Some(cache)` rebuilds an **existing** one and re-bakes every resident glyph into the SAME
     /// slot it already occupies, so the instances that address them survive the rebuild.
     ///
-    /// An associated function rather than a method because the constructor has no `self` yet, and
-    /// because it must not be able to read a live tier by accident.
+    /// An associated function, reading no tier. Why: `docs/map/territory/glyph-atlas.md` § One
+    /// bake function builds every configuration.
     pub(super) fn bake_config(
         gl: &glow::Context,
         max_texture_size: u32,
@@ -38,11 +38,10 @@ impl JustermRenderer {
             key.font_weight_bold(),
             key.subpixel(),
         )?;
-        // The rasteriser measures the GLYPH box; the grid cell is that box plus the consumer's
-        // spacing policy (#338). The atlas slot is the padded CELL (#359), so the rasteriser must
-        // know the cell before anything is sized from `padded_size()`. And ask the implementation
-        // rather than predicting it: a cell the atlas texture cannot hold leaves that texture
-        // storage-less, and a storage-less sampler answers alpha 1 for every glyph (#339/#359).
+        // The cell is the glyph box plus the spacing policy (#338), fitted to what the atlas texture
+        // can hold (#339/#359); the rasteriser learns it before anything is sized from
+        // `padded_size()`, the atlas slot being the padded cell. Why:
+        // `docs/map/territory/cell-geometry.md` § The cell is bounded twice.
         let char_size = rasterizer.glyph_box();
         // The bands this face needs, measured before the cell is sized because they are spent out of
         // the same texture budget (#791 the per-layer height, #966 the width).
@@ -76,8 +75,7 @@ impl JustermRenderer {
         })
     }
 
-    /// Bake the 95 normal ASCII glyphs into `atlas` using `rasterizer`.
-    /// Rasterise + upload the 95 normal-styled ASCII glyphs into their fixed fast-path
+    /// Rasterise + upload the 95 normal-styled ASCII glyphs into `atlas`, at their fixed fast-path
     /// slots (`0..=94`), so a cell using the ASCII fast path samples a real bitmap.
     fn prebake_ascii_into(
         gl: &glow::Context,
@@ -110,10 +108,8 @@ impl JustermRenderer {
         let (pad_w, pad_h) = atlas_cell;
         Self::prebake_ascii_into(gl, rasterizer, atlas, atlas_cell)?;
         for (k, slot) in cache.entries() {
-            // Two-cell iff the slot lives in the wide region — true for both `Wide` (CJK) and a
-            // *wide* `Emoji` (2-cell colour emoji); a narrow `Emoji` (#297 EmojiNarrow) sits in
-            // the normal region and is one cell. Keying off `slot_id() >= WIDE_BASE` (not
-            // `matches!(Wide)`) is what catches the wide-emoji case.
+            // Two-cell iff the slot lives in the wide region — a `Wide` (CJK) glyph or a *wide*
+            // `Emoji`; a narrow `Emoji` (#297) sits in the normal region and is one cell.
             let wide = slot.slot_id() >= WIDE_BASE;
             let rgba = rasterizer.rasterize(&k.text, k.style, wide)?;
             let colour = matches!(slot, GlyphSlot::Emoji(_));
@@ -134,46 +130,37 @@ impl JustermRenderer {
     /// Notify the renderer that `window.devicePixelRatio` changed to `dpr`. The consumer
     /// drives this from a resolution `matchMedia` listener — a DPR change at the *same* CSS size
     /// (dragging to another-density monitor) does not fire a resize, so it must be signalled
-    /// explicitly. **Every** configuration is re-baked at the new device size, each keeping its own
-    /// glyph slots (so nothing has to re-pack). **The drawing buffer is deliberately left alone** —
-    /// see the paragraph below the next one, which is where that decision is stated; this sentence
-    /// said the opposite until 2026-08-19, describing the pre-0.15.0 behaviour
-    /// fifteen lines above the paragraph that retired it. A no-op if the ratio is unchanged; on
-    /// error every old atlas is left intact and `dpr` unadvanced, so the next notification retries
-    /// (self-healing).
+    /// explicitly. **Every** configuration is re-baked in place at the new device size, each keeping
+    /// its own glyph slots (so nothing has to re-pack). A no-op if the ratio is unchanged; on error
+    /// every old atlas is left intact and `dpr` unadvanced, so the next notification retries
+    /// (self-healing). While the context is lost the notification is dropped: the restore bakes at
+    /// the ratio live at that moment.
     ///
-    /// **This is the "rebuild all of them" path, not the "re-key one" path** ([ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)). One
-    /// canvas means one drawing buffer and one DPR, so a density change is true of every entry at
-    /// once — which is exactly the case where mutating a shared entry in place is right rather than
-    /// wrong: nobody is being moved into a configuration they did not ask for.
+    /// **The drawing buffer and every viewport rect are left alone.** They are the consumer's
+    /// device-pixel measurements, so after a density change the consumer re-issues the surface size
+    /// and every rect — which it must anyway, the cell having just moved. Why:
+    /// [`docs/map/territory/multi-viewport.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/multi-viewport.md)
+    /// § The selector funnel.
     #[wasm_bindgen(js_name = setDevicePixelRatio)]
     pub fn set_device_pixel_ratio(&mut self, dpr: f32) -> Result<(), JsValue> {
         if !dpr_changed(self.global.dpr, dpr) {
             return Ok(());
         }
-        // A lost context can only hand back invalidated atlas textures, so re-baking now would
-        // burn the work and commit empty atlases. Drop the notification: `restore` re-reads the
-        // *live* DPR and bakes at that density anyway (#269).
+        // Dropped, not stored: `restore` re-reads the live DPR (#269). Why:
+        // `docs/map/territory/gl-context-lifecycle.md` § Every entry point that changes the geometry.
         if self.gpu_work_must_wait() {
             return Ok(());
         }
         self.rebuild_all_configs(dpr)?;
         self.global.dpr = dpr;
-        // **The drawing buffer is deliberately left alone** (#773). Until S5 this re-derived it from
-        // the implicit grid's `cols`/`rows` — a density-independent quantity that stayed meaningful
-        // across the change. A surface has no such quantity: it is the consumer's device-px
-        // measurement, and re-deriving it would mean converting through our copy of the density,
-        // which is stale in exactly this window. So the buffer holds and the consumer re-issues it,
-        // as it re-issues every viewport rect — which it must anyway, the cell having just moved.
         Ok(())
     }
 
     /// Re-bake **every** live configuration at `dpr`, each keeping its own glyph slots (#772).
     ///
     /// Atomic across the whole registry: every replacement is built before any is committed, so a
-    /// failure part-way leaves every entry exactly as it was and the caller retries. That matters
-    /// more here than it did with one entry — a half-applied density would leave two grids drawing
-    /// through atlases baked at different densities with one shared `dpr` describing both.
+    /// failure part-way leaves every entry exactly as it was and the caller retries. Why:
+    /// `docs/map/territory/multi-viewport.md` § The selector funnel.
     ///
     /// Does **not** advance `self.global.dpr`; the caller commits that once this returns.
     fn rebuild_all_configs(&mut self, dpr: f32) -> Result<(), JsValue> {
@@ -211,27 +198,16 @@ impl JustermRenderer {
     }
 
     /// Write one grid's font/metric selectors through `edit` and move that grid onto the
-    /// configuration they now name (#772, per-grid since #773).
+    /// configuration they now name (#772, per-grid since #773) — the single site all seven selector
+    /// setters go through. It does not touch the drawing buffer.
     ///
-    /// It does **not** touch the drawing buffer, which it did until #773: the buffer is the
-    /// surface's, and a surface drawing N grids belongs to none of them. The consumer re-fits after
-    /// any selector that moves the cell — every one but the two weights and the subpixel setting,
-    /// which do not.
+    /// - **Atomic.** On failure the selectors are put back, so the grid and the entry it names
+    ///   still agree and the consumer can retry.
+    /// - **Deferred while the context is dead.** The selectors still advance and
+    ///   [`restore`](Self::restore) re-selects from them; the cell does not move until then.
+    /// - **It never edits the entry it is leaving** — `select_config` moves the grid.
     ///
-    /// The single site every one of the seven setters goes through, so none of them can decide any of
-    /// this differently. Three properties it owes, and each one is a bug that has been paid for
-    /// here before:
-    ///
-    /// - **Atomic.** A rasterise can fail (it draws through the browser's 2D engine), and a
-    ///   half-applied change is worse than a rejected one. On failure the selectors are put back, so
-    ///   the grid and the entry it names still agree and the consumer can retry (#338/#359).
-    /// - **Deferred while the context is dead.** An atlas built on a lost context comes back
-    ///   invalidated. The selectors still advance — they are CPU state and outlive the loss — and
-    ///   [`restore`](Self::restore) re-selects from them, which is where a mid-loss `setFontSize`
-    ///   has always landed (#269/#406). What changed at #772 is that the *cell* no longer moves
-    ///   ahead of the atlas either: the cell belongs to a configuration, and no configuration moved.
-    /// - **It never edits the entry it is leaving.** That is the immutability rule the middle tier
-    ///   is built on (ghostty `src/font/SharedGrid.zig:13-18`); `select_config` carries it out.
+    /// Why each: `docs/map/territory/multi-viewport.md` § The selector funnel.
     fn adopt_selectors(
         &mut self,
         at: usize,
@@ -276,12 +252,10 @@ impl JustermRenderer {
     /// a smaller-than-`1.0` one is clamped (a zero/negative size would rasterise a degenerate
     /// atlas). A no-op if unchanged.
     ///
-    /// **It moves that grid only**, which is what [ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)'s D1 means by a selector being per-grid,
-    /// and what makes two terminals in two fonts drawable side by side. A sibling on the
-    /// configuration this grid is leaving keeps it, untouched — the entry is never edited to follow
-    /// a grid out of it (ghostty `src/font/SharedGrid.zig:13-18`).
+    /// **It moves that grid only**: a sibling on the configuration this grid is leaving keeps it,
+    /// untouched, so two terminals in two fonts draw side by side.
     ///
-    /// The cell size changes, so `cssCellWidth`/`css_cell_height` move and
+    /// The cell size changes, so `cssCellWidth`/`cssCellHeight` move and
     /// **the consumer must re-fit**: re-divide its box, `resizeGrid`, and
     /// re-place the grid — nothing here resizes the surface for it, because a surface drawing N
     /// grids belongs to none of them. Takes effect on the next `render`.
@@ -305,7 +279,7 @@ impl JustermRenderer {
     /// before calling is the consumer's job (an unloaded family silently falls back). A no-op if
     /// unchanged, and like a size change it moves **this grid only**.
     ///
-    /// The cell size may change, so `cssCellWidth`/`css_cell_height` can move
+    /// The cell size may change, so `cssCellWidth`/`cssCellHeight` can move
     /// and **the consumer must re-fit**, exactly as after a size change. Takes effect on the
     /// next `render`.
     #[wasm_bindgen(js_name = setFontFamily)]
@@ -337,8 +311,8 @@ impl JustermRenderer {
     }
 
     /// Set the weight **one grid's** bold (SGR 1) text is drawn at. Takes the same values as
-    /// `setFontWeight`, and ignores anything else. Like it, this re-bakes
-    /// the atlas without moving the cell.
+    /// `setFontWeight`, and ignores anything else. Like it, this joins the configuration keyed by the
+    /// new weight, moves this grid only, and does not move the cell.
     #[wasm_bindgen(js_name = setFontWeightBold)]
     pub fn set_font_weight_bold(&mut self, grid: u32, weight: JsValue) -> Result<(), JsValue> {
         let at = self.slot(grid)?;
@@ -370,16 +344,12 @@ impl JustermRenderer {
         self.adopt_selectors(at, |g| g.subpixel = on)
     }
 
-    /// Adopt a spacing policy on one grid (#338/#359), or leave every field as it was.
+    /// Adopt a spacing policy on one grid (#338/#359), or leave every field as it was — a spacing
+    /// change is a different configuration. [`adopt_selectors`](Self::adopt_selectors) owns the
+    /// atomicity and the lost-context deferral; this only decides which fields move.
     ///
-    /// The atlas slot is the padded CELL, so a spacing change is a different *configuration* rather
-    /// than an edit to the current one — which is why `setLetterSpacing`/`setLineHeight` cost an
-    /// atlas bake rather than a uniform, and why two grids can now hold two spacings at once.
-    /// [`adopt_selectors`](Self::adopt_selectors) owns the atomicity and the lost-context deferral;
-    /// this only decides which fields move.
-    ///
-    /// The error is dropped rather than returned because both public setters return `()`; a failed
-    /// bake leaves the policy unchanged, so the next call retries (self-healing).
+    /// The error is dropped: both public setters return `()`, and a failed bake leaves the policy
+    /// unchanged, so the next call retries.
     fn adopt_spacing(&mut self, at: usize, letter_spacing: f32, line_height: f32) {
         let _ = self.adopt_selectors(at, |g| {
             g.letter_spacing = letter_spacing;
@@ -390,10 +360,7 @@ impl JustermRenderer {
     /// Extra space between columns, in **CSS pixels** — the consumer's policy ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)), applied
     /// as `round(letter_spacing * dpr)` device px on the cell. May be negative, which
     /// narrows the cell and crops the glyph rather than stretching it; the cell never reaches zero.
-    ///
-    /// Both references take this in device px (xterm `WebglRenderer.ts:671`, alacritty
-    /// `config/font.rs:20`), so the same setting is a different gap on a Retina display. Ours is
-    /// the unit `FONT_SIZE` already speaks.
+    /// Why CSS pixels: [ADR-0023](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0023-spacing-settings-are-css-pixels.md).
     #[wasm_bindgen(js_name = setLetterSpacing)]
     pub fn set_letter_spacing(&mut self, grid: u32, css_px: f32) -> Result<(), JsValue> {
         let at = self.slot(grid)?;
@@ -403,10 +370,10 @@ impl JustermRenderer {
     }
 
     /// A multiplier on the glyph height, `>= 1` — the consumer's policy. Clamped rather than
-    /// rejected: xterm throws from its option setter (`OptionsService.ts:182`), and a renderer that
-    /// panics across the wasm boundary is a worse contract than one that reports what it adopted.
-    /// Read the result back with `cell_height` — it may be smaller than asked,
-    /// because a cell the atlas texture cannot hold is shrunk to one it can.
+    /// rejected; a non-finite value is `1`. Read the result back with `cell_height` — it may be
+    /// smaller than asked, because a cell the atlas texture cannot hold is shrunk to one it can.
+    /// Why: [`docs/map/territory/cell-geometry.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/cell-geometry.md)
+    /// § A spacing change is a new configuration.
     #[wasm_bindgen(js_name = setLineHeight)]
     pub fn set_line_height(&mut self, grid: u32, multiplier: f32) -> Result<(), JsValue> {
         let at = self.slot(grid)?;

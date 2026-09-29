@@ -693,7 +693,7 @@ and the **consumer** re-derives the grid — were recorded in no artifact before
 | A `letterSpacing` / `lineHeight` option change re-lays out **at the current grid** — the handler is `clear(); handleResize(bufferService.cols, bufferService.rows); _fullRefresh()`, reading the grid from the buffer service rather than re-deriving it from the pixel box | xterm.js | `browser/services/RenderService.ts:100-112` |
 | ⚠ **And the pixel-box half stays manual**: `FitAddon` registers **no listeners at all** — no `ResizeObserver`, no window handler. `fit()` is something the consumer calls. So xterm splits this exactly where justerm does | xterm.js | `addons/addon-fit/src/FitAddon.ts` (grep for `addEventListener|onResize|register(` returns nothing) |
 | alacritty **does** auto-re-fit: a font/offset change recomputes the cell, rebuilds `SizeInfo` from the same window box, and resizes the PTY + terminal when the column/line count moved | alacritty | `display/mod.rs:420` (`compute_cell_size`), `:714-722` (the PTY + terminal resize) |
-| xterm **throws** for `lineHeight < 1` where justerm clamps — already recorded at `webgl/font.rs` `set_line_height`, repeated here because it is the same call site | xterm.js | `common/services/OptionsService.ts:182-186` |
+| xterm **throws** for `lineHeight < 1` where justerm clamps — recorded in [cell geometry](../map/territory/cell-geometry.md) § A spacing change is a new configuration, repeated here because it is the same call site | xterm.js | `common/services/OptionsService.ts:182-186` |
 
 **Direction — not a drift, and the two references are not in conflict.** justerm's renderer already
 performs xterm's half automatically: `adopt_spacing` ends with `self.resize(cols, rows)` at the stored
