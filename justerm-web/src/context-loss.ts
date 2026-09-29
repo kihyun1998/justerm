@@ -3,8 +3,8 @@
  *
  * `justerm-renderer` notifies a **single** JS function when a lost WebGL context has not come back
  * within the restore deadline (`setOnContextLoss`, #327). This object is that function. The
- * consumer's own handler is swapped behind it, and the channel is closed for good when the widget
- * ends.
+ * consumer's own handler is swapped behind it, and the channel is closed for good when the surface
+ * that owns it ends.
  *
  * Deliberately a relay rather than the consumer's function handed straight to the renderer: the
  * renderer's `setOnContextLoss` has no unset, and `dispose()` cannot reach the slot the renderer

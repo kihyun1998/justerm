@@ -87,9 +87,9 @@ obligation. The rest depend on a consumer remembering, and the measurement below
   rather than closing it), and a
   re-mounted renderer would have lost its `prefers-reduced-motion` listener permanently — its only
   registration is in a private constructor.
-- **It stops work, not memory.** The renderer's wasm instance, GL context, glyph atlas and the
-  canvas context-loss listeners its Rust side owns all survive `dispose()`; they belong to the
-  binding's `free()`, which is unsafe while the consumer still holds the object.
+- **It stops work and releases its grid** (since #770 added `removeGrid`). The renderer's wasm
+  instance, GL context and the canvas context-loss listeners its Rust side owns survive `dispose()`;
+  they belong to the binding's `free()`, which is unsafe while the consumer still holds the object.
 
 Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
 
@@ -145,6 +145,8 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
     made them serial — pure startup latency. The adapter is not exercised by vitest (it needs a GL
     context and the wasm); its pure wire logic is unit-tested and the whole path is proven by the
     demo's headless e2e and the renderer's own GL proofs.
+  - *The first frame packs once*: `setOverlay`'s re-pack is a no-op until the first `apply_damage`,
+    and the frame's overlay, decorations and cursor are set before its damage.
   - *The grid is named at birth* (#773, #928, #961): the seven selectors go into `addGrid`, one bake,
     where pushing them by setter afterwards baked up to eight, each of the first seven freed by the
     next. The values are the ones the setters used, defaults included, so the initial fit is still
@@ -175,6 +177,64 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
     cell, while the origin is the host's measurement. The host re-supplies the origin whenever the box
     moves because WebGL binds one context to one canvas — a terminal is a transparent overlay over its
     viewport, and nothing inside the GL layer can observe the overlay drifting from it.
+- **The blink loop and the present** (`JustermRenderer.render`, `blinkTick`, `trackBlinkCells`,
+  `setFocused`, `dispose`).
+  - *`render()` presents the whole canvas*, since it takes no grid, so how it presents follows from
+    whether the terminal is alone. A sole tenant presents synchronously, exactly as before #775: one
+    terminal is one present per frame either way, coalescing would only add a frame of latency, and
+    the whole e2e suite drives a frame and reads pixels in the same turn, so deferring would silently
+    change what many unrelated assertions mean. A terminal sharing a surface requests a present on the
+    surface's loop, coalesced with its siblings' — N synchronous presents would redraw the canvas N
+    times a frame. The two agree at N=1, which makes this a derivation rather than a mode switch;
+    `Terminal` calls `render` on every decoded frame and cannot choose, so without it a shared widget
+    could not reach the loop the surface exists to run.
+  - *The SGR 5 phase re-pack is gated on the grid possibly holding a `BLINK` cell* — xterm.js's
+    `needsBlinkInViewport` (`TextBlinkStateManager.ts:67`) adapted to frame mode. xterm.js answers
+    exactly by scanning the viewport it owns; a frame-mode consumer holds damage, not the grid, so the
+    gate is **conservative**: a false positive costs one redundant re-pack, a false negative would
+    freeze blinking text. A Full frame replaces the answer, a Partial one can only add to it, and the
+    answer decays only at the next Full frame. The Full case's exactness rests on core emitting full
+    damage as every row at full width (`justerm-core/src/term.rs`, `TermDamage::Full`), which
+    `FrameKind::Full` states as its contract (*"Every row is present"*, `serialize.rs`) — if a Full frame
+    became a subset, this gate would produce the one error it must not. Without the gate an opted-in
+    consumer pays a full re-pack per half-period on every terminal; measured (demo, 600 ms interval,
+    3.0 s, presenting rAF turns, identical conditions): 16 with three blinking cells on screen, 11 with
+    none — a delta of 5, exactly the 5 phase flips in the window, each proportional to `cols x rows`.
+  - *A hidden terminal's tick does nothing* (#801). Both halves of a tick end in `backend.render()`,
+    which presents the whole canvas, so on a shared surface a hidden pane's blink redrew its siblings
+    twice a second for pixels not on screen. The re-pack was already gated in the renderer's draw
+    loop, which is why this was invisible — what was wasted was the present, and no counter at this
+    layer reports presents. The cursor half looked self-gated (`CursorBlink.isVisible` is solid when
+    blurred, and `display: none` blurs the textarea), but `TextBlink.isVisible` has no focus gate, and
+    `hide()` with no DOM change — which the README recommends for `visibility: hidden` — leaves the
+    terminal focused. rAF stops for a hidden *document*, but a terminal scrolled out of view inside a
+    visible page keeps ticking — not xterm.js's guarantee, whose `setViewportVisible` is fed by an
+    `IntersectionObserver` on the screen element; the gap covers the cursor half equally, so it is a
+    widget-level decision, left as it was. A throw in the body stops the loop with no handle left and
+    the next `startBlinkLoop` restarts it (`FrameLoop`, #696); before that the re-arm sat at the
+    bottom of the body and a throw latched the loop off permanently.
+  - *`setFocused` presents even with no caret on screen*, when the tint moved. It is the one setter
+    that changes something other than the cursor, and `issueOverlay` only retains and re-packs —
+    `redrawCursor` is what presents, which is why `setTheme` pairs the two. Guarding the present on a
+    cursor, as `setCursorBlink` and `setComposing` legitimately do, dropped the tint flip whenever the
+    application had hidden the caret, and on an idle hidden-caret terminal there may be no next
+    present at all. The mount-time call takes neither branch, since `focused` starts `false`. xterm.js
+    re-shows the caret from its own focus handler for the same reason
+    (`browser/CoreBrowserTerminal.ts:310`, `_showCursor()`).
+  - *`dispose` releases the grid* (called by `Terminal.dispose()` since #606; the doc once said
+    "nothing calls this yet", which was the defect), so every per-grid method throws after it — the
+    honest answer rather than a regression. It used to say "stops work, does not release memory", on
+    the ground that `free()` is the only release — untrue since #770 added `removeGrid`; what keeping
+    it cost, at the time, was the atlas above per closed terminal until the tab went away: a fixed
+    `tex_storage_3d(RGBA8, paddedW, paddedH * 32, 192)` allocation whose size does not depend on how
+    many glyphs were used (4.2 / 12.8 MiB), plus the rasteriser and glyph cache on the wasm heap. The
+    wasm instance, the GL context and the Rust-side canvas listeners survive until the binding's
+    `free()`. The context-loss notification is ended by the surface's own `dispose`, which only a
+    terminal that composed its surface reaches — a shared surface's channel belongs to the surface.
+    The renderer's `ContextLossHandler` would clear it only in `Drop`, at `free()`, too late; the
+    contract matched is xterm.js's, whose disposable clears its pending restore timeout
+    (`addons/addon-webgl/src/WebglRenderer.ts:161-163`). `isContextLost()` / `isRestoreOverdue()` keep
+    answering, since they read the state machine the surviving canvas listeners still feed.
 
 ## Code
 

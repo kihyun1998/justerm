@@ -67,6 +67,12 @@ a coherent full viewport.
   the scatter reads it tolerantly — omitted means every cell's underline colour is Default.
   `apply_frame` takes its dense frame the same way, and its underline column is likewise not grouped
   with the colour columns, because that would shift every existing call.
+  Whether `extra` is a zero-copy identity is decided by the **frame producer's** decoder, not by
+  `justerm-web`'s: a consumer on `justerm-wasm-decode` >= 0.12.0 hands a `Uint32Array`, one still on
+  0.11.0 hands a `Uint16Array` and pays one widening copy, correct for every value a u16 can hold. The
+  widget calls `decodeFrame` nowhere (it uses the decoder for `buildPalette`, `flags` and the
+  underline-style accessors), so its own pin decides nothing here (an earlier comment tied the copy
+  to that pin, #633).
 - **The widget's wire encoders** (`justerm-web/src/renderer-wire.ts`). Pure functions, so the wire
   assembly is unit-testable with no backend. `damageHeader` builds the eight-slot `apply_damage`
   header: a negative `scrollCount` rides its `u32` slot as two's complement and the renderer reads
