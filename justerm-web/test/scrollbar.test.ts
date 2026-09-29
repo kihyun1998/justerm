@@ -183,8 +183,9 @@ describe("dragToDisplayOffset totality (#814)", () => {
   });
 
   // Same rule as the sibling on this seam (#675): a producer owes its consumer a value the
-  // consumer's type can mean, and `wheelScrollTarget` states the reason this function inherits
-  // — it is EXPORTED, so it owes its own totality rather than trusting its one in-repo caller.
+  // consumer's type can mean, and `wheelScrollTarget` is total for the reason this function
+  // inherits — it is EXPORTED, so it owes its own totality rather than trusting its one in-repo
+  // caller (docs/map/invariant/pointer-coordinates-are-bounded-by-their-producer.md).
   it("refuses a position it cannot answer for", () => {
     expect(dragToDisplayOffset(0.5, { ...POS, scrollbackLen: NaN })).toBeUndefined();
     expect(dragToDisplayOffset(0.5, { ...POS, rows: NaN })).toBeUndefined();

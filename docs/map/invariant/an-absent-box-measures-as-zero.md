@@ -184,7 +184,7 @@ because every value involved is finite and in range. The four measured shapes:
   not this note at all but a **sibling guard one module over** — `routeWheel`'s
   `!Number.isFinite(lines)` refusal (`justerm-web/src/scroll-control.ts`, #675) already decided that a
   non-finite scroll request must not reach the consumer's `onScroll`, while
-  `TerminalOptions.onScroll`'s own doc says the scrollbar drag *"funnels to the SAME callback"*. The
+  `TerminalOptions.onScroll`'s own doc says three producers, the scrollbar drag among them, *"funnel to the SAME callback"*. The
   scrollbar was the one producer of that callback not on the guard's path — a statement that needs no
   reference in it, which is why it is the one the change rests on.
   **#913 added a third producer and the count in that sentence is no longer exhaustive**: user input
