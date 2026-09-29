@@ -1,18 +1,10 @@
 //! Thin `#[wasm_bindgen]` + WebGL2 glue — browser-only (wasm32), verified in the demo.
 //!
-//! The instanced pipeline draws the whole grid in one call: `apply_frame` resolves each
-//! cell's bg/fg references (injected palette) and its glyph slot (glyph cache, rasterising
-//! and uploading new glyphs on demand), packs one instance per cell, and `render`
-//! composites each glyph's coverage from the atlas over its background, plus SGR attrs
-//! (#267: bold/italic font variants, underline/strikethrough lines, inverse fg/bg swap; #272:
-//! bold→bright + dim + minimum-contrast + selection fg + tile-glyph colours; #393: marker decoration
-//! bg/fg overrides) and double-width glyphs (#268: a wide glyph splits across two atlas
-//! slots / two grid cells).
-//! ASCII (`0x20..=0x7E`) is pre-rasterised. Colour emoji (#284) + clusters (#285) follow.
-//!
-//! The selection / search overlay (#271, `setOverlay`) folds its highlight colour into each covered
-//! cell's packed background at pack time (blend vs solid), so it rides the same instanced draw — no
-//! overlay pass. The cursor (#270, `setCursor`) is a shader uniform composited last, over any highlight.
+//! `JustermRenderer` and its three tiers (global, per-config, per-grid), the accessors every export
+//! goes through, the constructor and the GL builders. The exports themselves live in the child
+//! modules below, one per axis. A frame's cells are resolved against the injected palette and the
+//! glyph cache, packed one instance per cell — highlights folded into the packed background — and
+//! drawn with one instanced call per grid; the cursor is a shader uniform composited last.
 
 use glow::HasContext;
 use wasm_bindgen::JsCast;
@@ -70,10 +62,7 @@ const TOTAL_LAYERS: i32 = ((WIDE_BASE + WIDE_CAPACITY * 2) / GLYPHS_PER_LAYER) a
 /// Default font size (CSS px) for the atlas rasteriser.
 const FONT_SIZE: f32 = 16.0;
 
-/// The CSS `font-family` a grid is born with (#773). A grid arrives on the configuration these
-/// defaults key, and moves off it with `setFontFamily` / `setFontSize` / the spacing setters — so a
-/// consumer whose terminals all share one non-default font pays exactly **one** bake for this
-/// configuration, and it is released the moment the last grid leaves it.
+/// The CSS `font-family` a grid is born with when `addGrid` names none (#773).
 const DEFAULT_FONT_FAMILY: &str = "monospace";
 
 /// A font weight a consumer named from JS: a number, or a weight keyword string (#928). `None` for
@@ -88,28 +77,19 @@ fn weight_from_js(v: &JsValue) -> Option<FontWeight> {
 
 /// Unit-quad corners (triangle strip): geometry + per-cell glyph texture coordinate.
 const QUAD: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
-/// Byte stride of one packed instance. **Derived** from [`INSTANCE_FLOATS`] rather than written out:
-/// the two drifting apart silently mis-addresses every attribute, and nothing in the pipeline would
-/// say so — the geometry would simply be wrong. It was a literal `9 * 4` until #513 widened the
-/// record, then #455 (the `bg_default` provenance flag) and #525 (the second line ink) widened it
-/// again — three times in one release cycle, which is the whole argument for deriving it.
-/// The per-attribute **offsets** in `build_pipeline` are still literals and are not derived; a float
-/// inserted anywhere but the end moves them, so they are edited with this constant, not after it.
+/// Byte stride of one packed instance, **derived** from [`INSTANCE_FLOATS`] rather than written
+/// out. Why: `docs/map/territory/gpu-upload.md` § The instance layout is stated once.
 const INSTANCE_STRIDE: i32 = (INSTANCE_FLOATS * 4) as i32;
 
-/// The GL program + buffers + uniform locations built once at startup (`build_pipeline`).
-/// The GPU objects one grid owns (#771). Built together because the VAO's whole content is where
-/// the instance buffer is: `vertex_attrib_pointer_f32` captures the buffer bound at the time, so a
-/// VAO is not a thing two grids can share — ADR-0021 D2 asks whether one instance can serve two
-/// grids *byte-for-byte*, and this one cannot. #768 left that open as "either a per-grid VAO or a
-/// re-pointer per grid per frame"; the re-pointer would keep the per-grid fact in the global tier
-/// and rewrite it N times a frame, which is the arrangement D2 rejects rather than a cheaper form
-/// of it.
+/// The GPU objects one grid owns (#771): its instance buffer and the VAO that points at it, built
+/// together because the VAO's whole content is which buffer feeds the draw. Why:
+/// `docs/map/territory/multi-viewport.md` § Registration.
 struct GridBuffers {
     vao: glow::VertexArray,
     instance_vbo: glow::Buffer,
 }
 
+/// The GL program, the shared quad buffer and the uniform locations, built once (`build_pipeline`).
 struct Pipeline {
     program: glow::Program,
     /// The one quad every cell instance is drawn from — static, identical for every grid, and
@@ -140,47 +120,33 @@ pub struct JustermRenderer {
     /// duplicated (ADR-0021 D2, #772). One grid selects into a configuration; it does not own one,
     /// and six terminals in one font hold one atlas between them.
     configs: ConfigRegistry<ConfigTier>,
-    /// Every terminal grid this renderer holds, and which of them are drawn (#770, ADR-0021 D1/D2).
-    /// This is the field multi-viewport (#287) multiplies; the other two tiers stay one each, which
-    /// the types above say by being singular rather than by being asserted anywhere.
-    ///
-    /// **Empty until the consumer registers one** (#773). Every per-grid export names the grid it
-    /// acts on, so there is nothing left for an implicit grid to serve — and one would be a third
-    /// terminal painting under the two a surface actually holds.
+    /// Every terminal grid this renderer holds, and which of them are drawn (#770, ADR-0021 D1/D2)
+    /// — the one tier multi-viewport (#287) multiplies. **Empty until the consumer registers one**
+    /// (#773). Why: `docs/map/territory/multi-viewport.md` § A renderer holds no terminal until the
+    /// consumer registers one.
     grids: GridRegistry<GridTier>,
     /// Count of `resolve_and_pack` runs — a diagnostic the proofs read to assert render packs once
     /// per frame, not once per setter (#421). Wraps harmlessly; only deltas are meaningful.
     pack_count: u32,
-    /// The glyphs the current pack scope may not evict (#772).
-    ///
-    /// A field rather than a threaded parameter because the thing it models is a **scope**, and a
-    /// scope with one owner is clearer as state than as an argument every layer forwards: `render`
-    /// clears it once and every grid it packs shares it, so a grid cannot evict a slot a sibling
-    /// committed to in the same frame; `apply_frame` clears it for its own immediate pack, which is
-    /// the only scope that pack actually has.
+    /// The glyphs the current pack scope may not evict (#772): `render` clears it once for every
+    /// grid it packs, `apply_frame` for its own immediate pack. A field because it models a scope
+    /// with one owner (`docs/map/territory/multi-viewport.md` § The draw loop).
     pins: FramePins,
     /// Count of atlas bakes — every construction of a `ConfigTier`, plus every in-place rebuild of
-    /// one (a DPR change, a context restore). The diagnostic that makes *sharing* observable rather
-    /// than inferred (#772): a grid joining an existing configuration must move this by zero.
-    ///
-    /// ADR-0021 D5 leaves where such counters live to whoever adds the second one; this is that
-    /// one, and it lands beside `pack_count` because the question is the same shape — a proof
-    /// reading a **delta** across an operation, not a rendering control. Wraps harmlessly.
+    /// one (a DPR change, a context restore). Read as a delta, like `pack_count`: a grid joining an
+    /// existing configuration moves it by zero (#772). Wraps harmlessly. Why:
+    /// `docs/map/territory/multi-viewport.md` § The counters.
     bake_count: u32,
 }
 
-/// The **global** tier — one per WebGL2 context (ADR-0021 D2: invalidated only by context loss).
-///
-/// Multi-viewport (#287) keeps exactly one of these however many grids the context draws, which is
-/// the whole point of the design: the context, the compiled program and the vertex layout are what N
-/// terminals stop paying for N times.
+/// The **global** tier — one per WebGL2 context (ADR-0021 D2: invalidated only by context loss),
+/// however many grids the context draws.
 struct GlobalTier {
     gl: glow::Context,
     /// The bound canvas — kept so `resize_surface` can size its drawing buffer (device px).
     canvas: HtmlCanvasElement,
-    /// devicePixelRatio the atlas + drawing buffer are currently sized for (#265). The atlas is
-    /// rasterised at `font_size * dpr` (device px) so HiDPI stays sharp; a DPR change — or a
-    /// `set_font_size` (#406) / `set_font_family` (#413) — re-bakes it.
+    /// devicePixelRatio every configuration's atlas is currently baked for (#265): the atlas is
+    /// rasterised at `font_size * dpr` (device px) so HiDPI stays sharp.
     dpr: f32,
     program: glow::Program,
     /// The shared per-vertex quad. Global, unlike the VAO that points at it: two grids share these
@@ -192,10 +158,8 @@ struct GlobalTier {
     u_char_offset: glow::UniformLocation,
     u_line_thickness: glow::UniformLocation,
     u_dots_per_cell: glow::UniformLocation,
-    /// The guard band's fraction of a padded atlas cell. Held here — rather than being set once
-    /// per program as it was until #772 — because the padded cell is a **per-config** dimension:
-    /// two grids in different fonts sample atlases with different guard fractions, so this became
-    /// a per-draw uniform the moment a second configuration was reachable.
+    /// The guard band's fraction of a padded atlas cell — a per-draw uniform, since the padded cell
+    /// is per configuration (`docs/map/territory/multi-viewport.md` § The draw loop).
     u_cell_uv: glow::UniformLocation,
     u_bg_alpha: glow::UniformLocation,
     u_bleed_px: glow::UniformLocation,
@@ -217,25 +181,17 @@ struct GlobalTier {
     size: (i32, i32),
     /// The drawing buffer the consumer last **asked** for, in device px — as given, unconverted
     /// (#773). `size` above is what the browser granted; this is what to re-ask for when the buffer
-    /// has to be rebuilt (a restore) and nobody is going to re-ask.
-    ///
-    /// **Stored verbatim, and that is the whole point.** Until S5 this role was played by the
-    /// implicit default grid's `grid_size` — the buffer was `cols * cell`, a density-*independent*
-    /// quantity — which stops being derivable the moment two grids in two cells share one canvas.
-    /// The obvious replacement, a CSS box, is not one: converting device px to CSS px needs a
-    /// density, the only density available here is *our copy* of the consumer's, and that copy lags
-    /// by construction — `set_device_pixel_ratio` drops the notification outright while the context
-    /// is lost. A box stored through a lagging basis comes back wrong by the ratio between the two
-    /// densities, which is exactly what the old cell-count storage could not do. The fact belongs to
-    /// the site it is first true at (ADR-0032, "a shared fact is owned by its producer"), and
-    /// that site is the consumer's measurement — so it is kept as measured.
+    /// has to be rebuilt (a restore) and nobody is going to re-ask. Why verbatim:
+    /// `docs/map/territory/cell-geometry.md` § The surface's size is the consumer's device-px
+    /// request.
     requested: (i32, i32),
     /// Canvas context-loss listeners + the shared lost/pending-rebuild state (#269). `render`
     /// consults it every frame: skip while lost, rebuild once restored, otherwise draw.
     ctx_loss: ContextLossHandler,
 }
 
-/// The **per-config** tier — one per font configuration (family, size, spacing, DPR).
+/// The **per-config** tier — one per font configuration (the seven selectors a `ConfigKey` holds;
+/// not the DPR, which every entry shares).
 ///
 /// ADR-0021 D2: two grids with equal selectors are served by **one instance**, and rebuilding this
 /// is expensive enough to repay keying it. #772 made that real: the facade holds a refcounted
@@ -309,23 +265,19 @@ impl ConfigTier {
 ///
 /// Everything a consumer can set differently per terminal is a **selector** and lands here, including
 /// the seven font/metric fields: they are per-grid *as settings*, while the machinery they key
-/// (`ConfigTier`) is not. `instance_vbo` is here rather than global because `uploaded` mirrors it —
-/// one shared buffer with N per-grid baselines would let one grid's upload silently invalidate
-/// another's — and `vao` followed it in #771, because a VAO records which buffer feeds the draw.
-///
-/// Multi-viewport (#287) multiplies **this struct and nothing else**, so a method that touches only
-/// this tier is written as an inherent method here rather than on the facade. That is the split's
-/// load-bearing half: moving a field out of this struct breaks those methods at compile time.
+/// (`ConfigTier`) is not. `instance_vbo` and `vao` are per-grid too. A method that touches only this
+/// tier is an inherent method here rather than on the facade. Why each:
+/// `docs/map/territory/multi-viewport.md` § Resources sort into three tiers.
 struct GridTier {
     /// The configuration this grid draws through — the atlas, rasteriser, glyph cache and cell it
     /// selects into (#772). A **handle, not a copy**: the seven selector fields below say what this
-    /// grid asked for, and this says which shared entry serves it. The two are kept in step by
-    /// `select_config`, the only writer of either.
+    /// grid asked for, and this says which shared entry serves it. `adopt_selectors` writes the
+    /// selectors and `select_config` moves this handle to match — on a lost context the handle
+    /// follows at the restore.
     config: ConfigId,
     instance_vbo: glow::Buffer,
-    /// The VAO that points at this grid's `instance_vbo`. Per-grid for the same reason the buffer
-    /// is: an attribute pointer captures the buffer bound when it was set, so a VAO's content *is*
-    /// which grid's cells feed the draw (#771 resolves the corollary #768 recorded).
+    /// The VAO that points at this grid's `instance_vbo` — per-grid for the same reason the buffer
+    /// is (#771).
     vao: glow::VertexArray,
     /// The cursor this frame, or `None` for hidden / blinked off (#270). Blink timing is the
     /// consumer's policy, as `blink_on` is (#282) — the renderer only draws what it is handed.
@@ -350,19 +302,17 @@ struct GridTier {
     /// renderer's, the fraction is the consumer's. Default `0.15` (alacritty's `cursor.thickness`),
     /// clamped to `[0, 1]`; a **block** ignores it (it recolours its cell, drawing no stroke).
     cursor_thickness_frac: f32,
-    /// Consumer-injected policy (ADR-0017), in **CSS px** — see `metrics::device_cell` for why the
-    /// references' device-px choice is not ours (#338).
+    /// Consumer-injected policy (ADR-0017), in **CSS px** — ADR-0023 for why not device px (#338).
     letter_spacing: f32,
     /// Consumer-injected policy: a multiplier on the glyph height. Clamped to `>= 1` (#338).
     line_height: f32,
     /// Consumer-injected font size in **CSS px** (#406); the atlas rasterises at `font_size * dpr`.
-    /// Default [`FONT_SIZE`]. Changed by `set_font_size`, which re-bakes the atlas (same seam as a
-    /// DPR change), so a restored context bakes at the consumer's size, not the hardcoded default.
+    /// Default [`FONT_SIZE`]. Changed by `set_font_size`, which joins the configuration it names, so
+    /// a restored context bakes at the consumer's size, not the hardcoded default.
     font_size: f32,
-    /// Consumer-injected CSS `font-family` (#413); default `"monospace"`. Changed by `set_font_family`,
-    /// which re-bakes the atlas — same seam as a size change — so a restored context bakes the
-    /// consumer's family. The browser's text engine resolves it (with fallback); the renderer stays
-    /// font-agnostic.
+    /// Consumer-injected CSS `font-family` (#413); default `"monospace"`. Changed by
+    /// `set_font_family`, which joins a configuration as a size change does. The browser's text
+    /// engine resolves it (with fallback); the renderer stays font-agnostic.
     font_family: String,
     /// Consumer-injected weights for regular and bold text (#928); default CSS `normal` / `bold`.
     /// Changed by `set_font_weight` / `set_font_weight_bold`, which join a configuration as a family
@@ -374,12 +324,8 @@ struct GridTier {
     subpixel: bool,
     palette: Palette,
     /// The `cols`×`rows` grid last passed to `resizeGrid` — what this grid
-    /// reports and what the frames fed to it are expected to carry.
-    ///
-    /// **Nothing derives the drawing buffer from it any more** (#773). While one grid owned the
-    /// canvas the buffer was `cols * cell`, so a DPR change could re-derive it from here; a surface
-    /// drawing N grids in M cell sizes has no such multiple to be, so the buffer is asked for
-    /// directly and kept as asked (`GlobalTier::requested`).
+    /// reports and what the frames fed to it are expected to carry. Nothing derives the drawing
+    /// buffer from it (#773; that is `GlobalTier::requested`).
     grid_size: (u32, u32),
     instances: Vec<f32>,
     instance_count: i32,
@@ -390,7 +336,6 @@ struct GridTier {
     /// buffer persists. WebGL **context loss** destroys the buffer, so [`restore`](JustermRenderer::restore)
     /// calls [`invalidate_baseline`](crate::upload::invalidate_baseline) on it — otherwise the next identical frame diffs to zero
     /// ranges and never refills the fresh (empty) buffer → a blank render that won't self-heal.
-    /// (Surfaced by the #263 adversarial 2-lens pass; implemented in #269.)
     uploaded: Vec<f32>,
     /// Persistent dense grid for the decoder→renderer frame adapter (#277): a Partial frame's
     /// span-ordered damage scatters into this before packing. `None` until the first
@@ -411,10 +356,9 @@ struct GridTier {
     /// [`set_link_hover`](JustermRenderer::set_link_hover). Empty = no link hovered.
     link_hover_spans: Vec<u32>,
     /// The in-progress IME composition and the cell it is anchored to (#249, ADR-0028). Empty = no
-    /// composition. Unlike every other retained state here this describes something the **engine
-    /// never sees** — the preedit reaches no frame and no wire — so it can only arrive from the
-    /// consumer's browser events, and it is a *pass* over the composed cells rather than a layer in
-    /// the stack (ADR-0019's amendment).
+    /// composition. The engine never sees it — it reaches no frame and no wire — so it arrives only
+    /// from the consumer's browser events, and it is a *pass* over the composed cells rather than a
+    /// layer in the stack (ADR-0019's amendment).
     preedit_run: Vec<PreeditCodepoint>,
     preedit_col: u32,
     preedit_row: u32,
@@ -444,19 +388,11 @@ struct GridTier {
     /// The last blink phase packed, so a `setOverlay` re-pack (no new frame)
     /// keeps the cursor/blink cells in the phase the render loop last drove.
     last_blink_on: bool,
-    /// The eviction count of this grid's configuration at its last successful pack (#772).
-    ///
-    /// Sharing a glyph cache means another grid's pack can **repoint** a slot this grid's instances
-    /// still address, and the upload diff — the defence against a slot changing under an undamaged
-    /// cell — cannot see it, because the instance floats did not change. `render`
-    /// compares this against the configuration's live count and re-packs the difference away.
-    ///
-    /// **It converges wherever the drawn grids' *live* glyph sets fit a region together**, which is
-    /// the regime that matters: an eviction only happens once a region has been filled, and the
-    /// re-pack marks this grid's glyphs most-recently-used, so the next eviction takes one of the
-    /// dead slots instead. Where the live sets do **not** fit together, nothing can be right —
-    /// ADR-0021 leaves that open, and the single-grid form of the same impossibility is refused
-    /// outright rather than drawn (`ResolveError::FrameExceedsCapacity`).
+    /// The eviction count of this grid's configuration at its last successful pack (#772). `render`
+    /// compares it against the configuration's live count and re-packs the difference away — a
+    /// sibling's pack can repoint a slot this grid's instances still address, where the upload diff
+    /// cannot see it. Why it converges, and where it cannot: `docs/map/territory/multi-viewport.md`
+    /// § The middle tier's hazard went LIVE.
     packed_at_evictions: u32,
     /// Set by every state mutation that changes the packed instance buffer (overlay, decorations,
     /// colour policy, palette, `apply_damage`); cleared by the re-pack in `render`.
@@ -506,12 +442,8 @@ fn upload_glyph(
 #[wasm_bindgen]
 impl JustermRenderer {
     /// The registry slot a consumer's grid handle addresses, or the error the wasm boundary throws
-    /// (#773).
-    ///
-    /// **Every per-grid export starts here**, which is the whole of what S5 changed at this layer:
-    /// the state was already per-grid (#769) and the draw loop already walked all of it (#771);
-    /// what was missing was the consumer being able to say *which*. An unknown or removed id is a
-    /// caller error arriving from JS, so it throws rather than silently addressing something.
+    /// (#773). **Every per-grid export starts here.** An unknown or removed id is a caller error
+    /// arriving from JS, so it throws rather than silently addressing something.
     fn slot(&self, grid: u32) -> Result<usize, JsValue> {
         self.grids
             .index_of(GridId::from_raw(grid))
@@ -564,59 +496,29 @@ impl JustermRenderer {
             .ok_or_else(|| JsValue::from_str("justerm-renderer: no webgl2 context"))?
             .dyn_into()?;
 
-        // `getContext` succeeding is NOT a liveness property (#688): on a canvas whose context is
-        // already lost it hands back the SAME lost object. Everything below then runs on a dead
-        // context, and the very first thing that does is glow's own constructor — which enumerates
-        // the extensions (`get_supported_extensions().unwrap()`, glow `web_sys.rs:237-239`) and
-        // PANICS on the `null` a lost context answers with, before any code here is reached. A
-        // panic crosses into JS as a `RuntimeError`, not as this crate's `Err`, so a consumer's
-        // `catch` gets something no other failure here produces.
-        //
-        // One check covers the whole constructor, and NOT because a context cannot die inside it —
-        // it can; what cannot arrive inside it is the *report*, since `webglcontextlost` dispatches
-        // at a task boundary and everything from here to the final `apply_surface_size` is
-        // synchronous. The
-        // guard is sufficient for a different reason, and this is the load-bearing half: every
-        // remaining glow call on this path fails **cleanly**. `create_*` return `Result`,
-        // `get_uniform_location` an `Option`, the status getters `.as_bool().unwrap_or(false)` —
-        // so a context dying mid-construction yields this crate's bare-string `Err`, never the
-        // `RuntimeError` a panic produces. The check above exists to cover the one call that does
-        // NOT have that shape.
-        //
-        // It asks the CONTEXT, not this crate's own state machine. The machine's flag is fresh
-        // here and therefore always `false` — spine #689's proxy ①, and not a weaker predicate but
-        // a constant. Measured as a mutation on `demo/context-loss-construct.html`, whose
-        // pre-dispatch section is exactly where the two answers differ.
+        // `getContext` hands back an already-lost context unchanged, and glow's constructor below
+        // panics on it (#688). One check, asking the context itself, covers the whole constructor.
+        // Why: `docs/map/territory/gl-context-lifecycle.md` § Construction is the one entry point
+        // that refuses.
         if webgl2.is_context_lost() {
             return Err(JsValue::from_str(
                 "justerm-renderer: webgl2 context is lost",
             ));
         }
 
-        // Attached before any GL work, including glow's constructor below — but read what that
-        // does and does not buy (#688). It cannot *catch* a loss during construction: listeners
-        // fire at a task boundary and there is none between here and the end of this function, so
-        // this site and the old one (seven lines below, under the first GL call) observe exactly
-        // the same set of events — none. What it buys is that the promise this comment makes is
-        // now true, and that the handler is in place before the first thing that could need it.
-        // The original wording claimed the stronger property; a reader deriving from it would
-        // conclude a mid-construction loss is reported, and it is not (#269).
+        // Attached before any GL work; it cannot report a loss during construction (#688).
         let ctx_loss = ContextLossHandler::new(&canvas)?;
 
         let raw_gl = webgl2.clone();
         let gl = glow::Context::from_webgl2_context(webgl2);
         // Read once: the atlas is sized from the cell (#359), and the cell is the consumer's to grow.
-        // `.max(1)` defends glow's fallback, not the driver: `get_parameter_i32` answers `0` for a
-        // `null` rather than failing (glow `web_sys.rs:3590`), so the clamp is about the binding's
-        // shape, not about a limit any live implementation would report (#688 — and the guard above
-        // is what keeps a `null` from reaching here in the first place).
+        // `.max(1)` defends glow's `0` for a `null` answer, not the driver (#688).
         let max_texture_size =
             unsafe { gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE).max(1) as u32 };
         let size = (canvas.width() as i32, canvas.height() as i32);
 
-        // devicePixelRatio: rasterise the atlas at device px (FONT_SIZE * dpr) so HiDPI is sharp,
-        // and size the drawing buffer in device px. The consumer speaks CSS px (#252); the renderer
-        // owns the DPR (beamterm `device_pixel_ratio`). Fallback 1.0 off the main thread / in tests.
+        // devicePixelRatio: the atlas rasterises at device px (FONT_SIZE * dpr) so HiDPI is sharp;
+        // the consumer speaks CSS px (#252). Fallback 1.0 off the main thread / in tests.
         let dpr = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio() as f32);
 
         let Pipeline {
@@ -669,10 +571,8 @@ impl JustermRenderer {
                 requested: size,
                 ctx_loss,
             },
-            // Both registries start **empty** (#773): a renderer holds no terminal until the
-            // consumer registers one, and therefore no font configuration either — there would be
-            // nothing to key an atlas by, and baking one against the chance that a grid arrives is
-            // a bake charged to nobody.
+            // Both registries start **empty** (#773): no terminal until the consumer registers one,
+            // and so no font configuration to key an atlas by.
             configs: ConfigRegistry::new(),
             grids: GridRegistry::new(),
             pack_count: 0,
@@ -737,12 +637,8 @@ impl JustermRenderer {
         }
     }
 
-    /// One grid's instance buffer and the VAO that points at it (#771).
-    ///
-    /// The attribute *layout* is the same for every grid — there is one program, so the instance
-    /// format is the union of what any terminal needs and a per-grid layout is not reachable
-    /// (#287). What differs per grid is which buffer feeds it, and that is exactly what a VAO
-    /// records.
+    /// One grid's instance buffer and the VAO that points at it (#771). The attribute *layout* is
+    /// the same for every grid — there is one program; what differs is which buffer feeds it.
     fn build_grid_buffers(
         gl: &glow::Context,
         quad_vbo: glow::Buffer,
@@ -762,9 +658,8 @@ impl JustermRenderer {
             // neighbour slots(4), neighbour inks(4)] → locations 1..9.
             let instance_vbo = gl.create_buffer().map_err(js_err)?;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_vbo));
-            // Byte offsets are derived from `frame`'s named float offsets, not written out: this
-            // table and the packer are two statements of one layout, and a literal here is how they
-            // come apart when a field is appended (#791).
+            // Byte offsets come from `frame`'s named float offsets where it names one (#791;
+            // `docs/map/territory/gpu-upload.md` § The instance layout is stated once).
             const F: i32 = 4; // bytes per float
             for (loc, size, offset) in [
                 (1u32, 2i32, 0i32),
@@ -810,9 +705,9 @@ impl JustermRenderer {
                 (cell_h * GLYPHS_PER_LAYER as u32) as i32,
                 TOTAL_LAYERS,
             );
-            // NEAREST (matching beamterm): 32 glyphs pack vertically per layer with no
-            // guard band, so LINEAR would interpolate across a band seam (adjacent glyph
-            // bleed) under mediump precision or a non-1:1 cell↔texel mapping (#265 DPR).
+            // NEAREST, matching beamterm: 32 glyphs pack vertically per layer, and LINEAR would
+            // interpolate across a band seam (adjacent-glyph bleed) under mediump precision or a
+            // non-1:1 cell↔texel mapping (#265 DPR).
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D_ARRAY,
                 glow::TEXTURE_MIN_FILTER,
@@ -905,13 +800,8 @@ impl GridTier {
     /// key is per-config) — its palette, and the grid it is sized to.
     ///
     /// The seven selectors are **unpacked from the key itself** rather than passed beside it, so the
-    /// grid's fields and the entry its handle names cannot be born disagreeing. `select_config` is
-    /// the only thing that moves either afterwards, and it moves both.
-    ///
-    /// **One constructor, and since #773 exactly one caller** (`add_grid`): the second path, which
-    /// built the implicit default grid inside `new`, is gone with the grid it built. What that
-    /// sentence used to buy — a field added to this tier cannot be initialised in one path and
-    /// forgotten in the other — is now true by there being nowhere else to forget it.
+    /// grid's fields and the entry its handle names cannot be born disagreeing. One caller,
+    /// `add_grid` (#773).
     fn new(
         buffers: GridBuffers,
         config: ConfigId,
@@ -970,10 +860,8 @@ impl GridTier {
     }
 }
 
-/// Per-grid operations (ADR-0021 D1/D2). These live here rather than on the facade because
-/// multi-viewport (#287) multiplies this struct and nothing else: a method written against
-/// `GridTier` is already the per-grid form #770 needs, and one that reached into another tier
-/// would not compile here.
+/// Per-grid operations (ADR-0021 D1/D2): inherent methods on the one tier multi-viewport
+/// (#287) multiplies, so a method that reached into another tier would not compile here.
 impl GridTier {
     fn set_bg_alpha(&mut self, alpha: f32) {
         self.bg_alpha = if alpha.is_finite() {
@@ -1014,10 +902,7 @@ impl GridTier {
     }
 }
 
-/// Per-grid operations (ADR-0021 D1/D2). These live here rather than on the facade because
-/// multi-viewport (#287) multiplies this struct and nothing else: a method written against
-/// `GridTier` is already the per-grid form #770 needs, and one that reached into another tier
-/// would not compile here.
+/// Per-grid operations, continued.
 impl GridTier {
     fn set_palette(
         &mut self,
@@ -1032,10 +917,8 @@ impl GridTier {
                     e.got
                 ))
             })?;
-        // A re-pack is all a live theme swap needs: it re-resolves every cell's colour against the new
-        // palette (the render's clear reads `self.palette.default_bg` fresh). #298 translucency used to
-        // also re-push a `u_default_bg` uniform here; since #455 its trigger is the packer's per-cell
-        // `bg_default` provenance flag — palette-independent — so the re-pack alone carries it.
+        // A re-pack is all a live theme swap needs (`docs/map/territory/colour-policy.md` § A live
+        // palette swap is a re-pack).
         self.needs_repack = true; // defer the pack to render (#421)
         Ok(())
     }
@@ -1159,10 +1042,7 @@ impl GridTier {
     }
 }
 
-/// Per-grid operations (ADR-0021 D1/D2). These live here rather than on the facade because
-/// multi-viewport (#287) multiplies this struct and nothing else: a method written against
-/// `GridTier` is already the per-grid form #770 needs, and one that reached into another tier
-/// would not compile here.
+/// Per-grid operations, continued.
 impl GridTier {
     #[allow(clippy::too_many_arguments)]
     fn apply_damage(
@@ -1175,9 +1055,8 @@ impl GridTier {
         flags: &[u16],
         extra: &[u32],
         side_table: Vec<String>,
-        // #520: the span-ordered underline colour column (SGR 58), tagged-u32 like `fg`/`bg`.
-        // Optional + TRAILING for the same reason as `apply_frame` — a caller that predates it
-        // keeps working, and the scatter reads it tolerantly (omitted ⇒ all Default).
+        // #520: the span-ordered underline colour column (SGR 58), tagged-u32 like `fg`/`bg`;
+        // omitted ⇒ all Default.
         underline_colors: Option<Vec<u32>>,
     ) -> Result<(), JsValue> {
         if header.len() < 8 {
@@ -1207,7 +1086,7 @@ impl GridTier {
             })?,
         };
         // A malformed span directory refuses the whole frame; the grid is untouched and the
-        // renderer stays usable. Before #355 it trapped the module and poisoned every later call.
+        // renderer stays usable (#355).
         let underline_colors = underline_colors.unwrap_or_default();
         let scattered = grid.apply(&DamageFrame {
             kind,
@@ -1229,10 +1108,9 @@ impl GridTier {
                 "justerm-renderer: apply_damage refused a malformed frame: {e:?}"
             )));
         }
-        // Defer the pack to `render` (#421): the frame's overlay/decoration setters, which the
-        // consumer calls around this, would otherwise each re-pack the same grid. The scatter above
-        // is done, so store the blink phase the deferred `repack_from_grid` reads (`last_blink_on`),
-        // put the grid back, and mark dirty. A pack error now surfaces at `render`, not here.
+        // Defer the pack to `render` (#421), which re-packs once however many setters the consumer
+        // calls around this: store the blink phase the deferred `repack_from_grid` reads, put the
+        // grid back, and mark dirty. A pack error surfaces at `render`, not here.
         self.last_blink_on = blink_on;
         self.grid = Some(grid);
         self.needs_repack = true;
