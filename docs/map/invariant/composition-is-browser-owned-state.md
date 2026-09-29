@@ -98,7 +98,10 @@ composition it never saw, so nothing throws and no test on the core side can fai
   composition in its causal chain. Measured in a browser rather than traced: with the cursor moved
   four cells during the excursion, the composition's caret landed at the cell the view left rather
   than the cell the cursor holds, while the same sequence without the excursion landed correctly.
-- **Writing a grid coordinate where a viewport one is required (#921).** The engine names the cursor
+- **Writing a grid coordinate where a viewport one is required (#921).** `setPreedit`'s `row` is a
+  viewport row, not the grid row core reports the cursor at; the widget once passed the origin's
+  grid row straight through, and with the view scrolled up 2 the run was drawn on row 33 while row
+  35 was showing its cell. The engine names the cursor
   by its row in the **grid**; the renderer draws the **viewport**, and the two differ by
   `display_offset` — at offset `d` a grid row `r` is on screen only while `r < rows - d`, and it is
   shown at row `r + d`. A composition is where this surfaces, because a preedit is the one thing

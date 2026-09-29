@@ -247,6 +247,33 @@ How a version gets there is [release](release.md).
 - **The tombstone is a published surface with no code behind it.** `justerm-facade` exists so that
   `justerm = "0.5"` dependants keep compiling *while learning the name changed* — its entire purpose
   is the message, and its fourteen lines of `pub use` are the delivery mechanism.
+- **The decoder members the widget carries** (#862, `cellStyleContext`). The widget carries the
+  decoder's `underlineStyle` / `UnderlineStyle` rather than letting a consumer re-import them, and
+  the one wiring on that seam is invisible to the type system. Measured: replacing
+  `decoder.underlineStyle` with `decoder.wireVersion` typechecks clean and ships a widget that
+  answers `16` for every cell, because two TypeScript rules combine — a function taking **fewer**
+  parameters is assignable where one taking more is expected, and a **numeric enum** accepts a
+  `number`. The sibling member *is* caught (`decoder.Flags` in place of `decoder.UnderlineStyle` is a
+  type error, an enum object's type being nominal enough), so only the function slips — which is why
+  the test checks it by reference identity rather than by type. Extracting it for that test is not
+  ceremony.
+- **The widget's renderer seam is gated at `build`** (`RendererBackend`, #775). `RendererBackend`
+  extends `SurfaceBackend` rather than restating its members, and extending is what turns the split
+  into a gate: a member that drifts between the two interfaces fails to compile where
+  `TerminalSurface.open`'s `TerminalSurface<PublishedRenderer>` is passed to `JustermRenderer.build`,
+  which takes a `TerminalSurface<RendererBackend>`. Before #775 the same job was done by a
+  `const backend: RendererBackend` assignment in `create`. It is an interface rather than the
+  imported wasm type so the wiring is testable behind a fake with no GL context — the injected-seam
+  pattern the beamterm adapter used through its `Renderer` port. That gate covers the published
+  *renderer* only; the decoder is gated separately in `test/published-seam.types.ts`, which asserts
+  that the decoder's columns can feed these parameters — the pairing #627 broke.
+- **A binding added in the repo is absent until published.** `justerm-web` consumes
+  `justerm-renderer` from npm, so a binding added here is missing at runtime — and from the `.d.ts` —
+  until a `renderer-v*` tag publishes it. Declared required, it would make the widget
+  un-typecheckable against every renderer that predates it; called unguarded, it would be a
+  `TypeError` rather than a missing feature. So such a member is optional and guarded
+  (`setPreedit`, `setSuggestion`, `setLinkHover`): a renderer without `setPreedit` is preedit-blind,
+  the state every consumer was in before #249.
 
 ### The `#[non_exhaustive]` question, for structs (#844)
 
@@ -342,7 +369,8 @@ same trace.
 - `justerm-web/src/types.ts` — `DecodedFrame`, web's mirror of the published decoder's getters;
   width-agnostic by contract, so it gates a column's presence and never its width
 - `justerm-web/src/justerm-renderer.ts` — `RendererBackend`, web's mirror of the published
-  renderer, and the typed binding in `JustermRenderer.create` that gates it
+  renderer, and `JustermRenderer.build`, whose `TerminalSurface<RendererBackend>` parameter gates it
+  (#775)
 - `justerm-web/test/published-seam.types.ts` — the decoder-side gate (#646): the published
   decoder's columns must feed the published renderer's parameters, and every decoder getter must be
   mirrored. Checked by `pnpm typecheck`, not by vitest, and it names what it cannot see. §1b (#831)
