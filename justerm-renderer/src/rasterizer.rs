@@ -107,10 +107,7 @@ impl Rasterizer {
         // positioning) fits with headroom above and below the baseline.
         let buf = ((font_size * 4.0).ceil() as u32).max(64);
         let canvas = OffscreenCanvas::new(buf, buf)?;
-        let ctx = canvas
-            .get_context("2d")?
-            .ok_or_else(|| JsValue::from_str("justerm-renderer: no 2d context"))?
-            .dyn_into::<OffscreenCanvasRenderingContext2d>()?;
+        let ctx = Self::context_2d(&canvas, true)?;
 
         // Cell metrics are style-independent for monospace (bold/italic keep the advance), and are
         // measured at the `normal` weight whatever this rasteriser's weights are (#928).
@@ -206,14 +203,23 @@ impl Rasterizer {
         font: &str,
     ) -> Result<(OffscreenCanvas, OffscreenCanvasRenderingContext2d), JsValue> {
         let canvas = OffscreenCanvas::new(w, h)?;
-        let opts = js_sys::Object::new();
-        js_sys::Reflect::set(&opts, &"alpha".into(), &JsValue::FALSE)?;
-        let ctx = canvas
-            .get_context_with_context_options("2d", &opts)?
-            .ok_or_else(|| JsValue::from_str("justerm-renderer: no 2d context"))?
-            .dyn_into::<OffscreenCanvasRenderingContext2d>()?;
+        let ctx = Self::context_2d(&canvas, false)?;
         Self::apply_state(&ctx, font);
         Ok((canvas, ctx))
+    }
+
+    /// `canvas`'s 2D context: `willReadFrequently` (#1019), with an alpha channel iff `alpha`.
+    fn context_2d(
+        canvas: &OffscreenCanvas,
+        alpha: bool,
+    ) -> Result<OffscreenCanvasRenderingContext2d, JsValue> {
+        let opts = js_sys::Object::new();
+        js_sys::Reflect::set(&opts, &"alpha".into(), &JsValue::from_bool(alpha))?;
+        js_sys::Reflect::set(&opts, &"willReadFrequently".into(), &JsValue::TRUE)?;
+        Ok(canvas
+            .get_context_with_context_options("2d", &opts)?
+            .ok_or_else(|| JsValue::from_str("justerm-renderer: no 2d context"))?
+            .dyn_into::<OffscreenCanvasRenderingContext2d>()?)
     }
 
     /// The dark-ink coverage exponent for text drawn in `font` (#961): [`CALIBRATION_TEXT`] white
