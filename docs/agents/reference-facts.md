@@ -446,6 +446,7 @@ where neither reference puts contrast in its colour scheme. That is a deliberate
 | Fact | Reference | Site |
 |---|---|---|
 | Cursor thickness is a **fraction of the cell width**, defaulting to `0.15`, and lives under the `cursor` config section — not under `colors` | alacritty | `alacritty/src/config/cursor.rs:31` |
+| The stroke in device pixels is `(thickness * width).round().max(1.)` — the fraction times the cell width, rounded, floored at one pixel (row added 2026-09-29, #990) | alacritty | `alacritty/src/display/cursor.rs:25` |
 | ⚠ The cursor contrast guard is a **compile-time constant, not a setting**: `1.5`, with no config path at all. justerm's `setCursorContrast` therefore exposes configurability the reference does not have — the *number* is borrowed, the *knob* is not | alacritty | `alacritty/src/display/content.rs:22` |
 | xterm.js's cursor width is `cursorWidth`, an **option in CSS px** — a length, not a fraction, which is why #270 took alacritty's rule instead (a fixed length gives a 32px font the same hairline caret as a 12px one) | xterm.js | `src/common/services/OptionsService.ts:19` |
 | `minimumContrastRatio` is likewise an **option**, defaulting to `1` (off) — and xterm.js has no cursor-specific contrast guard of any kind | xterm.js | `src/common/services/OptionsService.ts:43` |

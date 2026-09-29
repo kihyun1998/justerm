@@ -56,6 +56,12 @@ a coherent full viewport.
   it (#621/#627): the table has one entry per combining cell of the viewport and the header admits a
   viewport far wider than `u16::MAX` cells, so the old `u16` column read index 65536 as "no cluster"
   and 65537 as the wrong one, silently.
+- **The damage entry point's arguments** (`JustermRenderer::apply_damage`). The eight array arguments
+  (the header, the span directory, five cell columns and the side table) arrive separately because
+  each is a distinct typed-array or `Vec` view at the wasm-bindgen boundary; grouping them would need an array-of-structs rewrite, which would break the zero-copy
+  struct-of-arrays transport. The underline colour column (#520, SGR 58) is optional and
+  **trailing** for the same reason as `apply_frame`'s: a caller that predates it keeps working, and
+  the scatter reads it tolerantly — omitted means every cell's underline colour is Default.
 
 ## Code
 

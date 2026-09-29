@@ -191,6 +191,17 @@ Nothing governs the encoding itself.
 - **`CellGeometry` is CSS px, and saying so is load-bearing.** The published README's example once
   built it from `renderer.cellSize()` — device px — so every click resolved to the wrong cell at
   `devicePixelRatio !== 1`; nothing type-checks a unit.
+- **The preedit run's caret column** (`setPreedit`). A composition has no representation anywhere in
+  the engine
+  ([ADR-0028](../../adr/0028-composition-surfaces-have-one-writer-each.md)): it is browser-owned and
+  reaches no frame and no wire, so the consumer is the only possible source and re-pushes it on every
+  `compositionupdate`. Skipping an update whose data is unchanged is worth doing — a real IME emits
+  one settling update per syllable where nothing moved (measured). The run shifts left at the row end
+  to stay whole rather than clipping (`preedit::range`), which is why the setter **returns** the caret
+  column instead of leaving the consumer to add: the consumer has no `wcwidth`, and after a shift the
+  answer is not `col + len`. Feeding it back to `setCursor` is ADR-0028 D5's position rule; feeding
+  it to the hidden textarea is D4's voluntary writer — and it is the value **A composition's origin
+  comes from the composition before it** (above) reads.
 
 ## Code
 

@@ -8,8 +8,7 @@ use super::JustermRenderer;
 impl JustermRenderer {
     /// Consume a decoded **damage** frame directly (the damage adapter): scatter its span-ordered
     /// cells into the persistent grid, then resolve + pack the full viewport. A Full frame wipes
-    /// the grid first, a scroll op shifts it before spans — so a Partial frame (the common case)
-    /// no longer misaligns as dense row-major. Grapheme clusters ride the `extra` column
+    /// the grid first, a scroll op shifts it before spans. Grapheme clusters ride the `extra` column
     /// + `side_table` and are resolved to text at scatter (the index is frame-local).
     ///
     /// `header` carries the frame's scalars, `[cols, rows, kind, has_scroll, scroll_top,
@@ -17,8 +16,8 @@ impl JustermRenderer {
     /// reinterpreted as `i16`; `blink_on` `0`/`1`). `spans` is the span directory
     /// (`SPAN_STRIDE` `u32`s each);
     /// `codepoints`/`fg`/`bg`/`flags`/`extra` are the span-ordered cell columns.
-    // 8 typed-array / vec columns at the wasm-bindgen boundary; each is a distinct JS view that
-    // can't be structurally grouped without an AoS rewrite that would break the zero-copy SoA.
+    // Eight array views at the wasm-bindgen boundary, one argument each
+    // (`docs/map/territory/frame-adapter.md` § The damage entry point's arguments).
     #[allow(clippy::too_many_arguments)]
     pub fn apply_damage(
         &mut self,
@@ -32,8 +31,7 @@ impl JustermRenderer {
         extra: &[u32],
         side_table: Vec<String>,
         // #520: the span-ordered underline colour column (SGR 58), tagged-u32 like `fg`/`bg`.
-        // Optional + TRAILING for the same reason as `apply_frame` — a caller that predates it
-        // keeps working, and the scatter reads it tolerantly (omitted ⇒ all Default).
+        // Optional and trailing; omitted ⇒ all Default.
         underline_colors: Option<Vec<u32>>,
     ) -> Result<(), JsValue> {
         let at = self.slot(grid)?;
@@ -54,22 +52,18 @@ impl JustermRenderer {
     /// consumer's current frame reported. `codepoints` is the preedit as the OS reports it
     /// (`compositionupdate.data`); an empty array clears it.
     ///
-    /// **This is the one piece of renderer state with no representation anywhere in the engine**
-    /// ([ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md)): a composition is browser-owned, reaches no frame and no wire, so the consumer is
-    /// the only possible source and must re-push on every `compositionupdate`. Skipping an update
-    /// whose data is unchanged is worth doing — a real IME emits one settling update per syllable
-    /// where nothing moved (measured).
+    /// **A composition reaches no frame and no wire**, so the consumer is the only source and must
+    /// re-push on every `compositionupdate` whose data changed ([ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md)).
     ///
     /// The run may extend past the anchor's row end: it shifts left to stay whole rather than
-    /// clipping (`preedit::range` — crate-private, so no link from this page). Width is per codepoint, the same
-    /// `unicode-width` answer the engine gives, so a VS16 emoji measures narrow here exactly as it
-    /// does there.
+    /// clipping. Width is per codepoint, the same `unicode-width` answer the engine gives, so a VS16
+    /// emoji measures narrow here exactly as it does there.
+    ///
     /// Returns the column the **caret and the IME anchor** belong at: one past the run's last cell,
-    /// clamped to the grid. The consumer cannot compute this — it has no `wcwidth` — and it is not
-    /// simply `col + len`, because the run shifts left at the right edge. Feeding it back to
-    /// `setCursor` is [ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md) D5's position rule (the caret rides the composition's end, while
-    /// DECTCEM still decides whether it is drawn at all), and feeding it to the hidden textarea is
-    /// D4's voluntary writer.
+    /// clamped to the grid — not `col + len`, because the run shifts left at the right edge. Feed it
+    /// to `setCursor` (the caret rides the composition's end, while DECTCEM still decides whether it
+    /// is drawn at all) and to the hidden textarea. Why: [`docs/map/territory/input-encoding.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/input-encoding.md)
+    /// § The preedit run's caret column.
     #[wasm_bindgen(js_name = setPreedit)]
     pub fn set_preedit(
         &mut self,
@@ -119,18 +113,14 @@ impl JustermRenderer {
     /// Swap the palette + default fg/bg for a **live theme change** — the renderer-side of a
     /// theme picker or a runtime scheme swap, so a consumer need not tear down and rebuild the
     /// renderer to recolour. `palette_colors` is the 256 pre-built indexed colours (as the
-    /// constructor takes); `default_fg`/`default_bg` the theme's defaults. Consumer policy
-    /// ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)): the palette *values* are the consumer's (theme-agnostic core), the *mechanism*
-    /// (re-resolve every retained cell against the new palette) is the renderer's.
+    /// constructor takes); `default_fg`/`default_bg` the theme's defaults. The palette *values* are
+    /// the consumer's; re-resolving every retained cell against them is the renderer's.
     ///
-    /// Marks the buffer dirty so the next `render` re-packs and the change
-    /// shows with no new frame — like `setOverlay` (a no-op until the first `apply_damage`; the
-    /// direct `apply_frame` path reflects the new palette on its next call). The re-pack is all that
-    /// is needed: it re-resolves every cell's colour against the new palette, and the render's clear
-    /// reads `default_bg` fresh. Translucency no longer needs a uniform re-push here:
-    /// its trigger is the packer's per-cell `bg_default` provenance flag, which is palette-independent.
-    ///
-    /// `setOverlay`: Self::set_overlay
+    /// Marks the buffer dirty so the next `render` re-packs, re-resolving every cell's colour, and
+    /// the change shows with no new frame — like `setOverlay` (a no-op until the first
+    /// `apply_damage`; the direct `apply_frame` path reflects the new palette on its next call).
+    /// Why nothing else is re-pushed: [`docs/map/territory/colour-policy.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/colour-policy.md)
+    /// § A live palette swap is a re-pack.
     #[wasm_bindgen(js_name = setPalette)]
     pub fn set_palette(
         &mut self,
@@ -161,10 +151,9 @@ impl JustermRenderer {
     /// them: the consumer must re-issue `set_overlay` with the current frame's spans whenever the
     /// viewport changes *or* the selection changes — exactly as it re-issues `set_cursor`. Stale spans
     /// do not panic (an out-of-range span simply highlights nothing), but an in-range stale span
-    /// highlights the wrong cells until the next call. Unlike beamterm, whose spans ride each decoded
-    /// frame, this renderer cannot self-refresh — the split mirrors the cursor's, and the widget wires both.
-    ///
-    /// `setCursor`: Self::set_cursor
+    /// highlights the wrong cells until the next call; the renderer never refreshes them itself.
+    /// Why: [`docs/map/territory/cell-compositing.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/cell-compositing.md)
+    /// § The highlight spans are consumer-pushed.
     #[wasm_bindgen(js_name = setOverlay)]
     pub fn set_overlay(
         &mut self,
@@ -235,16 +224,9 @@ impl JustermRenderer {
     /// uniforms of the fragment shader) and is resolved per fragment. So any cursor change —
     /// move, blink, shape — takes effect on the next `render` alone: one uniform,
     /// no re-pack and no instance upload. Blink phase is the consumer's policy, exactly as
-    /// `blink_on` is — call `clearCursor` for the off phase.
-    ///
-    /// A block *could* have been an instance: it is a colour override on the cell, not geometry,
-    /// and both references draw it that way. It is not one because [ADR-0018](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0018-justerm-renderer.md)
-    /// ([`docs/adr/0018-justerm-renderer.md`](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0018-justerm-renderer.md)) makes that **the contract, not an
-    /// optimisation** — a blink tick produces no terminal output, so a block packed into the
-    /// instances could not blink off without the consumer re-feeding the frame (an early draft
-    /// did exactly that). Two consequences follow rather than cause it: un-painting would need a
-    /// re-pack, and per-fragment resolution keeps the ordering free, since the instance colours
-    /// arrive already inverse-swapped and the glyph already concealed.
+    /// `blink_on` is — call `clearCursor` for the off phase. Why a block is not an instance:
+    /// [`docs/map/territory/caret-drawing.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/caret-drawing.md)
+    /// § Every shape lives in one uniform.
     #[wasm_bindgen(js_name = setCursor)]
     pub fn set_cursor(
         &mut self,
@@ -273,28 +255,14 @@ impl JustermRenderer {
     /// page/desktop behind the canvas, while glyph pixels stay opaque. Clamped to `[0, 1]`; takes
     /// effect on the next `render`.
     ///
-    /// **A translucent background contributes to a cell's colour in proportion to how translucent
-    /// it is** (fixed 2026-08-18). It used to contribute in full: an antialiased glyph
-    /// edge mixed toward the background colour with the coverage as its weight while the alpha
-    /// said that background was only `alpha` present, so at `0` a half-covered pixel came out half
-    /// background — a colour the caller had asked to be absent. At `1` nothing changed and nothing
-    /// changes now; the two agree exactly there, which is why this shipped unnoticed.
+    /// Only the **default** background goes translucent; a cell with its own background (an SGR
+    /// colour, an inverse, a highlight) and the block cursor stay opaque. A translucent background
+    /// contributes to a cell's colour in proportion to how translucent it is, so at `0` a glyph edge
+    /// over the default background shows no background colour.
     ///
-    /// **A non-finite value falls back to `1.0` (opaque), like every other float setter here.**
-    /// `f32::clamp` compares with `<` / `>`, both false for `NaN`, so a bare clamp *passes NaN
-    /// through* — and this was the only float setter on this type without the guard. The
-    /// consequence was not a wrong background: a `NaN` here reaches every fragment's alpha, so
-    /// glyph pixels go transparent too and the whole terminal disappears with no error anywhere.
-    /// Measured, not reasoned: booting the widget at `NaN` read `[30,30,46,0]` on a background
-    /// cell **and `[205,214,244,0]` inside a glyph**, against `[…,128]` / `[…,255]` for a valid
-    /// `0.5`. (The measurement stands; the expression it was taken against was
-    /// `mix(u_bg_alpha, 1.0, cov)`, which the coverage-weighted form replaced — the `NaN` now reaches the colour
-    /// through the same uniform as well, so the failure is if anything less subtle.)
-    ///
-    /// Reachable from type-correct consumer code, which is why the guard is here and not at the
-    /// caller: TypeScript's `number` includes `NaN`, so an ordinary `Number(configValue)` arrives
-    /// as one. Finite out-of-range values were never the problem — the clamp already handles them
-    /// (`-3` and `9` measured as fully transparent and fully opaque respectively).
+    /// **A non-finite value falls back to `1.0` (opaque).** Why, and what `NaN` did before the
+    /// guard: [`docs/map/territory/cell-compositing.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/cell-compositing.md)
+    /// § `setBgAlpha`'s two fixes.
     #[wasm_bindgen(js_name = setBgAlpha)]
     pub fn set_bg_alpha(&mut self, grid: u32, alpha: f32) -> Result<(), JsValue> {
         let at = self.slot(grid)?;
@@ -361,20 +329,15 @@ impl JustermRenderer {
     }
 
     /// Set the cursor stroke thickness as a fraction of the cell width — the width of a
-    /// bar, an underline, or a hollow block's outline. `cursor_thickness` turns it into device
-    /// pixels as `(frac * cell_w).round().max(1)`, so it tracks both dpr and font size — alacritty's
-    /// rule (`display/cursor.rs:25`), chosen over xterm's `dpr * cursorWidth` (that gives a
-    /// 32px font the same hairline as a 12px one). This adds only the configurability the mechanism
-    /// already had. A **block** ignores it — a block recolours its cell and draws no stroke.
+    /// bar, an underline, or a hollow block's outline, in device pixels as
+    /// `(frac * cell_w).round().max(1)` — so it tracks both dpr and font size, alacritty's rule. A
+    /// **block** ignores it — a block recolours its cell and draws no stroke.
     ///
     /// Default `0.15` (alacritty's `cursor.thickness`); clamped to `[0, 1]` (alacritty's
-    /// `Percentage`). The clamp is load-bearing, not hygiene: `cursor_thickness` computes
-    /// `(frac * cell_w).round() as u32`, and an unclamped `f32::INFINITY` saturates that cast to
-    /// `u32::MAX` device pixels. `NaN` is caught a layer deeper — `frac.max(0.0)` returns `0.0` for
-    /// it (`f32::max` yields the non-NaN operand) — so the floor below still gives it a 1px stroke.
-    /// The mechanism's `.max(1)` floor also means even `0` leaves a one-pixel stroke rather than an
-    /// invisible cursor. Takes effect on the next `render` — like a stroke's shape,
-    /// it is a shader uniform, so changing it costs no upload.
+    /// `Percentage`). Even `0`, and `NaN`, leave a one-pixel stroke rather than an invisible
+    /// cursor. Takes effect on the next `render` — like a stroke's shape, it is a shader uniform, so
+    /// changing it costs no upload. Why: [`docs/map/territory/caret-drawing.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/caret-drawing.md)
+    /// § The stroke thickness is a clamped fraction of the cell.
     #[wasm_bindgen(js_name = setCursorThickness)]
     pub fn set_cursor_thickness(&mut self, grid: u32, frac: f32) -> Result<(), JsValue> {
         let at = self.slot(grid)?;

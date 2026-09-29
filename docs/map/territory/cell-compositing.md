@@ -179,6 +179,32 @@ becomes an actual colour — the engine never does that by identity.
   without a GPU.
 - **Every frame re-packs entirely.** There is no incremental repaint here, which is why the
   engine's damage model targets the *wire* rather than this renderer.
+- **The highlight spans are consumer-pushed** (`setOverlay`, `setActiveMatch`). They are
+  viewport-relative and the decoder re-projects them every frame, so the consumer re-issues them on
+  every viewport or selection change, exactly as it re-issues the cursor. beamterm's spans ride each
+  decoded frame instead; this renderer is not handed them with the frame, so it cannot refresh them
+  itself — the split mirrors the cursor's, and the widget wires both.
+- **`setBgAlpha`'s two fixes.**
+  - *A translucent background contributes in proportion to how translucent it is* (2026-08-18). It
+    used to contribute in full: an antialiased glyph edge mixed toward the background colour with
+    the coverage as its weight while the alpha said that background was only `alpha` present, so at
+    `0` a half-covered pixel came out half background — a colour the caller had asked to be absent.
+    At `1` the two forms agree exactly, which is why it shipped unnoticed.
+  - *A non-finite alpha falls back to `1.0`.* `f32::clamp` compares with `<` / `>`, both false for
+    `NaN`, so a bare clamp passes `NaN` through. The consequence was not a wrong background: `NaN`
+    reached every fragment's alpha, so glyph pixels went transparent too and the whole terminal
+    disappeared with no error anywhere. Measured, not reasoned: booting the widget at `NaN` read
+    `[30,30,46,0]` on a background cell **and `[205,214,244,0]` inside a glyph**, against `[…,128]`
+    / `[…,255]` for a valid `0.5`. The expression it was measured against was
+    `mix(u_bg_alpha, 1.0, cov)`, which the coverage-weighted form above replaced; `NaN` now reaches
+    the colour through the same uniform as well, so the failure would be if anything less subtle.
+    The guard sits in the renderer rather than at the caller because the input is reachable from
+    type-correct consumer code: TypeScript's `number` includes `NaN`, so an ordinary
+    `Number(configValue)` arrives as one. Finite out-of-range values were never the problem — `-3`
+    and `9` measured as fully transparent and fully opaque. The old doc-comment called this guard
+    what *every* float setter here has; `set_cursor_contrast` is a bare clamp (a `NaN` there
+    disables the guard, as `1.0` does, because `contrast < NaN` is false), and
+    `set_cursor_thickness` is saved a layer deeper ([caret drawing](caret-drawing.md)).
 
 ### The fragment stage (`shader.rs` `FRAG_SRC`), step by step
 
