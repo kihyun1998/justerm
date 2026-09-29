@@ -39,6 +39,19 @@ Two consequences that are easy to state wrong:
    (#627). A test that writes `expect(asU32(frame.extra)).toBe(frame.extra)` reads the getter twice
    and fails against code that is doing exactly the right thing. The identity that matters is
    between what a reader received and what it forwards.
+3. **The coercion does not validate** (#467). `asU32` / `asU16` pass a real typed array through by
+   reference and convert a plain one — a test or demo fixture such as `demo/fake-search.ts`. The
+   conversion **reinterprets** an out-of-range value rather than rejecting it: a negative wraps to its
+   two's complement, `NaN` / ±`Infinity` land as `0`, and a value past the type's range wraps mod
+   2³² (or 2¹⁶) — pinned in the renderer test, the same class as the #457 decoration wire. So a span
+   source feeding it (`selectionSpans` / `matchSpans` / `activeMatchSpans`) must clip to a valid
+   range itself, as `decorationsForFrame` and the demo's span producers do: the coercion knows nothing
+   of a value's meaning or geometry, and a per-frame coercion is the wrong layer to validate at. `asU16`
+   feeds `flags` only; `extra` widened to `u32` at #621/#627. The retained twin, `retainU32`, always
+   copies — measured (#657), a held view detaches after **one** decode of a 300x220 frame, or 109
+   small ones held at once, and a detached array passed to any wasm entry point throws
+   `TypeError: … on a detached or out-of-bounds ArrayBuffer` rather than degrading. The copy is cheap: overlay spans are `(row, left, right)` triples for the highlighted
+   rows only, copied once per frame.
 
 ## Why it is cross-cutting
 

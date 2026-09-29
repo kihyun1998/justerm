@@ -40,6 +40,37 @@ a CSS box and reads the grid back, rather than asking for 80×24 and being given
   `MIN_COLUMNS`, silently.
 - **This is the frame-mode analog of xterm.js's `FitAddon.proposeDimensions`**, named as such at the
   top of the module.
+- **`gridForBox` must agree with `proposeDimensions`** (both in `fit.ts`). The renderer takes a
+  *grid* (#331) and pixel→cell is consumer policy (ADR-0017), so the adapter owns this division —
+  the same `floor(box / cell)` xterm's FitAddon does, pure so the fractional-DPR rounding is
+  testable. Two paths from a pixel box to a grid must not disagree, and each rule below was once
+  where they did:
+  - *Floored at `MINIMUM_COLS`×`MINIMUM_ROWS`, not at one cell* (#547). "A grid must have a cell"
+    under-shot: the engine clamps `resize(1, r)` up to two columns, so a 1-column proposal is a grid
+    it can never be in, and driving the engine at 1 while it holds 2 puts every span of the frame
+    outside the grid — the surface silently stops updating. The clamp is pull-only on the core side
+    (a consumer reads the width back, it is not told), so agreeing with the floor is what keeps the
+    two in step.
+  - *`undefined` for an unmeasured cell or a non-finite box* (#632). A non-finite box means "not
+    measured", exactly when the terminal must not be shrunk. This axis was missing:
+    `Math.max(2, Math.floor(NaN / 8))` is `NaN`, so `backend.resize(NaN)` coerced to `0` and the
+    terminal came back 1×1 — through the path that reaches the renderer, while the guarded path was
+    the one nothing called. One `Number.isFinite` check covers both conditions, **measured**: a
+    separate `cellCss* === 0` guard, mirroring `proposeDimensions`'s, was written first and a mutation
+    showed it could not fail, since a zero cell makes the quotient `±Infinity` (or `NaN` for a zero
+    box over a zero cell). It was removed rather than kept for symmetry — a branch that cannot change
+    an outcome is untestable by construction. `proposeDimensions` keeps the same redundancy,
+    inherited from xterm's `cell.width === 0` guard, and is left alone because changing it would
+    alter nothing.
+  - *`undefined` for a box with no area* (#810), the same answer `proposeDimensions` gives. Of
+    `gridForBox`'s two callers only `resize()` can deliver a zero on an ordinary path (see [an absent
+    element box measures as zero](../invariant/an-absent-box-measures-as-zero.md)); for `applyGrid`'s
+    grant read-back the guard is defensive, and the one remaining route there is a canvas authored at
+    `width="0"` whose surface is never sized. Left unguarded that caller was the worse of the two:
+    `{2, 1}` satisfied `granted.cols < cols`, so an empty buffer would clamp **every attached pane's
+    grid** to the minimum. The guard borrows the renderer's sentence for the neighbouring fact —
+    *"a buffer of no size is not a grant, it is the absence of an answer"* (#639): an unmeasured box
+    and an ungranted buffer are different facts with the same shape.
 
 ## Code
 
