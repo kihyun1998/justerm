@@ -170,7 +170,13 @@ for the tier and its lifetime.
     xterm.js, beamterm and three.js all leave them, because #337 couples the CSS display box to them
     — a lying attribute would make `cssWidth()` describe a buffer that does not exist. The request is
     stored, not passed, because one of its three callers (construction, `resizeSurface`, a context
-    restore) is the restore: the loss reset the buffer and nobody is going to re-ask. A grant
+    restore) is the restore: the loss reset the buffer and nobody is going to re-ask. It is stored **verbatim**: until S5 the implicit grid's
+    `grid_size` played this role (the buffer was `cols * cell`, density-independent), and the
+    obvious replacement, a CSS box, would be stored through the renderer's copy of the density, which
+    lags by construction — `setDevicePixelRatio` drops a notification outright while the context is
+    lost — so it would come back wrong by the ratio between the two densities. The fact belongs to
+    the site it is first true at, the consumer's measurement
+    ([ADR-0032](../../adr/0032-a-shared-fact-is-owned-by-its-producer.md)). A grant
     smaller than the request moves every placed rect, since a rect's GL y is measured from the
     buffer's bottom edge; the consumer re-places them, which it is doing anyway, since its own layout
     is what shrank.
