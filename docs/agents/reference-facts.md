@@ -968,6 +968,14 @@ an absence.
 | Defaults are `normal` and `bold` | xterm.js | `src/common/services/OptionsService.ts:26-27` |
 | ⚠ **The cell comes from the configured regular face.** `GlyphCache::new` loads metrics from the `regular` key, whose description is `font.normal()` — and `make_desc` uses the user's `style` (e.g. `Light`) in place of `Weight::Normal` whenever one is set. `compute_cell_size` then takes `average_advance` and `line_height` from those metrics | alacritty | `alacritty/src/renderer/text/glyph_cache.rs:83-85`, `:134`, `make_desc` at `:182-188`; `alacritty/src/display/mod.rs:1608-1615` |
 
+## A 2D canvas the glyph bake reads back (#1019, verified 2026-09-29)
+
+| Fact | Reference | Site |
+|---|---|---|
+| The glyph atlas's scratch canvas — the one every glyph is drawn into before its pixels are read — is created `willReadFrequently: true` | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:102` |
+| …and it is read back with `getImageData` on the bake path | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:741`, `:749`, `:773` |
+| The 1×1 colour-probe canvas is created the same way | xterm.js | `src/common/Color.ts:128` |
+
 ## Renderer ink channels
 
 | Fact | Reference | Site |
