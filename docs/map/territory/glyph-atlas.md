@@ -89,12 +89,17 @@ it.
   dark-ink exponent is fitted once per configuration bake from a calibration draw, never fixed: it
   is the platform's text gamma (2.65 on the Windows 11 box it was measured on).
 - **Every 2D context the rasteriser creates is `willReadFrequently`** (#1019), through the one
-  `Rasterizer::context_2d`. Every bake reads its canvas back with `getImageData`, and Chromium keeps
-  a 2D context without the flag GPU-backed, so each read is a synchronous GPU→CPU readback: a font
-  size change with an 80×24 frame cost a median 143–221 ms to paint on a GTX 1050 Ti (ANGLE D3D11,
-  headed Chromium, dev wasm), 31–37 ms with the flag. The flag's usual cost — a slower
-  canvas→texture upload — does not apply here: `upload_glyph` uploads the bytes `getImageData`
-  returned, never the canvas. `demo/read-frequently.html` asserts it for every read.
+  `Rasterizer::context_2d`. Every bake reads its canvas back with `getImageData`, and Chromium starts
+  a 2D context without the flag GPU-backed, so a read is a synchronous GPU→CPU readback — and every
+  rebake makes fresh contexts: a font size change with an 80×24 frame cost a median 143–221 ms to
+  paint on a GTX 1050 Ti (ANGLE D3D11, headed Chromium, dev wasm), 31–37 ms with the flag. What the
+  rasteriser reads is unchanged by it: all 305 readbacks of a subpixel bake, calibration included,
+  were byte-identical with and without the flag, headed and headless (Windows 11). The flag's usual
+  cost — a slower canvas→texture upload — does not apply here: `upload_glyph` uploads the bytes
+  `getImageData` returned, never the canvas. `demo/read-frequently.html` asserts the flag for every
+  read on the paths it drives (construction, a rebuild, subpixel, a cache miss); it spies only
+  `OffscreenCanvas`, and a context-loss restore is covered only because it rebakes through the same
+  `bake_config`.
 - **`builtin` is outside it by construction, not by a list.** The builtin check precedes `fill_text`,
   so no fit can fire on a glyph the font never drew — the same shape as #507's dependency inversion,
   where the classifier *asks* `builtin::owns` rather than restating its ranges.
