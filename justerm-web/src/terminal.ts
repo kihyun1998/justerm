@@ -546,58 +546,29 @@ export class Terminal {
     }, 0);
   }
 
-  /** Move the hidden textarea over the cursor cell so the IME candidate window
-   * appears there (xterm's updateCompositionElements). Geometry from the same
-   * source the input uses; **the DOM write** is skipped when the cursor is absent/hidden — the
-   * retained cell it would have been written from is {@link Terminal.track}'s and is kept either
-   * way. xterm.js bails on the same question (`_syncTextArea`, `!isCursorInViewport`) and
-   * can afford to bail on both at once because it holds no retained cell at all: it positions from
-   * the live `buffer.x`/`.y` every time, so a skipped write is one skipped write.
-   *
-   * Only touches the DOM (a layout read via `getGeometry` + two style writes) when the cursor
-   * actually moved, not on every output frame. That cache is keyed on the *coordinate*, so it
-   * cannot see a cell-size change — {@link Terminal.syncTextareaAnchor} is the path that can. */
+  /** Move the hidden textarea over the cursor cell so the IME candidate window appears there.
+   * **The DOM write** is skipped when the cursor is absent or hidden; the retained cell is
+   * {@link Terminal.track}'s and is kept either way. Touches the DOM (a layout read via `getGeometry`
+   * and two style writes) only when the cursor moved — a cache keyed on the coordinate, which cannot
+   * see a cell-size change; {@link Terminal.syncTextareaAnchor} is the path that can. */
   private positionTextarea(frame: DecodedFrame): void {
     if (frame.cursorRow === undefined || frame.cursorVisible === false) return;
-    // Built from the FRAME, not read back from {@link Terminal.cursorAnchor}, although `track` has
-    // just written that from this same frame. Reading the retained cell would make this function
-    // correct only while it runs after `track` in the subscription; deriving it here means the two
-    // cannot be put out of order. The retained cell has exactly one writer either way, which is the
-    // property #921 was about — this is about not acquiring a reader with an ordering condition.
+    // Built from the FRAME, not read back from `cursorAnchor`, so this has no ordering condition
+    // against `track` (docs/map/invariant/composition-is-browser-owned-state.md).
     const cursor = { col: frame.cursorCol ?? 0, row: frame.cursorRow };
     this.applyTextareaAnchor(textareaMove(cursor, this.textareaCell, false, this.composition?.composing ?? false));
   }
 
   /**
-   * Re-anchor the textarea at the retained cursor cell, re-reading the geometry.
-   *
-   * The cache above holds a *coordinate* while the anchor is derived from the *geometry*, and a
-   * `setFontSize` / `setLetterSpacing` / `setLineHeight` with a stationary cursor moves the second
-   * without touching the first — so the widget cannot keep the anchor fresh by watching frames.
-   * Instead this runs at the moments something reads the anchor: composition start (the OS IME
-   * candidate window) and focus (the browser's focus steps scroll the nearest scrollable ancestor
-   * to the focused element). One geometry read per IME session and per focus, not per frame.
-   *
-   * **That focus read is measured, not assumed.** In real Chrome, focusing the textarea from
-   * `scrollY: 2000` scrolled the page back to it, and the destination tracked the anchor exactly —
-   * a 1020px anchor difference moved the landing point by 1020px. So a stale anchor here does not
-   * merely sit wrong, it scrolls the page to the wrong place, by an amount proportional to the
-   * cursor's row (a `lineHeight` 1 → 1.6 change moved row 5 by 47px, i.e. ~9px per row).
-   *
-   * **`composing` outranks `force`.** A composition freezes the anchor for *every* caller,
-   * including this one: `Terminal.focus()` is public, so a pointer-down — or a consumer restoring
-   * focus after a dialog — used to re-anchor to the superseded cursor cell mid-composition, which is
-   * #637's harm through another entrance. #631's `compositionstart` re-sync is unaffected because it
-   * runs *before* the controller is told, and therefore sees `composing === false`; that ordering in
-   * {@link Terminal.attach}'s `onStart` is the contract this depends on. The predicate is
-   * {@link CompositionController.composing}, never `active` — `active` outlives the candidate window
-   * by one deferred read, which is exactly the window a continuous-CJK `compositionstart` lands in.
-   *
-   * xterm.js reaches the same conclusion for the same reason: an option change there never reaches
-   * `_syncTextArea` either (`RenderService.handleResize` forwards to the renderer without touching
-   * `BufferService`, so `onResize` never fires; and `Terminal.resize` early-returns on an unchanged
-   * grid), and its whole mitigation is the same re-sync at `compositionstart`, whose comment names
-   * this exact symptom. ghostty goes further and pushes the IME rect on every key event.
+   * Re-anchor the textarea at the retained cursor cell, re-reading the geometry. Runs at the moments
+   * something reads the anchor — composition start and focus — because the coordinate cache cannot
+   * see a cell-size change. `composing` outranks `force`: a composition freezes the anchor for this
+   * caller too
+   * ([`docs/map/invariant/composition-is-browser-owned-state.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/composition-is-browser-owned-state.md)).
+   * Why these moments:
+   * [`docs/map/invariant/cell-size-is-derived-state.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/cell-size-is-derived-state.md);
+   * the measured cost of a stale anchor at focus:
+   * [`docs/agents/reference-facts.md`](https://github.com/kihyun1998/justerm/blob/master/docs/agents/reference-facts.md#the-ime-anchor-nobody-caches-it-and-xterm-shares-our-staleness-631-verified-2026-07-30-637-adjudicated-2026-07-30-649-measured-2026-07-31).
    */
   private syncTextareaAnchor(): void {
     this.applyTextareaAnchor(textareaMove(this.cursorAnchor, this.textareaCell, true, this.composition?.composing ?? false));
@@ -611,65 +582,32 @@ export class Terminal {
     this.writeTextareaAnchor(move.col, move.row);
   }
 
-  /** Draw the in-progress composition and re-aim the IME anchor at its end (#249, ADR-0028).
-   *
-   * `text` is `compositionupdate.data` — **the OS's own preedit**, not the textarea's value, which
-   * measurement showed lags it by exactly one event (`data="하"` while `value="ㅎ"`). That the two
-   * disagree is not a defect to reconcile: `data` is what the IME is showing the user, and `value`
-   * is what will be committed, and #116 reads the commit from `value` for its own good reasons.
-   *
-   * Unchanged data is dropped. A real IME emits one settling update per syllable where nothing
-   * moved (measured), and each one would otherwise cost a full re-pack.
-   *
-   * Anchoring here is D4's voluntary writer: it re-aims *because* it knows where the composition
-   * is, which is exactly what the frame stream and the focus path do not (#637/#649), so their
-   * freeze stays and this bypasses it. Without the re-aim the candidate window would sit at the
-   * composition's start while the text grows away from it. */
+  /** Draw the in-progress composition and re-aim the IME anchor at its end. `text` is
+   * `compositionupdate.data` — the OS's own preedit, not the textarea's value (ADR-0028 D3).
+   * Unchanged data is dropped. The re-aim is the voluntary writer, so it bypasses the freeze the
+   * involuntary ones go through: [ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md) D4. */
   private showPreedit(text: string): void {
     const intent = preeditIntent(text, this.preeditText, this.preeditOrigin);
     this.preeditText = text;
     if (!intent) return;
-    // The ORIGIN is latched at `compositionstart`, never re-read here. `cursorAnchor` is reassigned
-    // by every frame (`track`, which retains it unconditionally and is not a writer that can decline
-    // — #921), so reading it per update would let an output frame relocate the whole run on the
-    // next keystroke — #637's harm through a new
-    // entrance, measured: with unsolicited output running, the anchor held at row 5 while the
-    // composition was open and then jumped to row 9 on the following keystroke.
-    //
-    // This is also what makes ADR-0028 D4 true rather than half-true. The preedit writer earns its
-    // bypass of `textareaMove` by knowing where the composition is — and it only knows that if it
-    // knows both halves: the EXTENT (live, from the run) and the ORIGIN (fixed, from where the user
-    // started typing). Re-asking the frame stream for the origin is asking the one source #637
-    // established cannot answer it.
+    // The ORIGIN is latched at `compositionstart`, never re-read here
+    // (docs/map/invariant/composition-is-browser-owned-state.md).
     this.paintPreedit(intent.codepoints, intent.origin);
   }
 
   /**
-   * Draw the run at the viewport row its origin cell is **shown at**, or not at all.
-   *
-   * The origin is a GRID row — core samples `cursor_row` from `self.cursor` with no
-   * `display_offset` term — while the renderer draws the **viewport**. At offset `d` a grid row `r`
-   * is on screen only while `r < rows - d`, and it is shown at viewport row `r + d`. Measured
-   * before this mapping existed: with `gridRow` 33, `rows` 37 and the view up 2, the run landed on
-   * viewport row 33 while its own cell was being shown on row 35.
-   *
-   * **Off the bottom, it waits rather than drawing somewhere wrong**, and waiting costs nothing
-   * because {@link Terminal.repaintPreedit} re-asserts on the next frame that can place it. Both
-   * references resolve it the same way and neither suppresses permanently: xterm skips the
-   * positioning while `!isCursorInViewport` and re-runs `updateCompositionElements` on every render
-   * plus once through `setTimeout(0)`; alacritty maps the point through the display offset and
-   * drops it only when that viewport line is off screen.
+   * Draw the run at the viewport row its origin cell is **shown at**, or not at all. The origin is a
+   * GRID row; at offset `d` a grid row `r` is on screen only while `r < rows - d`, and is shown at
+   * viewport row `r + d`. Off the bottom it clears what is drawn and waits for
+   * {@link Terminal.repaintPreedit}. Why:
+   * [`docs/map/invariant/composition-is-browser-owned-state.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/composition-is-browser-owned-state.md).
    */
   private paintPreedit(codepoints: Uint32Array, at: TextareaAnchor): void {
-    // `rows` is 0 until the first frame, which would make every row read as off screen. Unreachable
-    // rather than handled: the origin is latched from `cursorAnchor`, which no frame has written
-    // yet, so `preeditIntent` declines on "no origin, no push" before anything reaches here. Stated
-    // because giving the origin a default would quietly turn that into a preedit that never draws.
+    // `rows` is 0 until the first frame; unreachable, since `preeditIntent` declines without an
+    // origin (docs/map/territory/input-encoding.md).
     const row = at.row + this.frameOffset;
     if (row >= this.rows) {
-      // Clear what is drawn, if anything — a view scrolled away mid-composition must not leave the
-      // run sitting on scrollback. `preeditEnd` is deliberately untouched: the handoff to the next
-      // composition (#911) is about where the run ENDED, which the viewport cannot change.
+      // Clear what is drawn, if anything. `preeditEnd` is left as is.
       if (this.preeditPaintedRow !== undefined) {
         this.renderer.setPreedit?.(at.col, this.preeditPaintedRow, EMPTY_PREEDIT);
         this.preeditPaintedRow = undefined;
@@ -677,26 +615,13 @@ export class Terminal {
       return;
     }
     const caretCol = this.renderer.setPreedit?.(at.col, row, codepoints);
-    // A preedit-blind renderer: nothing drawn, nothing to aim at. Only a consumer-supplied
-    // `Renderer` reaches this — the shipped `JustermRenderer` adapter returns `col` when its backend
-    // has no `setPreedit` binding, so on a renderer older than #249 `preeditEnd` becomes the ORIGIN
-    // and the #911 handoff quietly degrades to the frame stream's answer. Benign (it is what the
-    // widget did before #911) but silent, and the two packages release on separate tracks (#918,
-    // closed `not_planned`).
+    // A preedit-blind renderer: nothing drawn, nothing to aim at (docs/map/territory/input-encoding.md).
     if (caretCol === undefined) return;
     this.preeditPaintedRow = codepoints.length > 0 ? row : undefined;
-    // Keep a non-empty run's end for the next composition to latch from (#911). Skipped for the
-    // clearing call at `compositionend`, whose caret column is the origin again, not the end.
-    //
-    // A GRID row, like the origin it will become — the viewport is a property of the moment it is
-    // drawn, not of where the text was typed.
+    // Keep a non-empty run's end for the next composition to latch from (#911) — as a GRID row, like
+    // the origin it will become. Skipped for the clearing call, whose caret column is the origin.
     if (codepoints.length > 0) this.preeditEnd = { col: caretCol, row: at.row };
     this.writeTextareaAnchor(caretCol, row);
-    // A composition that spent its whole life off screen therefore hands on no end, and the next
-    // one falls back to the frame stream — D4's own "a composition that draws nothing leaves no run
-    // end" clause, reached by a second route. The fallback is the bounded wrong that clause already
-    // chose over an unbounded one; it needs a view that never returns to the bottom to happen at
-    // all, which needs a consumer that did not wire `onScroll`.
   }
 
   /**
@@ -726,17 +651,9 @@ export class Terminal {
   }
 
   /**
-   * Re-assert the open composition's run against the frame just applied.
-   *
-   * **This is [ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md) D5's rule, which the run needed as much as the caret and was not given.** The
-   * record already says position is re-asserted on *every* frame rather than only when the
-   * composition changes, and gives the reason: frames keep arriving and not one of them knows a
-   * preedit exists. A run written once therefore keeps whatever row it was given while the view
-   * moves out from under it — the same clause, unapplied to the neighbouring surface.
-   *
-   * Cheap by construction: it compares the row it *would* paint against the one it did, so a
-   * composition over a still view does nothing at all, and the renderer re-packs every frame
-   * regardless.
+   * Re-assert the open composition's run against the frame just applied — [ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md) D5's
+   * every-frame rule, applied to the run. Compares the row it would paint with the one it did, so a
+   * composition over a still view does nothing.
    */
   private repaintPreedit(): void {
     const at = this.preeditOrigin;
@@ -747,22 +664,14 @@ export class Terminal {
   }
 
   /** Put the textarea on a cell. The write itself, with no cache and no decision — see
-   * {@link textareaMove} for the decision the *involuntary* writers go through.
-   *
-   * The preedit writer calls this directly, which is [ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md) D4: a writer that knows where
-   * the composition is does not pass through the guard that exists for writers that do not, and it
-   * deliberately does not touch {@link Terminal.textareaCell} — that cache describes where the
-   * frame stream last put the anchor, and a composition's own re-aim is not an answer to that
-   * question. Same structure as xterm's, where `updateCompositionElements` writes `style.left/top`
-   * itself and never goes through `_syncTextArea`. */
+   * {@link textareaMove} for the decision the *involuntary* writers go through. The preedit writer
+   * calls this directly and leaves {@link Terminal.textareaCell} alone: [ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md) D4. */
   private writeTextareaAnchor(col: number, row: number): void {
     const ta = this.textarea;
     const getGeometry = this.options?.getGeometry;
     if (!ta || !getGeometry) return;
-    // An unmeasured box has no anchor to write. Leaving the last one in place is the right answer
-    // here rather than merely the safe one: the textarea is positioned RELATIVE to the element, so
-    // while the element has no box the anchor is not on screen either, and it is re-aimed by the
-    // next frame that moves the cursor once it is (#819).
+    // An unmeasured box has no anchor to write; the last one stays
+    // (docs/map/invariant/an-absent-box-measures-as-zero.md, #819).
     const g = getGeometry();
     if (!g) return;
     ta.style.left = `${col * g.cellWidth}px`;
@@ -778,9 +687,7 @@ export class Terminal {
     const getGeometry = o.getGeometry;
     const input = o.input;
     if (!getGeometry || !input) return;
-    // #819 — read ONCE. Two calls could answer differently (the box can go away between them), and
-    // an unmeasured box means the notch has no cell size to be measured in: `consumeWheelEvent`
-    // accumulates a sub-line fraction, and feeding it a `0` cell latches the accumulator (#675).
+    // Read once, and refuse an unmeasured box (#819, docs/map/invariant/an-absent-box-measures-as-zero.md).
     const geom = getGeometry();
     if (!geom) return;
     // getGeometry's cellHeight is CSS px, matching pixel-mode deltaY; dpr 1 keeps
@@ -792,9 +699,8 @@ export class Terminal {
     });
     const action = routeWheel(this.mask, lines, this.altScreen, this.displayOffset, this.scrollbackLen);
     if (action.kind === "none") {
-      // A LINE or PAGE notch the scroller carried below a whole line (a fractional sensitivity,
-      // #908) is still this terminal's, so the page must not scroll under it. A sub-line PIXEL
-      // delta keeps leaving the event to native scroll; shift and a non-finite delta bail as before.
+      // A LINE or PAGE notch carried below a whole line is consumed; a sub-line PIXEL delta, shift
+      // and a non-finite delta are left to native scroll (#908).
       const carried = e.deltaMode !== 0 /* DOM_DELTA_PIXEL */ && lines === 0 && e.deltaY !== 0 && !e.shiftKey;
       if (carried && Number.isFinite(e.deltaY)) e.preventDefault();
       return;
@@ -806,17 +712,14 @@ export class Terminal {
         input.send({ kind: "mouse", event: wheelMouseFromDom(e, lines, geom) });
         return;
       case "altKeys": {
-        // The alt buffer has no scrollback; a wheel becomes a cursor key (xterm).
-        // DECCKM (application-cursor-keys) is core's encode_key job — the web only
-        // picks the direction.
+        // A cursor key; DECCKM is core's `encode_key` job — the web only picks the direction.
         const key: NamedKey = action.direction === "up" ? "up" : "down";
         input.send({ kind: "key", event: { key: { type: key }, mods: 0, action: "press" } });
         return;
       }
       case "scroll":
         if (!o.onScroll) return;
-        // Optimistically advance the tracked offset so a fast burst of notches
-        // composes (frame mode's echo is an async round-trip); track() reconciles.
+        // Optimistic, so a burst of notches composes ahead of the echo; `track` reconciles.
         this.displayOffset = action.displayOffset;
         o.onScroll(action.displayOffset);
         return;
@@ -825,12 +728,10 @@ export class Terminal {
 
   /**
    * **End of life** for this widget: stop consuming frames, detach DOM listeners, and dispose the
-   * renderer it was handed. Safe to call more than once; the renderer is disposed exactly
-   * once. After this the widget cannot be mounted again — see {@link Terminal.mount}.
-   *
-   * The renderer is disposed **last**, after the widget has stopped feeding it, so nothing arrives
-   * at an already-ended renderer. (xterm.js disposes its addons in reverse registration order for
-   * the same reason.)
+   * renderer it was handed — last, after the widget has stopped feeding it. Safe to call more than
+   * once; the renderer is disposed exactly once. After this the widget cannot be mounted again —
+   * see {@link Terminal.mount} and
+   * [`docs/map/territory/widget-lifecycle.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/widget-lifecycle.md).
    */
   dispose(): void {
     if (this.disposed) return;
@@ -839,10 +740,8 @@ export class Terminal {
     this.unsubscribe = undefined;
     this.eventUnsub?.();
     this.eventUnsub = undefined;
-    // Unsubscribing is NOT enough: an in-flight clipboard read is already past the
-    // subscription, and was measured pending indefinitely on a browser permission
-    // prompt. Ending the controller latches the landing so a late answer reports
-    // nothing (#841).
+    // Unsubscribing is not enough: an in-flight clipboard read is already past the subscription
+    // (docs/map/territory/events-and-replies.md).
     this.clipboardController?.dispose();
     this.clipboardController = undefined;
     for (const off of this.detach) off();
@@ -856,8 +755,7 @@ export class Terminal {
     this.textarea?.remove();
     this.textarea = undefined;
     this.composition = undefined;
-    // The consumer built this and handed it over; the widget drove it, so the widget ends it.
-    // Optional on the port, so a renderer with nothing of its own to stop simply omits it.
+    // Optional on the port: a renderer with nothing of its own to stop omits it.
     this.renderer.dispose?.();
   }
 }
