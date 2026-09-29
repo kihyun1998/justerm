@@ -72,6 +72,13 @@ programmer.
 - **Re-activation must reset every announce-related piece of state.** `reactivate()` emulates a fresh
   manager; a new debounce or idle field that is not reset there leaks across activations — this has
   already happened once with a flush timestamp.
+- **The hidden input textarea is a labelled accessible input, not `aria-hidden`** (#248,
+  `makeHiddenTextarea`). It cannot be `aria-hidden` because it is programmatically focused to type,
+  and focusing an `aria-hidden` element violates WCAG 4.1.2 — a screen reader lands on it and
+  announces "blank". The #119 row tree stays the separate review/announce surface, and the two
+  coexist as xterm.js's helper textarea and its accessibility rows do, with no `aria-owns` between
+  them. Typed-echo dedup (#119 `onKey`) is what keeps output from double-reading what the AT already
+  announced on input.
 
 ## Code
 
@@ -94,7 +101,9 @@ programmer.
 **None** in `docs/agents/reference-facts.md`, and this territory names **two** references in prose
 that the usual comparison set does not even contain — xterm.js's `AccessibilityManager` and VSCode's
 terminal a11y (`decorationAddon.ts`). Both are cited by symbol, neither is pinned, and one of them is
-an editor rather than a terminal.
+an editor rather than a terminal. One pinned fact is cited inline instead (§ Design model, #993):
+xterm.js labels its helper textarea (`src/browser/CoreBrowserTerminal.ts:488-489` @ `699f553`) and
+sets no `aria-owns` anywhere under `src/browser`.
 
 ## Cross-cutting invariants
 

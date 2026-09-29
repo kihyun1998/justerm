@@ -109,11 +109,10 @@ export class WheelScroller {
 }
 
 /**
- * Whether a wheel notch reports to the app rather than scrolling scrollback
- * locally — true only when the app tracks the wheel (the WHEEL bit of the frame's
- * `mouseWantedEvents` mask, #129). `undefined` (frame omitted the field) → local.
- * Per-category (not "any mouse mode"): an X10 app (`?9`, DOWN only) keeps the
- * wheel local, matching xterm's per-protocol wheel gate.
+ * Whether a wheel notch reports to the app rather than scrolling scrollback locally: true only
+ * when the frame's `mouseWantedEvents` mask has the WHEEL bit (#129). `undefined` (the frame
+ * omitted the field) is local. Per category, not "any mouse mode": an X10 app (`?9`, presses
+ * only) keeps the wheel local.
  */
 export function wheelGoesToApp(mouseWantedEvents: number | undefined): boolean {
   return ((mouseWantedEvents ?? 0) & MouseEvents.Wheel) !== 0;
@@ -121,7 +120,7 @@ export function wheelGoesToApp(mouseWantedEvents: number | undefined): boolean {
 
 /**
  * The display offset a local wheel scroll requests, or `null` when the notch
- * moved no whole line. `lines` is the {@link WheelScroller} result (positive =
+ * moved no whole line or an argument is non-finite. `lines` is the {@link WheelScroller} result (positive =
  * down/newer); `displayOffset` is lines UP from the bottom (0 = following), so
  * scrolling newer LOWERS it. Clamped to `[0, scrollbackLen]` — can't scroll past
  * the live edge or before the oldest history line. The backend scrolls to it.
@@ -132,17 +131,7 @@ export function wheelScrollTarget(
   scrollbackLen: number,
 ): number | null {
   if (lines === 0) return null;
-  // `Math.max(0, Math.min(len, NaN))` is `NaN` — the same propagation `clampTo`
-  // had at the pointer seam (#672), here at the scroll seam. A non-finite result
-  // is "no request", not a request for a nonsense offset: this function is
-  // exported, so it owes its own totality rather than trusting its one in-repo
-  // caller, and any of the three arguments can arrive poisoned (#675).
-  //
-  // Checked on the **inputs**, and a result check is not a substitute for it —
-  // the clamp *rescues* an infinite request into a finite, wrong one:
-  // `Math.max(0, Math.min(100, 10 - Infinity))` is `0`, a silent jump to the
-  // live edge. Only `NaN` survives to the output, so guarding there would fix
-  // half the cases and read as if it had fixed all of them.
+  // Checked on the inputs, not the result (#675) — docs/map/invariant/pointer-coordinates-are-bounded-by-their-producer.md.
   if (!Number.isFinite(lines) || !Number.isFinite(displayOffset) || !Number.isFinite(scrollbackLen)) {
     return null;
   }
@@ -150,11 +139,9 @@ export function wheelScrollTarget(
 }
 
 /**
- * What a wheel notch does, once {@link WheelScroller} has turned it into whole
- * `lines`. Three destinations, mirroring xterm: `app` (the app tracks the wheel —
- * a wheel-button report), `altKeys` (the alt buffer has no scrollback, so a
- * non-tracking app gets cursor keys — xterm's `_handlePassiveWheel`), and `scroll`
- * (normal-buffer local scrollback). `none` = a sub-line/zero notch (nothing yet).
+ * What a wheel notch does, once {@link WheelScroller} has turned it into whole `lines`: `app` (a
+ * wheel-button report to an app tracking the wheel), `altKeys` (cursor keys, for the alt buffer,
+ * which has no scrollback), `scroll` (local scrollback), or `none` (a sub-line or zero notch).
  */
 export type WheelAction =
   | { kind: "app"; direction: "up" | "down" }
@@ -163,12 +150,11 @@ export type WheelAction =
   | { kind: "none" };
 
 /**
- * Decide where a wheel notch goes. Gate on the accumulated `lines` first (a
- * sub-line trackpad notch or a shift/zero wheel is `none` — the {@link
- * WheelScroller} already returned 0), so the app never gets hyper-sensitive
- * per-pixel reports (xterm routes its wheel report through the SAME accumulator).
- * Precedence: a wheel-tracking app wins even on the alt screen; else the alt
- * buffer (no scrollback) takes cursor keys; else local scrollback.
+ * Decide where a wheel notch goes. A sub-line or zero notch is `none` before any destination is
+ * asked. Otherwise a wheel-tracking app wins, even on the alt screen; else the alt buffer takes
+ * cursor keys; else local scrollback. A non-finite `lines`, or an offset
+ * {@link wheelScrollTarget} refuses, is `none`. Why this order, and why the guards:
+ * [`docs/map/territory/viewport.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/viewport.md).
  */
 export function routeWheel(
   mouseWantedEvents: number | undefined,
@@ -177,17 +163,10 @@ export function routeWheel(
   displayOffset: number,
   scrollbackLen: number,
 ): WheelAction {
-  // `NaN === 0` is false, so a non-finite count reaches every branch below. The
-  // app branch is the one that fails *quietly*: `direction` comes from
-  // `lines < 0`, which is false for `NaN`, so a poisoned scroller would report a
-  // fabricated `down` to the application instead of reporting nothing (#675).
   if (lines === 0 || !Number.isFinite(lines)) return { kind: "none" };
   const direction = lines < 0 ? "up" : "down";
   if (wheelGoesToApp(mouseWantedEvents)) return { kind: "app", direction };
   if (altScreen) return { kind: "altKeys", direction };
-  // No `!`: the target really can be null now (a poisoned `displayOffset` coming
-  // back from a frame), and asserting it away is how a non-finite offset reached
-  // the consumer's `onScroll` in the first place.
   const target = wheelScrollTarget(lines, displayOffset, scrollbackLen);
   if (target === null) return { kind: "none" };
   return { kind: "scroll", displayOffset: target };
@@ -201,10 +180,8 @@ export function routeWheel(
  * vetoed by `TerminalOptions.beforeKey` never becomes an {@link Intent}, so it cannot reach
  * here as one.
  *
- * `displayOffset` is the only state this needs — `0` already means the live edge, on the
- * alt screen included, so there is no screen to ask about. A non-finite offset snaps:
- * unlike {@link wheelScrollTarget}, the requested offset is the constant `0` rather than
- * something computed from the argument.
+ * `displayOffset` is the only state this reads; a non-finite one snaps. Why:
+ * [`docs/map/territory/viewport.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/viewport.md).
  */
 export function scrollsToBottomOnInput(signal: InputScrollSignal, displayOffset: number): boolean {
   return isUserInput(signal) && displayOffset !== 0;

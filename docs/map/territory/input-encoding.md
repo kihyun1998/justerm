@@ -202,6 +202,15 @@ Nothing governs the encoding itself.
   answer is not `col + len`. Feeding it back to `setCursor` is ADR-0028 D5's position rule; feeding
   it to the hidden textarea is D4's voluntary writer — and it is the value **A composition's origin
   comes from the composition before it** (above) reads.
+  The widget's half of the push is `preeditIntent` (`composition.ts`), which answers *nothing* or
+  *these codepoints at this origin*. Besides the unchanged-data skip it pushes nothing without an
+  origin: the origin is latched at `compositionstart`, so a composition that somehow runs before any
+  frame has reported a cursor has nowhere to draw, and guessing a cell is worse than drawing nothing.
+  It splits the text by **code point**, not by UTF-16 unit, because a preedit can carry astral
+  scalars — `Array.from`'s iterator is what makes `"\u{1F600}"` one cell rather than two halves of a
+  surrogate pair. It and `preeditLatch` are pure so that the two decisions are testable at all: the
+  widget half that acts on them needs a DOM, and the unit suite runs in `environment: "node"`, the
+  blind spot #649 measured.
 
 ## Code
 
@@ -215,7 +224,7 @@ Nothing governs the encoding itself.
 - `justerm-web/src/terminal.ts` — `makeHiddenTextarea` (the input target, marked with
   `INPUT_ATTRIBUTE`) and `Terminal.attach`, which mounts it inside `element`
 - `justerm-web/src/composition.ts` — IME composition, including the backspace-during-composition case
-  reported as one delete
+  reported as one delete; `preeditIntent`, `preeditLatch`
 
 ## Reference behaviour
 

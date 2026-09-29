@@ -164,7 +164,8 @@ describe("dragTrackRatio (#814)", () => {
   // is the one input on which `height <= 0` and a finiteness test **on the un-clamped
   // quotient** disagree. A finiteness test on the RETURNED ratio disagrees far more
   // widely — it accepts every zero-height box, because the clamp turns `Infinity` into a
-  // perfectly finite `1` (`scroll-control.ts`'s `wheelScrollTarget` records the general form).
+  // perfectly finite `1` (the general form is recorded with `wheelScrollTarget` in
+  // docs/map/invariant/pointer-coordinates-are-bounded-by-their-producer.md).
   it("refuses a negative height, which a finiteness test would accept", () => {
     expect(dragTrackRatio(200, { top: 100, height: -300 })).toBeUndefined();
   });
@@ -194,8 +195,9 @@ describe("dragToDisplayOffset totality (#814)", () => {
   // The one that decides the guard's PLACEMENT, and the reason a result check will not do.
   // Measured before the fix: `rows: Infinity` gave `0` — finite, plausible, and a silent jump to
   // the live edge — because `Math.max(0, Math.min(60, -Infinity))` is `0`. The other three gave
-  // `NaN`. `scroll-control.ts`'s `wheelScrollTarget` records the general form: only `NaN` survives to
-  // the output, so guarding there fixes half the cases and reads as if it fixed all of them.
+  // `NaN`. Only `NaN` survives to the output, so guarding there fixes half the cases and reads
+  // as if it fixed all of them (the general form is recorded with `wheelScrollTarget` in
+  // docs/map/invariant/pointer-coordinates-are-bounded-by-their-producer.md).
   it("refuses the input whose result the clamp would rescue into a plausible wrong number", () => {
     expect(dragToDisplayOffset(0.5, { ...POS, rows: Infinity })).toBeUndefined();
   });

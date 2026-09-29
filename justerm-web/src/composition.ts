@@ -181,68 +181,16 @@ export interface TextareaAnchor {
 }
 
 /**
- * Whether the hidden textarea must move, and the cache key to remember (#631).
+ * Whether the hidden textarea must move, and the cache key to remember (#631). The key is the
+ * cursor's cell coordinate; `force` overrides it, for the callers that sit where something reads
+ * the anchor. `composing` suppresses every path, forced or not, so the anchor stays put while a
+ * composition is open (#637, #649). A suppressed or unchanged move is `undefined`, which leaves the
+ * cache alone.
  *
- * The key is the cursor's **cell coordinate**, but the anchor is computed from the **geometry** —
- * so a cell-size change (`setFontSize`, `setFontFamily`, `setLetterSpacing`, `setLineHeight`, and
- * `setDevicePixelRatio` once it is wired) moves what the anchor should be while leaving the
- * coordinate identical. A coordinate-keyed cache structurally cannot express "the geometry moved",
- * which is why `force` exists: the callers that sit at a moment something actually *reads* the
- * anchor override the cache instead of trying to keep it fresh at all times.
+ * `composing` is `CompositionController.composing` (`isComposing`), never `active`.
  *
- * Why not simply drop the cache and re-read every frame, which is what all three references do
- * (xterm.js `_syncTextArea`, ghostty `imePoint`, alacritty `update_ime_position` — none of them
- * caches)? Because their cell is a **stored field** they push to (`dimensions.css.cell`,
- * `size.cell`, `size_info`), while ours arrives through a consumer-supplied
- * {@link TerminalOptions.getGeometry} callback whose cost we do not control — the demo's and the
- * README's both do a `getBoundingClientRect()`. Per-frame is cheap for them and a forced layout
- * read per output flush for us. Valid only as long as `getGeometry` stays a pull-based consumer
- * callback; if the widget ever holds a pushed cell, prefer the reference's no-cache shape.
- *
- * `composing` suppresses **every** path, forced or not (#637 established the rule, #649 closed the
- * `force` exemption). While a composition is open the OS re-reads the anchor to keep its candidate
- * window placed — measured with a real Korean IME: the Hanja window follows the anchor down as
- * unsolicited output moves the cursor, walking away from the text being composed.
- *
- * `force` originally won over `composing` so that #631's `compositionstart` re-sync could not be
- * gated by its own guard. It never needed that: `onStart` re-anchors *before* telling the controller,
- * so it sees `composing === false` either way. What the exemption actually bought was a second
- * entrance to the same harm — `element` mousedown → `onDown` → `Terminal.focus()` → a forced re-sync
- * onto the superseded cursor cell, reachable through the public `focus()` from any consumer, not only
- * a pointer (#649). So `force` now means one thing and one thing only: *override the coordinate
- * cache*. It says nothing about the composition rule.
- *
- * **`composing` is `isComposing`, never `active`.** `active` stays true through the deferred commit
- * read, and a continuous-CJK `compositionstart` lands inside exactly that window — so keying this on
- * `active` would swallow #631's re-sync in the ordinary Korean/Japanese typing pattern, while looking
- * equivalent at the call site. `composition.test.ts` pins the two diverging there.
- *
- * Suppression returns `undefined`, which the caller treats as a decided no-op that leaves the cache
- * alone — so the move is not recorded as applied and the anchor catches up on the first frame after
- * the composition ends, rather than waiting for the cursor to move again.
- *
- * **Freezing is this codebase's form of the rule, not the rule itself.** All three references converge
- * on *the anchor tracks where the user's composition is, never where the output cursor went* — and two
- * of the three do that by **actively re-aiming during the composition**, not by suppressing:
- *
- * - ghostty folds the preedit's width into the IME rect it pushes on every key event
- *   (`src/Surface.zig:2108`, used at `:2151`) — no gate at all
- * - alacritty picks the point *from* the preedit when there is one and from the cursor when there is
- *   not (`alacritty/src/display/mod.rs:1136-1142`, `:1215`) — also no gate
- * - xterm.js is the only one that suppresses, and only the **involuntary** writer: `_syncTextArea`
- *   bails while composing (`browser/CoreBrowserTerminal.ts:338`, gating all three of its callers) while
- *   `CompositionHelper.updateCompositionElements` deliberately rewrites `left`/`top` every render
- *   (`browser/input/CompositionHelper.ts:273-274`)
- *
- * **justerm-web now re-aims too, and this guard is unchanged — which is the part worth reading.**
- * Until #249 there was no preedit view here, so *"where the composition is"* collapsed to *"where it
- * started"* and freezing was the only available expression of the shared rule. #249 supplied the
- * missing representation, and the prediction recorded here was that this guard *"is what has to
- * give"*. It did not, and the reason is ADR-0028 D4: the writer that knows where the composition is
- * does not pass through the guard that exists for the writers that do not. The preedit's re-aim goes
- * straight to {@link Terminal.writeTextareaAnchor}, exactly as xterm's `updateCompositionElements`
- * never goes through `_syncTextArea`. So this stays a rule about the **involuntary** writers — the
- * frame stream (#637) and the focus path (#649) — which is what both of them actually measured.
+ * Why the cache and `force`: `docs/map/invariant/cell-size-is-derived-state.md`. Why the freeze,
+ * and why the preedit writer bypasses it: `docs/map/invariant/composition-is-browser-owned-state.md`.
  */
 export function textareaMove(
   cursor: TextareaAnchor | undefined,
@@ -257,21 +205,9 @@ export function textareaMove(
 }
 
 /**
- * What a `compositionupdate` should do to the drawn run: nothing, or push these codepoints (#249).
- *
- * Pure so the two decisions are testable at all — the widget half that acts on them needs a DOM and
- * the unit suite runs in `environment: "node"`, which is the blind spot #649 measured.
- *
- * - **Unchanged text is dropped.** A real IME emits one settling `compositionupdate` per syllable
- *   carrying the data it already sent (measured on a Windows Korean IME), and each one would
- *   otherwise cost a full re-pack.
- * - **No origin, no push.** The origin is latched at `compositionstart`; a composition that somehow
- *   runs before any frame has reported a cursor has nowhere to draw, and guessing a cell is worse
- *   than drawing nothing.
- *
- * The text itself is split by **code point**, not by UTF-16 unit: a preedit can carry astral
- * scalars, and `Array.from`'s iterator is what makes `"\u{1F600}"` one cell rather than two halves
- * of a surrogate pair.
+ * What a `compositionupdate` should do to the drawn run (#249): nothing, when the text is unchanged
+ * or there is no origin yet, or push these codepoints at `origin` — split by code point, not by
+ * UTF-16 unit. Why: `docs/map/territory/input-encoding.md`.
  */
 export function preeditIntent(
   text: string,
@@ -283,21 +219,11 @@ export function preeditIntent(
 }
 
 /**
- * Where a composition that is starting should draw, given what the widget is still holding (#911).
- *
- * `cursorAnchor` is written only by the frame stream, so it can never be fresher than the last frame
- * the engine sent. `lastRunEnd` is where the previous composition's run finished — the renderer's own
- * caret column, one past its last cell.
- *
- * **When a commit is in flight the frame stream is known to be stale, not merely possibly stale.**
- * The committed text leaves one deferred read after `compositionend` (#116) and a continuous-CJK
- * `compositionstart` lands inside that window, so at the latch the engine has not been handed the
- * previous syllable at all — `cursorAnchor` still points at the cell that syllable is about to take.
- * The previous run's end is the one coordinate that does account for it.
- *
- * Pure so the choice is testable at all: the wiring needs a DOM and the unit suite runs in
- * `environment: "node"`. It is the run's END rather than a width because the widget has no
- * `wcwidth` — see {@link Renderer.setPreedit}, whose return exists for that reason.
+ * Where a composition that is starting should draw (#911): `lastRunEnd` while a commit is still in
+ * flight and a previous run has an end, otherwise `cursorAnchor`. `cursorAnchor` is the cursor the last frame reported;
+ * `lastRunEnd` is where the previous composition's run finished — the renderer's caret column, one
+ * past its last cell. Why a commit in flight makes the frame's cursor stale:
+ * `docs/map/invariant/composition-is-browser-owned-state.md`.
  */
 export function preeditLatch(
   cursorAnchor: TextareaAnchor | undefined,

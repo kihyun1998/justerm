@@ -41,7 +41,10 @@ directly.
   zeroes the offset on entering alt (`term.rs`, asserted by core's own
   `entering_alt_resets_scroll_position`), so an alt-screen branch here would be a second, weaker copy
   of an invariant the engine already holds. What counts as input is a key, committed IME text, a
-  paste, and a keydown the IME gate swallowed — bare modifiers excluded on **both** key paths.
+  paste, and a keydown the IME gate swallowed — bare modifiers excluded on **both** key paths. A
+  non-finite offset snaps rather than being refused, unlike `wheelScrollTarget`: the requested offset
+  is the constant `0`, not a value computed from the argument
+  ([an absent box measures as zero](../invariant/an-absent-box-measures-as-zero.md)).
   - **The gate is a mirror, and three siblings write past it.** The predicate reads the widget's
     `displayOffset`, refreshed only by `track()` on each frame and by the two optimistic sites. The
     scrollbar drag, the selection drag auto-scroll and the accessible-view line nav all move the
@@ -49,11 +52,30 @@ directly.
     mirror reads stale and typing does not snap. One frame wide, unbounded if a consumer coalesces
     frames. Pre-existing — `routeWheel` reads the same mirror — and **not** introduced by #913, which
     merely made a second thing depend on it.
-  - **Requesting is deduplicated by the widget, not by the consumer.** `requestBottom` sets its own
+  - **Requesting is deduplicated by the widget, not by the consumer.** `onUserInput` sets its own
     tracked offset to `0` before calling out, because a frame-mode echo is an async round-trip and
     without it every keystroke in a burst is another round-trip. This is invisible to a consumer that
     echoes synchronously, which is why the demo needs `__deferScrollEcho` to make it observable at
     all — a test written against the demo's default timing passes whether or not the line exists.
+- **A wheel notch is routed in three pure steps, the way xterm.js routes it** (`scroll-control.ts`).
+  `WheelScroller` turns the event into whole lines, `routeWheel` picks the destination, and
+  `wheelScrollTarget` computes the offset when the destination is local scrollback.
+  - **Whole lines first, for every destination.** A sub-line trackpad notch, or a shift/zero wheel
+    the scroller already returned `0` for, is `none` before any destination is asked — so the
+    application never gets per-pixel wheel reports. xterm.js does the same: its wheel *report* goes
+    through the one `_consumeWheelEvent` accumulator its local scroll uses
+    (`src/browser/services/MouseService.ts:146` @ `699f553`).
+  - **Precedence: the application, then the alt screen, then scrollback.** An application tracking
+    the wheel wins even on the alt screen. Otherwise the alt buffer, which has no scrollback, gets
+    cursor keys — xterm.js's `_handlePassiveWheel` (`MouseService.ts:252-290`). Otherwise the view
+    scrolls locally.
+  - **"Tracks the wheel" is per category, not "any mouse mode"** (#129). `wheelGoesToApp` tests the
+    WHEEL bit of the frame's `mouseWantedEvents` mask (ADR-0016), so an X10 application (`?9`, presses
+    only) keeps the wheel local, as in xterm.js, whose X10 protocol carries only `DOWN` and whose wheel
+    listener is attached only for a protocol with the WHEEL bit (`MouseStateService.ts:28-29`,
+    `MouseService.ts:420-427`). A frame that omits the field routes locally.
+  - **Each step is total** (#675) — the guards and why they sit on the inputs are in
+    [pointer coordinates are bounded by their producer](../invariant/pointer-coordinates-are-bounded-by-their-producer.md).
 - **Wheel sensitivity is the one option a mounted `Terminal` changes** (#959). In xterm.js a
   Settings change applies at once — the mouse-report path reads `scrollSensitivity` per event, and
   the local scroll path picks it up through an option-change subscription; before this a consumer
@@ -93,7 +115,9 @@ directly.
 (#913), which is also the
 first time this territory was read against the pinned trees rather than argued from. It covers one
 moment only: what the references do to the viewport when the user provides input. The ownership split
-ADR-0013 assumes — who holds the scroll position at all — is still uncompared.
+ADR-0013 assumes — who holds the scroll position at all — is still uncompared. The wheel's routing
+is cited against xterm.js at the pin inline, in § Design model (#993), and has no reference-facts
+row.
 
 ## Cross-cutting invariants
 
