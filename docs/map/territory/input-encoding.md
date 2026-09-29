@@ -215,9 +215,9 @@ Nothing governs the encoding itself.
   frame has reported a cursor has nowhere to draw, and guessing a cell is worse than drawing nothing.
   It splits the text by **code point**, not by UTF-16 unit, because a preedit can carry astral
   scalars — `Array.from`'s iterator is what makes `"\u{1F600}"` one cell rather than two halves of a
-  surrogate pair. The no-origin rule is also what keeps a run from being drawn before the first
-  frame, when `rows` is still `0` and every row would read as off screen — so giving the origin a
-  default would quietly turn that into a preedit that never draws. It and `preeditLatch` are pure so that the two decisions are testable at all: the
+  surrogate pair. The no-origin rule is also what keeps `paintPreedit` from being reached before
+  the first frame, when `rows` is still `0` and every row would read as off screen — so giving the
+  origin a default would quietly turn that into a preedit that never draws. It and `preeditLatch` are pure so that the two decisions are testable at all: the
   widget half that acts on them needs a DOM, and the unit suite runs in `environment: "node"`, the
   blind spot #649 measured.
   The drawn run is cleared at `compositionend`, before the commit is anywhere near the grid: the

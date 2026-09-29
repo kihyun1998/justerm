@@ -563,10 +563,12 @@ export class Terminal {
    * Re-anchor the textarea at the retained cursor cell, re-reading the geometry. Runs at the moments
    * something reads the anchor — composition start and focus — because the coordinate cache cannot
    * see a cell-size change. `composing` outranks `force`: a composition freezes the anchor for this
-   * caller too. Why these moments:
+   * caller too
+   * ([`docs/map/invariant/composition-is-browser-owned-state.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/composition-is-browser-owned-state.md)).
+   * Why these moments:
    * [`docs/map/invariant/cell-size-is-derived-state.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/cell-size-is-derived-state.md);
    * the measured cost of a stale anchor at focus:
-   * [`docs/agents/reference-facts.md`](https://github.com/kihyun1998/justerm/blob/master/docs/agents/reference-facts.md).
+   * [`docs/agents/reference-facts.md`](https://github.com/kihyun1998/justerm/blob/master/docs/agents/reference-facts.md#the-ime-anchor-nobody-caches-it-and-xterm-shares-our-staleness-631-verified-2026-07-30-637-adjudicated-2026-07-30-649-measured-2026-07-31).
    */
   private syncTextareaAnchor(): void {
     this.applyTextareaAnchor(textareaMove(this.cursorAnchor, this.textareaCell, true, this.composition?.composing ?? false));
@@ -581,9 +583,9 @@ export class Terminal {
   }
 
   /** Draw the in-progress composition and re-aim the IME anchor at its end. `text` is
-   * `compositionupdate.data` — the OS's own preedit, not the textarea's value. Unchanged data is
-   * dropped. The re-aim is the voluntary writer, so it bypasses the freeze the involuntary ones go
-   * through: [ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md) D3, D4. */
+   * `compositionupdate.data` — the OS's own preedit, not the textarea's value (ADR-0028 D3).
+   * Unchanged data is dropped. The re-aim is the voluntary writer, so it bypasses the freeze the
+   * involuntary ones go through: [ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md) D4. */
   private showPreedit(text: string): void {
     const intent = preeditIntent(text, this.preeditText, this.preeditOrigin);
     this.preeditText = text;
@@ -601,7 +603,8 @@ export class Terminal {
    * [`docs/map/invariant/composition-is-browser-owned-state.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/composition-is-browser-owned-state.md).
    */
   private paintPreedit(codepoints: Uint32Array, at: TextareaAnchor): void {
-    // `rows` is 0 until the first frame; unreachable, since `preeditIntent` declines without an origin.
+    // `rows` is 0 until the first frame; unreachable, since `preeditIntent` declines without an
+    // origin (docs/map/territory/input-encoding.md).
     const row = at.row + this.frameOffset;
     if (row >= this.rows) {
       // Clear what is drawn, if anything. `preeditEnd` is left as is.

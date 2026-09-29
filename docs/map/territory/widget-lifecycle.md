@@ -91,7 +91,7 @@ obligation. The rest depend on a consumer remembering, and the measurement below
   registration is in a private constructor.
   `dispose()` ends the renderer **last**, after the widget has stopped feeding it, so nothing arrives
   at an already-ended renderer — as xterm.js disposes its addons in reverse registration order
-  (`src/common/public/AddonManager.ts:18` @ `699f553`). The consumer built the renderer and handed
+  ([reference facts](../../agents/reference-facts.md#widget-teardown--who-ends-a-handed-over-component-606-verified-2026-07-29)). The consumer built the renderer and handed
   it over; the widget drove it, so the widget ends it.
 - **It stops work and releases its grid** (since #770 added `removeGrid`). The renderer's wasm
   instance, GL context and the canvas context-loss listeners its Rust side owns survive `dispose()`;
