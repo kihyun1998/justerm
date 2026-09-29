@@ -155,6 +155,15 @@ nothing about it appears in the frame.
   provider's policy. Not measured: a never-activated page, a denied prompt, other browsers. And
   `""` and `null` are different answers: an empty clipboard still replies, because the application
   is blocked waiting — ghostty says so outright (`src/Surface.zig:5945-5946` @ `e6e26e1`).
+- **One subscription serves both surfaces** (`Terminal.mount`). Core produces a single event stream
+  and a backend has a single channel to push it down, so the clipboard pair arrives with the
+  notifications; `dispatchTermEvent` ignores the pair and the clipboard controller ignores the
+  notifications, so wiring either alone still works. The controller is held on the widget, not in
+  a local, because an in-flight clipboard read is already past the subscription — dropping the
+  subscription cannot stop it landing — so `dispose()` ends the controller
+  ([a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md)).
+  `handle` is floated rather than awaited: it never rejects, and the event channel is
+  fire-and-forget, so a clipboard round trip must not stall the stream.
 - **`ClipboardTarget` models three of `OSC 52`'s selectors and keeps `p` apart from `s`** (#828). The
   field admits `c`, `p`, `q`, `s` and eight cut buffers; the three a consumer can act on are modelled
   and the rest ignored, as alacritty ignores them, rather than folded onto a neighbour, which would be

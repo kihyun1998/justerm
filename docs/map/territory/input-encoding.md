@@ -211,6 +211,10 @@ Nothing governs the encoding itself.
   surrogate pair. It and `preeditLatch` are pure so that the two decisions are testable at all: the
   widget half that acts on them needs a DOM, and the unit suite runs in `environment: "node"`, the
   blind spot #649 measured.
+  The drawn run is cleared at `compositionend`, before the commit is anywhere near the grid: the
+  committed text leaves as an intent one deferred read later, by which time the next composition has
+  already started, so there is no frame to hand the job to — waiting for one drew the last syllable
+  twice (measured, #249).
 
 ## Code
 

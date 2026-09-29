@@ -148,27 +148,25 @@ export interface TerminalOptions {
 
 /**
  * The browser terminal widget: wires a {@link FrameSource} to a {@link Renderer}
- * and, given {@link TerminalOptions}, to the DOM (input capture + wheel + cursor
- * blink + focus). It owns no transport and no GL — both are injected. Each frame
- * from the source is handed to the renderer and presented. This keeps the widget
- * source-agnostic (frame mode / in-wasm) and renderer-agnostic (the real
- * justerm-renderer / a fake), which is what makes it testable without a backend or a canvas.
+ * and, given {@link TerminalOptions}, to the DOM (input capture, wheel, cursor
+ * blink, focus). It owns no transport and no GL — both are injected, so it runs
+ * against any source (frame mode or in-wasm) and any renderer. Each frame from the
+ * source is handed to the renderer and presented.
  *
- * The DOM attachment in {@link mount} is browser-only glue (not unit-tested, like
- * {@link captureInput}); the decisions it makes — wheel routing ({@link routeWheel}),
- * pointer routing ({@link PointerRouter}), the input snap
- * ({@link scrollsToBottomOnInput}) and renderer notification
- * ({@link rendererNotifyingSink}) — are pure and covered. The *wiring* between them is not:
- * `attach` needs a DOM, so the node suite cannot reach it and the browser proofs carry it.
+ * The decisions {@link mount} wires — wheel routing ({@link routeWheel}), pointer
+ * routing ({@link PointerRouter}), the input snap ({@link scrollsToBottomOnInput})
+ * and renderer notification ({@link rendererNotifyingSink}) — are pure; the DOM
+ * wiring is browser-only glue. How each half is tested:
+ * [`docs/map/territory/browser-proof-harness.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/browser-proof-harness.md).
  */
 export class Terminal {
   private unsubscribe: Unsubscribe | undefined;
-  /** Unsubscribe from the source's event channel (#117), if subscribed. */
+  /** Unsubscribe from the source's event channel, if subscribed. */
   private eventUnsub: Unsubscribe | undefined;
   /** Detachers for the input capture + wheel + focus listeners (mount w/ options). */
   private detach: Array<() => void> = [];
   /** Wheel → line delta (stateful: carries trackpad sub-line remainders). Shared
-   * by the app-report and local-scroll paths, like xterm's single accumulator. */
+   * by the app-report and local-scroll paths. */
   private readonly scroller: WheelScroller;
   /** Latest frame state the wheel router reads (a frame may omit any of them). */
   private mask = 0;
@@ -180,21 +178,16 @@ export class Terminal {
    * canvas can't receive composition events); created on mount w/ options. */
   private textarea: HTMLTextAreaElement | undefined;
   private composition: CompositionController | undefined;
-  /** The OSC 52 router (#841), when the consumer wired one. Held so `dispose()` can
+  /** The OSC 52 router, when the consumer wired one. Held so `dispose()` can
    * end it — an in-flight clipboard read outlives the event subscription. */
   private clipboardController: ClipboardController | undefined;
   /** Last cursor cell the textarea was moved to, so it repositions only on a move
-   * (not every frame — that would force a layout read+write per output flush). */
+   * rather than on every frame. */
   private textareaCell = "";
   /** The cursor cell the latest frame reported, retained so the anchor can be re-synced at a
-   * point of use without waiting for a frame. Not cleared when the cursor hides: an
-   * application can hide the caret and the user can still open an IME, and re-anchoring at the
-   * last known cell beats leaving the anchor wherever the geometry used to put it.
-   *
-   * **Written by {@link Terminal.track}, with the rest of the retained frame state, and never from
-   * inside a writer that can decline.** The same sentence above is why: if the caret hiding
-   * must not take the anchor away, it must not take its freshness away either, and a guard placed
-   * in front of the assignment does exactly that one step further in. */
+   * point of use without waiting for a frame. Written by {@link Terminal.track} on every frame, and
+   * not cleared when the cursor hides. Why:
+   * [`docs/map/invariant/composition-is-browser-owned-state.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/composition-is-browser-owned-state.md). */
   private cursorAnchor: TextareaAnchor | undefined;
   /** The `displayOffset` of the frame the renderer has actually been given — **not**
    * {@link Terminal.displayOffset}, which `onUserInput` advances to 0 optimistically ahead of the
@@ -206,29 +199,17 @@ export class Terminal {
    * viewport. The re-assert below compares against it so a composition over a still view costs
    * nothing. */
   private preeditPaintedRow: number | undefined;
-  /** The composition text currently drawn (#249). Held to drop the settling `compositionupdate`
+  /** The composition text currently drawn. Held to drop the settling `compositionupdate`
    * a real IME emits once per syllable with unchanged data — see {@link Terminal.showPreedit}. */
   private preeditText = "";
-  /** Where the open composition started (#249). Latched at `compositionstart` and held for the
-   * composition's life: the frame stream keeps reassigning {@link Terminal.cursorAnchor}, and a
-   * composition that re-read it would walk to wherever the application's output went. */
+  /** Where the open composition started. Latched at `compositionstart` and held for the
+   * composition's life, rather than re-read from {@link Terminal.cursorAnchor}, which the frame
+   * stream keeps reassigning. */
   private preeditOrigin: TextareaAnchor | undefined;
-  /** Where the open composition's run currently ends (#911) — the renderer's caret column. Set by
-   * every non-empty update and read by the NEXT `compositionstart`, which is where the composition
-   * that just ended hands its end over.
-   *
-   * **It is one past the run only while there IS a cell past it.** At the right edge `caret_col`
-   * steps back onto the last glyph's lead ([ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md) D5) and `range` shifts the run left, so there
-   * the handoff names a column inside the run and the next syllable lands on the previous one —
-   * #911's own symptom, unfixed at the margin. The row is the run's, so a commit that WRAPS leaves
-   * it on the line above. Neither is a regression (the frame stream is equally wrong there), and
-   * neither is answerable here: the real destination is column 0 of the next row, which needs the
-   * grid width and `DECAWM` — engine state this widget does not hold and must not guess at.
-   *
-   * Consumed at that latch, which is what scopes it to a single composition: a composition that
-   * draws nothing (a start and an end with no update in between) leaves it undefined, so the latch
-   * after it falls back to the frame stream instead of reaching past it for a run that may be
-   * arbitrarily old — rows that have since scrolled away. */
+  /** Where the open composition's run currently ends — the renderer's caret column. Set by every
+   * non-empty update and consumed by the next `compositionstart`'s latch, so a composition that draws
+   * nothing leaves it undefined. At the right margin it names a column inside the run, and after a
+   * commit that wraps, the row above: [ADR-0028](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0028-composition-surfaces-have-one-writer-each.md). */
   private preeditEnd: TextareaAnchor | undefined;
   /** The consumer's suggestion text and how it draws ([justerm#972](https://github.com/kihyun1998/justerm/issues/972)). `""` = none. */
   private suggestionText = "";
@@ -237,7 +218,7 @@ export class Terminal {
   /** The viewport cell the renderer was last given the suggestion at, or `undefined` when nothing
    * is drawn. */
   private suggestionPainted: TextareaAnchor | undefined;
-  /** The link state (#934), when {@link TerminalOptions.links} is wired. */
+  /** The link state, when {@link TerminalOptions.links} is wired. */
   private links: LinkTracker | undefined;
   /** The pointer router, once the DOM group is attached — a frame re-asks its hover question. */
   private router: PointerRouter | undefined;
@@ -245,7 +226,7 @@ export class Terminal {
   private applyingFrame = false;
   /** The element's inline `cursor` from before a link was hovered, restored on leave. */
   private cursorBeforeLink: string | undefined;
-  /** Latched by {@link Terminal.dispose} (#606): the widget's lifecycle is one-shot, so this both
+  /** Latched by {@link Terminal.dispose}: the widget's lifecycle is one-shot, so this both
    * keeps the renderer from being disposed twice and refuses a re-mount. */
   private disposed = false;
 
@@ -288,13 +269,12 @@ export class Terminal {
     return true;
   }
 
-  /** Focus the keyboard/IME input target (the hidden textarea, #116). Consumers
+  /** Focus the keyboard/IME input target (the hidden textarea). Consumers
    * that move focus away — an accessible-view overlay, a control button — call this
    * to return it, since the real input target is the textarea, not the canvas.
    *
-   * Re-anchors first: focusing is a read moment for the element's position — the browser's
-   * focus steps scroll the nearest scrollable ancestor to it — and the cell may have moved since
-   * the cursor last did. */
+   * Re-anchors first: focusing is a moment something reads the element's position, and the cell
+   * may have moved since the cursor last did. */
   focus(): void {
     this.syncTextareaAnchor();
     this.textarea?.focus();
@@ -303,16 +283,9 @@ export class Terminal {
   /**
    * Begin consuming frames from the source; wire the DOM if options were given.
    *
-   * **Not callable after {@link Terminal.dispose}**. The alternative — a widget that can be
-   * unmounted and mounted again — is a larger contract than this one currently keeps, and pretending
-   * to keep it is worse than refusing: `textareaCell` and `cursorAnchor` survive disposal, so a
-   * remounted widget would park the IME candidate window at the *previous* mount's anchor — since
-   * #631 only until the next focus or composition start re-syncs it, which shortens the window
-   * without closing it — and a re-mounted
-   * renderer would have lost its `prefers-reduced-motion` listener for good (its only registration is
-   * in a private constructor). Throwing names the contract at the moment it is broken; the reference
-   * makes the same call structurally — xterm.js's disposable store latches on dispose and `open()`
-   * has no re-entry path. Build a new `Terminal` (and a new renderer) instead.
+   * **Not callable after {@link Terminal.dispose}** — it throws. Build a new `Terminal` (and a new
+   * renderer) instead. Why the lifecycle is one-shot:
+   * [`docs/map/territory/widget-lifecycle.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/widget-lifecycle.md).
    */
   mount(): void {
     if (this.disposed) {
@@ -388,47 +361,36 @@ export class Terminal {
     if (!this.applyingFrame) this.renderer.render();
   }
 
-  /** Wraps the consumer's sink so input that counts returns the view to the bottom (#913). */
+  /** Wraps the consumer's sink so input that counts returns the view to the bottom. */
   private scrollOnUserInput(inner: InputSink, o: TerminalOptions): InputSink {
     return {
       send: (intent) => {
-        // Before forwarding, as xterm.js fires its scroll request before `onData`.
         this.onUserInput(intent, o);
         inner.send(intent);
       },
     };
   }
 
-  /** What user input does locally: drop the selection, and return the view to the bottom (#913). */
+  /** What user input does locally: drop the selection, and return the view to the bottom. */
   private onUserInput(signal: InputScrollSignal, o: TerminalOptions): void {
     if (!isUserInput(signal)) return;
-    // Unconditional — see {@link isUserInput}. Optional on the port, so a consumer on the older
-    // `LocalPointer` shape keeps working and simply does not drop its selection.
+    // Unconditional — see {@link isUserInput}. `clear` is optional on the port.
     o.selection?.clear?.();
     if (!o.onScroll || !scrollsToBottomOnInput(signal, this.displayOffset)) return;
-    // Optimistically advance, as the wheel's scroll case does: frame mode's echo is an
-    // async round-trip, so without it every keystroke re-requests the same scroll.
+    // Optimistic, ahead of the echo, as the wheel's scroll case is.
     this.displayOffset = 0;
     o.onScroll(0);
   }
 
   /** Retain the state each frame carries — scroll, routing, and the cursor cell the IME anchor is
-   * placed from; drop the wheel remainder
-   * on a buffer switch (alt-screen), so a fresh screen doesn't inherit a stale
-   * trackpad fraction.
-   *
-   * **Every write here is unconditional on purpose.** What a frame says about *drawing* —
-   * `cursorVisible` is `cursor.visible && display_offset == 0`, a decision about a caret that would
-   * otherwise ink over scrollback — never decides whether the widget keeps what that frame
-   * *said*. The coordinates stay true while the caret is hidden and are exactly the cell the cursor
-   * holds once the view returns, which is pinned on the producing side in
-   * `justerm-core/tests/cursor_coordinate_while_hidden.rs`. Ours, not xterm.js's: its `MouseService.reset()` runs only on a
-   * terminal reset (`CoreBrowserTerminal.reset`, 699f553), never on a buffer switch. */
+   * placed from — and drop the wheel remainder on a buffer switch (alt-screen). Every write is
+   * unconditional: what a frame says about *drawing* (`cursorVisible`) never decides whether the
+   * widget keeps what that frame *said*. Why:
+   * [`docs/map/invariant/composition-is-browser-owned-state.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/composition-is-browser-owned-state.md),
+   * [`docs/map/territory/viewport.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/viewport.md). */
   private track(frame: DecodedFrame): void {
     this.mask = frame.mouseWantedEvents ?? 0;
-    // The IME anchor's cell (#921). Here, with the other retained state, rather than inside
-    // `positionTextarea` below — retention is unconditional and the DOM write is not, and holding
-    // both in one function is what let a *drawing* guard sit in front of a *data* assignment.
+    // The IME anchor's cell, retained here with the rest of the frame state (#921).
     if (frame.cursorRow !== undefined) {
       this.cursorAnchor = { col: frame.cursorCol ?? 0, row: frame.cursorRow };
     }
@@ -446,7 +408,7 @@ export class Terminal {
 
   /** Attach the DOM listeners (browser-only glue). A hidden `<textarea>` over the
    * cursor is the real keyboard/IME/clipboard target (a canvas can't receive
-   * composition events, #116); keys/paste/focus flow through it via {@link
+   * composition events); keys/paste/focus flow through it via {@link
    * captureInput}, gated by the {@link CompositionController} so an IME owns its
    * keys, then by the consumer's {@link TerminalOptions.beforeKey}. The element (a container over
    * the canvas) keeps the wheel and the pointer. */
@@ -456,26 +418,14 @@ export class Terminal {
     const input = o.input;
     const getGeometry = o.getGeometry;
     if (!element || !input || !getGeometry) return;
-    // #913 — the snap wraps the consumer's sink, so everything reaching it has already
-    // survived the IME gate and `beforeKey`. It is NOT every intent the consumer receives:
-    // `onWheel` sends its app report and its alt-screen cursor keys straight to `o.input`,
-    // past both wrappers. Unreachable for the snap (an alt screen is always at offset 0),
-    // but the bypass is real and the next reader needs it to be stated correctly.
+    // The snap wraps the consumer's sink; `onWheel`'s reports go straight to `o.input`, past it
+    // (docs/map/territory/viewport.md).
     const sink = rendererNotifyingSink(this.scrollOnUserInput(input, o), this.renderer);
     const ta = makeHiddenTextarea();
     element.appendChild(ta);
     this.textarea = ta;
-    // Establish the renderer's focus state before any focus event (#912). `sink` carries focus
-    // *changes*, so a terminal nobody clicks is never described at all — and a renderer that assumed
-    // focus blinked its caret and painted the active selection tint for the life of the pane.
-    //
-    // Unconditionally `false`, not `document.activeElement === ta`: `ta` was created two lines up and
-    // appended, so it cannot be the active element. Reporting through the renderer rather than
-    // through `sink` on purpose — `sink` is the *input* intent stream, and a mount is not a user
-    // action; a consumer that encodes focus reports would otherwise write bytes to the PTY at mount.
-    //
-    // The references and the 2-1 split behind taking BOTH this call and an unfocused default are in
-    // [`docs/agents/reference-facts.md`](https://github.com/kihyun1998/justerm/blob/master/docs/agents/reference-facts.md) § "The INITIAL focus state — who establishes it".
+    // Establish the renderer's focus state before any focus event (#912): unfocused, reported to the
+    // renderer directly rather than through `sink` (docs/map/territory/widget-lifecycle.md).
     this.renderer.setFocused?.(false);
     const composition = new CompositionController(ta, sink);
     this.composition = composition;
@@ -500,24 +450,15 @@ export class Terminal {
     );
     // Composition events only fire on the focused textarea; route them to the
     // controller, then clear the textarea once its deferred read has run.
-    // The caret also stops blinking for the duration (#592) — composition is a browser fact the
-    // engine never sees, so this is the only place that can tell the renderer about it.
+    // The caret also stops blinking for the duration (#592).
     const onStart = (): void => {
-      // Re-anchor BEFORE the controller is told a composition began (#631). The order is the
-      // contract, not a coincidence: this is the one moment the OS reads the anchor to place its
-      // candidate window, and the "don't move the textarea mid-composition" guard (`textareaMove`)
-      // keys on the controller's `composing`, which reads false here only because this runs before
-      // `compositionStart()` — so flipping these two lines would silently disable the re-sync. xterm.js orders its own `_syncTextArea()` before
-      // `compositionHelper.compositionstart()` for exactly that reason.
+      // Re-anchor BEFORE the controller is told a composition began (#631): the guard in
+      // `textareaMove` keys on `composing`, which reads false here only because this runs before
+      // `compositionStart()`. Swapping the two silently disables the re-sync.
       this.syncTextareaAnchor();
-      // Latch the origin here, after the re-sync above has made the cell current (#631) and while
-      // the guard still reads `composing === false`. Everything the composition draws hangs off it.
-      //
-      // `active`, not `composing`: read before `compositionStart()` below, it is exactly "a commit is
-      // still queued behind its deferred read", which is the state in which `cursorAnchor` cannot yet
-      // describe where this composition begins (#911). `composition.test.ts` pins the CONTROLLER's
-      // value at this instant — true in continuous CJK, false otherwise; the wiring that reads it
-      // here needs a DOM and is gated by the #911 e2e instead.
+      // Latch the origin, after the re-sync above made the cell current. `active`, not `composing`:
+      // read before `compositionStart()`, it means a commit is still queued behind its deferred read
+      // (#911, ADR-0028).
       this.preeditOrigin = preeditLatch(this.cursorAnchor, this.preeditEnd, composition.active);
       this.preeditEnd = undefined;
       composition.compositionStart();
@@ -532,10 +473,7 @@ export class Terminal {
       composition.compositionEnd();
       this.renderer.setComposing?.(false);
       if (this.paintSuggestion(false)) this.renderer.render();
-      // Clear the drawn run BEFORE the commit is anywhere near the grid. Measured (#249): the
-      // committed text leaves as an intent one deferred read later, by which time the next
-      // composition has already started — so there is no frame to hand the job over to, and
-      // waiting for one would leave the last syllable drawn twice.
+      // Clear the drawn run BEFORE the commit reaches the grid (docs/map/territory/input-encoding.md).
       this.showPreedit("");
       this.preeditOrigin = undefined;
       this.clearTextareaWhenIdle();

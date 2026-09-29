@@ -106,6 +106,12 @@ composition it never saw, so nothing throws and no test on the core side can fai
   composition in its causal chain. Measured in a browser rather than traced: with the cursor moved
   four cells during the excursion, the composition's caret landed at the cell the view left rather
   than the cell the cursor holds, while the same sequence without the excursion landed correctly.
+  The retention now lives in `Terminal.track`, with the rest of the retained frame state, rather
+  than in `positionTextarea`: retention is unconditional and the DOM write is not, and holding both
+  in one function is what let a *drawing* guard sit in front of a *data* assignment. For the same
+  reason the retained cell is not cleared when the cursor hides — an application can hide the caret
+  and the user can still open an IME, and re-anchoring at the last known cell beats leaving the
+  anchor wherever the geometry used to put it.
 - **Re-deriving the caret column per frame snaps it back under the run** (`JustermRenderer.setPreedit`,
   `preeditCaret`). ADR-0028 D5 is a rule about every frame: frames keep arriving while a composition
   is open, each describing the engine's cursor, which knows nothing of the preedit — so without the

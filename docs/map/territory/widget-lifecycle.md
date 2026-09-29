@@ -79,7 +79,9 @@ obligation. The rest depend on a consumer remembering, and the measurement below
   never attaches; the `attach()` call is the only half that reaches a consumer-supplied `Renderer`,
   whose own default nobody here controls. It reports to the renderer directly rather than through
   the input sink — a mount is not a user action, and a consumer that encodes focus reports would
-  otherwise write bytes to the PTY at mount.
+  otherwise write bytes to the PTY at mount. The value is unconditionally `false`, not
+  `document.activeElement === ta`: the textarea was created and appended a moment earlier, so it
+  cannot be the active element.
 - **`Terminal.dispose()` is end of life, not unmount.** `mount()` after it throws. Declared rather
   than left open because the alternative was already broken: `textareaCell` and `cursorAnchor`
   survive disposal (a remounted widget parks the IME candidate window at the previous mount's anchor;

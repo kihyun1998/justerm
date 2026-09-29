@@ -216,6 +216,11 @@ a justerm shape here wrong, only corroborate one.
   poll windows with the timer running and 0 of 31 with it stopped (`__blinkIdleProbe`'s first
   poll, bounded at input + 1400ms, missed 6 of 6). This is why #575 / #592 / #593 failed
   together on CI while never failing locally, where a present is ~60ms.
+- **`Terminal`'s decisions are unit-tested; its wiring is carried by the browser proofs.** It owns
+  no transport and no GL — both are injected — so it runs against a fake source and a fake
+  renderer, and the decisions `mount` wires (`routeWheel`, `PointerRouter`,
+  `scrollsToBottomOnInput`, `rendererNotifyingSink`) are pure. `attach`, which wires them to the
+  DOM, needs one, so the node suite cannot reach it.
 
 ## Code
 
