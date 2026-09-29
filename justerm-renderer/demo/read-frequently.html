@@ -1,0 +1,67 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — every 2D context the rasteriser reads back is willReadFrequently (#1019)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  The rasteriser reads its OffscreenCanvas 2D contexts back with getImageData; a context created
+  without `willReadFrequently: true` stays GPU-backed in Chromium, so each read is a synchronous
+  GPU->CPU readback (#1019).
+
+  The page wraps OffscreenCanvas.prototype.getContext and the 2D context's getImageData before the
+  renderer exists, then drives every rasteriser path that reads back: construction (the `█` ink
+  scan), a font size change (a rebuild), a subpixel configuration (the calibration draw and the LCD
+  mask) and a cache-miss glyph. Checks: every 2D context that was read back was created with
+  `willReadFrequently: true`. Positive controls: reads were seen, on both a transparent and an
+  opaque (`alpha: false`) context — without them "no offending read" would also be what a spy that
+  saw nothing reports.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="32"></canvas>
+<script type="module">
+  // Installed before init: every context the renderer creates passes through here.
+  const created = new WeakMap(); // context -> the options it was created with
+  const getContext = OffscreenCanvas.prototype.getContext;
+  OffscreenCanvas.prototype.getContext = function (kind, opts) {
+    const ctx = getContext.call(this, kind, opts);
+    if (kind === "2d" && ctx && !created.has(ctx)) created.set(ctx, { ...(opts ?? {}) });
+    return ctx;
+  };
+  const reads = []; // the creation options of the context each getImageData read
+  const getImageData = OffscreenCanvasRenderingContext2D.prototype.getImageData;
+  OffscreenCanvasRenderingContext2D.prototype.getImageData = function (...args) {
+    reads.push(created.get(this) ?? null);
+    return getImageData.apply(this, args);
+  };
+
+  const { default: init, JustermRenderer } = await import("../pkg/justerm_renderer.js");
+  const { fitGrid } = await import("./proof.js");
+  await init();
+
+  const COLS = 2, ROWS = 1, N = COLS * ROWS;
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(new Uint32Array(256), 0xffffff, 0x000000);
+  r.setFontSize(g, 24);
+  r.setSubpixelAntialiasing(g, true);
+  fitGrid(r, g, COLS, ROWS);
+  // "가" and "Ω" are outside the ASCII prebake, so drawing them is a cache miss.
+  r.apply_frame(g, COLS, ROWS, new Uint32Array(N), new Uint32Array(N), new Uint32Array([0xac00, 0x3a9]), new Uint16Array(N), true);
+  r.render();
+
+  const offending = reads.filter((o) => !o || o.willReadFrequently !== true);
+  const checks = {
+    readsWereSeen: reads.length > 0,
+    anOpaqueContextWasRead: reads.some((o) => o && o.alpha === false),
+    aTransparentContextWasRead: reads.some((o) => o && o.alpha !== false),
+    everyReadContextIsWillReadFrequently: offending.length === 0,
+  };
+
+  window.__proof = {
+    ok: Object.values(checks).every(Boolean), checks,
+    measured: { reads: reads.length, offending: offending.length, sample: offending.slice(0, 3) },
+  };
+  window.__done = true;
+</script>
