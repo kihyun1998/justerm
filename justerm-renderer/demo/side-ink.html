@@ -40,7 +40,14 @@
   off.textBaseline = "alphabetic";
   off.textAlign = "left";
   const pen = Math.round(16 * dpr * 1.5);
-  const base = Math.round(16 * dpr * 2);
+  // The glyph box as the renderer bakes it (ADR-0022, #986): `ch` tall, its top on a whole device
+  // row, the alphabetic baseline `ascent` below that top — `ch` less the drawn size's ideographic
+  // depth, unrounded (`metrics::line_box`). Drawn at the same sub-pixel phase, a reach past
+  // `ascent` above or `ch - 1 - ascent` below is exactly ink on a row outside the box.
+  off.font = FONT;
+  const ideoBelow = -off.measureText("W").ideographicBaseline;
+  const ascent = ch - ideoBelow;
+  const base = Math.round(16 * dpr * 2) + ascent;
 
   const freeInk = (text) => {
     off.clearRect(0, 0, big, big);
@@ -61,11 +68,8 @@
     return { lit, above: base - minY, below: maxY - base, left: pen - minX, right: maxX + 1 - (pen + cw) };
   };
   const blockInk = freeInk("█");
-  // The cell's reach: vertically the glyph box (ADR-0022, #986) — `ch` tall, its alphabetic
-  // baseline the face's ideographic baseline above the bottom, as xterm draws it; horizontally the box.
-  off.font = FONT;
-  const ideoBelow = -off.measureText("W").ideographicBaseline;
-  const cellInk = { ...blockInk, above: Math.round(ch - ideoBelow), below: Math.round(ideoBelow) - 1 };
+  // The cell's reach: vertically the glyph box above; horizontally the box.
+  const cellInk = { ...blockInk, above: ascent, below: ch - 1 - ascent };
 
   const metric = (t) => {
     off.font = FONT;
