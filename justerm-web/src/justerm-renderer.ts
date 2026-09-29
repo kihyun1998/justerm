@@ -816,17 +816,18 @@ export class JustermRenderer implements Renderer {
     return { width: this.backend.cell_width(this.lease.id), height: this.backend.cell_height(this.lease.id) };
   }
 
-  /** Change the font size (CSS px) at runtime (#406/#417) — re-bakes the atlas. The cell size moves,
-   * so **the consumer must re-fit** (recompute its grid + `resize`) after calling. A no-op at the
-   * current size. */
+  /** Change the font size (CSS px) at runtime — this terminal joins the font configuration the new
+   * size names. The cell size moves, so **the consumer must re-fit** (recompute its grid +
+   * {@link resize}) after calling. A no-op at the current size. */
   setFontSize(cssPx: number): void {
     this.backend.setFontSize(this.lease.id, cssPx);
     this.reapplySurface();
   }
 
-  /** Change the font family at runtime (#413/#417) — a CSS `font-family` string, re-bakes the atlas.
-   * As with {@link setFontSize}, the cell size can move, so **the consumer must re-fit** after. Load
-   * a webfont before an unfamiliar family (the browser silently falls back otherwise). */
+  /** Change the font family at runtime — a CSS `font-family` string; this terminal joins the
+   * configuration it names. As with {@link setFontSize}, the cell size can move, so **the consumer
+   * must re-fit** after. Load a webfont before an unfamiliar family (the browser silently falls back
+   * otherwise). */
   setFontFamily(family: string): void {
     this.backend.setFontFamily(this.lease.id, family);
     this.reapplySurface();
@@ -834,7 +835,7 @@ export class JustermRenderer implements Renderer {
 
   /**
    * Change the weight regular text is drawn at — the live counterpart of
-   * {@link JustermRendererOptions.fontWeight}. Re-bakes the atlas and presents.
+   * {@link JustermRendererOptions.fontWeight}. Joins the configuration the weight names, and presents.
    *
    * **No re-fit**, unlike {@link setFontFamily}: the cell is measured at `"normal"` whatever the
    * weight, so the grid the consumer drives its engine at is unaffected.
@@ -852,7 +853,8 @@ export class JustermRenderer implements Renderer {
 
   /**
    * Turn per-channel (LCD / subpixel) text coverage on or off — the live counterpart of
-   * {@link JustermRendererOptions.subpixelAntialiasing}. Re-bakes the atlas and presents. No re-fit:
+   * {@link JustermRendererOptions.subpixelAntialiasing}. Joins the configuration it names, and
+   * presents. No re-fit:
    * the cell does not move.
    */
   setSubpixelAntialiasing(on: boolean): void {
@@ -866,56 +868,15 @@ export class JustermRenderer implements Renderer {
    * JustermRendererOptions.lineHeight}, whose docs carry the units and the clamping.
    *
    * **The consumer must re-fit afterwards**, exactly as for {@link setFontSize}/{@link
-   * setFontFamily}: call {@link resize} with the CSS box. These do not do it for you, because this
-   * object has no reference to the fit — the widget and the consumer own that (the demo's
-   * `setFontSize(); fit(); render();` is the shape, #417). Skipping it is not cosmetic: the **grid**
-   * is then a column count derived from the old cell, so the terminal is fitted to a box it no
-   * longer occupies. (The *buffer* half is handled — since renderer 0.15.0 these setters re-derive
-   * it here, because the renderer stopped doing it; what they cannot derive is the grid, which needs
-   * a container measurement this object does not hold.)
+   * setFontFamily}: call {@link resize} with the CSS box — **not `FitController.fit()`**, whose port
+   * carries a grid and never reaches this canvas's display box. Skipping it leaves the grid a column
+   * count derived from the old cell.
    *
-   * **Call this {@link resize} directly — not `FitController.fit()`**, even if you hold one. The
-   * reason is a *signature*, not a bug: `ResizePort.resize(cols, rows)` carries a **grid**, and the
-   * canvas display box is set only here, from a **box**. So a flush reaches the consumer's port and
-   * stops there; nothing in that chain touches `canvas.style.width/height`. Secondarily, the flush is
-   * debounced (100 ms by default), which is 100 ms of displaying a buffer that no longer exists.
-   *
-   * Until #632 there was a third reason and it was the one written here: the controller deduped on
-   * `cols`/`rows` alone, so a cell change that left the grid identical was dropped outright.
-   * **That one is fixed** — the key now carries the cell too, so `FitController` is safe to keep
-   * using for container resizes across a spacing change. It still is not the thing that re-sizes
-   * this canvas.
-   *
-   * xterm.js draws the same line, which is why this is a shape rather than a preference: an option
-   * change there re-lays out at the *current* grid (`RenderService.ts` `handleResize(cols, rows)`) and
-   * its `FitAddon` registers no listeners at all — re-deriving the grid from the pixel box stays
-   * manual. alacritty auto-re-fits, but it owns its OS window; an embeddable widget does not.
-   *
-   * **Read the cell back rather than deriving it from what you passed.** `adopt_spacing` can hand you
-   * something other than what you asked for in three separate ways, and none of them reports an error:
-   * a `lineHeight` whose cell the atlas cannot hold is *shrunk*; a failed atlas re-bake rolls
-   * the whole change back to the previous spacing; and **what happens while the GL context is lost
-   * depends on which renderer you are on**, so read the cell back rather than assuming either:
-   *
-   * - **renderer 0.14.x and earlier** — the cell moves immediately and the buffer does not.
-   *   `adopt_spacing` ran `recompute_cell()` *before* its lost-context guard, so {@link cellSize}
-   *   reported the new cell while the atlas re-bake and the drawing-buffer resize waited for
-   *   `webglcontextrestored`. (This bullet used to say the cell "does not move at all", which was
-   *   false against that ordering — corrected in #632.)
-   * - **after that** — neither moves until the restore. The cell belongs to a *font configuration*
-   *   since #772, and a setter arriving on a dead context cannot bake one, so it advances the
-   *   selector and defers; `restore` re-selects from the surviving selectors and the cell lands
-   *   then. This is the more consistent of the two, and it is the one #632's dedupe wants: there is
-   *   no longer a window in which the cell has moved and the buffer has not.
-   *
-   * **#632's conclusion is unaffected either way**, which is worth stating because the comment it
-   * corrected is the bullet above: {@link FitController} dedupes on the cell *and* the grid, and the
-   * reason is that a cell change can leave the grid identical — true under both orderings.
-   *
-   * {@link cellSize} and
-   * {@link terminalSize} are the truth afterwards — and `terminalSize` matters as much as the cell,
-   * because the renderer's internal re-size adopts what the drawing buffer will actually grant,
-   * so a large enough cell shrinks the *grid* as well.
+   * **Read the cell back rather than deriving it from what you passed**: a `lineHeight` whose cell
+   * the atlas cannot hold is shrunk, a failed atlas re-bake rolls the whole change back, and on a lost
+   * context the change lands at the restore. {@link cellSize} and {@link terminalSize} are the truth
+   * afterwards — a large enough cell shrinks the *grid* as well. Why each:
+   * [`docs/map/territory/fit.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/fit.md) § The widget re-fits on `resize`, and only there.
    */
   setLetterSpacing(cssPx: number): void {
     this.backend.setLetterSpacing(this.lease.id, cssPx);
@@ -936,15 +897,9 @@ export class JustermRenderer implements Renderer {
    * **No re-fit**, unlike {@link setFontSize}/{@link setFontFamily}: the cell geometry does not
    * move, so the grid the consumer drives its engine at is unaffected.
    *
-   * Presents immediately, and — unlike {@link setCursorBlink} / {@link setTextBlinkInterval}, which
-   * first check that there is a cursor or a frame to redraw — does so unconditionally. Those guards
-   * exist because their redraw has nothing to say without retained content; this one always does.
-   * The alpha rides the *clear* colour as well as the per-cell one (`webgl/draw.rs` `draw`), so even an
-   * empty terminal changes, and a consumer that sets this before the first frame sees it at once
-   * rather than at the next output.
-   *
-   * Out-of-range values are the renderer's to clamp (`set_bg_alpha`, `[0,1]`) and are deliberately
-   * not re-clamped here — two layers holding the same bound is how they drift apart.
+   * Presents immediately and unconditionally — the alpha rides the clear colour as well as each
+   * cell's, so even an empty terminal changes. Out-of-range values are the renderer's to clamp
+   * (`[0,1]`).
    */
   setBgAlpha(alpha: number): void {
     this.backend.setBgAlpha(this.lease.id, alpha);
@@ -973,56 +928,24 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Adopt a new device pixel ratio (#325, consumer half of #322) — re-bake the atlas at the new
-   * density and re-apply the canvas display box. **Called for you** by the widget's own resolution
-   * watcher; a consumer needs this only to drive the path in a test, or to serve a density this
-   * object cannot observe (a `window` it was not built against).
+   * Adopt a new device pixel ratio: every atlas re-bakes at the new density, and every terminal on
+   * this surface re-derives its drawing buffer and canvas display box. **Called for you** by the
+   * widget's own resolution watcher; a consumer needs this only to drive the path in a test, or to
+   * serve a density this object cannot observe (a `window` it was not built against).
    *
-   * **Two things move and neither of them is the renderer's to finish.** The renderer re-rasterises
-   * at the new density and stops: since 0.15.0 it leaves the drawing buffer exactly as it was asked
-   * for (a buffer holding N grids belongs to none of them, so it will not re-derive one), and it
-   * never touches the DOM. So this method re-derives the buffer from the grid it is holding *and*
-   * re-writes the canvas's CSS box from it — without the first the terminal would shrink by the
-   * density ratio, and without the second the browser would scale a stale box. The latter is the
-   * blur #322 exists to remove, reintroduced one layer out.
-   *
-   * **The CSS box can move, which is not obvious and is why this is not just a forward.** The device
-   * cell is `round(metric * dpr)`, and dividing that back by the new ratio need not land on the old
-   * CSS cell. Measured (font 16, 25x6 grid): CSS height `96` at dpr 1 and at dpr 1.5, but `99` at
-   * dpr 2 — the cell is 33 device px there, and `33 / 2 = 16.5`.
-   *
-   * **Whether it moves is font dependent, so do not treat the numbers above as the contract.** It
-   * turns on the fractional part of the metric, which differs per font — and equal cells at one
-   * density say nothing about the next: this machine's font goes 19 -> 37 device px across dpr 1 -> 2
-   * while CI's Linux font goes 19 -> 38, from the *same* 19. An e2e assertion that the box had moved
-   * was red on CI for exactly that reason. What always holds, and is what to assert, is
+   * **The CSS box can move** — the device cell is `round(metric * dpr)`, and dividing that back need
+   * not land on the old CSS cell — and whether it does is font dependent. What always holds is
    * `canvas.style x dpr === drawing buffer`.
    *
-   * **No re-fit, deliberately.** The grid is left alone, so a terminal in a fixed container can end
-   * up a few CSS px larger or smaller than the box that fitted it. Re-deriving the grid needs the
-   * container's measurements, which this object does not hold — the consumer owns the fit (#417,
-   * #578) — and the reference draws the same line: xterm.js's `handleDevicePixelRatioChange`
-   * re-measures the char size, tells its renderer and repaints, and calls no `resize`
-   * (`src/browser/services/RenderService.ts:279-290` @ `699f553`); its `FitAddon` stays manual. A
-   * consumer that wants the grid re-derived calls {@link resize} with its current CSS box, exactly
-   * as it already must after {@link setFontSize} or {@link setLetterSpacing}.
-   *
-   * A no-op at an unchanged ratio, and **dropped while the GL context is lost** — both inside the
-   * renderer, so this is safe to call unconditionally.
+   * **No re-fit**: the grid is left alone, so a terminal in a fixed container can end up a few CSS px
+   * larger or smaller than the box that fitted it; call {@link resize} with the current CSS box to
+   * re-derive it. A no-op at an unchanged ratio, and **dropped while the GL context is lost** — so
+   * this is safe to call unconditionally. Why each: [`docs/map/territory/cell-geometry.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/cell-geometry.md) § A density change moves the cell and may move the CSS box.
    */
   setDevicePixelRatio(dpr: number): void {
-    // Through the surface, because the density is the surface's: one canvas is one drawing buffer at
-    // one `devicePixelRatio`, so this moves EVERY grid's cell, and the surface re-derives every
-    // attached terminal rather than only the one whose consumer happened to call (#775).
-    // Re-deriving and presenting are the SURFACE's now, and doing them here too would do both twice
-    // per density change — two `resizeSurface` calls (each of which clears the buffer) and two
-    // presents. The obligation itself is unchanged and still real: since renderer 0.15.0 the renderer
-    // re-bakes the atlases and leaves every device-px measurement exactly as it was given, because
-    // those are the consumer's and it will not convert them through its own copy of the density — a
-    // copy that lags, since this very notification is dropped while the context is lost (#773).
-    // Without the re-ask the buffer would stay put while `cssWidth()` divided it by the new ratio,
-    // so a move to a denser monitor would *halve* the displayed terminal. What changed is only WHO
-    // pays it: every attached terminal, not just the one whose consumer happened to call.
+    // Through the surface: one canvas is one density, so this moves every grid's cell and the surface
+    // re-derives every attached terminal (#775; docs/map/territory/cell-geometry.md § A density
+    // change moves the cell and may move the CSS box).
     this.surface.setDevicePixelRatio(dpr);
   }
 
@@ -1038,10 +961,8 @@ export class JustermRenderer implements Renderer {
    * terminal's handler for the entire canvas, last call wins, with no diagnostic. A host driving
    * several terminals should register once, on the surface.
    *
-   * **Nothing is re-registered with the renderer here.** The surface holds one relay for the life of
-   * the *surface*, because `setOnContextLoss` takes a `Function` and offers no unset; this swaps the
-   * handler behind it. That is what makes clearing expressible at all, and it is why a swap cannot
-   * leave the renderer holding a stale closure.
+   * Nothing is re-registered with the renderer here: the surface holds one relay for its life and this
+   * swaps the handler behind it, which is what makes clearing expressible.
    *
    * **No redraw**, unlike {@link setCursorBlink} / {@link setBgAlpha}: this changes who is told
    * about a future event, not anything currently on screen.
@@ -1056,9 +977,7 @@ export class JustermRenderer implements Renderer {
    * knob exists.
    *
    * Applies to the **next** loss. A deadline already armed keeps the duration it was armed with, so
-   * shortening this during a loss does not bring that loss's notification forward — the renderer
-   * stamps each deadline with the loss it belongs to and never re-arms one (`context_loss.rs`, the
-   * `loss_epoch` field).
+   * shortening this during a loss does not bring that loss's notification forward.
    */
   setContextRestoreTimeout(ms: number): void {
     this.surface.setContextRestoreTimeout(ms);
@@ -1108,10 +1027,8 @@ export class JustermRenderer implements Renderer {
    * retained cell in wasm. No re-fit needed (the cell geometry is unchanged); it presents on the
    * render below. The a11y cell mirror reads only text, so it needs no re-notification.
    *
-   * **Leaves {@link setBgAlpha} alone**, which is the point of keeping the alpha off {@link Theme}
-   *: swapping the colour scheme does not silently make a translucent terminal opaque again.
-   * Stated because it is a property of where the field lives rather than of any code here — nothing
-   * in this method would have to change for it to be false. */
+   * **Leaves {@link setBgAlpha} alone**: the alpha is not on {@link Theme}, so swapping the colour
+   * scheme does not make a translucent terminal opaque again. */
   setTheme(theme: Theme): void {
     const colors = this.buildPalette(Uint32Array.from(theme.ansi));
     this.palette = { colors, defaultFg: theme.defaultFg, defaultBg: theme.defaultBg };
@@ -1135,35 +1052,14 @@ export class JustermRenderer implements Renderer {
     this.redrawCursor(); // re-push the cursor with its new colour, then present (one pack, #421)
   }
 
-  /** Fit a `cols`×`rows` grid to a CSS-pixel box and size the renderer + canvas display box to
-   * it. Unlike beamterm (which took CSS px and computed the grid itself), the renderer takes a
-   * grid, so the adapter divides here (pixel→cell is consumer policy) and sets the canvas CSS box
-   * from what the renderer reports it must be (`cssWidth`/`cssHeight`) — forget that and the
-   * device-px buffer displays at twice its size on a Retina screen.
+  /** Fit a `cols`×`rows` grid to a CSS-pixel box and size the renderer and the canvas display box
+   * to it; the display box is written from what the renderer reports (`cssWidth`/`cssHeight`), since
+   * the device-px buffer would otherwise display at twice its size on a Retina screen.
    *
-   * **A call that lands while the GL context is lost is provisional**. The renderer commits
-   * the buffer you asked for but defers reading it back, because a dead context answers `0` and
-   * adopting that would floor the surface to one pixel. That read — and therefore any browser
-   * clamp — settles inside `restore()`, which runs on the next {@link render}, not when
-   * `webglcontextrestored` fires.
-   *
-   * **It no longer has to be repeated, and that changed in this package rather than in the
-   * renderer.** The `webglcontextrestored` handler now renders (which runs `restore` and settles the
-   * clamp), then re-derives the buffer and re-writes the display box from what was actually granted.
-   * So the provisional numbers are replaced without a consumer call.
-   *
-   * Measured on **renderer 0.14.x**, where nothing did that (headless Chromium, `MAX_TEXTURE_SIZE`
-   * 8192, cell 9 device px), asking for 4000 columns during a loss — kept because it is the shape of
-   * the failure, and because the middle column is still what happens:
-   *
-   * | | grid | `cssWidth()` | `canvas.style.width` |
-   * |---|---|---|---|
-   * | during the loss | 4000 | 36000 | `36000px` |
-   * | after the restoring `render()` | **910** | **8190** | `36000px` ← now `8190px` |
-   *
-   * The display box described a buffer 4.4x wider than the one that existed and the browser
-   * stretched to fit. Reachable only when the requested grid exceeds the browser's buffer limits, so
-   * most consumers will never see either version. */
+   * **A call that lands while the GL context is lost is provisional**: the renderer commits the
+   * buffer asked for and settles any browser clamp at the restore, after which this widget re-derives
+   * the buffer and the display box by itself — no consumer call is needed. Why:
+   * [`docs/map/territory/gl-context-lifecycle.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/gl-context-lifecycle.md) § A resize during a loss is provisional. */
   resize(cssWidth: number, cssHeight: number): void {
     const grid = gridForBox(
       cssWidth,
@@ -1171,9 +1067,8 @@ export class JustermRenderer implements Renderer {
       this.backend.cssCellWidth(this.lease.id),
       this.backend.cssCellHeight(this.lease.id),
     );
-    // Nothing to propose — an unmeasured cell or a non-finite box (#632). Leave the renderer and the
-    // canvas box exactly as they are: resizing to a guess is how an unlaid-out container turned into
-    // a 1x1 terminal, and the CSS box below must not describe a buffer we did not ask for.
+    // Nothing to propose — an unmeasured cell or a non-finite box (#632): leave the renderer and the
+    // canvas box exactly as they are.
     if (!grid) return;
     this.applyGrid(grid.cols, grid.rows);
   }
@@ -1182,25 +1077,13 @@ export class JustermRenderer implements Renderer {
    * Give the renderer a `cols`×`rows` grid **and** the surface to draw it on, then re-apply the
    * canvas display box.
    *
-   * **This is what `backend.resize(cols, rows)` was until renderer 0.15.0**, assembled here because
-   * the renderer stopped being able to do it. A drawing buffer shared by N grids in M font
-   * configurations has no cell it can be a multiple of, so it is sized in device px by whoever knows
-   * which grid it is holding. This widget holds exactly one, so it can — and every obligation
-   * the renderer handed back is discharged in this one method rather than at each of its callers.
-   *
-   * **It asks for `cols * cell_width(grid)` rather than scaling a CSS box by the ratio**, and that
-   * is #331's exactness kept rather than re-derived: both are integers the renderer hands back, so
-   * nothing rounds between the grid the shader lays out and the buffer that has to hold it. The
-   * browser may still grant less, which is why the display box is written from `cssWidth()`
-   * afterwards rather than from the numbers asked for.
+   * The one site every placement path reaches. It asks for `cols * cell_width(grid)` device px (a
+   * sole tenant only), reads the browser's grant back and shrinks the grid to it, and places or
+   * withholds the rect. Why each: [`docs/map/territory/multi-viewport.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/multi-viewport.md) § `applyGrid` is the widget's one placement site.
    */
   private applyGrid(cols: number, rows: number): void {
     this.backend.resizeGrid(this.lease.id, cols, rows);
-    // Sizing the shared buffer is the SOLE TENANT's alone (#775). Asking for `cols * cell` is #331's
-    // exactness — both are integers the renderer hands back, so nothing rounds between the grid the
-    // shader lays out and the buffer holding it — and it is available only while this grid is the
-    // one thing on the canvas. A terminal sharing a surface leaves the buffer to whoever measured
-    // the container, and takes its rect from `setViewportRect` instead.
+    // Sizing the shared buffer is the sole tenant's alone (#775; #331's exactness).
     if (this.composedSurface) {
       this.surface.resizeSurface(
         cols * this.backend.cell_width(this.lease.id),
@@ -1208,31 +1091,8 @@ export class JustermRenderer implements Renderer {
       );
     }
 
-    // **Read the grant back and adopt it** (#339). WebGL is free to give a smaller drawing buffer
-    // than asked for, and until renderer 0.15.0 the renderer read that back itself and shrank the
-    // grid — which is what made {@link terminalSize} "the grid actually adopted". It cannot now: a
-    // buffer belongs to no grid, so it clamps the *surface* and leaves the grid saying what it was
-    // told. This widget is the one place holding both the grant (`cssWidth`) and the grid, so the
-    // read-back lands here, and `justerm-web`'s contract is unchanged across the renderer break.
-    //
-    // Without it the failure is silent in the way this repo treats as worst: nothing errors, the
-    // grid keeps the columns it asked for, and the cells past the buffer's edge are clipped by the
-    // scissor — drawn nowhere, with `terminalSize()` still reporting them.
-    //
-    // `cssWidth()` is the granted buffer, in CSS px, which is the space `gridForBox` divides in. On
-    // a lost context it reports the *committed* request rather than a grant (the read-back is
-    // deferred to the restore, #639), so this shrinks nothing then — which is right, and the restore
-    // path re-runs this whole method.
-    //
-    // **It protects a SOLE TENANT, and only that** (#775). `cssWidth()` is the whole canvas while
-    // `cols` is this tenant's share of it, so for a pane smaller than the surface the comparison is
-    // between quantities of different scope and the clamp cannot fire: measured on the two-terminal
-    // drive, a 450 CSS-px pane at an 8 CSS-px cell fits 56 columns while this computes 112. That is
-    // not a wrong answer for a sole tenant, where the two are the same box by construction — it is a
-    // check that has nothing to say about a shared one. The grant on a shared surface belongs to
-    // whoever asked for the buffer: the host reads `TerminalSurface.cssSize()` back after
-    // `resizeSurface` and re-places its panes. Where the per-grid check should live once a host
-    // actually tiles is an open question, deliberately not answered here.
+    // Read the grant back and adopt it (#339) — for a sole tenant; on a lost context `cssWidth()` is
+    // the committed request, so nothing shrinks (#639). docs/map/territory/multi-viewport.md § `applyGrid`.
     const granted = gridForBox(
       this.backend.cssWidth(),
       this.backend.cssHeight(),
@@ -1243,24 +1103,16 @@ export class JustermRenderer implements Renderer {
       this.backend.resizeGrid(this.lease.id, granted.cols, granted.rows);
     }
 
-    // **A hidden terminal is placed nowhere, and this is the only site that can enforce that**
-    // (#801). Every path that re-derives a placement arrives here, so consulting `hidden` once
-    // covers all seven — including the two that carry no consumer call at all, a density change and
-    // a context restore, which is precisely where a one-shot `clearViewport` would have been undone
-    // without anyone calling anything.
-    //
-    // `resizeGrid` above still ran, deliberately: a host may re-fit a hidden pane, and the grid has
-    // to adopt it so that coming back stays a placement rather than a resize-and-repack. What is
-    // withheld is only the rect.
+    // A hidden terminal is placed nowhere (#801); `resizeGrid` above still ran, so coming back stays a
+    // placement. Only the rect is withheld.
     if (this.hidden) {
       this.backend.clearViewport(this.lease.id);
       this.present();
       return;
     }
 
-    // A grid draws only where it is placed, and for a one-terminal widget that is the whole buffer.
-    // Re-issued on every call because a rect is device px: the cell may have just moved under it,
-    // and the grid may have just been shrunk to the grant.
+    // Re-issued on every call: a rect is device px, the cell may have just moved and the grid may
+    // have just been shrunk to the grant.
     const { cols: fitted, rows: fittedRows } = granted ?? { cols, rows };
     this.backend.setViewport(
       this.lease.id,
@@ -1274,25 +1126,8 @@ export class JustermRenderer implements Renderer {
 
   /**
    * Present, because a placement change is **a change to what is on screen** and nothing else on
-   * this path will draw it.
-   *
-   * Found by looking at the compositor rather than at the drawing buffer, which is the only
-   * instrument that can see it: every reading in this package's own probes is taken after a forced
-   * `present()`, so a `readPixels` assertion is structurally blind here. On an idle two-terminal page
-   * — timers stopped, which is exactly the state a host is in when the user has just switched tabs —
-   * hiding a pane left its pixels on the shared canvas, and showing one left it unpainted, until some
-   * unrelated event happened to present.
-   *
-   * The rule it violated is this file's own, stated at {@link setOnContextLoss}: a call that changes
-   * *"who is told about a future event, not anything currently on screen"* owes no redraw — and by
-   * that division a call that moves a grid onto or off the buffer plainly does owe one.
-   *
-   * It sits at the end of {@link applyGrid} rather than in `hide` / `setViewportRect` because that is
-   * where all seven placement paths already meet, and the same argument covers a rect that merely
-   * moved: an overlay dragged across the canvas with no frame behind it had the same gap before this
-   * change, and it is repaired by the same line. {@link render}'s existing split is what is reused —
-   * a sole tenant presents now, a shared tenant coalesces into the surface's one frame — so N
-   * terminals re-placed inside one host handler still cost one present.
+   * this path will draw it: a sole tenant presents now, a shared tenant coalesces into the surface's
+   * one frame. Why: [`docs/map/territory/multi-viewport.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/multi-viewport.md) § `applyGrid` is the widget's one placement site.
    */
   private present(): void {
     this.render();
@@ -1302,16 +1137,8 @@ export class JustermRenderer implements Renderer {
    * Re-derive the drawing buffer from the grid this widget is already holding, at whatever the cell
    * has just become — the response to anything that moves the cell without moving the grid.
    *
-   * Until renderer 0.15.0 the renderer did this itself: every font, spacing and density path ended
-   * by re-deriving the buffer from the grid it was holding. It cannot any more — a surface belongs
-   * to no grid — so the obligation came back to the consumer, and this widget *is* the consumer.
-   * What stays the renderer's is the cell; what stays the application's is the **grid**, which is
-   * why {@link setFontSize} and friends still say "re-fit" and still mean the column count.
-   *
-   * A no-op before the first {@link resize}: a grid is born `0`x`0`, and `resizeGrid` would floor
-   * that to one cell — turning a density change that arrives between `create` and the first fit into
-   * a one-cell canvas. (The old renderer had no such window: it seeded its implicit grid from the
-   * canvas attributes.)
+   * A no-op before the first {@link resize}: a grid is born `0`x`0`, and re-deriving from that would
+   * floor it to one cell.
    */
   private reapplySurface(): void {
     const { cols, rows } = this.terminalSize();
@@ -1323,34 +1150,19 @@ export class JustermRenderer implements Renderer {
    * For a terminal sharing a surface with siblings — a sole tenant sits at the origin and
    * never calls this.
    *
-   * **The extent is not a parameter, and that is the point.** A viewport's size is `cols * cell` and
-   * `rows * cell`, both integers the renderer hands back, so passing a measured box would reintroduce
-   * the rounding #331 exists to prevent. What only the host can know is *where* the box is; what only
-   * the renderer can know is how big a grid of cells is. So this takes the first and derives the
-   * second — pair it with {@link resize} to change how many cells fit.
+   * The extent is not a parameter: it is `cols * cell` × `rows * cell`, derived here — pair this with
+   * {@link resize} to change how many cells fit.
    *
    * **The host owes this call whenever the overlay's box moves** — a scroll, a layout change, a pane
-   * drag — and nothing detects a missed one: the GL viewport simply stays where it was while the DOM
-   * overlay (the hidden textarea, the a11y tree, the scrollbar) moves off it. That asymmetry is the
-   * forced consequence of one context being bound to one canvas, and it is accepted knowingly
-   * ([ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md)).
-   *
-   * **And it is owed after a density change, where the box has not moved at all.** A rect is device
-   * px, so [ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md) D3 invalidates it along with every other device-px quantity the host gave — *"the
-   * surface's size as well as every viewport rect, since only the consumer can re-measure them"*.
-   * Nothing here can pay that: this object re-issues the rect it was last given, and scaling it by a
-   * density it holds a copy of is exactly the conversion the renderer refuses one layer down, for the
-   * same reason. Register {@link TerminalSurface.onDensityChange} and re-supply — which also covers
-   * the density a **context restore** adopts on its own, since a notification arriving during a loss
-   * is dropped rather than queued and the restore re-reads the live ratio. A sole tenant
-   * re-derives its own buffer there and needs none of this; a shared one has no other notice.
+   * drag — and nothing detects a missed one: the GL viewport stays where it was while the DOM overlay
+   * moves off it. **It is owed after a density change too**, where the box has not moved: a rect is
+   * device px, so register {@link TerminalSurface.onDensityChange} and re-supply it (a context
+   * restore that adopts a new density fires it as well). A sole tenant needs none of this. Why:
+   * [`docs/map/territory/multi-viewport.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/multi-viewport.md) § `applyGrid` is the widget's one placement site.
    */
   setViewportRect(x: number, y: number): void {
     this.rect = { x, y };
-    // Giving a rect IS showing (#801) — the same field {@link hide} and {@link show} write, so no
-    // pair of bits can disagree about one overlay (the shape #805 reached one issue earlier). A
-    // shared tenant returning into a layout goes through here rather than through `show`, because it
-    // has to re-supply the origin its missing box took away.
+    // Giving a rect IS showing (#801) — the same field `hide` and `show` write.
     this.setHidden(false);
   }
 
@@ -1359,18 +1171,12 @@ export class JustermRenderer implements Renderer {
    *
    * Every byte survives: the grid stays registered, its packed instances and upload baseline stay
    * resident, and its font configuration's atlas is not released. Coming back is
-   * {@link setViewportRect} — a placement, which re-packs once from the state the grid already had.
-   * That is the payoff [ADR-0021](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0021-single-context-multi-viewport.md) states in as many words, and until this method existed a host with a
-   * hidden tab had exactly one option: {@link dispose} the terminal and rebuild it on the way back,
-   * which is the rebuild Epic #287 exists to remove.
+   * {@link setViewportRect} — a placement, which re-packs once from the state the grid already had —
+   * or {@link show}.
    *
-   * **Hiding the DOM overlay is not this, and cannot be** — measured in a real browser rather than
-   * reasoned. One WebGL context binds to one canvas, so a terminal's pixels are on the *shared*
-   * canvas and not in its overlay: `visibility: hidden` leaves the terminal fully drawn and fully
-   * paid for, and `display: none` is worse, because the box it removes used to be re-read as the
-   * origin `{ 0, 0 }` and re-placed this grid, at full size, on top of a sibling. That path is
-   * closed at its source ({@link viewportOrigin} answers `undefined` for a box with no area), and
-   * this is what a host wires it to.
+   * **Hiding the DOM overlay is not this**: one WebGL context binds to one canvas, so a terminal's
+   * pixels are on the shared canvas, not in its overlay — `visibility: hidden` leaves it drawn and
+   * paid for.
    *
    * Idempotent, and a no-op before the first {@link resize}: a grid with no cells is drawn nowhere
    * already. {@link show} is the way back.
@@ -1382,13 +1188,9 @@ export class JustermRenderer implements Renderer {
   /**
    * The one writer of {@link hidden}, so the *transition* has a single site.
    *
-   * Setting the field is the easy half; what needs a home is what happens on the way **back**.
-   * {@link blinkTick} does no work while hidden, so the phase the renderer holds can drift away from
-   * the live clock — a terminal hidden with its blinking cells lit and shown again after the phase
-   * flipped would keep drawing them lit until the next flip, up to a whole interval later. Re-syncing
-   * once on the true → false edge costs nothing on any other path, which is why it is keyed on the
-   * edge and not on the value: {@link setViewportRect} runs through here on every scroll of an
-   * ancestor, and re-packing the grid on a scroll would be a new cost in the hot path.
+   * On the way back (the true → false edge) it re-syncs the text-blink phase and the cursor, which
+   * drift while hidden; keyed on the edge because {@link setViewportRect} runs through here on every
+   * ancestor scroll.
    */
   private setHidden(next: boolean): void {
     const was = this.hidden;
@@ -1405,19 +1207,8 @@ export class JustermRenderer implements Renderer {
   /**
    * Draw this terminal again, at the rect it already holds — the inverse of {@link hide}.
    *
-   * **A sole tenant is why this exists rather than {@link setViewportRect} being the only way back.**
-   * That method also shows, and for a *shared* tenant it is the natural call, since a pane returning
-   * into a layout has to re-supply its origin anyway — its box is what was taken away. But a sole
-   * tenant sits at the origin and is told, on `setViewportRect` itself, that it never calls it. So
-   * without this the single-terminal widget — the `create` path, which is what every consumer of this
-   * package uses today — could enter the hidden state and leave it only by calling the method its own
-   * documentation forbids it. Two doc-comments in this file contradicting each other is the tell, and
-   * on this layer the tie-breaker is our own API's internal coherence rather than any reference.
-   *
-   * A shared tenant that has *moved* while it was away must still call {@link setViewportRect}: this
-   * re-places at the last origin given, and a stale origin is exactly the wrong answer the whole
-   * `undefined` union upstream exists to prevent. Wiring `observeViewportRect` covers that by
-   * construction — a returning box fires it.
+   * For a sole tenant this is the way back; a *shared* tenant that moved while it was away calls
+   * {@link setViewportRect} instead, since this re-places at the last origin given.
    *
    * Idempotent, and a no-op before the first {@link resize}.
    */
@@ -1429,11 +1220,8 @@ export class JustermRenderer implements Renderer {
    * Whether this terminal is currently drawn — the renderer's own answer, not a mirror of
    * {@link hide}.
    *
-   * Asked of the registry rather than reported from the field above, because the two can differ in
-   * the one direction that matters: a grid is registered **not drawn** until its first
-   * {@link resize} places it, so a terminal that has never been sized answers `false` here while
-   * nothing has hidden it. Reporting the field would answer `true` and be wrong on exactly the case
-   * a host uses this to check.
+   * A terminal that has never been sized answers `false` here while nothing has hidden it: a grid is
+   * registered not drawn until its first {@link resize} places it.
    */
   isDrawn(): boolean {
     return this.backend.isGridDrawn(this.lease.id);
@@ -1444,17 +1232,9 @@ export class JustermRenderer implements Renderer {
    * `cols`/`rows`, so a browser drawing-buffer clamp cannot desync the grid the consumer
    * drives its engine and frames at from the grid the buffer can hold.
    *
-   * **That guarantee belongs to a terminal that composed its surface** — held by
-   * construction rather than enforced, see `composedSurface`. A terminal sharing a surface occupies part of a
-   * buffer it did not ask for, so the read-back in {@link applyGrid} compares its columns against the
-   * whole canvas and never shrinks it; the grant is the host's to read from
-   * {@link TerminalSurface.cssSize} after it sizes the surface. This still answers what `resizeGrid`
-   * was last given either way — what varies is whether anything clamped it first.
-   *
-   * **Who adopts it moved at renderer 0.15.0, and this contract did not**. The renderer used
-   * to shrink the grid to what the buffer granted; it clamps only the shared *surface* now, because
-   * a buffer holding N grids belongs to none of them. So {@link resize} reads the grant back and
-   * shrinks the grid here instead — which is why this still answers what it always did. */
+   * **That guarantee belongs to a terminal that composed its surface.** A terminal sharing a surface
+   * occupies part of a buffer it did not ask for, so nothing clamps its grid; the grant is the host's
+   * to read from {@link TerminalSurface.cssSize}. */
   terminalSize(): { cols: number; rows: number } {
     return { cols: this.backend.cols(this.lease.id), rows: this.backend.rows(this.lease.id) };
   }

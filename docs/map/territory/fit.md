@@ -74,6 +74,31 @@ a CSS box and reads the grid back, rather than asking for 80×24 and being given
     grid** to the minimum. The guard borrows the renderer's sentence for the neighbouring fact —
     *"a buffer of no size is not a grant, it is the absence of an answer"* (#639): an unmeasured box
     and an ungranted buffer are different facts with the same shape.
+- **The widget re-fits on `resize`, and only there** (`JustermRenderer.setLetterSpacing` and the
+  other cell-moving setters). They re-derive the drawing buffer themselves, but not the **grid**,
+  which needs a container measurement the widget does not hold — the widget and the consumer own the
+  fit (the demo's `setFontSize(); fit(); render();`, #417). Skipping it is not cosmetic: the grid is
+  then a column count derived from the old cell, fitted to a box it no longer occupies.
+  - *Call `resize`, not `FitController.fit()`.* The reason is a signature: `ResizePort.resize(cols,
+    rows)` carries a grid, and the canvas display box is set only by `resize`, from a box, so a flush
+    reaches the consumer's port and stops there. The flush is also debounced (100 ms by default) —
+    100 ms of displaying a buffer that no longer exists. Until #632 there was a third reason: the
+    controller deduped on `cols`/`rows` alone and dropped a cell change that left the grid identical.
+    That is fixed — the key carries the cell — so `FitController` is safe for container resizes across
+    a spacing change; it still is not what re-sizes this canvas.
+  - *xterm.js draws the same line*, which makes this a shape rather than a preference: an option
+    change there re-lays out at the current grid (`RenderService.ts` `handleResize(cols, rows)`) and
+    its `FitAddon` registers no listeners. alacritty auto-re-fits, but it owns its OS window; an
+    embeddable widget does not.
+  - *Read the cell back.* The spacing path can hand back something other than what was asked in three
+    ways, none reporting an error: a `lineHeight` whose cell the atlas cannot hold is shrunk; a failed
+    re-bake rolls the whole change back; and a change arriving on a lost context depends on the
+    renderer. Up to 0.14.x the cell moved at once and the buffer did not — `adopt_spacing` ran
+    `recompute_cell()` before its lost-context guard (an earlier comment said the cell "does not move
+    at all", corrected in #632). Since #772 neither moves until the restore: the cell belongs to a
+    font configuration, the setter advances the selector and defers, and `restore` re-selects. #632's
+    conclusion holds under both — `FitController` dedupes on the cell *and* the grid because a cell
+    change can leave the grid identical.
 
 ## Code
 

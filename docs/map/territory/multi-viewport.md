@@ -251,6 +251,51 @@ warns about, so prefer `## Code` over it if the two ever disagree again.)
   multiplexing contexts underneath rather than sharing one honestly. **Only Ghostty is checkable**:
   the pinned reference trees are alacritty, ghostty and xterm.js, so the three.js and WezTerm
   citations in the record cannot be verified from here.
+- **`applyGrid` is the widget's one placement site** (`justerm-web/src/justerm-renderer.ts`). It is
+  what `backend.resize(cols, rows)` was until renderer 0.15.0, assembled in the widget because a
+  buffer shared by N grids in M configurations has no cell it can be a multiple of; this widget holds
+  one grid, so every obligation the renderer handed back is discharged here rather than at each
+  caller. Seven paths reach it — a density change or a restore through `onReapply`, the four font and
+  spacing setters, `resize` and `setViewportRect`.
+  - *It asks for `cols * cell_width(grid)`, not a scaled CSS box* — #331's exactness, since both are
+    integers the renderer hands back — and only as a sole tenant (#775); a shared tenant leaves the
+    buffer to whoever measured the container.
+  - *It reads the grant back and shrinks the grid to it* (#339). WebGL may grant a smaller buffer, and
+    until 0.15.0 the renderer shrank the grid itself; now it clamps only the surface, so the widget,
+    the one place holding both the grant and the grid, does it — and `terminalSize()` keeps meaning
+    "the grid actually adopted". Without it the failure is silent: the grid keeps its columns, the
+    cells past the edge are scissored away, and `terminalSize()` still reports them. On a lost context
+    `cssWidth()` is the committed request, so nothing shrinks, and the restore re-runs the method.
+    **It protects a sole tenant only** (#775): `cssWidth()` is the whole canvas while `cols` is a
+    tenant's share, so for a smaller pane the clamp cannot fire — measured on the two-terminal drive, a
+    450 CSS-px pane at an 8 CSS-px cell fits 56 columns while this computes 112. On a shared surface
+    the grant is the host's to read back (`TerminalSurface.cssSize()`); where a per-grid check should
+    live once a host really tiles is open.
+  - *A hidden terminal is placed nowhere* (#801) — this is the only site that can enforce it, since
+    all seven paths meet here — but `resizeGrid` still runs, so a host may re-fit a hidden pane and
+    coming back stays a placement. The rect is re-issued on every call, because a rect is device px.
+  - *It presents*, because a placement change is a change to what is on screen. Found by looking at
+    the compositor rather than the drawing buffer: every probe in this package presents before it
+    reads, so a `readPixels` assertion is structurally blind here — on an idle two-terminal page,
+    hiding a pane left its pixels and showing one left it unpainted until something unrelated
+    presented. It sits here rather than in `hide` / `setViewportRect` because all seven paths meet
+    here, which also repairs an overlay dragged with no frame behind it; a sole tenant presents at
+    once and a shared tenant coalesces, so N re-placements in one handler cost one present.
+  - *`reapplySurface` is a no-op before the first `resize`*: a grid is born `0`x`0`, and `resizeGrid`
+    would floor that to one cell, turning a density change between `create` and the first fit into a
+    one-cell canvas (the old renderer seeded its implicit grid from the canvas attributes).
+  - *The rect's extent is never a parameter*: a viewport is `cols * cell` by `rows * cell`, and a
+    measured box would reintroduce the rounding #331 removes. A rect is invalidated by a density
+    change even when the box has not moved (ADR-0021 D3), and scaling it by the widget's copy of the
+    density is the conversion the renderer refuses one layer down — so the host re-supplies it on
+    `onDensityChange`, which also covers a density a restore adopts.
+  - *`show` exists for the sole tenant.* `setViewportRect` also shows, but its own doc tells a sole
+    tenant it never calls it, so without `show` the `create` path could enter the hidden state and
+    leave it only through a call its documentation forbids; the tie-breaker there is this API's own
+    coherence. `setHidden` re-syncs the text-blink phase and the cursor on the true → false edge —
+    `blinkTick` does no work while hidden, so the renderer's phase drifts — keyed on the edge because
+    `setViewportRect` passes through on every ancestor scroll. `isDrawn` asks the registry rather than
+    the field because a never-sized grid is registered not drawn.
 
 ## Code
 

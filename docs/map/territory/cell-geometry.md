@@ -192,6 +192,26 @@ for the tier and its lifetime.
     small canvas — and can round *up*, stretching the image over a box wider than the buffer; the
     unrounded one misses by the layout grain (the #337 bullet above). `cellWidth` carries the bare name because it
     is the exact, measured cell, as xterm.js's `dimensions.device.cell` and beamterm's `cell_size()`.
+- **A density change moves the cell and may move the CSS box** (`JustermRenderer.setDevicePixelRatio`,
+  #325, the consumer half of #322). The renderer re-rasterises and stops: since 0.15.0 it leaves the
+  drawing buffer as asked and never touches the DOM, so the widget re-derives the buffer from the grid
+  *and* re-writes the canvas's CSS box — without the first the terminal shrinks by the density ratio,
+  without the second the browser scales a stale box, the blur #322 exists to remove. It goes through
+  the surface because the density is the surface's: it moves every grid's cell, the surface
+  re-derives every attached terminal, and doing it per terminal as well would issue two
+  `resizeSurface` calls (each clearing the buffer) and two presents. Without the re-ask a move to a
+  denser monitor would *halve* the displayed terminal.
+  - *The CSS box can move.* The device cell is `round(metric * dpr)`, and dividing it back by the
+    new ratio need not land on the old CSS cell. Measured (font 16, 25x6 grid): CSS height `96` at dpr
+    1 and 1.5, `99` at dpr 2 — the cell is 33 device px there, and `33 / 2 = 16.5`. Whether it moves
+    is font dependent: this machine's font goes 19 → 37 device px across dpr 1 → 2 while CI's Linux
+    font goes 19 → 38 from the same 19, and an e2e assertion that the box had moved was red on CI for
+    exactly that reason. What always holds, and what to assert, is `canvas.style x dpr === drawing
+    buffer`.
+  - *No re-fit, deliberately.* Re-deriving the grid needs the container's measurements, which the
+    widget does not hold (#417, #578); xterm.js draws the same line — `handleDevicePixelRatioChange`
+    re-measures, tells its renderer and repaints, and calls no `resize`
+    (`src/browser/services/RenderService.ts:279-290` @ `699f553`) — and its `FitAddon` stays manual.
 
 ## Code
 
