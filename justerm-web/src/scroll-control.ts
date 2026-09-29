@@ -120,7 +120,7 @@ export function wheelGoesToApp(mouseWantedEvents: number | undefined): boolean {
 
 /**
  * The display offset a local wheel scroll requests, or `null` when the notch
- * moved no whole line. `lines` is the {@link WheelScroller} result (positive =
+ * moved no whole line or an argument is non-finite. `lines` is the {@link WheelScroller} result (positive =
  * down/newer); `displayOffset` is lines UP from the bottom (0 = following), so
  * scrolling newer LOWERS it. Clamped to `[0, scrollbackLen]` — can't scroll past
  * the live edge or before the oldest history line. The backend scrolls to it.

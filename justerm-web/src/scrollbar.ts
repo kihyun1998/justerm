@@ -157,14 +157,16 @@ export function dragTrackRatio(clientY: number, track: { top: number; height: nu
  * back to an offset, clamped to `[0, scrollbackLen]`. The backend scrolls to it.
  *
  * **Checked on the inputs, and a result check would not do** — the same rule `wheelScrollTarget`
- * carries on the other producer of this consumer callback (`scroll-control.ts`, #675). Three of the four
+ * follows on a sibling producer of this consumer callback
+ * ([`docs/map/invariant/pointer-coordinates-are-bounded-by-their-producer.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/pointer-coordinates-are-bounded-by-their-producer.md)). Three of the four
  * poisoned positions surface as `NaN`, but `rows: Infinity` gives **`0`**: `Math.round(60 - ∞)` is
  * `-Infinity`, and the clamp rescues that into a perfectly finite, perfectly plausible *jump to the
  * live edge*. Measured, all four, before this guard existed. So guarding the result would fix three
  * cases and read as if it had fixed all of them.
  *
  * The guard is here rather than at the one in-repo caller because this function is **exported**: it
- * owes its own totality, the same reason `wheelScrollTarget` checks its own inputs. `displayOffset`
+ * owes its own totality, the same reason `wheelScrollTarget` guards itself rather than trusting its
+ * caller. `displayOffset`
  * is deliberately not checked — this function does not read it.
  */
 export function dragToDisplayOffset(topRatio: number, pos: ScrollPosition): number | undefined {

@@ -508,9 +508,9 @@ export class Terminal {
     const onStart = (): void => {
       // Re-anchor BEFORE the controller is told a composition began (#631). The order is the
       // contract, not a coincidence: this is the one moment the OS reads the anchor to place its
-      // candidate window, and any future "don't move the textarea mid-composition" guard (xterm
-      // has one) would key on the controller's `active` flag — so flipping these two lines would
-      // silently disable the re-sync. xterm.js orders its own `_syncTextArea()` before
+      // candidate window, and the "don't move the textarea mid-composition" guard (`textareaMove`)
+      // keys on the controller's `composing`, which reads false here only because this runs before
+      // `compositionStart()` — so flipping these two lines would silently disable the re-sync. xterm.js orders its own `_syncTextArea()` before
       // `compositionHelper.compositionstart()` for exactly that reason.
       this.syncTextareaAnchor();
       // Latch the origin here, after the re-sync above has made the cell current (#631) and while

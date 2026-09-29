@@ -174,8 +174,8 @@ fix mentions a shared rule.
   not assert `wheelScrollTarget`'s result non-null: a poisoned `displayOffset` coming back from a
   frame really makes it `null`, and asserting that away is how a non-finite offset reached the
   consumer's `onScroll` in the first place.
-  **#814 found a third producer of the same callback and made it total too**, and it is the one that
-  shows why the rule has to be applied at the *inputs*. `dragToDisplayOffset` is exported, so it owes
+  **#814 found another producer of the same callback and made it total too**, and it is the one that
+  *measured* why the rule has to be applied at the *inputs* — #675 had reasoned it (above). `dragToDisplayOffset` is exported, so it owes
   its own totality; measured across its four poisoned positions, three surfaced as `NaN` and
   `rows: Infinity` surfaced as **`0`** — `Math.round(60 - ∞)` is `-Infinity` and the clamp rescues it
   into a finite, plausible jump to the live edge. A finiteness test on the *result* therefore fixes
@@ -183,7 +183,7 @@ fix mentions a shared rule.
   followed (above) — and a mutation now pins it: moving the guard to the result reddens exactly
   the `rows: Infinity` assertion and nothing else. Note that this producer is **not** a member of the
   note's own rule — it computes a ratio, not a cell, exactly as the exclusion below says.
-  **A fourth producer in the same file came with it, and finding it is the transferable part.**
+  **Another producer in the same file came with it, and finding it is the transferable part.**
   `scrollbarMetrics` divided after a *relational* `visible` check, so a non-finite position answered
   `visible: false` correctly and still emitted `NaN` ratios into `style.height` / `style.top` as
   `"NaN%"`. #463 had already fixed exactly this in `decorations.ts` and left the rule in its comment

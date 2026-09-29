@@ -220,7 +220,7 @@ export function preeditIntent(
 
 /**
  * Where a composition that is starting should draw (#911): `lastRunEnd` while a commit is still in
- * flight, otherwise `cursorAnchor`. `cursorAnchor` is the cursor the last frame reported;
+ * flight and a previous run has an end, otherwise `cursorAnchor`. `cursorAnchor` is the cursor the last frame reported;
  * `lastRunEnd` is where the previous composition's run finished — the renderer's caret column, one
  * past its last cell. Why a commit in flight makes the frame's cursor stale:
  * `docs/map/invariant/composition-is-browser-owned-state.md`.
