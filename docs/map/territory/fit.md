@@ -80,8 +80,8 @@ a CSS box and reads the grid back, rather than asking for 80×24 and being given
   fit (the demo's `setFontSize(); fit(); render();`, #417). Skipping it is not cosmetic: the grid is
   then a column count derived from the old cell, fitted to a box it no longer occupies.
   - *Call `resize`, not `FitController.fit()`.* The reason is a signature: `ResizePort.resize(cols,
-    rows)` carries a grid, and the canvas display box is set only by `resize`, from a box, so a flush
-    reaches the consumer's port and stops there. The flush is also debounced (100 ms by default) —
+    rows)` carries a grid, and the canvas display box is written only on the `applyGrid` →
+    `resizeSurface` path, which no `ResizePort` call reaches — a flush stops at the consumer's port. The flush is also debounced (100 ms by default) —
     100 ms of displaying a buffer that no longer exists. Until #632 there was a third reason: the
     controller deduped on `cols`/`rows` alone and dropped a cell change that left the grid identical.
     That is fixed — the key carries the cell — so `FitController` is safe for container resizes across

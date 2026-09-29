@@ -869,7 +869,7 @@ export class JustermRenderer implements Renderer {
    *
    * **The consumer must re-fit afterwards**, exactly as for {@link setFontSize}/{@link
    * setFontFamily}: call {@link resize} with the CSS box — **not `FitController.fit()`**, whose port
-   * carries a grid and never reaches this canvas's display box. Skipping it leaves the grid a column
+   * carries a grid and never reaches this canvas's display box (it stays right for container resizes). Skipping it leaves the grid a column
    * count derived from the old cell.
    *
    * **Read the cell back rather than deriving it from what you passed**: a `lineHeight` whose cell
@@ -928,8 +928,10 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Adopt a new device pixel ratio: every atlas re-bakes at the new density, and every terminal on
-   * this surface re-derives its drawing buffer and canvas display box. **Called for you** by the
+   * Adopt a new device pixel ratio: every atlas re-bakes at the new density and every terminal on
+   * this surface is re-placed at the new cell. A terminal that composed its surface also re-derives
+   * the drawing buffer and the canvas display box; a shared surface's buffer is the host's to re-size
+   * on {@link TerminalSurface.onDensityChange}. **Called for you** by the
    * widget's own resolution watcher; a consumer needs this only to drive the path in a test, or to
    * serve a density this object cannot observe (a `window` it was not built against).
    *
@@ -999,11 +1001,10 @@ export class JustermRenderer implements Renderer {
    * canvas listeners belong to the wasm binding, so the state machine behind this keeps tracking.
    * Only the notification is closed.
    *
-   * **Watch it for the falling edge if you re-fit**, which is the one thing a consumer has to *do*
-   * with this rather than display: a {@link resize} that landed during the loss is
-   * provisional, and repeating it once this reads `false` again is what re-syncs the canvas display
-   * box to the buffer the browser actually granted. `resize`'s doc carries the measurement and why
-   * re-reading {@link terminalSize} does not cover it.
+   * A {@link resize} that landed during the loss is provisional; on a terminal that composed its
+   * surface the widget re-syncs it at the restore with no call from you (see {@link resize}). A host
+   * sharing a surface is told through {@link TerminalSurface.onDensityChange} when a restore adopted a
+   * new density.
    */
   isContextLost(): boolean {
     return this.surface.isContextLost();
@@ -1208,7 +1209,8 @@ export class JustermRenderer implements Renderer {
    * Draw this terminal again, at the rect it already holds — the inverse of {@link hide}.
    *
    * For a sole tenant this is the way back; a *shared* tenant that moved while it was away calls
-   * {@link setViewportRect} instead, since this re-places at the last origin given.
+   * {@link setViewportRect} instead, since this re-places at the last origin given — wiring
+   * `observeViewportRect` does that for you.
    *
    * Idempotent, and a no-op before the first {@link resize}.
    */

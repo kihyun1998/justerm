@@ -194,8 +194,9 @@ for the tier and its lifetime.
     is the exact, measured cell, as xterm.js's `dimensions.device.cell` and beamterm's `cell_size()`.
 - **A density change moves the cell and may move the CSS box** (`JustermRenderer.setDevicePixelRatio`,
   #325, the consumer half of #322). The renderer re-rasterises and stops: since 0.15.0 it leaves the
-  drawing buffer as asked and never touches the DOM, so the widget re-derives the buffer from the grid
-  *and* re-writes the canvas's CSS box — without the first the terminal shrinks by the density ratio,
+  drawing buffer as asked and never touches the DOM, so a terminal that composed its surface
+  re-derives the buffer from the grid *and* re-writes the canvas's CSS box (a shared surface's buffer
+  is the host's, re-sized on `onDensityChange`) — without the first the terminal shrinks by the density ratio,
   without the second the browser scales a stale box, the blur #322 exists to remove. It goes through
   the surface because the density is the surface's: it moves every grid's cell, the surface
   re-derives every attached terminal, and doing it per terminal as well would issue two

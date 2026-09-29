@@ -255,8 +255,9 @@ warns about, so prefer `## Code` over it if the two ever disagree again.)
   what `backend.resize(cols, rows)` was until renderer 0.15.0, assembled in the widget because a
   buffer shared by N grids in M configurations has no cell it can be a multiple of; this widget holds
   one grid, so every obligation the renderer handed back is discharged here rather than at each
-  caller. Seven paths reach it — a density change or a restore through `onReapply`, the four font and
-  spacing setters, `resize` and `setViewportRect`.
+  caller. Seven re-placing paths reach it — a density change or a restore through `onReapply`, the four
+  font and spacing setters, `resize` and `setViewportRect` — plus `hide` / `show` through
+  `setHidden`.
   - *It asks for `cols * cell_width(grid)`, not a scaled CSS box* — #331's exactness, since both are
     integers the renderer hands back — and only as a sole tenant (#775); a shared tenant leaves the
     buffer to whoever measured the container.
