@@ -41,7 +41,8 @@ const INVARIANT_SECTIONS = [
   '## Discovery history',
   '## Where it will recur',
 ];
-// The tree is every git-tracked file with one of these extensions, under the working directory.
+// The tree is every file git tracks or would track (untracked, not ignored) with one of these
+// extensions, under the working directory.
 const SRC_EXT = new Set(['.rs', '.ts', '.mjs', '.yml', '.toml']);
 
 const raw = readFileSync(file, 'utf8');
@@ -66,7 +67,9 @@ const codeSection = /^## Code\r?\n([\s\S]*?)^## /m.exec(raw)?.[1] ?? '';
 // the prose after it may name things that do not exist yet.
 const noCode = /^\s*\*\*None\.\*\*/.test(codeSection);
 if (codeSection.trim() && !noCode) {
-  const allPaths = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' })
+  const allPaths = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
+    encoding: 'utf8',
+  })
     .split('\0')
     .filter((p) => p && existsSync(p));
   const tree = allPaths

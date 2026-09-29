@@ -1014,8 +1014,7 @@ read as complete while gates had never executed. The one that fired checks each 
 **section schema** — an invariant note owes `## The fact` · `## Why it is cross-cutting` ·
 `## Territories it holds in` · `## What a violation looks like` · `## Discovery history` ·
 `## Where it will recur`, and a territory note its own six — plus resolution of every symbol named
-under `## Code` against the tracked tree (the source roots only, until #1016 widened it to
-`git ls-files`). It is a different tool from `check-map-links.mjs` one line above it, which is
+under `## Code` against the whole tree `git ls-files` lists (the source roots only, until #1016). It is a different tool from `check-map-links.mjs` one line above it, which is
 exactly why having one in the list made the other look present. Read the workflow, not this list,
 when a job goes red on something absent here:
 `sed -n '/^  test:/,/^  wasm:/p' .github/workflows/test.yml`.

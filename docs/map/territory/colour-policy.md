@@ -210,8 +210,9 @@ port is the strongest possible claim about a reference; #577 pinned what the fun
 **The glyph-class exception is xterm.js's, unpinned.** `treat_glyph_as_background_color` ports
 xterm.js's `treatGlyphAsBackgroundColor` (`src/browser/renderer/shared/RendererUtils.ts:63` at the
 pin); the webgl addon passes its answer down as `excludeFromContrastRatioDemands`, which skips the
-contrast nudge (`addons/addon-webgl/src/TextureAtlas.ts:423-424`). Not yet a `reference-facts.md`
-row.
+contrast nudge (`addons/addon-webgl/src/TextureAtlas.ts:423-424`), and paints such a glyph in the
+selection background under a selection (`addons/addon-webgl/src/CellColorResolver.ts:132-139`). Not
+yet a `reference-facts.md` row.
 
 **Provenance worth knowing (#504):** these modules cite justerm-web siblings they were ported from —
 `render-policy.ts`, `render-core.ts`, `glyph-class.ts` — and **those modules no longer exist.** The

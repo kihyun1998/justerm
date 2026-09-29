@@ -66,19 +66,26 @@ Nothing governs the gate matrix itself — which checks exist, and what each is 
   `impl` for a foreign trait, a bare basename resolved anywhere in the tree), and restated status.
   `**None.**` under `## Code` is a legal state — a design recorded and not built — and stands the
   symbol check down.
-- **"The tree" is `git ls-files`, not a hand-written root list** (#1016). The list it replaced had
-  drifted the way every hand-written scope does
+- **"The tree" is what `git ls-files` lists — tracked plus untracked-not-ignored — not a
+  hand-written root list** (#1016). Untracked is in so a note naming a file not yet added passes
+  mid-write. The list it replaced had drifted the way every hand-written scope does
   ([workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)):
-  no `e2e/`, `demo/` or `test/` tree, no `justerm-facade/src`, no `justerm-core/tests`. **A token
-  shape the collector does not match is never checked at all**, and passes exactly like a resolved
-  one: until #1016 the collector took three casing patterns, so no camelCase name, no `name()` call
-  form and no member of a dotted or `::` path was checked, and a stale TypeScript name
-  (`viewport.md`'s `requestBottom`, fixed in #1015) passed. It now takes every identifier segment of
-  a backticked name of any shape, minus a token the file check already owns. A symbol that belongs to a *reference*
-  rather than to this tree is named under `## Reference behaviour`, never under `## Code` — the gate
-  has no marker to exempt one. That is the maintainer's call (#1016, chosen over an exempting marker
-  and over dropping the backticks), made on the ground that a marker is also a way past the gate for
-  a stale name.
+  no `e2e/`, `demo/` or `test/` tree, no `justerm-facade/src`, no `justerm-core/tests`.
+- **A token shape the collector does not match is never checked at all**, and passes exactly like a
+  resolved one. Until #1016 the collector took three casing patterns, so no camelCase name, no
+  `name()` call form and no member of a dotted or `::` path was checked, and a stale TypeScript name
+  (`viewport.md`'s `requestBottom`, fixed in #1015) passed. It now takes each identifier segment of a
+  token shaped `a`, `a()`, `a.b` or `a::b` (minus a token the file check already owns). Still
+  unchecked: anything else inside backticks — generics (`Foo<Bar>`), an expression
+  (`width.min(2)`), a call with arguments, a `*` wildcard, `?.` — and file names with an extension
+  outside the file check's list (`.sh`, `.html`, `.js`).
+- **Resolution is textual over the whole tree, comments included**, so a name that appears anywhere
+  in call or field form passes, whether or not it is ours. A symbol that belongs to a *reference*
+  rather than to this tree is named under `## Reference behaviour`, never under `## Code` — the
+  maintainer's call (#1016, chosen over an exempting marker and over dropping the backticks), made
+  on the ground that a marker is also a way past the gate for a stale name. **The gate enforces that
+  only for a name the tree never mentions**: `bench/xterm-compare` drives xterm.js's own API, so
+  `Terminal`, `dispose` or `translateToString` resolve whoever they belong to.
 - **`check-tool-pins.mjs` checks that pins agree, never that they are current.** Dependabot never
   edits a `run:` line (`git log -S "cargo install wasm-pack"` returned three commits, all human), so
   the realistic failure is one workflow bumped alone and CI building the artifact with a different

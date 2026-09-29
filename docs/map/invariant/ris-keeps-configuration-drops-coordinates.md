@@ -141,8 +141,6 @@ then feed text, then check the behaviour the setting governs.
 - `justerm-core/src/term.rs` — `Term::full_reset` (the copy-back list), `Term::with_scrollback`
   (what a rebuild restores from arguments), `Term::set_word_separators`, `DEFAULT_WORD_SEPARATORS`
 - `justerm-core/tests/selection.rs` — the RIS-survival test named under §"Where it will recur"
-  (spelled out there rather than here: this section's symbols are resolved against the source tree,
-  which does not include `tests/`)
 
 ## Reference behaviour
 
