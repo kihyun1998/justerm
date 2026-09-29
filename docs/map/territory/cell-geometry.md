@@ -133,10 +133,11 @@ for the tier and its lifetime.
 - **A spacing change is a new configuration** (`setLetterSpacing`, `setLineHeight`). The atlas slot
   is the padded cell, so a spacing change is a different configuration rather than an edit to the
   current one — which is why it costs an atlas bake rather than a uniform, and why two grids can hold
-  two spacings at once. Both setters **clamp rather than reject**: xterm.js throws from its option
-  setter for a `lineHeight` below 1 ([who re-fits after a spacing change](../../agents/reference-facts.md#who-re-fits-after-a-spacing-change-578-verified-2026-07-29)),
-  and throwing across the wasm boundary is a worse contract than reporting what was adopted — the
-  consumer reads the result back from the cell. The letter-spacing unit is ADR-0023's (CSS px, where
+  two spacings at once. Neither setter rejects: `setLineHeight` clamps to `>= 1` where xterm.js throws from its option
+  setter ([who re-fits after a spacing change](../../agents/reference-facts.md#who-re-fits-after-a-spacing-change-578-verified-2026-07-29);
+  the reason is in the centring bullet above), and `setLetterSpacing` maps a non-finite value to 0,
+  with the cell width floored at 1 by the geometry. The consumer reads the adopted result back from
+  the cell. The letter-spacing unit is ADR-0023's (CSS px, where
   both references take device px).
 
 ## Code

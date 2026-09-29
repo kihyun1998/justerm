@@ -180,9 +180,8 @@ warns about, so prefer `## Code` over it if the two ever disagree again.)
     terminals in two fonts drawable side by side.
 
   **Neither the funnel nor a density change touches the drawing buffer**, and both did until #773.
-  The selector path re-sized it from the grid's cell; `setDevicePixelRatio` re-derived it from the
-  implicit grid's `cols` / `rows`, a density-independent quantity that stayed meaningful across the
-  change. A surface has no such quantity — its size is the consumer's device-px measurement, and
+  Both ended in `resize(cols, rows)`, re-deriving it from the implicit grid's stored `cols` /
+  `rows` at the new cell — a density-independent quantity that stayed meaningful across the change. A surface has no such quantity — its size is the consumer's device-px measurement, and
   re-deriving it would mean converting through the renderer's copy of the density, which is stale in
   exactly that window (see `## Blast radius`). So the buffer holds and the consumer re-issues it and
   every rect, which it must anyway since the cell just moved. The consumer re-fits after any selector

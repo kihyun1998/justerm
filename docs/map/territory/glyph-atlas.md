@@ -108,7 +108,7 @@ it.
   constructor has no `self` yet, and so that it cannot read a live tier by accident — which is what
   lets every caller commit its result atomically or throw it away. A resident glyph is baked across
   two slots iff its slot id is in the wide region (`slot_id() >= WIDE_BASE`), not iff it is a `Wide`
-  glyph: keying off the region is what catches a *wide* colour emoji, while a narrow one (#297) sits
+  glyph: keying off the region is what catches a *wide* colour emoji, while a narrow one (#297, `GlyphKind::EmojiNarrow`) sits
   in the normal region.
 
 ## Code
