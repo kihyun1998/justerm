@@ -83,14 +83,14 @@ if (codeSection.trim() && !noCode) {
     if (!known) problems.push(`## Code names a missing file: ${f}`);
   }
 
-  const syms = new Set([
-    ...[...codeSection.matchAll(/`(?:[A-Za-z_]+::)?([a-z_][a-z0-9_]{2,})`/g)].map((m) => m[1]),
-    ...[...codeSection.matchAll(/`([A-Z][A-Za-z0-9_]+)`/g)].map((m) => m[1]),
-    // camelCase — a TypeScript function, method or field, or a wasm-bindgen `js_name`
-    ...[...codeSection.matchAll(/`(?:[A-Za-z_]+\.)?([a-z][a-z0-9]*[A-Z][A-Za-z0-9]*)`/g)].map((m) => m[1]),
-  ]);
+  // Every identifier in a backticked name of any casing — `name`, `name()`, `Type.member`,
+  // `path::Type::member` — except lowercase ones shorter than three characters.
+  const syms = new Set();
+  for (const [, t] of codeSection.matchAll(/`([A-Za-z_]\w*(?:(?:\.|::)[A-Za-z_]\w*)*)(?:\(\))?`/g)) {
+    if (files.has(t)) continue;
+    for (const part of t.split(/\.|::/)) if (part.length > 2 || /^[A-Z]./.test(part)) syms.add(part);
+  }
   for (const s of syms) {
-    if (files.has(s)) continue;
     // declaration, wasm-bindgen export name, call/field, enum variant, macro, or TOML key.
     const pats = [
       // Rust and TypeScript declaration keywords; `impl` because a note may name a *foreign* trait
