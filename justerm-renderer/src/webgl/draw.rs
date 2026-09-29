@@ -22,15 +22,17 @@ use super::{ConfigTier, JustermRenderer, f32_bytes, upload_glyph};
 
 #[wasm_bindgen]
 impl JustermRenderer {
-    /// Apply a `cols`×`rows` frame (dense row-major, length `cols*rows` — see `applyDamage` for the
+    /// Apply a `cols`×`rows` frame (dense row-major, length `cols*rows` — see `apply_damage` for the
     /// Partial-frame adapter): `bg`/`fg` are tagged-u32 colour refs, `codepoints` the glyph
     /// per cell, `flags` the `CellFlags`. A `WIDE_CHAR` lead cell rasterises a double-width
     /// glyph and splits it into two atlas slots; its `WIDE_CHAR_SPACER` cell reuses the
     /// right-half slot. New glyphs are rasterised + uploaded on demand.
     ///
-    /// This direct path carries no grapheme clusters — `applyDamage` does. A frame is refused with
-    /// an error, and the grid keeps its last frame, when it holds more distinct glyphs than the
-    /// atlas can, when a glyph fails to rasterise, or when a column is shorter than `cols*rows`.
+    /// This direct path carries no grapheme clusters — `apply_damage` does. A frame is refused with
+    /// an error, and the grid keeps its last packed instances, when it holds more distinct glyphs
+    /// than the atlas can, when a glyph fails to rasterise, or when `codepoints`, `flags`, `bg` or
+    /// `fg` is shorter than `cols*rows`. A refused frame may already have displaced glyphs the
+    /// last one drew, and those cells can draw other glyphs until a frame is accepted.
     // The frame's scalars and columns as separate arguments at the wasm-bindgen boundary
     // (`docs/map/territory/frame-adapter.md` § The damage entry point's arguments).
     #[allow(clippy::too_many_arguments)]
@@ -191,8 +193,7 @@ impl JustermRenderer {
                 // Two causes since #772, and a consumer cannot tell them apart from the outside, so
                 // the message names both: this frame alone, or this frame together with the other
                 // grids drawn beside it through the same font configuration. Either way the pack is
-                // refused rather than drawn wrong — the grid keeps its last frame and this reaches
-                // the consumer as a thrown error.
+                // refused rather than drawn wrong, and this reaches the consumer as a thrown error.
                 "justerm-renderer: more distinct glyphs than the atlas can hold — this frame, or \
                  this frame together with the other grids sharing its font configuration",
             ),
@@ -345,8 +346,8 @@ impl JustermRenderer {
 
     /// Draw every placed grid: clear the whole drawing buffer to transparent, then clear each
     /// grid's rect to its own default background and draw its cells with one instanced draw call.
-    /// A grid whose content changed since the last `render` is re-packed first; a grid with no
-    /// viewport is neither packed nor drawn.
+    /// A grid whose content changed since the last `render`, or whose atlas a sibling moved, is
+    /// re-packed first; a grid with no viewport is neither packed nor drawn.
     ///
     /// Context loss is handled here, before any GL work: while the context is lost — whether the
     /// browser has reported it yet or not — this is a silent no-op, and on the frame after

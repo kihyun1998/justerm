@@ -38,7 +38,10 @@ a coherent full viewport.
   `cols`/`rows` at `u16`, so no frame from core can name more than 65535×65535 = 4_294_836_225 cells
   (just under `u32::MAX`) — but `apply_damage` reads its header from JS and `apply_frame` takes bare
   `u32`s, so nothing binds a caller that does not come through core. `cell_count` is checked before
-  any per-cell vector is reserved, and span/scroll indices are validated **before the first write**:
+  any per-cell vector is reserved — in `resolve_and_pack` as well as in `resolve_frame`, because
+  guarding only the pure layer left the panic one frame earlier, exactly where it was, and
+  `resolve_frame` re-checks because it is a separately tested public surface, not because the first
+  check can be trusted to have run — and span/scroll indices are validated **before the first write**:
   an unchecked `line == rows` — an off-by-one, not an exotic value — used to trap the module
   (`RuntimeError: unreachable`) and poison it for good ("recursive use of an object"), and checking
   as the scatter went left a refused frame half-applied. Up-front validation makes a refusal total;
