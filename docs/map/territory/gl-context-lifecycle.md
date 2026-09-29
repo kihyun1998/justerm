@@ -114,6 +114,16 @@ machine that decides what the renderer does in between.
   — none — and what the early position buys is only that the handler is in place before the first
   thing that could need it. An earlier wording of that comment claimed the stronger property, and a
   reader deriving from it would conclude a mid-construction loss is reported; it is not (#269).
+- **A resize during a loss is provisional** (`JustermRenderer.resize`). The renderer commits the
+  buffer asked for but defers reading it back, since a dead context answers `0`; any browser clamp
+  settles inside `restore()`, which runs on the next `render`, not when `webglcontextrestored`
+  fires. Since the widget's restored handler renders and then re-derives the buffer and the display
+  box from what was granted, the provisional numbers are replaced with no consumer call. Measured on
+  renderer 0.14.x, where nothing did that (headless Chromium, `MAX_TEXTURE_SIZE` 8192, cell 9 device
+  px), asking for 4000 columns during a loss: during the loss the grid was 4000, `cssWidth()` 36000 and
+  `canvas.style.width` `36000px`; after the restoring `render()` the grid was 910 and `cssWidth()`
+  8190 while the display box stayed `36000px` — 4.4x wider than the buffer, stretched to fit. Reachable
+  only when the requested grid exceeds the browser's buffer limits.
 - **Every entry point that changes the geometry takes the request and defers the GPU work.** Seven of
   them can arrive mid-loss — the DPR, the font size, the font family, the font weights (#928), the
   subpixel setting (#961), the spacing policy and the resize — and none may reject the call, because a consumer has no obligation to hold it back. It can
