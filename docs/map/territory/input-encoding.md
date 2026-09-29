@@ -90,7 +90,7 @@ Nothing governs the encoding itself.
 - **The input target is a hidden textarea, not the canvas** — a canvas cannot receive IME events at
   all. Focus restoration must go through the widget's own `focus()`; focusing the canvas kills typing
   and IME together. So `element` does **not** have to be focusable and the widget never makes it so
-  (#649) — but a focusable element's pointer-down must have its default cancelled, because the
+  (#649: the option's doc had claimed otherwise, and no `tabIndex` was ever written) — but a focusable element's pointer-down must have its default cancelled, because the
   browser's focusing steps run *after* the widget's handler and would blur the textarea it just
   focused. Since #902 the widget cancels every press it acts on (reported, or handed to
   `TerminalOptions.selection`); a press it does not act on is still the consumer's to cancel.
