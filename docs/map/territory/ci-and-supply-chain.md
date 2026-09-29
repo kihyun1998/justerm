@@ -83,8 +83,8 @@ Nothing governs the gate matrix itself — which checks exist, and what each is 
   code in call or field form passes, whether or not it is ours. Comments are out because a concept
   label a comment uses is not a symbol: `COMBINED_PRESENT` and `LINK_PRESENT` resolved through
   `cell.rs` comments for the bits the code declares as `C_COMBINED` and `BG_LINK` (#1016). The
-  stripper is line-based and string-unaware, so a `//` inside a string hides the rest of that line —
-  that fails loud (a false red), never silent. A symbol that belongs to a *reference*
+  stripper is line-based and string-unaware, so a `//` inside a string (a URL) hides the rest of
+  that line — that fails loud (a false red), never silent. A symbol that belongs to a *reference*
   rather than to this tree is named under `## Reference behaviour`, never under `## Code` — the
   maintainer's call (#1016, chosen over an exempting marker and over dropping the backticks), made
   on the ground that a marker is also a way past the gate for a stale name. **The gate enforces that

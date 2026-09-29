@@ -45,12 +45,11 @@ const INVARIANT_SECTIONS = [
 // extensions, under the working directory.
 const SRC_EXT = new Set(['.rs', '.ts', '.mjs', '.yml', '.toml']);
 
-// A name only a comment mentions is not in the code. Line-based and string-unaware, except that
-// `://` (a URL) does not open a comment.
+// A name only a comment mentions is not in the code. Line-based and string-unaware.
 const stripComments = (path, text) =>
   /\.(yml|toml)$/.test(path)
     ? text.replace(/(^|\s)#.*$/gm, '$1')
-    : text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    : text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
 const raw = readFileSync(file, 'utf8');
 const isAggregate = raw.startsWith('# Aggregate');
