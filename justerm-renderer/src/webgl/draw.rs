@@ -22,17 +22,19 @@ use super::{ConfigTier, JustermRenderer, f32_bytes, upload_glyph};
 
 #[wasm_bindgen]
 impl JustermRenderer {
-    /// Apply a `cols`×`rows` frame (dense row-major, length `cols*rows` — see `applyDamage` for the
+    /// Apply a `cols`×`rows` frame (dense row-major, length `cols*rows` — see `apply_damage` for the
     /// Partial-frame adapter): `bg`/`fg` are tagged-u32 colour refs, `codepoints` the glyph
     /// per cell, `flags` the `CellFlags`. A `WIDE_CHAR` lead cell rasterises a double-width
     /// glyph and splits it into two atlas slots; its `WIDE_CHAR_SPACER` cell reuses the
     /// right-half slot. New glyphs are rasterised + uploaded on demand.
     ///
-    /// Tracked limits (surfaced by adversarial passes, not silent): colour emoji and
-    /// ZWJ/grapheme clusters are separate slices; a frame with more distinct glyphs
-    /// than a region's capacity, or a rasterise failure, can strand a slot.
-    // Seven typed-array / scalar columns at the wasm-bindgen boundary; each is a distinct JS view
-    // that cannot be grouped without an AoS rewrite breaking the zero-copy SoA (as on `apply_damage`).
+    /// This direct path carries no grapheme clusters — `apply_damage` does. A frame is refused with
+    /// an error, and the grid keeps its last packed instances, when it holds more distinct glyphs
+    /// than the atlas can, when a glyph fails to rasterise, or when `codepoints`, `flags`, `bg` or
+    /// `fg` is shorter than `cols*rows`. A refused frame may already have displaced glyphs the
+    /// last one drew, and those cells can draw other glyphs until a frame is accepted.
+    // The frame's scalars and columns as separate arguments at the wasm-bindgen boundary
+    // (`docs/map/territory/frame-adapter.md` § The damage entry point's arguments).
     #[allow(clippy::too_many_arguments)]
     pub fn apply_frame(
         &mut self,
@@ -45,9 +47,7 @@ impl JustermRenderer {
         flags: &[u16],
         blink_on: bool,
         // #520: the underline colour (SGR 58) column, tagged-u32 like `fg`/`bg`. Optional and
-        // TRAILING so a caller (or demo) that predates it keeps working — omitted / `undefined`
-        // ⇒ every underline follows the fg (Default). Not grouped with the colour columns because
-        // that would shift every existing call; the packer reads it tolerantly regardless.
+        // trailing; omitted ⇒ every underline follows the fg (Default).
         underline_colors: Option<Vec<u32>>,
     ) -> Result<(), JsValue> {
         // The direct (dense, cluster-free) path: one base codepoint per cell.
@@ -83,18 +83,13 @@ impl JustermRenderer {
         self.grid_at(at).preedit_span(cols, rows)
     }
 
-    /// The composed cells, re-supplied (#249, ADR-0028 D2).
-    ///
-    /// A preedit is a **pass**, not a layer: ADR-0019's stack can recolour a channel or blank a
-    /// slot but nothing in it can *supply* a glyph, and its rule 5 authorship axis has no value for
-    /// content the browser owns and the application never declared. So the covered cells leave the
-    /// stack entirely and come back with background, foreground and glyph together — which is also
-    /// the only way a selection tint under a composition stops reading as *selected text*.
+    /// The composed cells, re-supplied with background, foreground and glyph together (#249,
+    /// ADR-0028 D2) — a pass that takes the cells out of the layer stack. Why:
+    /// `docs/map/territory/cell-compositing.md` § An IME preedit is not a layer in this stack.
     ///
     /// Returns owned columns, and only while a composition is open: a page that never composes
     /// allocates nothing here. `0` is the `Default` colour tag (see [`palette`](crate::palette)),
-    /// so the run draws in the terminal's own default fg over its default bg — ghostty's choice
-    /// (`state.colors.foreground`, no background cell at all).
+    /// so the run draws in the terminal's own default fg over its default bg.
     fn preedit_patch(
         &self,
         at: usize,
@@ -120,22 +115,17 @@ impl JustermRenderer {
         blink_on: bool,
     ) -> Result<(), JsValue> {
         self.pack_count = self.pack_count.wrapping_add(1); // #421 diagnostic — see `packs()`
-        // The same multiply `resolve_frame` guards, evaluated one frame earlier — so guarding only
-        // the pure layer left the panic exactly where it was (#355). This is the first arithmetic a
-        // JS-supplied `cols`/`rows` touches; `resolve_frame` re-checks it because it is a public,
-        // separately-tested surface, not because this line can be trusted to have run.
+        // The first arithmetic a JS-supplied `cols`/`rows` touches, checked here as `resolve_frame`
+        // checks it again (#355; `docs/map/territory/frame-adapter.md` § Every index is bounded).
         let count = cell_count(cells.cols, cells.rows).ok_or_else(|| {
             JsValue::from_str(&format!(
                 "justerm-renderer: grid {}x{} has more cells than a u32 can count",
                 cells.cols, cells.rows
             ))
         })?;
-        // ADR-0028 D2: the preedit takes its cells out of the stack before anything resolves them,
-        // so the glyph it supplies is rasterised like any other and every later stage — contrast,
-        // overlay compositing, the cursor span — sees the composed cell rather than the one the
-        // application last wrote there.
-        // The suggestion (#972) is the second pass and yields to the first: while a composition is
-        // open it draws nothing.
+        // ADR-0028 D2: the preedit's cells replace the frame's before anything resolves them, so
+        // every later stage sees the composed cell. The suggestion (#972) is the second pass and
+        // yields to the first: while a composition is open it draws nothing.
         let patch = self
             .preedit_patch(at, cells, bg, fg)
             .or_else(|| self.grid_at(at).suggestion_patch(cells, bg, fg));
@@ -154,13 +144,9 @@ impl JustermRenderer {
         // Resolve the per-cell glyph slots via the pure host-tested resolver (#280): it
         // rasterises before committing (a failure strands nothing), pins this frame's
         // working set (an over-capacity frame is surfaced, not silently corrupted), and
-        // sanitises control codepoints to space. Field-level borrows keep `&mut cache`
-        // disjoint from the GL fields the upload closure needs.
-        //
-        // Which cache is the one this GRID selects into (#772) — not "the" cache, of which there is
-        // no longer one. The field-level split is what keeps `&mut configs` (the cache) disjoint
-        // from `&global` (the GL the upload closure needs); they are separate fields of the facade,
-        // so this borrows neither through the other.
+        // sanitises control codepoints to space. The cache is the one this grid's configuration
+        // owns (#772), borrowed field by field so `&mut configs` stays disjoint from the `&global`
+        // GL the upload closure needs.
         let gl = &self.global.gl;
         let pins = &mut self.pins;
         let config = self.configs.get_mut(self.grids.grid_at(at).config);
@@ -179,11 +165,9 @@ impl JustermRenderer {
             cache,
             pins,
             |text, style, wide| {
-                // Rasterise, then classify with the hybrid signal (#297): a colour emoji comes
-                // back in its own palette (COLR/CBDT/SVG) → is_color_bitmap; an emoji the font
-                // draws in pure grayscale (`⬛ ⬜ ⚫ ⚪`) has R=G=B so the bitmap misses it → the
-                // unicode `is_emoji_text` (keyed off core's `wide`) recovers it. Either signal
-                // routes the glyph to a colour-sampled slot; a text glyph satisfies neither.
+                // Rasterise, then classify with the hybrid signal (#297): either the bitmap or the
+                // text says emoji, and either routes the glyph to a colour-sampled slot
+                // (`docs/map/territory/emoji-classification.md`).
                 let rgba = rasterizer.rasterize(text, style, wide)?;
                 let is_emoji = is_emoji_text(text, wide) || is_color_bitmap(&rgba);
                 let rgba = rasterizer.finish(rgba, text, style, wide, is_emoji)?;
@@ -209,8 +193,7 @@ impl JustermRenderer {
                 // Two causes since #772, and a consumer cannot tell them apart from the outside, so
                 // the message names both: this frame alone, or this frame together with the other
                 // grids drawn beside it through the same font configuration. Either way the pack is
-                // refused rather than drawn wrong — the grid keeps its last frame and this reaches
-                // the consumer as a thrown error.
+                // refused rather than drawn wrong, and this reaches the consumer as a thrown error.
                 "justerm-renderer: more distinct glyphs than the atlas can hold — this frame, or \
                  this frame together with the other grids sharing its font configuration",
             ),
@@ -222,14 +205,10 @@ impl JustermRenderer {
             )),
         })?;
 
-        // `resolve_frame` bounds `codepoints`/`flags`, the two columns it reads, and allocates only
-        // `count <= codepoints.len()` — so this can wait until after it. `bg`/`fg` are read by
-        // `pack_instances`, which `.get(idx).unwrap_or(0)`s them: no panic, but a short colour column
-        // renders silently in Default rather than being refused. Same rule for every column — a frame
-        // that does not carry its cells is not a frame (#355).
-        //
-        // It runs *after* so that a frame short in every column reports the cells it is missing, not
-        // just its colours; `FrameShorterThanGrid` is the more useful diagnosis.
+        // `pack_instances` would read a short `bg`/`fg` as Default rather than refuse it, so they are
+        // bounded here (#355) — after `resolve_frame`, which bounds the other two columns and
+        // allocates no more cells than `codepoints` holds, so a frame short in every column reports
+        // `FrameShorterThanGrid`, the more useful diagnosis.
         if bg.len() < count || fg.len() < count {
             return Err(JsValue::from_str(&format!(
                 "justerm-renderer: grid claims {count} cells but bg/fg carry {}/{}",
@@ -295,17 +274,15 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// Reconcile the GPU instance buffer with the freshly packed `self.grid().instances`, uploading
+    /// Reconcile grid `at`'s GPU instance buffer with its freshly packed `instances`, uploading
     /// only the cells that changed since the last upload (#263). A size change (first frame /
     /// resize) reallocates the whole buffer; otherwise each changed contiguous range goes up via
-    /// `buffer_sub_data` and an unchanged frame does no GL work at all. `self.grid().uploaded` mirrors
-    /// what the GPU holds so the next frame can diff against it.
+    /// `buffer_sub_data` and an unchanged frame does no GL work at all. The grid's `uploaded`
+    /// mirrors what the GPU holds so the next frame can diff against it.
     pub(super) fn upload_instances(&mut self, at: usize) {
-        // Bind the two tiers this touches once, as separate fields of `self`: the baseline lives
-        // beside the buffer it mirrors (both per-grid), and the context that uploads it is global.
-        // Going through `grid_mut()` at each site instead would re-borrow all of `self` per call —
-        // and `uploaded.clone_from(&instances)` is two fields of ONE grid, which only splits when
-        // the grid is a place expression.
+        // The global GL and the grid are bound once, as separate fields of `self`, so
+        // `uploaded.clone_from(&instances)` — two fields of one grid — borrows as a place
+        // expression rather than re-borrowing all of `self`.
         let gl = &self.global.gl;
         let grid = self.grids.grid_at_mut(at);
         match plan_upload(&grid.uploaded, &grid.instances, INSTANCE_FLOATS) {
@@ -367,24 +344,23 @@ impl JustermRenderer {
         result
     }
 
-    /// Clear to the palette's default background, then draw every cell of the current frame
-    /// (glyph composited over background) with one instanced draw call.
+    /// Draw every placed grid: clear the whole drawing buffer to transparent, then clear each
+    /// grid's rect to its own default background and draw its cells with one instanced draw call.
+    /// A grid whose content changed since the last `render`, or whose atlas a sibling moved, is
+    /// re-packed first; a grid with no viewport is neither packed nor drawn.
     ///
-    /// Context loss is handled here, before any GL work: while the context is lost this is a
-    /// silent no-op (a draw call on a dead context accomplishes nothing), and on the frame after
+    /// Context loss is handled here, before any GL work: while the context is lost — whether the
+    /// browser has reported it yet or not — this is a silent no-op, and on the frame after
     /// `webglcontextrestored` it first rebuilds the destroyed resources. Recovery therefore needs
     /// no consumer cooperation beyond continuing to call `render`. A failed rebuild propagates and
     /// is retried on the next frame.
     ///
-    /// **"While the context is lost" means either sense of lost, and it did not always**.
-    /// The decision consults the context itself *and* the state machine's flag, because a browser
-    /// destroys a context synchronously and only queues the event: asking the flag alone, this
-    /// promise was false for that slice — a pending rebuild ran on a dead context and threw.
+    /// One grid's refused pack does not blank the others: they still draw, and the error is
+    /// returned after the draw.
     pub fn render(&mut self) -> Result<(), JsValue> {
-        // Ask the CONTEXT, then let the state machine compose that with the flag it owns
-        // (#695, ADR-0027 D3). Bound to locals in this order deliberately: the liveness read
-        // must not happen while the `Ref` below is alive, and the `Ref` must be released
-        // before the `&mut self` calls in the match.
+        // Ask the context, then let the state machine compose that with its flag (#695,
+        // ADR-0027 D3). The liveness read happens before the `Ref` below is taken, and the `Ref`
+        // is released before the `&mut self` calls in the match.
         let live = if self.global.raw_gl.is_context_lost() {
             ContextLiveness::Dead
         } else {
@@ -401,32 +377,11 @@ impl JustermRenderer {
             FrameAction::Draw => {}
         }
         // Pack once per drawn grid, here, if a mutation since the last render dirtied its buffer
-        // (#421) — the context is live past the match above (Skip returned, Rebuild restored). A
-        // frame that set overlay + decorations + `apply_damage` marked dirty three times but
-        // re-packs once. On a pack error the flag stays set, so the next render retries
-        // (self-healing).
-        //
-        // **A grid with no viewport is not packed either, and that is a decision** (#771). The
-        // registry's `Option<Viewport>` says whether a grid *draws*; nothing said whether a hidden
-        // grid still pays for the frames it is fed, and the consumer's adoption design keeps hidden
-        // terminals mounted **and feeding**. Measured on a release build at 120x40, an ungated
-        // hidden grid costs about 0.4 ms/frame — pack + upload about 0.33 of it — so ten of them
-        // would spend a quarter of a 60 fps budget on pixels nobody sees. Gating it here is free
-        // rather than clever: the dirty flag stays set while the grid is hidden, so the first
-        // render after it is placed packs it, once. Ghostty gates the same two things on the same
-        // state (`renderer/Thread.zig:526-531` the draw, `:644-650` the CPU rebuild); alacritty
-        // gates only the paint.
-        //
-        // One grid's bad frame must not blank its neighbours, so a pack error is held and the
-        // frame still draws. It surfaces after the draw, and the flag it left set means the next
-        // render retries exactly as the single-grid path did.
-        // One pin set for the whole loop, so a grid cannot evict a slot a sibling packed earlier in
-        // the SAME frame (#772). Without it the second grid's pack repoints the first's committed
-        // slots, the first is not re-diffed because its instance floats did not change, and it draws
-        // **stably wrong** — measured, and invisible to a pixel check without a control: a grid drew
-        // 911 lit subpixels beside a sibling and 891 alone, every frame, with no error anywhere.
-        // With the pin the second pack is refused instead, which is exactly what an over-capacity
-        // *single* frame has always got (`FrameExceedsCapacity`), extended to the union.
+        // (#421) — the context is live past the match above. On a pack error the flag stays set,
+        // so the next render retries; the error is held and the frame still draws. A grid with no
+        // viewport is skipped before the pack (#771), and one pin set spans the whole loop so a
+        // grid cannot evict a slot a sibling packed earlier in the same frame (#772). Why each:
+        // `docs/map/territory/multi-viewport.md` § The draw loop.
         self.pins.clear();
         let mut pack_error = None;
         for at in 0..self.grids.len() {
@@ -434,31 +389,17 @@ impl JustermRenderer {
                 continue;
             }
             // …and a grid whose atlas moved under it re-packs too, even though nothing it owns
-            // changed (#772). A sibling on the same configuration can evict a slot this grid's
-            // instances still address; the upload diff cannot notice, because the floats are the
-            // same and only the atlas behind them moved. Comparing counters costs a `u32` per grid
-            // per frame and is the whole of the guarantee ADR-0021 asked this tier for.
+            // changed (#772): its configuration's eviction count moved since it last packed.
             let stale =
                 self.grid_at(at).packed_at_evictions != self.config_at(at).cache.evictions();
             if self.grid_at(at).needs_repack || stale {
                 match self.repack_from_grid(at) {
                     Ok(()) => self.grid_at_mut(at).needs_repack = false,
                     Err(e) => {
-                        // A refused pack has to leave a **fixed point**, or the frames alternate.
-                        //
-                        // The pin only covers grids that actually packed this frame, and a clean
-                        // grid does not pack — so without this the cycle is: this grid is refused
-                        // and its sibling stays correct; next frame the sibling is clean, packs
-                        // nothing, leaves the pins empty, and *this* grid succeeds by repointing
-                        // the sibling's slots. Measured: `a` alternating 891 (right) / 911 (wrong)
-                        // with the error appearing only on alternate frames.
-                        //
-                        // Dirtying every grid that shares this configuration makes them all pack,
-                        // every frame, for as long as the overflow lasts — so the earlier ones pin
-                        // their glyphs first and stay correct, and the same grid is refused each
-                        // time. Registration order decides who wins, which is the order everything
-                        // else in this loop already uses (#771): the grid registered first wins. The extra packing costs what a re-pack costs, in a state that is
-                        // already reporting an error every frame; it is bounded by the overflow.
+                        // A refused pack dirties every drawn grid on the same configuration, so
+                        // the refusal is a fixed point rather than an alternation: the grid
+                        // registered first wins each frame (`docs/map/territory/multi-viewport.md`
+                        // § The draw loop).
                         let config = self.grid_at(at).config;
                         for other in 0..self.grids.len() {
                             if self.grids.viewport_at(other).is_some()
@@ -492,25 +433,10 @@ impl JustermRenderer {
     /// **drawn** grid (#771). The caller has established that the context is live and its resources
     /// are intact.
     ///
-    /// The full-buffer clear happens once and before the loop, and it clears to **transparent**
-    /// rather than to any grid's background. The buffer is one shared plane that the grids do not
-    /// have to tile (ADR-0021's z-order constraint: every terminal is an overlay on it), so the
-    /// area between two rects belongs to the page behind the canvas — painting a terminal's colour
-    /// there would be this renderer deciding a background it was never given. A single-grid
-    /// consumer sees no difference *if it places its grid over the whole buffer*, which is what the
-    /// single-grid arrangement is since #773 — its own clear then covers every pixel this one
-    /// touched. It is the consumer's arrangement now rather than something `resize` guaranteed, so
-    /// a consumer that places a smaller rect gets a transparent margin, honestly.
-    ///
-    /// three.js's multiple-views example does no full clear at all
-    /// (`examples/webgl_multiple_views.html:252-278`) — its views tile the canvas, so it has no
-    /// uncovered area to answer for. That is a silence rather than a divergence.
-    ///
-    /// **Grids are painted in registration order and are not composited with each other.** A later
-    /// grid's rect *replaces* what is under it rather than blending with it, because each grid opens
-    /// with a `clear` and a clear writes. So a translucent grid (`setBgAlpha`) shows the page behind
-    /// the canvas, never the grid it overlaps. Overlapping rects are the consumer's business —
-    /// tiling panes do not produce one — and the same is true of the reference's per-view clear.
+    /// The full-buffer clear happens once, before the loop, to **transparent** rather than to any
+    /// grid's background. Grids are painted in registration order and are not composited with each
+    /// other: each opens with a `clear` of its own rect, so a later grid's rect replaces what is
+    /// under it. Why: `docs/map/territory/multi-viewport.md` § The draw loop.
     fn draw(&self) {
         unsafe {
             self.global.gl.disable(glow::SCISSOR_TEST);
@@ -520,11 +446,8 @@ impl JustermRenderer {
             self.global.gl.clear_color(0.0, 0.0, 0.0, 0.0);
             self.global.gl.clear(glow::COLOR_BUFFER_BIT);
 
-            // Every grid's clear and every grid's cells are confined to its own rect from here.
-            // The viewport alone would already clip the *cells* (they are drawn in clip space and
-            // the transform maps NDC onto the rect), but `clear` ignores the viewport entirely —
-            // so without the scissor each grid's background clear would wipe the whole buffer,
-            // leaving only the last grid visible.
+            // Every grid's clear and every grid's cells are confined to its own rect from here —
+            // the scissor, because `clear` ignores the viewport.
             self.global.gl.enable(glow::SCISSOR_TEST);
             for at in 0..self.grids.len() {
                 if let Some(viewport) = self.grids.viewport_at(at) {
@@ -542,10 +465,8 @@ impl JustermRenderer {
     /// Live context with intact resources, as [`draw`](Self::draw) establishes.
     unsafe fn draw_grid(&self, at: usize, viewport: Viewport) {
         let grid = self.grid_at(at);
-        // The configuration THIS grid selects into (#772). Two grids in two fonts draw through two
-        // atlases with two cell geometries in the same frame, which is why every one of these is a
-        // per-draw uniform rather than a per-program one — `u_cell_uv` included, since the
-        // guard band is a fixed pixel count and its *fraction* differs with the padded cell.
+        // The configuration this grid selects into (#772); every uniform below is set per draw,
+        // because two grids in two fonts draw through two atlases and two cell geometries.
         let config = self.config_at(at);
         let (vx, vy, vw, vh) = viewport.gl_rect(self.global.size.1);
         let [dr, dg, db] = gl_rgb(grid.palette.default_bg);
@@ -554,9 +475,7 @@ impl JustermRenderer {
             self.global.gl.scissor(vx, vy, vw, vh);
             // Clear with the injected background opacity so any area of this grid's rect not
             // covered by a cell is see-through too; cells then write their own per-pixel alpha
-            // (#298). A rect is the consumer's box and may be any size, so the uncovered area is
-            // whatever its cells do not reach — asking for `cols * cell_width(grid)` device px is
-            // what makes it none, and since #773 that is the consumer's arithmetic (#331).
+            // (#298). A rect of `cols * cell_width(grid)` device px leaves no such area (#331).
             self.global.gl.clear_color(dr, dg, db, grid.bg_alpha);
             self.global.gl.clear(glow::COLOR_BUFFER_BIT);
 
@@ -569,16 +488,13 @@ impl JustermRenderer {
             self.global
                 .gl
                 .bind_texture(glow::TEXTURE_2D_ARRAY, Some(config.atlas));
-            // The instance buffer already holds the current frame — `upload_instances` (in the
-            // pack path) uploaded only the changed cells (#263), so render just binds + draws.
-            // Binding THIS grid's VAO is what points the attributes at THIS grid's buffer: the
-            // pointer is VAO state, which is why the VAO is per-grid (#771 resolving #768).
+            // The instance buffer already holds the current frame (`upload_instances`, #263), so
+            // render just binds + draws. This grid's VAO points the attributes at this grid's
+            // buffer (#771).
             self.global.gl.bind_vertex_array(Some(grid.vao));
 
-            // The projection is sized to the RECT, not to the buffer: `gl.viewport` above already
-            // maps clip space onto the rect, so a buffer-sized projection would scale every grid
-            // by `buffer / rect`. Identical for a grid placed over the whole buffer, which is
-            // what the single-grid arrangement is.
+            // The projection is sized to the rect, not to the buffer: `gl.viewport` above already
+            // maps clip space onto the rect.
             let proj = Mat4::orthographic_from_size(vw as f32, vh as f32);
             self.global.gl.uniform_matrix_4_f32_slice(
                 Some(&self.global.u_projection),
@@ -601,8 +517,8 @@ impl JustermRenderer {
                 config.char_offset.1 as f32,
             );
             // How much of each padded atlas cell is guard band, so the shader insets the texcoord
-            // to the content region (see FRAG_SRC). Set once per program until #772; per draw now,
-            // because the padded cell belongs to the configuration rather than to the context.
+            // to the content region (see FRAG_SRC). The band is a fixed pixel count, so its
+            // fraction is the configuration's.
             let ((ox, oy), (sx, sy)) = crate::metrics::cell_uv(
                 crate::metrics::SlotGeometry {
                     padded: config.atlas_cell,
@@ -654,18 +570,12 @@ impl JustermRenderer {
             self.global
                 .gl
                 .uniform_4_f32(Some(&self.global.u_cursor), cx, cy, span, shape);
-            // The visibility guard (#368): look up the cursor cell's RESOLVED bg in the packed
+            // The visibility guard (#368): look up the cursor cell's resolved bg in the packed
             // instances (row-major, `bg` at float offset 2 of each `INSTANCE_FLOATS` cell) and invert
-            // the cursor to the default fg/bg if its contrast is below the injected threshold. Only the
-            // renderer has this resolved RGB, which is why the mechanism lives here (ADR-0017). If the
-            // cursor sits off the current grid (no packed cell), honour the consumer's colours as-is.
-            //
-            // The index is bounded only by `get()`, not by `col < last_cols`: a cursor with
-            // `col >= last_cols` but a small row would read a DIFFERENT row's cell here. That is
-            // harmless because the shader's `covers()` paints the cursor only where a real cell has
-            // `col ∈ [cursor.col, cursor.col + span)`, i.e. only when `col < cols` — so a mis-read
-            // guarded colour is never sampled by any fragment. Valid as long as `covers()` keeps that
-            // gate.
+            // the cursor to the default fg/bg if its contrast is below the injected threshold. A
+            // cursor off the current grid (no packed cell) keeps the consumer's colours. The index is
+            // bounded only by `get()`; why that is enough: `docs/map/territory/caret-drawing.md`
+            // § The contrast guard reads the packed background.
             let (color, text_color) = match grid.cursor {
                 Some(c) => {
                     let cell_bg = (c.row as usize)
