@@ -27,8 +27,8 @@ for the tier and its lifetime.
 ## Design model
 
 - **Device pixels are the source of truth; the CSS view is derived.** The rasteriser reads the
-  advance and ink-scans `█` at `FONT_SIZE * dpr`, the shader lays the grid out in device px (`u_cell_size`), and the drawing
-  buffer is an exact multiple of them. `cssCellWidth()` is a **float** on purpose, so the derivation
+  advance and ink-scans `█` at `FONT_SIZE * dpr`, the shader lays the grid out in device px (`u_cell_size`), and a
+  single-grid consumer can size the drawing buffer to an exact multiple of them. `cssCellWidth()` is a **float** on purpose, so the derivation
   can be undone — a consumer's `cols * cssCellWidth()` box scales back to `cols * cell` device px
   exactly.
 - **The cell box and the glyph box used to be the same rectangle, and are not any more** (#338).
@@ -161,15 +161,19 @@ for the tier and its lifetime.
     two, and beamterm's `auto_resize_canvas_css = false` is the same split.
   - *A density change leaves the buffer as asked* — the rule a viewport rect already follows,
     applied to the surface: a device-px quantity the consumer measured is re-issued by the consumer,
-    never adjusted here. A consumer re-fits after a density change regardless, since the cell moved,
-    so this costs it nothing and removes the one thing that could go wrong silently.
+    never adjusted here — until it does, the canvas is displayed at a different size. A consumer
+    re-fits after a density change regardless, since the cell moved and its column count and every
+    rect moved with it, so this costs it nothing and removes the one thing that could go wrong silently.
   - *Ask, then adopt; at most two passes.* The bound is a backstop against a browser that clamps
     non-monotonically: pass 2 asks for a buffer already granted, so it cannot be clamped again.
     `canvas.width` / `height` are re-set **down** to the grant rather than left oversized, as
     xterm.js, beamterm and three.js all leave them, because #337 couples the CSS display box to them
     — a lying attribute would make `cssWidth()` describe a buffer that does not exist. The request is
-    stored, not passed, because the second caller is a context restore: the loss reset the buffer
-    and nobody is going to re-ask.
+    stored, not passed, because one of its three callers (construction, `resizeSurface`, a context
+    restore) is the restore: the loss reset the buffer and nobody is going to re-ask. A grant
+    smaller than the request moves every placed rect, since a rect's GL y is measured from the
+    buffer's bottom edge; the consumer re-places them, which it is doing anyway, since its own layout
+    is what shrank.
   - *A read-back of no size is not a grant* (#639). A lost context reports 0x0; adopting it would
     commit a 1x1 surface that `restore` then rebuilds at, leaving the canvas one pixel wide,
     permanently and silently. So the request stays committed and only the verification defers. In

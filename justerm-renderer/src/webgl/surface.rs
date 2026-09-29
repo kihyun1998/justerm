@@ -107,8 +107,8 @@ impl JustermRenderer {
     /// **WebGL is not obliged to grant the buffer**, so this asks and then adopts what it
     /// got; `cssWidth` reports the *granted* box, which is what the consumer
     /// should size its display box to. **A clamp moves every placed rect**, because a rect's GL y
-    /// is measured from the buffer's bottom edge — a consumer that shrinks the surface re-places
-    /// the grids on it.
+    /// is measured from the buffer's bottom edge — a consumer that shrinks the surface must
+    /// re-place the grids on it.
     ///
     /// **A density change does not resize it.** `setDevicePixelRatio` re-bakes every atlas and
     /// leaves the buffer exactly as asked, so `cssWidth` reports a different CSS box for the same
@@ -134,9 +134,10 @@ impl JustermRenderer {
 
     /// Re-ask for the stored drawing buffer and adopt whatever the browser actually grants.
     ///
-    /// Two callers, which is why the request is *stored* rather than passed: a consumer's
-    /// `resizeSurface`, and a context restore. A density change does **not** call this. At most
-    /// two passes; `canvas.width` / `height` end at the grant. Why:
+    /// Three callers — construction, a consumer's `resizeSurface`, and a context restore; the
+    /// restore is why the request is *stored* rather than passed. A density change does **not**
+    /// call this. At most two passes; `canvas.width` / `height` are re-set down to the grant rather
+    /// than left at the request. Why:
     /// `docs/map/territory/cell-geometry.md` § The surface's size is the consumer's device-px
     /// request.
     pub(super) fn apply_surface_size(&mut self) {
@@ -149,7 +150,8 @@ impl JustermRenderer {
                 self.global.raw_gl.drawing_buffer_width(),
                 self.global.raw_gl.drawing_buffer_height(),
             );
-            // A buffer of no size is not a grant (#639): the request stays committed and only the
+            // A buffer of no size is not a grant, it is the absence of an answer (#639): the
+            // request stays committed and only the
             // verification defers. It guards on the read-back, not on the context's state
             // (`docs/map/territory/gl-context-lifecycle.md` § "Is the context lost" has two answers).
             if bw <= 0 || bh <= 0 {
