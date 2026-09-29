@@ -10,8 +10,9 @@ pub struct InkBounds {
 }
 
 /// A reference glyph's ink box, plus the baseline `ascent` (pixels the ink rose above the draw
-/// position). The rasteriser takes the physical cell's **height** and `ascent` from it; the cell's
-/// width is the face's advance instead (`metrics::advance_width`, ADR-0022).
+/// position). The rasteriser takes only the `width` of its `█`, which sizes the horizontal band
+/// (`metrics::horizontal_bleed`); the cell is the face's advance and line box instead
+/// (`metrics::advance_width`, `metrics::line_box`, ADR-0022).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CellMetrics {
     pub width: u32,
@@ -32,15 +33,14 @@ pub fn cell_metrics(bounds: InkBounds, draw_offset: f32) -> CellMetrics {
 
 /// Scan an RGBA bitmap (`w`×`h`, row-major) for the tight bounding box of pixels whose alpha
 /// is `>= alpha_threshold`. Returns `None` when nothing meets the threshold (a blank glyph).
-/// This is the basis of the cell's **height** (#288): measured from the `█` glyph's real pixel
-/// bounds rather than from `fontBoundingBox` (mirrors beamterm `canvas_rasterizer::measure_cell_metrics`,
-/// verbatim down to the 128 threshold). The width stopped coming from here in #962.
+/// This was the basis of the cell (#288): measured from the `█` glyph's real pixel bounds rather
+/// than from `fontBoundingBox` (mirrors beamterm `canvas_rasterizer::measure_cell_metrics`, verbatim
+/// down to the 128 threshold). The width stopped coming from here in #962 and the height in #986.
 ///
 /// **ADR-0022 grades that choice.** The "more accurate — `fontBoundingBox` has rounding/box-gap issues"
 /// rationale is beamterm's own comment, asserted without measurement and inherited here; both named
 /// references size the cell from font metrics instead (alacritty `display/mod.rs:1608-1615`, xterm
-/// `CharSizeService` → `WebglRenderer.ts:646-671`). Treat it as the current decision with an open
-/// validity question, not as established practice.
+/// `CharSizeService` → `WebglRenderer.ts:646-671`), and the cell now follows them on both axes.
 pub fn ink_bounds(pixels: &[u8], w: u32, h: u32, alpha_threshold: u8) -> Option<InkBounds> {
     let (mut min_x, mut max_x, mut min_y, mut max_y) = (w, 0u32, h, 0u32);
     let mut found = false;

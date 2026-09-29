@@ -87,15 +87,15 @@ test("the atlas is rasterised in device pixels, not CSS pixels", async ({ browse
   for (const m of measured) {
     for (const axis of [0, 1]) {
       // The device cell tracks the density. `±1` because the cell is measured from the face at the
-      // scaled font size (a floored advance, an ink-scanned height), not an exact multiple — e.g. the
-      // height is 33, not 32, at dpr 2.
+      // scaled font size (a floored advance, a ceiled line box), not an exact multiple — e.g. the
+      // height is 18, not 17.6, at dpr 1.1.
       const expectedDevice = at1.deviceCell[axis] * m.dpr;
       expect(Math.abs(m.deviceCell[axis] - expectedDevice), `device cell @ dpr ${m.dpr}: ${label}`)
         .toBeLessThanOrEqual(1);
 
       // The CSS cell does NOT track it. It is an unrounded float now (#331), so it still drifts by
-      // up to a pixel — the ink-scan is 16 device px at dpr 1 and 33 (not 32) at dpr 2, i.e. 16.5
-      // CSS px. What matters is that it does not SCALE with the density, which is what a CSS-px
+      // up to a pixel — the height is 16 device px at dpr 1 and 18 (not 17.6) at dpr 1.1, i.e.
+      // 16.36 CSS px. What matters is that it does not SCALE with the density, which is what a CSS-px
       // atlas would do.
       expect(Math.abs(m.cssCell[axis] - at1.cssCell[axis]), `css cell @ dpr ${m.dpr}: ${label}`)
         .toBeLessThanOrEqual(1);

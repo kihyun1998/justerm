@@ -97,7 +97,8 @@ or what the bake may do to a glyph before the composite sees it
 this file and are cited from it rather than restated.
 
 The cell is *measured* in device pixels — the rasteriser reads the face's advance (width, since #962)
-and ink-scans its `█` (height) at `FONT_SIZE * devicePixelRatio`, ADR-0022 — and that integer is what the
+at `FONT_SIZE * devicePixelRatio` and its line box (height, since #986; the ink scan of `█` before it)
+at `FONT_SIZE`, scaled by `devicePixelRatio` and ceiled, ADR-0022 — and that integer is what the
 shader receives as `u_cell_size`. Everything else is derived from it:
 
 - `cell_width()` / `cell_height()` → **device px, `u32`**. The exact cell. The bare name carries it, as in
@@ -122,8 +123,9 @@ shader receives as `u_cell_size`. Everything else is derived from it:
 - `cssWidth()` / `cssHeight()` → the CSS display box for that buffer, **unrounded** (#337). The canvas's
   CSS box stays the consumer's to set (as with beamterm's `auto_resize_canvas_css = false`).
 
-**Why the CSS view must be a float.** Rounding it to a whole CSS pixel destroys the cell: the ink-scan is
+**Why the CSS view must be a float.** Rounding it to a whole CSS pixel destroys the cell: the ink-scan was
 16 device px tall at dpr 1 and 33 at dpr 2, i.e. 16.5 CSS px, and a rounded 17 does not scale back to 33.
+The line box that replaced it (#986) does the same at dpr 1.1: 18 device px is 16.36 CSS px.
 
 **And why the CSS canvas *box* is a float too** (#337, decided against xterm.js). xterm rounds it:
 `css.canvas.width = Math.round(device.canvas.width / dpr)` (`WebglRenderer.ts:687`). We do not, on three

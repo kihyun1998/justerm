@@ -58,7 +58,7 @@
 
   checks.fontSizeGrowsTheCell = cw32 > cw16 + 2 && ch32 > ch16 + 2;
   const ratioW = cw32 / cw16, ratioH = ch32 / ch16;
-  // ~2x, generous band for the ink-scan not being an exact multiple.
+  // ~2x, generous band for the measured cell not being an exact multiple.
   checks.cellScalesRoughlyWithFontSize = ratioW > 1.6 && ratioW < 2.4 && ratioH > 1.6 && ratioH < 2.4;
 
   // The renderer still draws at the new size — a BLOCK fills its (bigger) cell with the fg. css_cell

@@ -1,0 +1,133 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — the cell is as tall as the face's line box, as xterm.js sizes it (#986)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; }
+</style>
+<!--
+  ADR-0022 as amended by #986: the cell's HEIGHT is the face's line box read at the CSS size, scaled
+  by the DPR and ceiled — `ceil((fontBoundingBoxAscent + fontBoundingBoxDescent) * dpr)`, as
+  xterm.js's `CharSizeService` reads it and `WebglRenderer` ceils it — and the alphabetic baseline
+  sits where xterm's ideographic baseline puts it: that baseline on the glyph box's bottom.
+
+  The expected height is computed here with the browser's own `measureText`, independently of the
+  renderer, at every size in a sweep. The browser rounds both metrics at the size it is asked for, so
+  the same line box read at the DRAWN size is a different number at some sizes; the sweep must reach
+  one, or the page cannot tell "read at the CSS size" from "read at the drawn size". It must also
+  reach a size where the old measurement, the ink box of `█`, differs. Which sizes those are is a
+  property of the face behind `monospace` on this machine (#578), so the page finds out rather than
+  assuming, and fails if there is none.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="64"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect, fitGrid, LIT_THRESHOLD } from "./proof.js";
+  await init();
+
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(new Uint32Array(256), 0xffffff, 0x000000);
+  const gl = document.querySelector("#c").getContext("webgl2");
+  const dpr = window.devicePixelRatio;
+
+  const off = new OffscreenCanvas(256, 256).getContext("2d", { willReadFrequently: true });
+  const lineBox = (px, family = "monospace") => {
+    off.font = `${px}px ${family}`;
+    const m = off.measureText("W");
+    return { ascent: m.fontBoundingBoxAscent, descent: m.fontBoundingBoxDescent, ideographic: m.ideographicBaseline };
+  };
+  /** xterm.js's device char height: the CSS line box, times the DPR, ceiled. */
+  const xtermHeight = (css, family) => {
+    const b = lineBox(css, family);
+    return Math.ceil((b.ascent + b.descent) * dpr);
+  };
+  /** Rows of `text`'s ink at `px` device px, relative to a `baseline` baseline at 0. */
+  const inkRows = (text, px, family = "monospace", baseline = "alphabetic") => {
+    off.clearRect(0, 0, 256, 256);
+    off.font = `${px}px ${family}`;
+    off.fillStyle = "white";
+    off.textBaseline = baseline;
+    off.fillText(text, 64, 160);
+    const d = off.getImageData(0, 0, 256, 256).data;
+    let top = 1e9, bottom = -1;
+    for (let y = 0; y < 256; y++)
+      for (let x = 0; x < 256; x++)
+        if (d[(y * 256 + x) * 4 + 3] > LIT_THRESHOLD) { top = Math.min(top, y); bottom = Math.max(bottom, y); }
+    return { top: top - 160, bottom: bottom - 160, h: bottom - top + 1 };
+  };
+
+  const rows = [];
+  for (const css of [10, 10.5, 11, 11.5, 12, 12.6, 13, 13.5, 14, 14.5, 15, 15.5, 16, 17, 18, 19, 20]) {
+    r.setFontSize(g, css);
+    const device = lineBox(css * dpr);
+    rows.push({
+      css, cell: [r.cell_width(g), r.cell_height(g)],
+      xterm: xtermHeight(css),
+      drawnLineBox: Math.ceil(device.ascent + device.descent),
+      blockInk: inkRows("█", css * dpr).h,
+    });
+  }
+
+  // The baseline, against xterm's own operation rather than this renderer's rule: `H` drawn with an
+  // ideographic baseline on the glyph box's bottom (`TextureAtlas.ts:735`). One cell, lineHeight 1
+  // so the glyph box is the cell, at every size in the sweep. The ink scan put the baseline the
+  // `█`'s ink ascent below the top instead; the sweep must reach a size where the two differ, or the
+  // check cannot tell them apart.
+  const baselineAt = (css, family) => {
+    r.setFontSize(g, css);
+    fitGrid(r, g, 1, 1);
+    r.apply_frame(g, 1, 1, new Uint32Array(1), new Uint32Array(1), new Uint32Array([0x48]), new Uint16Array(1), true);
+    r.render();
+    const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    const img = readRect(gl, { x: 0, y: 0, w, h });
+    let litBottom = -1;
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++)
+        if (img.buf[((h - 1 - y) * w + x) * 4] > LIT_THRESHOLD) litBottom = Math.max(litBottom, y);
+    const box = xtermHeight(css, family);
+    const expectedBottom = box + inkRows("H", css * dpr, family, "ideographic").bottom;
+    const inkScanBottom = -inkRows("█", css * dpr, family).top + inkRows("H", css * dpr, family).bottom;
+    return { css, family, litBottom, expectedBottom, inkScanBottom };
+  };
+  const baselines = rows.map((x) => baselineAt(x.css, "monospace"));
+
+  // A face that declares its own ideographic baseline (an OpenType BASE entry) is where "the
+  // descent above the bottom" and xterm's rule part. Only a machine that has one can run this: Yu
+  // Gothic ships with Windows. Where it is absent the page records that, and says so.
+  const OWN_BASE = "'Yu Gothic'";
+  const ownBase = document.fonts.check(`16px ${OWN_BASE}`) &&
+    Math.abs(lineBox(16 * dpr, OWN_BASE).ideographic + lineBox(16 * dpr, OWN_BASE).descent) >= 1;
+  const ownBaselines = [];
+  if (ownBase) {
+    r.setFontFamily(g, OWN_BASE);
+    for (const css of [12, 14, 16, 20]) ownBaselines.push(baselineAt(css, OWN_BASE));
+    r.setFontFamily(g, "monospace");
+  }
+
+  const CSS = 16;
+  r.setFontSize(g, CSS);
+  // lineHeight still multiplies the new glyph box and floors, as xterm's `cell.height` does.
+  r.setLineHeight(g, 1.2);
+  const tall = r.cell_height(g);
+  r.setLineHeight(g, 1);
+
+  const checks = {
+    everyCellIsTheXtermHeight: rows.every((x) => x.cell[1] === x.xterm),
+    // The window: without a size where these differ, the check above cannot tell the unit apart.
+    // At dpr 1 the CSS size IS the drawn size, so the two units cannot differ there.
+    aSizeWhereTheDrawnLineBoxDisagrees: dpr === 1 || rows.some((x) => x.drawnLineBox !== x.xterm),
+    aSizeWhereTheBlockInkDisagrees: rows.some((x) => x.blockInk !== x.xterm),
+    theBaselineIsXtermsIdeographicBaselineOnTheBoxBottom: baselines.every((x) => x.litBottom === x.expectedBottom),
+    aSizeWhereTheInkScanBaselineDisagrees: baselines.some((x) => x.inkScanBottom !== x.expectedBottom),
+    // Vacuously true where the face is absent — `measured.ownBase` says which.
+    aFaceWithItsOwnIdeographicBaselineSitsWhereXtermPutsIt: ownBaselines.every((x) => x.litBottom === x.expectedBottom),
+    lineHeightMultipliesTheLineBox: tall === Math.floor(xtermHeight(CSS) * 1.2),
+  };
+  window.__proof = {
+    ok: Object.values(checks).every(Boolean), checks,
+    measured: { rows, baselines, ownBase, ownBaselines, tall }, dpr,
+  };
+  window.__done = true;
+</script>

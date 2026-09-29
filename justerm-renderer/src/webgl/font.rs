@@ -33,7 +33,8 @@ impl JustermRenderer {
     ) -> Result<BakedConfig, JsValue> {
         let mut rasterizer = Rasterizer::new(
             key.font_family(),
-            key.font_size() * dpr,
+            key.font_size(),
+            dpr,
             key.font_weight(),
             key.font_weight_bold(),
             key.subpixel(),

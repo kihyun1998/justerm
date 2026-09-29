@@ -30,7 +30,7 @@ box drawing, the Legacy Computing polygons and fills, and a general raster primi
   `█` is one solid fill, `▀▄▌▐` halve the cell exactly, `▖▗▘▝` quarter it. The browser draws them as
   glyphs and the renderer masks every glyph to its **ink box** — so as soon as `letterSpacing` or
   `lineHeight` moves the cell away from the ink box, the fills stop meeting.
-- **And it is worse than a gap.** The renderer *measures* its cell's height by ink-scanning `█`. At
+- **And it is worse than a gap.** Until #986 the renderer *measured* its cell's height by ink-scanning `█`. At
   `lineHeight = 1.5` the very glyph that defines the cell no longer fills it — the measurement and
   the drawing disagree about the same character.
 - **Both references do the same thing, and that is unusually strong agreement**: xterm.js intercepts

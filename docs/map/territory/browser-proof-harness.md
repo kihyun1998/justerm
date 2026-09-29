@@ -90,8 +90,8 @@ a justerm shape here wrong, only corroborate one.
   file (`:1795`, `_skipRemainingTestsInSuite`); `workers` defaults to 50% of logical cores
   (`playwright/lib/common/index.js:595`).
 - **A seed runs to a condition, never to a count** (#818). How many output rows move the scrollbar
-  thumb to a given pixel depends on the fitted row count, which follows the cell — the font's ink box
-  (ADR-0022) — so it differs between a workstation and CI. A fixed seed passed locally and timed out
+  thumb to a given pixel depends on the fitted row count, which follows the cell — the font's
+  metrics (ADR-0022) — so it differs between a workstation and CI. A fixed seed passed locally and timed out
   on CI. No absolute cell dimension is portable.
 - **A reader that supplies the thing under test cannot fail** (#776). The sharpest form found so
   far: a probe that calls `present()` before it reads pixels is *itself* what runs the renderer's

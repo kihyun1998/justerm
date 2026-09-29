@@ -4,9 +4,11 @@
 
 How big a cell is, where the glyph sits inside it, and how those numbers survive the trip between
 device pixels and CSS pixels. Everything geometric derives from **one measurement of the face**: its
-advance, floored, for the width (#962), and an ink scan of its `█` for the height and the baseline.
+advance, floored, for the width (#962), and its line box — read at the CSS size, scaled by the DPR
+and ceiled, as xterm.js reads it — for the height and the baseline (#986). An ink scan of its `█`
+sizes only the horizontal bleed band (#966).
 
-One measurement *per font configuration*, since #772 — the renderer keys the ink scan, the cell and
+One measurement *per font configuration*, since #772 — the renderer keys the measurement, the cell and
 the glyph box by the grid's font selectors and refcounts them, so two terminals in two fonts have two
 cell geometries on one canvas. Nothing in the derivation changed; what changed is that "the
 renderer's cell" is no longer a phrase with one referent, so since #773 every cell reader names its
@@ -16,8 +18,9 @@ for the tier and its lifetime.
 ## Governing decisions
 
 - [**ADR-0022 — the grid cell is the ink box of the font's `█`**](../../adr/0022-cell-geometry-from-an-ink-scan.md)
-  — **amended by #962: the width is the face's floored advance**, as xterm.js and alacritty size it; the
-  height is still the ink box
+  — **amended by #962: the width is the face's floored advance**, as xterm.js and alacritty size it;
+  **amended by #986: the height is xterm.js's line box** (a judgement of the maintainer's, recorded
+  there with what it was decided on)
   — and everything geometric follows from it. The measurement method is inherited from beamterm and
   its grounds are **marked unverified in the record itself**
 - [**ADR-0023 — a spacing setting is CSS pixels**](../../adr/0023-spacing-settings-are-css-pixels.md)
@@ -28,10 +31,22 @@ for the tier and its lifetime.
 
 - **Device pixels are the source of truth; the CSS view is derived** — the renderer, not the
   consumer, owns the DPR the atlas is baked at, as beamterm's `device_pixel_ratio` does. The rasteriser reads the
-  advance and ink-scans `█` at `FONT_SIZE * dpr`, the shader lays the grid out in device px (`u_cell_size`), and a
+  advance at `FONT_SIZE * dpr` and the line box at `FONT_SIZE` (scaled by `dpr` and ceiled), the shader lays the grid out in device px (`u_cell_size`), and a
   single-grid consumer can size the drawing buffer to an exact multiple of them. `cssCellWidth()` is a **float** on purpose, so the derivation
   can be undone — a consumer's `cols * cssCellWidth()` box scales back to `cols * cell` device px
   exactly.
+- **"The face's line box" is not one number** (#986). Chromium rounds `fontBoundingBox{Ascent,
+  Descent}` to whole pixels at the size it is asked for, so the line box read at the CSS size and
+  scaled is not the line box read at the drawn size: Consolas at 14 CSS px x 1.5 is `ceil(17 x 1.5)` =
+  26 against 19 + 5 = 24 — the same as the old ink box, so a drawn-size read would not have moved
+  #986's grid at all. `line_box` takes xterm.js's side on purpose: the CSS-size read, the product in
+  double precision as JS takes it (single precision makes a line box of 10 at dpr 1.1 into 11, where
+  xterm gets 12), and the alphabetic baseline the *drawn* size's `ideographicBaseline` above the
+  box's bottom, which is where xterm draws — for most faces that is the descent, but Yu Gothic
+  declares its own and a descent rule sat it 2–5 px high. Three consequences: the height is not a function of the device size
+  alone; the box can be up to 2 px shorter than the face's `█` (harmless — `builtin` draws `█` to the
+  cell) or than the drawn-size line box (the vertical band takes that gap); and `line-box-cell.html`
+  needs a size where the two reads disagree to tell them apart, which no size at dpr 1 can be.
 - **The cell box and the glyph box used to be the same rectangle, and are not any more** (#338).
   While they were identical the shader could stretch one glyph quad across one cell and be right by
   construction. `letterSpacing` and `lineHeight` break that identity: the cell grows, the glyph does
@@ -42,8 +57,8 @@ for the tier and its lifetime.
 - **The slot is no longer the cell plus a guard band** (#791, #966). It carries a **bleed band** on
   every side as well — room for ink that leaves the cell, which the receiving cell reads back
   (ADR-0019 R1.2). Three consequences worth knowing before touching anything here: each band is
-  derived *per font configuration* (`metrics::vertical_bleed`, from the gap between this face's `█`
-  ink box and its declared line box; `metrics::horizontal_bleed`, from what that `█` overhangs the
+  derived *per font configuration* (`metrics::vertical_bleed`, from the gap between the glyph box
+  and the line box the face declares at the drawn size; `metrics::horizontal_bleed`, from what that `█` overhangs the
   glyph box; each plus the same empirical headroom), each is spent out of its own axis of the
   texture beside the guard band so it **lowers** the largest cell the atlas can hold on that axis,
   and every site that places something into a slot must use the same origin — `pad()`, the path that lays a
@@ -76,8 +91,8 @@ for the tier and its lifetime.
   was told. So `cols()` is an echo, and a consumer that asks for more than fits learns it from
   `cssWidth` rather than from `cols`.
 - **The cell is measured at the `normal` weight, whatever weights the configuration draws at** (#928).
-  The two weights key the configuration, so a weight change re-bakes the atlas — and the ink scan
-  still reads `█` at 400. The maintainer chose this over measuring at the regular weight, on a
+  The two weights key the configuration, so a weight change re-bakes the atlas — and the measurement
+  still reads the face at 400. The maintainer chose this over measuring at the regular weight, on a
   measurement that showed the other choice moves the cell on real faces (headless Chromium, cells in
   device px at weights 100 / 400 / 900): `monospace` 8x16 / 8x16 / 9x16 at dpr 1 and 16x33 / 16x33 /
   17x33 at dpr 2; Courier New 10x18 / 10x18 / 11x16 at dpr 1 and 20x37 / 20x37 / 21x33 at dpr 2;
@@ -216,7 +231,7 @@ for the tier and its lifetime.
 
 ## Code
 
-- `justerm-renderer/src/rasterizer.rs` — the advance read and the ink scan of `█` (browser-only)
+- `justerm-renderer/src/rasterizer.rs` — the advance and line-box reads and the ink scan of `█` (browser-only)
 - `justerm-renderer/src/css_font.rs` — `FontWeight` and `font_string`, the `font` the scan and every
   glyph are drawn with (host-testable)
 - `justerm-renderer/src/metrics.rs` — the cell box / glyph box nesting
@@ -242,9 +257,9 @@ recorded SHA; a paraphrase drops the pin).
 - [Font weight — what it reaches, and what the cell is measured at](../../agents/reference-facts.md#font-weight--what-it-reaches-and-what-the-cell-is-measured-at-928-verified-2026-09-17)
 
 The cell/glyph box split and the floored-advance width (#962, `metrics::advance_width`) are both
-backed by both references, cited in ADR-0022. **The ink-scan measurement that still sizes the
-height has no such backing** — ADR-0022 records it as inherited and grades its grounds as unverified,
-which is unusual enough to be worth knowing before building on it.
+backed by both references, cited in ADR-0022. The height (#986, `metrics::line_box`) is xterm.js's
+rule and only xterm.js's: it follows that engine's rounding rather than the face, because a consumer
+runs both engines from one setting — a judgement recorded in ADR-0022, not a derivation.
 
 ## Cross-cutting invariants
 
@@ -286,8 +301,8 @@ which is unusual enough to be worth knowing before building on it.
   window of the advance rounded *up*, which on Consolas is its ink box again. At the advance rounded
   *down*, which is the width xterm.js and alacritty adopt, the clipped count rises 21–75 % (ADR-0022
   records the re-run). The horizontal band #966 adds is what pays for that. **Width axis closed
-  2026-09-22 (#962)**: the width is the floored advance. What stays open is alternative (A) on the
-  height, which #962 left alone.
+  2026-09-22 (#962)**: the width is the floored advance. **Height axis closed 2026-09-29 (#986)**: the
+  height is xterm.js's line box.
 - ~~**Nothing catches ink that leaves the cell sideways.**~~ — **closed 2026-08-21 (#792)** by
   condensing at bake rather than by a band; see the design model above. What the closure does *not*
   cover is a **width-2** glyph whose ink exceeds two cells — and that turned out to be measurably

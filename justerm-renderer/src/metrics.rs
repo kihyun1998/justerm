@@ -1,7 +1,7 @@
 //! Cell metrics: how the grid cell relates to the glyph box (#338).
 //!
 //! One link in the chain ADR-0022 records: the cell comes from the face's advance (width, #962) and
-//! an ink scan of its `█` (height) ([`rasterizer`](crate::rasterizer)), this module nests the glyph box inside it, and that nesting is
+//! its line box (height, #986) ([`rasterizer`](crate::rasterizer)), this module nests the glyph box inside it, and that nesting is
 //! why tiling glyphs must be drawn to the *cell* ([`builtin`](crate::builtin)) instead of to their ink
 //! box. `letterSpacing` and `lineHeight` grow the cell and not the glyph, so this says where inside
 //! the cell the glyph sits. Both references keep the same split (ADR-0022).
@@ -52,6 +52,36 @@ pub fn advance_width(advance_px: f32) -> u32 {
         return 1;
     }
     (advance_px.floor().clamp(1.0, MAX_CELL_PX as f32)) as u32
+}
+
+/// The glyph box height and baseline in device px (ADR-0022, #986), as xterm.js sizes them.
+///
+/// `css_ascent` / `css_descent` are the face's `fontBoundingBox{Ascent,Descent}` measured at the
+/// **CSS** size; the height is their sum times `dpr`, ceiled — `CharSizeService` then
+/// `Math.ceil(charSizeService.height * dpr)` (`WebglRenderer.ts:659`). `device_ideographic` is the
+/// face's `ideographicBaseline` at the drawn size, negative below the alphabetic baseline; xterm draws
+/// that baseline on the box's bottom (`TextureAtlas.ts:735`), so the alphabetic one sits that far above
+/// it. Returns `(height, ascent)`: the height at least 1 and at most [`MAX_CELL_PX`], a non-finite line
+/// box 1; the ascent inside `0..=height`, a non-finite ideographic baseline the box's bottom. The
+/// product is taken in double precision, as JS takes it.
+pub fn line_box(
+    css_ascent: f64,
+    css_descent: f64,
+    dpr: f32,
+    device_ideographic: f64,
+) -> (u32, f32) {
+    let h = ((css_ascent + css_descent) * dpr as f64).ceil();
+    let h = if h.is_finite() {
+        h.clamp(1.0, MAX_CELL_PX as f64) as u32
+    } else {
+        1
+    };
+    let below = if device_ideographic.is_finite() {
+        -device_ideographic
+    } else {
+        0.0
+    };
+    (h, (h as f64 - below).clamp(0.0, h as f64) as f32)
 }
 
 /// The device-pixel grid cell for a glyph box of `char_px`, given the consumer's policy.
@@ -186,11 +216,11 @@ pub const BLEED_HEADROOM_PX: u32 = 4;
 
 /// How deep a band each slot reserves above and below the cell, for this font configuration (#791).
 ///
-/// The cell's height is the ink box of `█` (ADR-0022) and the face's own glyphs are not bounded by it, so the
-/// band has to cover the gap between the two — **per face**, because that gap is a property of how
-/// the designer drew one glyph and varies by several device px between faces at the same size. One
-/// number serves both edges, so the larger gap wins; [`BLEED_HEADROOM_PX`] is added on top for what
-/// overshoots even the declared line box.
+/// The cell's height is the line box read at the CSS size and scaled (ADR-0022, #986), and the line
+/// box the face declares at the drawn size can reach past it, so the band covers the gap between
+/// the two — **per configuration**, because each is rounded at its own size. One number serves both
+/// edges, so the larger gap wins; [`BLEED_HEADROOM_PX`] is added on top for what overshoots even the
+/// declared line box.
 ///
 /// All four arguments are device px against the baseline: the cell's own ascent and descent, and the
 /// face's, which a browser reports as `fontBoundingBox{Ascent,Descent}`.
@@ -365,6 +395,37 @@ mod tests {
         assert_eq!(advance_width(f32::NAN), 1);
         assert_eq!(advance_width(-3.0), 1);
         assert_eq!(advance_width(1e9), MAX_CELL_PX);
+    }
+
+    #[test]
+    fn the_glyph_box_height_is_the_css_line_box_scaled_and_ceiled_as_xterm_sizes_it() {
+        // #986's measurement: Consolas at 14 CSS px reports a line box of 13 + 4, and at dpr 1.5
+        // xterm.js makes that `ceil(17 * 1.5)` = 26 device px, where the ink box of `█` gave 24.
+        // At the drawn 21 device px its ideographic baseline is 5 below the alphabetic one, and
+        // xterm draws that ideographic baseline on the box's bottom — so the alphabetic one is 21
+        // down from the top.
+        assert_eq!(line_box(13.0, 4.0, 1.5, -5.0), (26, 21.0));
+        // A face with its own ideographic baseline (Yu Gothic: -1.68 at 14 px, where its descent is
+        // 4) puts the alphabetic baseline that much above the bottom, not its descent.
+        assert_eq!(
+            line_box(13.0, 4.0, 1.0, -1.681640625),
+            (17, (17.0 - 1.681640625_f64) as f32)
+        );
+        // Ceiled, not rounded or floored: 17 * 1.2 = 20.4.
+        assert_eq!(line_box(13.0, 4.0, 1.2, -5.0).0, 21);
+        // A whole product stays whole.
+        assert_eq!(line_box(13.0, 4.0, 2.0, -7.0), (34, 27.0));
+        // In double precision, as xterm.js multiplies in JS: a line box of 10 at dpr 1.1 is
+        // 11.000000000000002 there, so 12 — where single precision rounds the product to 11.
+        assert_eq!(line_box(8.0, 2.0, 1.1, -2.0).0, 12);
+        // Degenerate metrics cannot produce a zero-height box, an unbounded one, or a baseline
+        // outside it.
+        assert_eq!(line_box(0.0, 0.0, 1.0, 0.0), (1, 1.0));
+        assert_eq!(line_box(f64::NAN, 4.0, 1.0, -4.0), (1, 0.0));
+        assert_eq!(line_box(1e9, 0.0, 1.0, 0.0).0, MAX_CELL_PX);
+        assert_eq!(line_box(3.0, 1.0, 1.0, -9.0), (4, 0.0));
+        assert_eq!(line_box(3.0, 1.0, 1.0, 2.0), (4, 4.0));
+        assert_eq!(line_box(3.0, 1.0, 1.0, f64::NAN), (4, 4.0));
     }
 
     #[test]
@@ -545,8 +606,8 @@ mod tests {
 
     #[test]
     fn the_bleed_is_derived_per_font_from_what_that_face_overshoots_its_own_cell() {
-        // Measured 2026-08-20 in Chromium at em 24 device px (#791): the cell is the ink box of
-        // `█`, the line box is `fontBoundingBox{Ascent,Descent}`, and the gap between them differs
+        // Measured 2026-08-20 in Chromium at em 24 device px (#791): the cell was then the ink box
+        // of `█`, the line box is `fontBoundingBox{Ascent,Descent}`, and the gap between them differs
         // per face. A constant band would over-reserve on the tight faces and under-reserve on the
         // loose one — which is the whole argument for deriving it.
         //
@@ -813,7 +874,7 @@ mod tests {
         assert_eq!(device_cell(CHAR, 1e9, 1.0, 1.0).0, MAX_CELL_PX);
         assert_eq!(device_cell(CHAR, 0.0, 1e9, 1.0).1, MAX_CELL_PX);
         assert_eq!(device_cell(CHAR, 1e9, 1e9, 4.0), (MAX_CELL_PX, MAX_CELL_PX));
-        // The ceiling is far above any real cell (a 16 px font ink-scans to ~10x16 device px at
+        // The ceiling is far above any real cell (a 16 px font measures ~8x16 device px at
         // dpr 1) and far below the smallest MAX_TEXTURE_SIZE we have measured (8192, SwiftShader).
         // A `const` assertion, so moving the bound out of that window fails the build, not a run.
         const { assert!(MAX_CELL_PX > 1000 && MAX_CELL_PX < 8192) };
