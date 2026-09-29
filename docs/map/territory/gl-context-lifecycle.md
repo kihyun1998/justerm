@@ -102,7 +102,10 @@ machine that decides what the renderer does in between.
   now *see* the loss (#579 wired the surface), but seeing is not the same as being expected to act on
   it: nothing in the contract says a consumer must check, and a setter that rejected would break every
   one that does not. So each stores what it was given and lets `restore` re-derive
-  from it; nothing is queued, because the stored value *is* the queue. The font and spacing setters skip an
+  from it; nothing is queued, because the stored value *is* the queue. The DPR is the one not stored
+  at all: `setDevicePixelRatio` drops a mid-loss notification, since re-baking would commit atlases
+  the dead context hands back invalidated, and `restore` re-reads the live `devicePixelRatio` and
+  bakes at it (#269). The font and spacing setters skip an
   atlas re-bake that a dead context would return invalidated; `resize` skips reading the drawing
   buffer back, which on a dead context answers 0 and would floor the grid to one cell (#639).
 - **"Is the context lost" has two answers and they disagree for a whole window — so the predicate

@@ -101,6 +101,15 @@ it.
   nudged `+0.001` off the exact texel edge so `NEAREST` cannot round to a neighbour (beamterm
   `cell.frag`) — belt and braces for a fractional cell-to-texel mapping (DPR != 1, #265); a
   neighbour's slot is read with the same nudge.
+- **One bake function builds every configuration** (`JustermRenderer::bake_config`). A new
+  configuration primes the 95 ASCII fast-path glyphs; a rebuild (a density change, a context
+  restore) re-bakes every resident glyph into the slot it already occupies, so the packed instances
+  survive with no re-pack. It is an associated function rather than a method because the
+  constructor has no `self` yet, and so that it cannot read a live tier by accident — which is what
+  lets every caller commit its result atomically or throw it away. A resident glyph is baked across
+  two slots iff its slot id is in the wide region (`slot_id() >= WIDE_BASE`), not iff it is a `Wide`
+  glyph: keying off the region is what catches a *wide* colour emoji, while a narrow one (#297, `GlyphKind::EmojiNarrow`) sits
+  in the normal region.
 
 ## Code
 
