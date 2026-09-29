@@ -722,3 +722,30 @@ export function composeRulerMarks(
   for (const m of searchMarks) (isGutterMark(m) ? gutter : full).push(m);
   return gutter.concat(full);
 }
+
+/** The wire sentinel for an absent decoration bg/fg override — mirrors the renderer's
+ * `NO_REF` (`u32::MAX`). A decoration colour is a 24-bit `0xRRGGBB` (top byte `0`), so this
+ * can never collide with a real colour. */
+const NO_REF = 0xffffffff >>> 0;
+
+/** `u32`s per decoration rect in the flat wire: `row, left, right, layer, bg, fg`
+ * (mirrors the renderer's `DECORATION_STRIDE`). */
+const DECORATION_STRIDE = 6;
+
+/** Flatten projected decoration rects into the renderer's stride-6 wire
+ * `[row, left, right, layer(0=bottom/1=top), bg, fg]…`. `bg`/`fg` are absolute `0xRRGGBB`
+ * used verbatim (the consumer already resolved its theme — #393); an absent override becomes
+ * {@link NO_REF}. Pure, so the layer mapping + the `undefined → NO_REF` encoding are testable. */
+export function decorationWire(rects: readonly DecorationRect[]): Uint32Array {
+  const out = new Uint32Array(rects.length * DECORATION_STRIDE);
+  rects.forEach((r, i) => {
+    const o = i * DECORATION_STRIDE;
+    out[o] = r.row;
+    out[o + 1] = r.left;
+    out[o + 2] = r.right;
+    out[o + 3] = r.layer === "top" ? 1 : 0;
+    out[o + 4] = r.bg ?? NO_REF;
+    out[o + 5] = r.fg ?? NO_REF;
+  });
+  return out;
+}

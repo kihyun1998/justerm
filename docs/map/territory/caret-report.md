@@ -77,8 +77,8 @@ though one is derived from the other.
 ## Code
 
 - `justerm-core/src/cursor.rs` — `CursorShape`, and `Cursor`'s `visible` / `shape` / `blink`
-- `justerm-web/src/justerm-renderer.ts` — `resolveCursorShape`, `JustermRenderer.setCursorStyle`: the
-  consumer's default shape under an unset application shape
+- `justerm-web/src/cursor.ts` — `resolveCursorShape`, and `justerm-web/src/justerm-renderer.ts` —
+  `JustermRenderer.setCursorStyle`: the consumer's default shape under an unset application shape
 - `justerm-core/src/serialize.rs` — `Frame`'s `cursor_row` / `cursor_col` / `cursor_visible` /
   `cursor_shape` / `cursor_blink`
 - `justerm-core/src/term.rs` — `Term::frame` (the `display_offset == 0` gate), `Term::frame_damage`

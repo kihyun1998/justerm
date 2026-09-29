@@ -1,18 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { DecorationRect } from "../src/decorations";
-import { MINIMUM_COLS, proposeDimensions } from "../src/fit";
+import { type CursorStyle, cursorCommand, resolveCursorShape } from "../src/cursor";
+import { type DecorationRect, decorationWire } from "../src/decorations";
+import { MINIMUM_COLS, gridForBox, proposeDimensions } from "../src/fit";
 import {
   asU16,
   asU32,
   blinkPhaseHeader,
   carriesBlink,
-  cursorCommand,
   damageHeader,
-  decorationWire,
-  gridForBox,
-  resolveCursorShape,
-} from "../src/justerm-renderer";
-import type { CursorStyle } from "../src/justerm-renderer";
+} from "../src/renderer-wire";
 import type { DecodedFrame } from "../src/types";
 
 /** Minimal decoded frame: the `apply_damage`/cursor fields the adapter reads, defaulted so a test

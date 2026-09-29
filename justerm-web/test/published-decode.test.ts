@@ -35,7 +35,7 @@
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { asU16, asU32, damageHeader, retainU32 } from "../src/justerm-renderer";
+import { asU16, asU32, damageHeader, retainU32 } from "../src/renderer-wire";
 import { MouseEvents } from "../src/input";
 import { osc8Links } from "../src/links";
 import { MarkerKind } from "../src/markers";

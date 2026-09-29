@@ -54,7 +54,7 @@ export interface Dimensions {
  * (`MINIMUM_COLS`/`MINIMUM_ROWS`).
  *
  * Exported because this package has **two** paths from a pixel box to a grid — this one and
- * {@link import("./justerm-renderer").gridForBox} — and they must not disagree. They did: a
+ * {@link gridForBox} (below) — and they must not disagree. They did: a
  * 1-column proposal is a grid the engine can never adopt, since `Engine::resize(1, r)` silently
  * yields 2. A consumer driving the engine at 1 while it holds 2 puts every span of the frame
  * outside the renderer's grid, and the surface stops updating.
@@ -262,4 +262,73 @@ export function observeResize(
   const ro = new ResizeObserver(() => controller.fit(readInput()));
   ro.observe(element);
   return () => ro.disconnect();
+}
+
+/** The `cols`×`rows` grid that fits a CSS-pixel box, given the cell's CSS size. Pixel→cell is
+ * consumer policy (ADR-0017) and the renderer takes a *grid* (#331), so the adapter owns this
+ * division — the same `floor(box / cell)` xterm's FitAddon does. Pure, so the fractional-DPR
+ * rounding is testable.
+ *
+ * Floored at {@link MINIMUM_COLS}×{@link MINIMUM_ROWS}, not at one cell (#547). "A grid must have
+ * a cell" was the old reason and it under-shot: the engine clamps `resize(1, r)` up to two
+ * columns, so a 1-column proposal is a grid it can never be in. Driving the engine at 1 while it
+ * holds 2 puts every span of the frame outside this grid and the surface silently stops updating.
+ * The clamp is pull-only on the core side — a consumer reads the width back, it is not told — so
+ * agreeing with the floor here is what keeps the two in step.
+ *
+ * `undefined` when there is nothing to propose, matching what `proposeDimensions` refuses (#632): an
+ * **unmeasured cell** (either axis `0`) and a **non-finite box** (`NaN` from a detached or unlaid-out
+ * element, `Infinity` from a degenerate one). Refusing is deliberate and is not the same as clamping —
+ * a zero-sized *box* still yields the floors, because a container that measured as empty is a real
+ * answer, while a non-finite one means *"not measured"*, exactly when the terminal must not be shrunk.
+ * The floor agreement above and this refusal are two axes of the same invariant, and this axis was
+ * missing: `Math.max(2, Math.floor(NaN / 8))` is `NaN`, so `backend.resize(NaN)` coerced to `0` and the
+ * terminal came back 1×1 — through the path that actually reaches the renderer, while the guarded path
+ * was the one nothing calls.
+ *
+ * **One check covers both conditions, and that is measured rather than assumed.** A separate
+ * `cellCss* === 0` guard was written first, mirroring the sibling's, and a mutation test showed it
+ * could not fail: a zero cell makes the quotient `±Infinity` (or `NaN` for a zero box over a zero
+ * cell), so `Number.isFinite` already rejects every one of those inputs. It was removed rather than
+ * kept for symmetry — a branch that cannot change an outcome is untestable by construction, and the
+ * test below asserts the zero-cell *behaviour*, which is the part that must hold. (The sibling in
+ * `fit.ts` carries the same redundancy, inherited from xterm's `cell.width === 0` guard; left alone
+ * because it is working code and changing it would alter nothing.) */
+export function gridForBox(
+  cssWidth: number,
+  cssHeight: number,
+  cellCssWidth: number,
+  cellCssHeight: number,
+): { cols: number; rows: number } | undefined {
+  // A box with no area yields no proposal (#810) — the same answer `proposeDimensions` gives, and the
+  // two must not disagree, which is what #632 made them share arithmetic for.
+  //
+  // **Only one of the two callers can actually deliver a zero, and saying which is the point.**
+  // `resize()` passes a box the consumer measured, where `0` means *nobody measured* — an absent
+  // element, which is #810's whole subject and is reached on an ordinary path. `applyGrid`'s grant
+  // read-back passes `cssWidth()`/`cssHeight()`, and that is **not** reachable at zero through the
+  // supported API: `resize_surface` throws on `<= 0`, and `apply_surface_size` seeds its committed
+  // size from `global.requested` and **breaks without narrowing** when the drawing-buffer read-back
+  // is empty, so a failed grant preserves the request rather than zeroing it
+  // (`justerm-renderer/src/webgl/surface.rs`). The only remaining route is a canvas element authored at
+  // `width="0"` whose surface is never sized.
+  //
+  // So for that caller this guard is **defensive, not a repair**, and it is written down because two
+  // earlier drafts of this comment claimed the opposite — first that an empty grant commits `(0, 0)`,
+  // then that the README's multi-pane example reaches it. Neither survives reading
+  // `apply_surface_size`. What the guard does buy there is that the two callers cannot disagree about
+  // what a zero means, which is the property #632 made them share arithmetic for.
+  //
+  // The renderer refuses its own read-back for the neighbouring reason, and the sentence is the one
+  // this guard borrows: *"A buffer of no size is not a grant, it is the absence of an answer"*
+  // (#639). An unmeasured box and an ungranted buffer are different facts with the same shape.
+  //
+  // Left unguarded, the grant read-back was the worse of the two: `{2, 1}` satisfied
+  // `granted.cols < cols`, so an empty buffer silently clamped **every attached pane's grid** to the
+  // minimum. Nothing named that site until #810's completeness pass.
+  if (cssWidth <= 0 || cssHeight <= 0) return undefined;
+  const cols = Math.max(MINIMUM_COLS, Math.floor(cssWidth / cellCssWidth));
+  const rows = Math.max(MINIMUM_ROWS, Math.floor(cssHeight / cellCssHeight));
+  if (!Number.isFinite(cols) || !Number.isFinite(rows)) return undefined;
+  return { cols, rows };
 }
