@@ -42,18 +42,16 @@ export function rendererNotifyingSink(sink: InputSink, renderer: Renderer): Inpu
  * Wiring the {@link Terminal} needs to be a complete widget, not just a frame
  * pump. Omit it and the widget is the pure source→renderer pump (headless-
  * testable, no DOM); supply it and `mount` also captures input, restarts the
- * cursor blink on typing, tracks focus, and routes the wheel (S16 #133) and
- * pointer presses.
+ * cursor blink on typing, tracks focus, and routes the wheel and pointer presses.
  */
 export interface TerminalOptions {
   /** The element input listeners attach to (the canvas or a wrapper). Provide it WITH `input` +
    * `getGeometry` to wire keyboard/IME/wheel; omit the group for an output-only widget (e.g. one
    * that only wants {@link events}).
    *
-   * **It does not need to be focusable, and the widget does not make it so** (#649 — this used to
-   * claim otherwise, and no `tabIndex` was ever written). The real keyboard/IME target is a hidden
-   * textarea the widget mounts inside it, and a pointer-down here focuses *that* through
-   * {@link Terminal.focus}. A canvas being unfocusable is therefore not a problem to solve.
+   * **It does not need to be focusable, and the widget does not make it so.** The real keyboard/IME
+   * target is a hidden textarea the widget mounts inside it, and a pointer-down here focuses *that*
+   * through {@link Terminal.focus}. A canvas being unfocusable is therefore not a problem to solve.
    *
    * **If you do make it (or a child) focusable, its pointer-down's default must be cancelled.** The
    * browser's focusing steps run after our `mousedown` handler, so an un-cancelled default moves
@@ -61,8 +59,7 @@ export interface TerminalOptions {
    * press it reports to the application or hands to {@link selection}. Any other press keeps
    * its default and cancelling it is yours: with no `selection` and an application that tracks
    * nothing, a report it could not make (no measured box, the back/forward buttons), or a press on a
-   * `Scrollbar` mounted inside the element. xterm.js does the same pairing
-   * (`browser/services/MouseService.ts:224-226` — `preventDefault()` then focus). */
+   * `Scrollbar` mounted inside the element. */
   element?: HTMLElement;
   /** Where normalised input intents go — keys/paste/focus, pointer and wheel reports
    * when the app tracks them, and cursor keys from a wheel on the alt screen. The
@@ -125,20 +122,20 @@ export interface TerminalOptions {
   /** A local scroll request: scroll the viewport to this display offset (lines up
    * from the bottom). Three producers funnel to the SAME callback for one coherent
    * request: the wheel (normal buffer, no app tracking), the consumer's scrollbar
-   * drag, and — since #913 — user input arriving while the view is scrolled up,
+   * drag, and user input arriving while the view is scrolled up,
    * which always asks for `0`. Omit to disable local scrolling **and the input
    * snap with it**. The backend applies it → a frame. */
   onScroll?(displayOffset: number): void;
   /** Wheel scroll tuning (xterm `scrollSensitivity`). */
   scroll?: ScrollOptions;
-  /** Fire-and-forget consumer notifications (#117) — title/bell/cwd and an
+  /** Fire-and-forget consumer notifications — title/bell/cwd and an
    * application's `OSC 9` / `OSC 777` notification. The widget
    * subscribes the source's {@link import("./types").FrameSource.subscribeEvents}
    * channel and routes each event to these callbacks. Independent of the DOM group
    * above (works on an output-only widget). Link activation is {@link links}, not
    * this stream: a link is per-cell state, not an event ([ADR-0020](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0020-what-qualifies-for-the-frame-snapshot.md)). */
   events?: EventHandlers;
-  /** `OSC 52` clipboard requests (#841) — an application asking to write, or read,
+  /** `OSC 52` clipboard requests — an application asking to write, or read,
    * the user's clipboard. Rides the same {@link events} subscription, but is not a
    * notification: the consumer *acts on* it and owes a query a reply.
    *
