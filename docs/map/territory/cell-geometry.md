@@ -26,7 +26,8 @@ for the tier and its lifetime.
 
 ## Design model
 
-- **Device pixels are the source of truth; the CSS view is derived.** The rasteriser reads the
+- **Device pixels are the source of truth; the CSS view is derived** — the renderer, not the
+  consumer, owns the DPR the atlas is baked at, as beamterm's `device_pixel_ratio` does. The rasteriser reads the
   advance and ink-scans `█` at `FONT_SIZE * dpr`, the shader lays the grid out in device px (`u_cell_size`), and a
   single-grid consumer can size the drawing buffer to an exact multiple of them. `cssCellWidth()` is a **float** on purpose, so the derivation
   can be undone — a consumer's `cols * cssCellWidth()` box scales back to `cols * cell` device px
@@ -170,7 +171,13 @@ for the tier and its lifetime.
     xterm.js, beamterm and three.js all leave them, because #337 couples the CSS display box to them
     — a lying attribute would make `cssWidth()` describe a buffer that does not exist. The request is
     stored, not passed, because one of its three callers (construction, `resizeSurface`, a context
-    restore) is the restore: the loss reset the buffer and nobody is going to re-ask. A grant
+    restore) is the restore: the loss reset the buffer and nobody is going to re-ask. It is stored **verbatim**: until S5 the implicit grid's
+    `grid_size` played this role (the buffer was `cols * cell`, density-independent), and the
+    obvious replacement, a CSS box, would be stored through the renderer's copy of the density, which
+    lags by construction — `setDevicePixelRatio` drops a notification outright while the context is
+    lost — so it would come back wrong by the ratio between the two densities. The fact belongs to
+    the site it is first true at, the consumer's measurement
+    ([ADR-0032](../../adr/0032-a-shared-fact-is-owned-by-its-producer.md)). A grant
     smaller than the request moves every placed rect, since a rect's GL y is measured from the
     buffer's bottom edge; the consumer re-places them, which it is doing anyway, since its own layout
     is what shrank.

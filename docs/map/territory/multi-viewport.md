@@ -101,8 +101,11 @@ warns about, so prefer `## Code` over it if the two ever disagree again.)
     order is the consumer's, not a convenience: a widget's rect is a DOM measurement, and it has none
     until it is laid out. It costs one of the per-grid tier and nothing of the other two — an
     instance buffer **and the VAO that points at it** (ADR-0021 D2: no selector, not shareable,
-    cheap to create; a VAO's whole content is *which* buffer feeds the draw, so it cannot be shared
-    byte-for-byte and follows the buffer).
+    cheap to create; a VAO's whole content is *which* buffer feeds the draw — `vertex_attrib_pointer`
+    captures the buffer bound at the time — so it cannot be shared byte-for-byte and follows the
+    buffer). #768 left this open as "a per-grid VAO or a re-pointer per grid per frame"; the
+    re-pointer would keep the per-grid fact in the global tier and rewrite it N times a frame, which
+    is the arrangement D2 rejects rather than a cheaper form of it.
     **A grid names the font it is born into, and that is what keeps the middle tier's economy real**
     (#772 AC 4, #773): it joins rather than bakes whenever a sibling already stands on the same
     configuration, so six terminals in one font hold one atlas between them. Until S5 a new grid was
@@ -162,7 +165,9 @@ warns about, so prefer `## Code` over it if the two ever disagree again.)
     middle tier exists to make and the one a memory figure cannot settle. It counts **committed**
     bakes — a rebuild that fails part-way leaves it where it was — so the number tracks
     configurations the renderer is drawing through rather than rasterising work it performed, which
-    is what a delta is read for and what keeps the delta deterministic.
+    is what a delta is read for and what keeps the delta deterministic. `bakes` is the *second*
+    diagnostic counter, the one whose placement D5 leaves open: it lands beside `packs` because the
+    question is the same shape — a proof reading a delta, not a rendering control.
 - **The selector funnel** (`adopt_selectors`, and `setDevicePixelRatio` beside it). All seven
   selector setters — size, family, both weights, the subpixel setting, and the two spacings through
   `adopt_spacing` — go through one site, so none of them can decide any of this differently. It owes
@@ -200,7 +205,9 @@ warns about, so prefer `## Code` over it if the two ever disagree again.)
     grid is hidden, so the first render after it is placed packs it once. ghostty gates the draw and
     the CPU rebuild on the same state; alacritty gates only the paint
     ([the registry rows](../../agents/reference-facts.md#a-terminal-registry-and-what-registered-but-not-drawn-is-made-of-770-verified-2026-08-19)).
-  - *One pin set spans the whole loop* (#772). Without it the second grid's pack repoints slots the
+  - *One pin set spans the whole loop* (#772) — a renderer field rather than a threaded parameter,
+    because it models a **scope** with one owner: `render` clears it once for every grid it packs,
+    `apply_frame` for its own immediate pack, the only scope that pack has. Without it the second grid's pack repoints slots the
     first committed earlier in the same frame, and the first is not re-diffed because its instance
     floats did not change — it draws stably wrong (the 911 / 891 measurement under `## Known
     holes`). With the pin the second pack is refused, which is what an over-capacity single frame

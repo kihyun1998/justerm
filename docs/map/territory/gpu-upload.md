@@ -37,6 +37,20 @@ contiguous ranges that actually changed.
 - **This is why incremental-repaint work from the previous renderer was not ported.** The engine's
   incremental damage is aimed at the *wire*; the renderer's equivalent problem is solved here, by
   different means, against a different failure mode.
+- **The instance layout is stated once** (`INSTANCE_STRIDE`, `build_grid_buffers`). The stride is
+  derived from `frame`'s `INSTANCE_FLOATS` rather than written out: the two drifting apart silently
+  mis-addresses every attribute, and nothing in the pipeline would say so — the geometry would
+  simply be wrong. It was a literal `9 * 4` until #513 widened the record, then #455 (the
+  `bg_default` provenance flag) and #525 (the second line ink) widened it again — three times in one
+  release cycle, which is the whole argument for deriving it. The attribute byte offsets come from
+  `frame`'s named float offsets where it names one (#791): the attribute table and the packer are
+  two statements of one layout, and a literal is how they come apart when a field is appended.
+  Three offsets are still literals: fg at 5, although `frame::FG_RGB` names it, and the two line
+  inks at 9 and 10, which `frame` does not name — so a float inserted before them moves them by hand.
+- **The upload baseline is valid only while its buffer persists.** `uploaded` mirrors the live
+  instance buffer, so a restore invalidates it — otherwise an identical frame diffs to zero ranges
+  and never refills the fresh, empty buffer, a blank render that will not self-heal (found by #263's
+  adversarial pass, implemented in #269).
 
 ## Code
 

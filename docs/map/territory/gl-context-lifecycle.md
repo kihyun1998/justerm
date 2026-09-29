@@ -98,7 +98,22 @@ machine that decides what the renderer does in between.
   so the check sits above *that* call, not above the first parameter this crate reads. The read
   itself is harmless — `get_parameter_i32` answers `0` for a `null`. A panic is also the one failure
   here that leaves the family's error shape: it arrives as a `RuntimeError`, not as the bare string
-  every other fallible path throws.
+  every other fallible path throws. (glow sites, unpinned: `web_sys.rs:237-239` the extension
+  enumeration, `:3590` the `0`.) `getContext` succeeding is **not** a liveness property: on a canvas
+  whose context is already lost it hands back the same lost object.
+
+  **One check covers the whole constructor, and not because a context cannot die inside it** — it
+  can; what cannot arrive inside it is the *report*, since `webglcontextlost` dispatches at a task
+  boundary and everything from the check to the final `apply_surface_size` is synchronous. The
+  guard is sufficient for a different reason: every remaining glow call on that path fails
+  **cleanly** — `create_*` return `Result`, `get_uniform_location` an `Option`, the status getters
+  `.as_bool().unwrap_or(false)` — so a context dying mid-construction yields this crate's
+  bare-string `Err`, never a `RuntimeError`. The check exists to cover the one call that does not
+  have that shape. For the same reason the loss listener, attached before any GL work, cannot
+  *catch* a loss during construction: attaching it earlier or later observes the same set of events
+  — none — and what the early position buys is only that the handler is in place before the first
+  thing that could need it. An earlier wording of that comment claimed the stronger property, and a
+  reader deriving from it would conclude a mid-construction loss is reported; it is not (#269).
 - **Every entry point that changes the geometry takes the request and defers the GPU work.** Seven of
   them can arrive mid-loss — the DPR, the font size, the font family, the font weights (#928), the
   subpixel setting (#961), the spacing policy and the resize — and none may reject the call, because a consumer has no obligation to hold it back. It can
