@@ -163,6 +163,18 @@ fn a_soft_wrapped_final_row_carries_nothing() {
     assert_eq!(term.selection_range(), vec![span(0, 0, 9)]);
 }
 
+/// A soft-wrapped row can still end in blanks — spaces written over its tail are padding to the
+/// extent measure (#685) but leave the wrap in place — and its end is still not a line's end.
+#[test]
+fn a_soft_wrapped_row_ending_in_blanks_carries_nothing() {
+    let mut term = carrying(10, 5);
+    term.feed(b"0123456789abcde\x1b[1;7H    ");
+    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, 7, Side::Right));
+
+    assert_eq!(term.selection_text().as_deref(), Some("012345"));
+    assert_eq!(term.selection_range(), vec![span(0, 0, 7)]);
+}
+
 /// The buffer's last row has nothing below it, so nothing has finished it yet.
 #[test]
 fn the_buffers_last_row_carries_nothing() {
