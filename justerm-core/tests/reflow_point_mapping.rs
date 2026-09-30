@@ -181,7 +181,7 @@ fn a_point_past_a_full_last_row_moves_to_the_next_row() {
 #[test]
 fn a_point_past_a_full_last_row_of_the_last_line_does_not_name_a_row_that_does_not_exist() {
     // The mirror of the test above at the buffer's end, where `(last_row + 1, 0)` has no row to
-    // land on. `Grid::row` indexes `lines` directly and a selection anchor is written back
+    // land on. `Grid::row` indexes `lines` directly and a selection endpoint is written back
     // unclamped, so this was an index-out-of-bounds **panic** — a library crashing its consumer,
     // the #536 class.
     //
@@ -191,17 +191,36 @@ fn a_point_past_a_full_last_row_of_the_last_line_does_not_name_a_row_that_does_n
     // subject — was safe before. Caught by the refuting lens, not by me.
     let mut t = Engine::new(12, 2);
     t.feed("ab한cdef".as_bytes()); // 8 cells; at 3 columns: "ab"+artefact | 한 c | d e f
-    t.selection_begin(0, 8, Side::Left, SelectionType::Char);
+    t.selection_begin(0, 0, Side::Left, SelectionType::Char);
     t.selection_extend(0, 8, Side::Right);
 
     t.resize(3, 2);
 
     let spans = t.selection_range();
-    assert_eq!(spans.len(), 1);
+    let last = spans.last().expect("the run still covers the text");
     assert!(
-        spans[0].row < t.grid().rows(),
-        "the anchor must name a row that exists"
+        last.row < t.grid().rows(),
+        "the end must name a row that exists"
     );
+    assert_eq!((last.left, last.right), (0, 2), "the end covers `f`");
+    assert_eq!(t.selection_text().as_deref(), Some("ab한cdef"));
+}
+
+#[test]
+fn a_selection_of_only_the_blank_past_a_full_last_row_stays_empty_across_the_resize() {
+    // Both ends of a one-cell selection past the text reflow to one past the full last row. The
+    // clamped point is the boundary after `f` for both (#1032), so the run stays empty; with the
+    // clamp keeping `Left` the start fell before `f` and the selection gained it.
+    let mut t = Engine::new(12, 2);
+    t.feed("ab한cdef".as_bytes());
+    t.selection_begin(0, 8, Side::Left, SelectionType::Char);
+    t.selection_extend(0, 8, Side::Right);
+    assert_eq!(t.selection_text().as_deref(), Some(""), "fixture");
+
+    t.resize(3, 2);
+
+    assert_eq!(t.selection_text().as_deref(), Some(""));
+    assert_eq!(t.selection_range(), vec![]);
 }
 
 #[test]

@@ -10,7 +10,7 @@
 //! |---|---|---|
 //! | cursor | the next write position | the start of the row after — a real cell |
 //! | OSC-133 mark | an **exclusive** bound on the command text (`extract_lines` clips `[b, c)`) | `col == cols`, i.e. "all of this row" |
-//! | selection anchor | a highlight endpoint | clamped inside the grid; UI state may not move app content |
+//! | selection anchor | a highlight endpoint | clamped inside the grid to `(cols - 1, Right)`; UI state may not move app content |
 //!
 //! So `reflow` returns the honest logical answer — `col` may equal `new_cols` — and the seam in
 //! `Term::resize` resolves it per kind. Collapsing the three into one grid coordinate is what made
@@ -30,7 +30,7 @@
 //! it needs destination rows to spill into, and spending those rows destroys content on a pane with
 //! no scrollback — measured, and left to #562's open half.
 
-use justerm_core::{Engine, SelectionType, Side};
+use justerm_core::{Engine, SelectionSpan, SelectionType, Side};
 
 /// `$ echo hello world` with OSC-133 B/C marks around the command, then a line of output.
 fn shell_transcript(cols: usize) -> Engine {
@@ -144,6 +144,97 @@ fn a_selection_starting_past_a_full_row_skips_to_the_next_line() {
         Some("ghijkl"),
         "an anchor after the last cell of line 0 selects line 1, not a leading break"
     );
+}
+
+// ---------------------------------------------------------------------------
+// the selection endpoint the resize clamps — "one past" is the boundary after the last cell,
+// which is `(cols - 1, Right)` whichever end of the range it is (#1032)
+// ---------------------------------------------------------------------------
+
+/// `abc` on a hard-ended row above `next`, at 10 columns: a drag on row 0 from `anchor` to `focus`,
+/// then a resize to 3 columns, the width the text fills.
+fn narrowed_to_the_text(anchor: (usize, Side), focus: (usize, Side), carry: bool) -> Engine {
+    let mut t = Engine::new(10, 5);
+    t.set_selection_carries_line_end(carry);
+    t.feed(b"abc\r\nnext");
+    t.selection_begin(0, anchor.0, anchor.1, SelectionType::Char);
+    t.selection_extend(0, focus.0, focus.1);
+    t.resize(3, 5);
+    t
+}
+
+#[test]
+fn a_selection_ending_past_the_text_keeps_the_last_character_when_the_row_narrows_to_it() {
+    // The drag's end is past `c`, reflow maps it to "one past" the text, and at 3 columns that is
+    // column 3 — clamped to 2. `Left` there is the boundary *before* `c`.
+    let (a, past) = ((0, Side::Left), (8, Side::Left));
+    for (anchor, focus, who) in [(a, past, "focus"), (past, a, "anchor")] {
+        let t = narrowed_to_the_text(anchor, focus, false);
+        assert_eq!(
+            t.selection_text().as_deref(),
+            Some("abc"),
+            "clamped {who}: text"
+        );
+        assert_eq!(
+            t.selection_range(),
+            vec![SelectionSpan {
+                row: 0,
+                left: 0,
+                right: 2
+            }],
+            "clamped {who}: the highlight covers `c` too"
+        );
+    }
+}
+
+#[test]
+fn a_selection_of_the_last_character_from_past_the_text_keeps_it_from_either_end() {
+    // The clamped end lands on `c`'s column with the other end: `(2, Right)` against `(2, Left)`.
+    // The two sides of one cell bound it whichever end is the anchor.
+    let (c, past) = ((2, Side::Left), (8, Side::Left));
+    for (anchor, focus) in [(c, past), (past, c)] {
+        let t = narrowed_to_the_text(anchor, focus, false);
+        assert_eq!(
+            t.selection_text().as_deref(),
+            Some("c"),
+            "{anchor:?} to {focus:?}"
+        );
+    }
+}
+
+#[test]
+fn a_selection_starting_past_the_text_starts_after_the_last_character_when_the_row_narrows_to_it() {
+    // The mirror: a clamped start on `Left` would begin *on* `c`. After the last cell, a start past
+    // a full row skips to the next line (`a_selection_starting_past_a_full_row_skips_to_the_next_line`),
+    // so the copy that was `"\nnext"` at 10 columns is `"next"` at the width the text fills.
+    let mut t = Engine::new(10, 5);
+    t.feed(b"abc\r\nnext");
+    t.selection_begin(0, 8, Side::Left, SelectionType::Char);
+    t.selection_extend(1, 3, Side::Right);
+    t.resize(3, 5);
+
+    assert_eq!(t.selection_text().as_deref(), Some("next"));
+    assert!(
+        t.selection_range().iter().all(|s| s.row != 0),
+        "row 0 is not highlighted: {:?}",
+        t.selection_range()
+    );
+}
+
+#[test]
+fn an_endpoint_that_lands_on_the_last_column_is_not_clamped_and_keeps_its_side() {
+    // Control: only a clamped endpoint changes side. `(0, 2, Left)` is inside the 3-column grid
+    // and still ends before `c`.
+    let t = narrowed_to_the_text((0, Side::Left), (2, Side::Left), false);
+    assert_eq!(t.selection_text().as_deref(), Some("ab"));
+}
+
+#[test]
+fn a_selection_carrying_its_newline_still_carries_it_when_the_row_narrows_to_the_text() {
+    // With #1031's setting, an end past the text takes the row's `\n`. At 3 columns the text fills
+    // the row and the clamped end reaches its edge, which is the full-row case of the same rule.
+    let t = narrowed_to_the_text((0, Side::Left), (8, Side::Left), true);
+    assert_eq!(t.selection_text().as_deref(), Some("abc\n"));
 }
 
 #[test]

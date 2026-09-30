@@ -92,10 +92,10 @@ fn char_select_across_scrollback_boundary() {
 }
 
 /// The anchor side decides cell inclusion: Right at the start excludes that cell,
-/// Left at the end excludes it. And a degenerate range (the two sides invert the
-/// same cell) is empty, never a panic.
+/// Left at the end excludes it. The two sides of one cell bound that cell whichever
+/// end the drag began at (#1032), and one side of one cell bounds nothing.
 #[test]
-fn selection_side_excludes_and_degenerate_is_empty() {
+fn selection_side_excludes_and_one_cell_is_bounded_from_either_edge() {
     let mut term = Engine::new(80, 24);
     term.feed(b"hello");
 
@@ -103,10 +103,25 @@ fn selection_side_excludes_and_degenerate_is_empty() {
     term.selection_extend(0, 4, Side::Left);
     assert_eq!(term.selection_text().as_deref(), Some("ell")); // 'h', 'o' excluded
 
-    // Sides invert the same cell → empty (must not index-panic).
     term.selection_begin(0, 2, Side::Right, SelectionType::Char);
     term.selection_extend(0, 2, Side::Left);
-    assert_eq!(term.selection_text().as_deref(), Some(""));
+    assert_eq!(
+        term.selection_text().as_deref(),
+        Some("l"),
+        "right edge to left edge"
+    );
+
+    term.selection_begin(0, 2, Side::Left, SelectionType::Char);
+    term.selection_extend(0, 2, Side::Right);
+    assert_eq!(
+        term.selection_text().as_deref(),
+        Some("l"),
+        "left edge to right edge"
+    );
+
+    term.selection_begin(0, 2, Side::Right, SelectionType::Char);
+    term.selection_extend(0, 2, Side::Right);
+    assert_eq!(term.selection_text().as_deref(), Some(""), "one edge");
 }
 
 /// A Word selection snaps to word boundaries (double-click). Clicking inside
@@ -175,6 +190,25 @@ fn block_select_is_rectangular() {
     term.selection_extend(1, 2, Side::Right);
 
     assert_eq!(term.selection_text().as_deref(), Some("bc\nfg"));
+}
+
+/// A Block whose two ends share a column, on its two sides, covers that column whichever end the
+/// drag began at (#1032).
+#[test]
+fn block_select_bounds_one_column_from_either_edge() {
+    for (a, f) in [(Side::Right, Side::Left), (Side::Left, Side::Right)] {
+        let mut term = Engine::new(80, 24);
+        term.feed(b"abcd\r\nefgh");
+
+        term.selection_begin(0, 2, a, SelectionType::Block);
+        term.selection_extend(1, 2, f);
+
+        assert_eq!(
+            term.selection_text().as_deref(),
+            Some("c\ng"),
+            "{a:?} to {f:?}"
+        );
+    }
 }
 
 /// A wide glyph occupies two cells (lead + spacer); copying a selection over it
@@ -646,6 +680,42 @@ fn a_block_evicted_by_the_cap_keeps_its_columns() {
     term.feed(b"\r\nL4");
 
     assert_eq!(term.selection_text().as_deref(), Some("fg\n2\n3"));
+}
+
+/// A narrowing resize that evicts history applies the cap's rule to an endpoint on an evicted line:
+/// it clamps to the start of the new top line (#1032).
+#[test]
+fn an_endpoint_evicted_by_a_resize_clamps_to_the_start_of_the_new_top_line() {
+    let mut term = Engine::with_scrollback(10, 3, 2);
+    // `l4` stays short of 5 cells, so the cursor after it buys no row from history.
+    term.feed(b"aaaaaaaaa0\r\n  indented\r\nline2\r\nline3\r\nl4");
+    term.scroll_up(2);
+    term.selection_begin(0, 3, Side::Left, SelectionType::Char);
+    term.scroll_to_bottom();
+    term.selection_extend(0, 4, Side::Right);
+    assert_eq!(
+        term.selection_text().as_deref(),
+        Some("aaaaaa0\n  indented\nline2")
+    );
+
+    term.resize(5, 3); // `aaaaaaaaa0` re-splits into two rows and both are evicted
+
+    assert_eq!(term.selection_text().as_deref(), Some("  indented\nline2"));
+}
+
+/// A selection wholly on lines a resize evicts is cleared, as it is at the cap (#1032).
+#[test]
+fn a_selection_wholly_on_lines_a_resize_evicts_is_cleared() {
+    let mut term = Engine::with_scrollback(10, 3, 2);
+    term.feed(b"aaaaaaaaa0\r\n  indented\r\nline2\r\nline3\r\nline4");
+    term.scroll_up(2);
+    term.selection_begin(0, 0, Side::Left, SelectionType::Char);
+    term.selection_extend(0, 9, Side::Right);
+    assert_eq!(term.selection_text().as_deref(), Some("aaaaaaaaa0"));
+
+    term.resize(5, 3);
+
+    assert_eq!(term.selection_text(), None);
 }
 
 /// A select-all copy stays whole while output evicts its first line at the cap.

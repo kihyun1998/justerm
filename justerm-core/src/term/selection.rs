@@ -1,4 +1,4 @@
-//! The selection surface: the gesture entry points, the three fixups that keep an
+//! The selection surface: the gesture entry points, the four fixups that keep an
 //! anchor pointing at its content while the buffer moves under it, and two text
 //! extractors — `selection_text` for the selected run, and `accessible_text`, which
 //! reads the *active* buffer as one document (floored on the alt screen, like every
@@ -9,9 +9,9 @@
 //! survive an ordinary scroll, and the three places they do not — is stated in
 //! [`crate::selection`]. Read it there; this module is the `Term` half of it.
 //!
-//! What is local to this site is the shape of that `Term` half. Three fixups
-//! (`selection_shift_below_margin`, `selection_evict_oldest`, `selection_rotate_region`)
-//! are `pub(super)` because the write path calls them from `term.rs` — each one beside
+//! What is local to this site is the shape of that `Term` half. Four fixups
+//! (`selection_shift_below_margin`, `selection_evict_oldest`, `selection_rotate_region`,
+//! `selection_reflowed`) are `pub(super)` because the write path calls them from `term.rs` — each one beside
 //! its decoration-marker counterpart, since both are absolute anchors and a buffer
 //! motion moves them together. That pairing was weighed as a reason to merge the two
 //! surfaces into one module and rejected in #584; the grounds and the counter-evidence
@@ -125,7 +125,7 @@ impl Term {
 
     /// Shift the selection up by `n` absolute lines after the oldest `n` lines
     /// left the front of the buffer (the scrollback cap evicts one, `ED 3` all of
-    /// history). An endpoint on an evicted line clamps to the start of the new top
+    /// history, a resize's reflow what it pushed out). An endpoint on an evicted line clamps to the start of the new top
     /// line — column 0, left side — except in a Block, which keeps its columns (the
     /// rule `selection_rotate_region` applies at a region top). If the whole
     /// selection was on evicted lines, it is cleared.
@@ -155,6 +155,32 @@ impl Term {
                 }
             }
         }
+    }
+
+    /// Carry the selection through a resize's reflow. `extras` are the anchor's and the
+    /// focus's reflowed points, counted from the top of history before the reflow evicted
+    /// `evicted` lines from it. An endpoint `reflow` answers one past a full row (`col == cols`)
+    /// is clamped into the grid at the boundary after the last cell, `(cols - 1, Right)`,
+    /// whichever end of the range it is; UI state may not move the application's content to
+    /// make room for itself. The evicted lines then leave by `selection_evict_oldest`.
+    pub(super) fn selection_reflowed(
+        &mut self,
+        extras: &[(usize, usize)],
+        evicted: usize,
+        cols: usize,
+    ) {
+        if let Some(sel) = &mut self.selection {
+            for (end, &(line, col)) in [&mut sel.anchor, &mut sel.focus].into_iter().zip(extras) {
+                end.point = BufferPoint {
+                    line,
+                    col: col.min(cols - 1),
+                };
+                if col >= cols {
+                    end.side = Side::Right;
+                }
+            }
+        }
+        self.selection_evict_oldest(evicted);
     }
 
     /// Rotate the selection within an in-screen scroll of absolute lines
@@ -399,10 +425,13 @@ impl Term {
             },
             SelectionType::Block => {
                 // Rectangular: the same column range on every row. Columns come
-                // from the two anchors (min/max, with each edge's side).
+                // from the two anchors (min/max, with each edge's side; on one column the `Left`
+                // side is the left edge).
                 let cols = self.grid.cols();
                 let (a, b) = (sel.anchor, sel.focus);
-                let (lcol, lside, rcol, rside) = if a.point.col <= b.point.col {
+                let (lcol, lside, rcol, rside) = if a.point.col < b.point.col
+                    || (a.point.col == b.point.col && a.side == Side::Left)
+                {
                     (a.point.col, a.side, b.point.col, b.side)
                 } else {
                     (b.point.col, b.side, a.point.col, a.side)
