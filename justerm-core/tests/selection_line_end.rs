@@ -191,6 +191,23 @@ fn a_soft_wrapped_row_ending_in_blanks_carries_nothing() {
     assert_eq!(term.selection_range(), vec![span(0, 0, 7)]);
 }
 
+/// Rows are read by absolute line, not viewport row: with history and the view scrolled up, a
+/// visible row whose next line is below the viewport is still finished.
+#[test]
+fn a_row_in_a_scrolled_back_viewport_is_finished_by_the_line_below_it() {
+    let mut term = Engine::with_scrollback(10, 4, 3);
+    term.set_selection_carries_line_end(true);
+    term.feed(b"L0\r\nL1\r\nL2\r\nL3\r\nL4\r\nL5\r\nL6\r\nL7\r\nL8\r\nL9");
+    term.scroll_up(2);
+    drag(&mut term, (0, 0, Left), (3, 8, Right));
+
+    assert_eq!(term.selection_text().as_deref(), Some("L4\nL5\nL6\nL7\n"));
+    assert_eq!(
+        term.selection_range(),
+        vec![span(0, 0, 9), span(1, 0, 9), span(2, 0, 9), span(3, 0, 9)]
+    );
+}
+
 /// The buffer's last row has nothing below it, so nothing has finished it yet.
 #[test]
 fn the_buffers_last_row_carries_nothing() {
@@ -241,16 +258,50 @@ fn a_drag_over_padding_only_selects_nothing() {
     assert_eq!(term.selection_range(), vec![]);
 }
 
-/// A drag that starts in a row's padding begins on the next row: the row it started on
-/// contributed no text, and so no ending either.
+/// A drag that starts in one row's padding and runs on covers that row's ending, as it does with
+/// the setting off; only a single-row run over padding is empty.
 #[test]
-fn a_drag_starting_in_the_padding_begins_on_the_next_row() {
+fn a_multi_row_drag_starting_in_the_padding_keeps_that_rows_ending() {
     let mut term = carrying(80, 24);
     term.feed(b"ab\r\ncd\r\nef");
     drag(&mut term, (0, 5, Left), (1, 1, Right));
 
-    assert_eq!(term.selection_text().as_deref(), Some("cd"));
-    assert_eq!(term.selection_range(), vec![span(1, 0, 1)]);
+    assert_eq!(term.selection_text().as_deref(), Some("\ncd"));
+    assert_eq!(term.selection_range(), vec![span(0, 5, 79), span(1, 0, 1)]);
+}
+
+/// An empty line is a line: its ending is all it has, and a drag starting on it keeps it.
+#[test]
+fn a_drag_starting_on_an_empty_line_keeps_it() {
+    let mut term = carrying(10, 5);
+    term.feed(b"foo\r\n\r\nbar");
+    drag(&mut term, (1, 0, Left), (2, 2, Right));
+
+    assert_eq!(term.selection_text().as_deref(), Some("\nbar"));
+    assert_eq!(term.selection_range(), vec![span(1, 0, 9), span(2, 0, 2)]);
+}
+
+/// A line selection of an empty finished line takes its ending, and paints the row it did
+/// with the setting off.
+#[test]
+fn a_line_selection_of_an_empty_line_carries_its_newline() {
+    let mut term = carrying(10, 5);
+    term.feed(b"foo\r\n\r\nbar");
+    term.selection_begin(1, 0, Side::Left, SelectionType::Line);
+
+    assert_eq!(term.selection_text().as_deref(), Some("\n"));
+    assert_eq!(term.selection_range(), vec![span(1, 0, 9)]);
+}
+
+/// A drag across an empty line alone covers no text.
+#[test]
+fn a_drag_within_an_empty_line_selects_nothing() {
+    let mut term = carrying(10, 5);
+    term.feed(b"foo\r\n\r\nbar");
+    drag(&mut term, (1, 0, Left), (1, 4, Right));
+
+    assert_eq!(term.selection_text().as_deref(), Some(""));
+    assert_eq!(term.selection_range(), vec![]);
 }
 
 /// The first blank cell is already padding: a drag that starts there covers no text.

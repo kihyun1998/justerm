@@ -451,13 +451,14 @@ impl Term {
                 } else {
                     to
                 };
-                let ((start_line, from), (end_line, to)) = if self.selection_carries_line_end {
-                    (
-                        self.start_past_text(start_line, from),
-                        self.end_past_text(end_line, to),
-                    )
-                } else {
+                let ((start_line, from), (end_line, to)) = if !self.selection_carries_line_end {
                     ((start_line, from), (end_line, to))
+                } else if sel.ty != SelectionType::Line
+                    && self.covers_padding_only(start_line, from, end_line)
+                {
+                    ((start_line, from), (start_line, from))
+                } else {
+                    ((start_line, from), self.end_past_text(end_line, to))
                 };
                 Resolved::Linear {
                     start_line,
@@ -470,14 +471,10 @@ impl Term {
         })
     }
 
-    /// A run's start `(line, from)`, moved to the next row's start when it lies in the padding of a
-    /// finished row (#1031). Returns it unchanged otherwise.
-    fn start_past_text(&self, line: usize, from: usize) -> (usize, usize) {
-        if self.finishes_row(line) && from >= self.text_end(line) {
-            (line + 1, 0)
-        } else {
-            (line, from)
-        }
+    /// Whether a run from `(line, from)` that ends on `end_line` lies wholly in the padding of one
+    /// finished row — the run the line-end rule (#1031) resolves to empty rather than to `\n`.
+    fn covers_padding_only(&self, line: usize, from: usize, end_line: usize) -> bool {
+        line == end_line && self.finishes_row(line) && from >= self.text_end(line)
     }
 
     /// A run's exclusive end `(line, to)`, moved to the next row's start when it covers a blank
