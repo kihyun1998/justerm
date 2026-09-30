@@ -451,6 +451,31 @@ impl Term {
                 } else {
                     to
                 };
+                if !self.selection_carries_line_end {
+                    return Some(Resolved::Linear {
+                        start_line,
+                        from,
+                        end_line,
+                        to,
+                    });
+                }
+                // #1031: an end past a finished row's text — or at the edge of a row the text
+                // fills — becomes the next row's start, so the row's `\n` and a full-width span
+                // both follow from the one coordinate. A start in the padding moves the same way.
+                let (start_line, from) = if self.finishes_row(start_line)
+                    && from >= self.text_end(start_line)
+                {
+                    (start_line + 1, 0)
+                } else {
+                    (start_line, from)
+                };
+                let (end_line, to) = if self.finishes_row(end_line)
+                    && (to > self.text_end(end_line) || to >= self.abs_line(end_line).len())
+                {
+                    (end_line + 1, 0)
+                } else {
+                    (end_line, to)
+                };
                 Resolved::Linear {
                     start_line,
                     from,
@@ -460,6 +485,20 @@ impl Term {
             }
             block => block,
         })
+    }
+
+    /// Whether absolute `line` is a finished line: not soft-wrapped, with a row below it.
+    fn finishes_row(&self, line: usize) -> bool {
+        line + 1 < self.scrollback.len() + self.grid.rows() && !self.abs_row(line).is_wrapped()
+    }
+
+    /// The column just past the last non-blank cell of absolute `line`, in cells: a wide glyph's
+    /// spacer counts as text, and only a `Cell::is_blank` cell is padding.
+    fn text_end(&self, line: usize) -> usize {
+        self.abs_line(line)
+            .iter()
+            .rposition(|c| !c.is_blank())
+            .map_or(0, |i| i + 1)
     }
 
     /// Pull a range's **first** column left when it lands on a wide glyph's trailing spacer, so a

@@ -87,6 +87,10 @@ pub struct Term {
     /// survives RIS. Defaults to [`DEFAULT_WORD_SEPARATORS`]; replaced through
     /// `set_word_separators`, which enforces the `' '` floor.
     word_separators: String,
+    /// Whether a linear selection whose end has passed a finished row's text takes that row's
+    /// line ending (#1031) — consumer policy (ADR-0017), so it survives RIS. Off by default;
+    /// set through `set_selection_carries_line_end`.
+    selection_carries_line_end: bool,
     /// The window title the application last set (OSC 0/2), retained so a title pop has
     /// something to restore (#823). Application state, so it dies on RIS:
     /// `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md`.
@@ -651,6 +655,7 @@ impl Term {
             link_ids_sweep_at: LINK_IDS_FIRST_SWEEP,
             tabs: default_tabs(cols),
             word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
+            selection_carries_line_end: false,
             window_title: String::new(),
             icon_name: String::new(),
             window_title_stack: Vec::new(),
@@ -987,6 +992,30 @@ impl Term {
     /// [`DEFAULT_WORD_SEPARATORS`] if it was never called.
     pub fn word_separators(&self) -> &str {
         &self.word_separators
+    }
+
+    /// Choose whether a Char, Word or Line selection whose end has passed the text of a finished
+    /// row takes that row's line ending (#1031) — policy injected into a core mechanism
+    /// ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
+    /// Off by default.
+    ///
+    /// When on, an end that covers at least one blank cell after the row's text — or reaches the
+    /// right edge of a row the text fills — moves to the start of the next row, so
+    /// [`selection_text`](Term::selection_text) ends with `\n` and
+    /// [`selection_range`](Term::selection_range) paints the row to its edge. A start inside a
+    /// row's padding moves to the next row too, so a drag over padding alone selects nothing. A row
+    /// is finished when it is not soft-wrapped and a row exists below it. Block selections are
+    /// unaffected.
+    ///
+    /// A command line selected this way carries a newline that executes it when pasted into a
+    /// shell without bracketed paste.
+    pub fn set_selection_carries_line_end(&mut self, on: bool) {
+        self.selection_carries_line_end = on;
+    }
+
+    /// Whether [`Term::set_selection_carries_line_end`] is on.
+    pub fn selection_carries_line_end(&self) -> bool {
+        self.selection_carries_line_end
     }
 
     /// Number of lines currently held in scrollback history.
@@ -1635,7 +1664,7 @@ impl Term {
     /// RIS (ESC c) — full reset to the power-on state (#53): rebuild `Term` from the
     /// constructor at the current dimensions and scrollback cap, and signal a full repaint.
     /// Carried across: the consumer-bound `replies`/`events`, the embedder's
-    /// `word_separators`, and the tracked-point and marker id counters and marker epoch. The
+    /// `word_separators` and `selection_carries_line_end`, and the tracked-point and marker id counters and marker epoch. The
     /// title stacks and retained strings are dropped and the palette is not announced (#823,
     /// #835). Which survives and why: `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md`.
     fn full_reset(&mut self) {
@@ -1651,6 +1680,7 @@ impl Term {
         let (cols, rows) = (self.grid.cols(), self.grid.rows());
         // Consumer policy, not terminal state (#545).
         let word_separators = std::mem::take(&mut self.word_separators);
+        let selection_carries_line_end = self.selection_carries_line_end;
         // Tracked points die, but their id counter rides across: they have no disposal event,
         // so a reissued id would answer a stale ask with another point (#691).
         let next_tracked_id = self.next_tracked_id;
@@ -1662,6 +1692,7 @@ impl Term {
         self.replies = replies;
         self.events = events;
         self.word_separators = word_separators;
+        self.selection_carries_line_end = selection_carries_line_end;
         self.next_tracked_id = next_tracked_id;
         self.next_marker_id = next_marker_id;
         self.marker_epoch = marker_epoch;

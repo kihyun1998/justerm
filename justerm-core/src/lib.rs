@@ -461,6 +461,19 @@ impl Engine {
         self.term.word_separators()
     }
 
+    /// Choose whether a selection dragged past the end of a finished line takes that line's `\n`,
+    /// with the highlight filling the row to show it — consumer policy injected into a core
+    /// mechanism ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
+    /// Off by default; survives RIS. The rule is on [`Term::set_selection_carries_line_end`].
+    pub fn set_selection_carries_line_end(&mut self, on: bool) {
+        self.term.set_selection_carries_line_end(on);
+    }
+
+    /// Whether [`set_selection_carries_line_end`](Self::set_selection_carries_line_end) is on.
+    pub fn selection_carries_line_end(&self) -> bool {
+        self.term.selection_carries_line_end()
+    }
+
     /// Clear the selection.
     pub fn selection_clear(&mut self) {
         self.term.selection_clear();
