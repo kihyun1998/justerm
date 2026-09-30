@@ -1002,9 +1002,9 @@ impl Term {
     /// When on, an end that covers at least one blank cell after the row's text — or reaches the
     /// right edge of a row the text fills — moves to the start of the next row, so
     /// [`selection_text`](Term::selection_text) ends with `\n` and
-    /// [`selection_range`](Term::selection_range) paints the row to its edge. A start inside a
-    /// row's padding moves to the next row too, so a drag over padding alone selects nothing. A row
-    /// is finished when it is not soft-wrapped and a row exists below it. Block selections are
+    /// [`selection_range`](Term::selection_range) paints the row to its edge. A Char or Word
+    /// selection that lies wholly in one row's padding selects nothing, rather than a lone `\n`. A
+    /// row is finished when it is not soft-wrapped and a row exists below it. Block selections are
     /// unaffected.
     ///
     /// A command line selected this way carries a newline that executes it when pasted into a

@@ -118,18 +118,25 @@ status.
 - **A selection past a finished line's text can take its `\n` — opt-in, by moving the end** (#1031).
   `Term::set_selection_carries_line_end` (off by default, survives RIS as configuration). When on,
   `resolve`'s Linear arm moves an end that covers a blank cell past the row's text — or reaches the
-  edge of a row the text fills — to `(next row, 0)`, and a start in the padding the same way. Five
-  things about it are easy to get wrong:
+  edge of a row the text fills — to `(next row, 0)`; a single-row Char/Word run over padding alone
+  resolves empty instead. Five things about it are easy to get wrong:
   - **What was the maintainer's and what was derived** (the record is on #1031). *Judgements*: opt-in
     rather than default; "finished" is *not soft-wrapped and a row exists below*, with **no**
     cursor-row guard, so a typed command on a prompt row carries its `\n` and executes when pasted;
     Line follows the rule; the full-row exception stays. *Derivations*: the relocated coordinate
     (xterm's shape — both observables read it, so `extract_lines` and `selection_range` did not
-    change and `extract_lines`' other callers cannot pick it up), the start move, block exempt.
-  - **The start move is what keeps an empty-looking selection empty.** Without it a drag inside one
-    blank cell that crosses its midpoint, or a double-click on padding, copies a lone `"\n"`, which
-    is truthy, so the web's `copySelection` would write it to primary. `from >= text_end`, not
-    xterm's `col > LastTextCol + 1`: the first blank cell is already padding.
+    change and `extract_lines`' other callers cannot pick it up), the padding-only guard, block
+    exempt.
+  - **The padding-only guard is one row wide, and it is not xterm's start move.** Without a guard,
+    a drag inside one blank cell that crosses its midpoint, or a double-click on padding, copies a
+    lone `"\n"`, which is truthy, so the web's `copySelection` would write it to primary. xterm
+    guards by moving the *start* past padding too, and a first draft here copied that — which
+    dropped an empty line a drag or a triple-click *began* on, in both copy and highlight, because
+    column 0 of an empty row is past its text (#1031's completeness lens). Only a single-row run
+    can cover padding alone, so the guard is `same row && from >= text_end`, never on Line: a
+    triple-click on an empty line takes its `\n` and paints the row, as it paints it with the
+    setting off. `from >= text_end`, not xterm's `col > LastTextCol + 1`: the first blank cell is
+    already padding.
   - **The text's end is `Cell::is_blank`, never `select_all`'s `c != ' ' || is_combined`.** A wide
     glyph's spacer packs `' '`, so that closure measures a row ending in a wide glyph one cell short
     and selecting exactly to the end of `가나` carries (measured, #1031's mutation run).
@@ -217,8 +224,8 @@ status.
   `selection_clear` / `select_all` / `selection_range` / `selection_text` / `accessible_text`; the three coordinate
   fixups `selection_shift_below_margin` / `selection_evict_oldest` / `selection_rotate_region`; and
   the private `resolve` / `Resolved` that turn a selection into absolute bounds, with
-  `start_past_text` / `end_past_text` (over `finishes_row` / `text_end`) for the line-end rule (#1031, its setter in `term.rs`). Extracted from
-  `term.rs` in #587. As with search, the crate now has **two** files named `selection.rs` — the
+  `covers_padding_only` / `end_past_text` (over `finishes_row` / `text_end`) for the line-end
+  rule (#1031, its setter in `term.rs`). Extracted from `term.rs` in #587. As with search, the crate now has **two** files named `selection.rs` — the
   types in `src/selection.rs` above, the mechanism here — so a bare `selection.rs:NN` citation is
   ambiguous
 - `justerm-core/src/term/walk.rs` — the shared buffer-walk floor the selection reaches cells through:
