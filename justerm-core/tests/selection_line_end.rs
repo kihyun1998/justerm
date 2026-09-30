@@ -225,6 +225,17 @@ fn a_drag_starting_in_the_padding_begins_on_the_next_row() {
     assert_eq!(term.selection_range(), vec![span(1, 0, 1)]);
 }
 
+/// The first blank cell is already padding: a drag that starts there covers no text.
+#[test]
+fn a_drag_starting_on_the_first_blank_cell_covers_padding_only() {
+    let mut term = carrying(80, 24);
+    term.feed(b"hello\r\nnext");
+    select(&mut term, SelectionType::Char, (0, 5, Side::Left), (0, 7, Side::Right));
+
+    assert_eq!(term.selection_text().as_deref(), Some(""));
+    assert_eq!(term.selection_range(), vec![]);
+}
+
 #[test]
 fn a_double_click_on_padding_selects_nothing() {
     let mut term = carrying(80, 24);
