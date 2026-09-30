@@ -74,6 +74,7 @@ type AsyncProbe =
   | "__disposeProbe"
   | "__rulerAnchorProbe"
   | "__rulerLayerProbe"
+  | "__scrollbarLaneProbe"
   | "__searchRulerProbe"
   | "__textBlinkProbe";
 
@@ -3288,6 +3289,24 @@ test("a zero box leaves the grid alone, while a measured tiny one still re-grids
   // The control. Same call, same terminal, a box that IS measured — it must re-grid, or the guard
   // has been widened into "any small box refuses" and the zero above proves nothing.
   expect(p.afterTinyBox).toEqual({ cols: 2, rows: 1 });
+});
+
+test("a scrollbarWidth lane keeps the last column out from under the track (#1029)", async ({ page }) => {
+  const { box, laned, overlay } = await readAsyncProbe(page, "__scrollbarLaneProbe");
+  // Both panes are the same box and the track sits at its right edge in both.
+  expect(laned.trackRight).toBeCloseTo(box, 1);
+  expect(overlay.trackRight).toBeCloseTo(box, 1);
+  // The control: without a lane the grid fills the box and its last column is under the track.
+  expect(overlay.canvasRight, "the overlay arm must show the overlap, or the lane proves nothing").toBeGreaterThan(
+    overlay.trackLeft,
+  );
+  // With the lane the grid ends at or before the track …
+  expect(laned.canvasRight).toBeLessThanOrEqual(laned.trackLeft + 0.01);
+  // … and no sooner than it has to: one more column would reach into the lane.
+  expect(laned.canvasRight + laned.cell).toBeGreaterThan(laned.trackLeft);
+  // The grid, not the canvas: a lane taken twice (off the box and again off the drawing-buffer grant)
+  // shrinks the grid after the canvas was sized, so only the column count sees it.
+  expect(laned.cols).toBe(overlay.cols - 1);
 });
 
 /**

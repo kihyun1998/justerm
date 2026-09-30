@@ -279,6 +279,22 @@ export interface JustermRendererOptions {
    * runtime with {@link JustermRenderer.setContextRestoreTimeout}.
    */
   contextRestoreTimeout?: number;
+  /**
+   * CSS px at the right of the box that {@link JustermRenderer.resize} keeps free of columns — a
+   * lane for a `Scrollbar`, which floats over the right edge. Pass the width the `Scrollbar` was
+   * built with. Defaults to `0`: the grid fills the box and the last column sits under the track
+   * when it shows.
+   *
+   * Kept free whether or not the track is showing, so the grid does not reflow the moment the first
+   * line scrolls into history — xterm.js reserves its scrollbar the same way. A terminal with no
+   * scrollback has nothing to scroll and leaves this at `0`.
+   *
+   * Fitting with `proposeDimensions`? Pass the same value as `FitInput.scrollbarWidth`, with
+   * `FitInput.scrollback` set to the scrollback limit, and the two paths propose the same grid. The
+   * area of the lane is not drawn: while the track is hidden it shows whatever is behind the canvas.
+   * Read once, at `create` / `attach`.
+   */
+  scrollbarWidth?: number;
   theme: Theme;
 }
 
@@ -494,6 +510,9 @@ export class JustermRenderer implements Renderer {
    * measured against the canvas, re-supplied whenever that box moves.
    */
   private rect = { x: 0, y: 0 };
+  /** CSS px {@link resize} keeps free at the right of the box — {@link JustermRendererOptions.scrollbarWidth},
+   * set once at build. */
+  private scrollbarWidth = 0;
   /**
    * Whether the host has taken this terminal off the surface — **state consulted at every placement**
    * ({@link applyGrid}), not a command issued once. Why: [`docs/map/territory/multi-viewport.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/territory/multi-viewport.md) § Hidden-ness is state the widget
@@ -768,6 +787,7 @@ export class JustermRenderer implements Renderer {
     if (opts.cursorBlinkTimeout !== undefined) instance.setCursorBlinkTimeout(opts.cursorBlinkTimeout);
     // `0`/omitted = no text blink, the reference default (#576) — a no-op unless the consumer opts in.
     if (opts.textBlinkInterval !== undefined) instance.setTextBlinkInterval(opts.textBlinkInterval);
+    instance.scrollbarWidth = opts.scrollbarWidth ?? 0;
     return instance;
   }
 
@@ -1059,6 +1079,9 @@ export class JustermRenderer implements Renderer {
    * to it; the display box is written from what the renderer reports (`cssWidth`/`cssHeight`), since
    * the device-px buffer would otherwise display at twice its size on a Retina screen.
    *
+   * The box is the whole pane: the {@link JustermRendererOptions.scrollbarWidth} lane is taken off
+   * it here, so do not subtract it yourself.
+   *
    * **A call that lands while the GL context is lost is provisional**: the renderer commits the
    * buffer asked for and settles any browser clamp at the restore, after which this widget re-derives
    * the buffer and the display box by itself — no consumer call is needed. Why:
@@ -1069,6 +1092,7 @@ export class JustermRenderer implements Renderer {
       cssHeight,
       this.backend.cssCellWidth(this.lease.id),
       this.backend.cssCellHeight(this.lease.id),
+      this.scrollbarWidth,
     );
     // Nothing to propose — an unmeasured cell or a non-finite box (#632): leave the renderer and the
     // canvas box exactly as they are.

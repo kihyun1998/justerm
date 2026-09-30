@@ -112,6 +112,25 @@ each is an injected seam rather than a built-in policy, so the host stays in con
 transport, clipboard and theme. See the [demo](https://github.com/kihyun1998/justerm/blob/master/justerm-web/demo/main.ts)
 for a fully wired example.
 
+## A scrollbar lane
+
+`Scrollbar` floats over the right edge of the pane and takes no layout width, so by default the
+grid fills the whole box and the last column sits under the track while it shows. To keep that
+column clear, give the renderer the same width you give the scrollbar:
+
+```ts
+const renderer = await JustermRenderer.create({ canvasSelector: "#term", scrollbarWidth: 8, /* … */ });
+const scrollbar = new Scrollbar(paneEl, { width: 8, onScroll: (offset) => myBackend.scrollTo(offset) });
+renderer.resize(paneCssWidth, paneCssHeight); // the whole pane; the 8 px lane is taken off here
+```
+
+The lane is kept free whether or not the track is showing, so the grid does not reflow when the
+first line scrolls into history. The renderer does not draw it: while the track is hidden the lane
+shows whatever is behind the canvas, so give the pane your terminal background. `JustermRenderer.attach`
+takes the same option. If you fit with `proposeDimensions` instead, pass the same value as
+`FitInput.scrollbarWidth` and your scrollback **limit** as `FitInput.scrollback` (not the current
+history length), and the two agree.
+
 ## Several terminals on one canvas
 
 A browser caps live WebGL contexts at around sixteen, so one context per terminal puts a ceiling on

@@ -35,10 +35,16 @@ export interface FitInput {
    */
   cellWidth: number;
   cellHeight: number;
-  /** Px a *layout* scrollbar occupies (subtracted from width). Pass `0` for an overlay
-   * scrollbar like justerm's #112 (which floats over the canvas and reserves no width). */
+  /** CSS px of width kept free for a scrollbar (subtracted from width) whenever {@link scrollback}
+   * is not `0`. For justerm's own `Scrollbar`, which floats over the canvas at the right edge, pass
+   * the width it was built with to give it a lane, or `0` to let the last column sit under it. With
+   * the same value as `JustermRendererOptions.scrollbarWidth` and a non-zero {@link scrollback},
+   * this path and `JustermRenderer.resize` propose the same grid. */
   scrollbarWidth: number;
-  /** Scrollback lines; `0` means no scrollbar can show, so its width isn't reserved. */
+  /** The scrollback **limit** the terminal keeps — xterm's `scrollback` option — not how many lines
+   * of history it holds now. `0` means no history is ever kept, so no scrollbar can show and its
+   * width is not reserved. Passing the current history length instead makes the lane appear with
+   * the first line of history, and the grid lose its columns at that moment. */
   scrollback: number;
 }
 
@@ -63,7 +69,7 @@ export interface Dimensions {
  * (`undefined`) for an unmeasured cell or a non-finite box, and `gridForBox` did not — so the path
  * that actually reaches the renderer turned an unlaid-out container into a 1×1 terminal while the
  * guarded path was the one nothing calls. Both now refuse. When adding a third box→grid path, check
- * **both** axes: the floor and the refusal.
+ * **both** axes: the floor and the refusal — and take the scrollbar lane off the box, as both do.
  *
  * Hand-mirrored, like the wasm getters in `types.ts`: the core constant is Rust and does not
  * cross the wire. If core ever raises its floor, this is the line that must follow.
@@ -97,11 +103,7 @@ export function proposeDimensions(input: FitInput): Dimensions | undefined {
   // whose padding exceeds it is a layout the host measured and chose; an absent parent is not a
   // layout at all. Flooring stays right for the first.
   if (input.parentWidth <= 0 || input.parentHeight <= 0) return undefined;
-  // A *layout* scrollbar (one that occupies width) only reserves it when there is scrollback
-  // to scroll — matches xterm `FitAddon` (`scrollback === 0 ? 0 : ...`). NB: justerm's own
-  // #112 scrollbar is an OVERLAY (`position:absolute`, no layout width) — content sits under
-  // it — so a consumer using that scrollbar must pass `scrollbarWidth: 0` (as the demo does);
-  // this path exists for xterm parity / a hypothetical layout scrollbar, not the #112 overlay.
+  // The scrollbar lane, kept free only when there is scrollback to scroll — xterm `FitAddon`'s gate.
   const scrollbarWidth = input.scrollback === 0 ? 0 : input.scrollbarWidth;
   const availWidth = input.parentWidth - (input.padding.left + input.padding.right) - scrollbarWidth;
   const availHeight = input.parentHeight - (input.padding.top + input.padding.bottom);
@@ -266,20 +268,22 @@ export function observeResize(
 
 /** The `cols`×`rows` grid that fits a CSS-pixel box, given the cell's CSS size — the renderer
  * adapter's twin of {@link proposeDimensions}: `floor(box / cell)`, floored at
- * {@link MINIMUM_COLS}×{@link MINIMUM_ROWS} (#547). `undefined` when there is nothing to propose,
- * matching what `proposeDimensions` refuses (#632, #810): a box with no area, an unmeasured cell
- * (either axis `0`), or a non-finite box. Why each: `docs/map/territory/fit.md` § `gridForBox`
- * must agree with `proposeDimensions`. */
+ * {@link MINIMUM_COLS}×{@link MINIMUM_ROWS} (#547), with `scrollbarWidth` CSS px taken off the width
+ * first, as `proposeDimensions` takes {@link FitInput.scrollbarWidth} (#1029). `undefined` when there
+ * is nothing to propose, matching what `proposeDimensions` refuses (#632, #810): a box with no area,
+ * an unmeasured cell (either axis `0`), or a non-finite box. Why each: `docs/map/territory/fit.md`
+ * § `gridForBox` must agree with `proposeDimensions`. */
 export function gridForBox(
   cssWidth: number,
   cssHeight: number,
   cellCssWidth: number,
   cellCssHeight: number,
+  scrollbarWidth = 0,
 ): { cols: number; rows: number } | undefined {
   // A box with no area yields no proposal (#810). Which of the two callers can deliver a zero:
   // `docs/map/invariant/an-absent-box-measures-as-zero.md`.
   if (cssWidth <= 0 || cssHeight <= 0) return undefined;
-  const cols = Math.max(MINIMUM_COLS, Math.floor(cssWidth / cellCssWidth));
+  const cols = Math.max(MINIMUM_COLS, Math.floor((cssWidth - scrollbarWidth) / cellCssWidth));
   const rows = Math.max(MINIMUM_ROWS, Math.floor(cssHeight / cellCssHeight));
   if (!Number.isFinite(cols) || !Number.isFinite(rows)) return undefined;
   return { cols, rows };

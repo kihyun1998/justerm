@@ -281,15 +281,15 @@ describe("gridForBox", () => {
   // measured", exactly when the terminal must NOT be shrunk. `gridForBox` had neither guard, and it
   // is the path that actually reaches the renderer: `Math.max(2, Math.floor(NaN / 8))` is `NaN`, so
   // `backend.resize(NaN)` coerced to 0 and came back as a 1x1 terminal.
-  const asFit = (w: number, h: number, cw: number, ch: number) =>
+  const asFit = (w: number, h: number, cw: number, ch: number, scrollbarWidth = 0) =>
     proposeDimensions({
       parentWidth: w,
       parentHeight: h,
       cellWidth: cw,
       cellHeight: ch,
       padding: { top: 0, right: 0, bottom: 0, left: 0 },
-      scrollbarWidth: 0,
-      scrollback: 0,
+      scrollbarWidth,
+      scrollback: scrollbarWidth === 0 ? 0 : 1000,
     });
 
   it("proposes nothing for an unmeasured cell, like the fit path", () => {
@@ -343,6 +343,44 @@ describe("gridForBox", () => {
     // THE SIDE CONDITION, unchanged in substance: 1x1 is measured and tiny, not absent.
     expect(gridForBox(1, 1, 8, 16)).toEqual({ cols: MINIMUM_COLS, rows: 1 });
     expect(asFit(1, 1, 8, 16)).toEqual({ cols: MINIMUM_COLS, rows: 1 });
+  });
+
+  // #1029: a scrollbar lane is subtracted from the box width before dividing, the rule
+  // `proposeDimensions` applies to `FitInput.scrollbarWidth` — so the two paths agree on one lane.
+  it("leaves a scrollbar lane free, the same columns the fit path proposes (#1029)", () => {
+    // PenTerm's measured row: a 579.67 px box, a 7.333 px cell, an 8 px track. Without the lane the
+    // 79th column ends at 579.33 and sits wholly under the track; with it the grid stops short of it.
+    expect(gridForBox(579.67, 240, 7.333, 16)?.cols).toBe(79);
+    const laned = gridForBox(579.67, 240, 7.333, 16, 8);
+    expect(laned?.cols).toBe(77);
+    expect(laned!.cols * 7.333).toBeLessThanOrEqual(579.67 - 8);
+    // Height is not a lane's to take.
+    expect(laned?.rows).toBe(15);
+    const fittedInput = (parentWidth: number) => ({
+      parentWidth,
+      parentHeight: 240,
+      cellWidth: 7.333,
+      cellHeight: 16,
+      padding: { top: 0, right: 0, bottom: 0, left: 0 },
+      scrollbarWidth: 8,
+      scrollback: 1000,
+    });
+    expect(laned).toEqual(proposeDimensions(fittedInput(579.67)));
+    // The fit path keeps no lane for a terminal that keeps no scrollback, which is why
+    // `FitInput.scrollback` is the limit: a history length of 0 there would propose 79 here.
+    expect(proposeDimensions({ ...fittedInput(579.67), scrollback: 0 })?.cols).toBe(79);
+    // The other measured row: at 575.67 px the lane costs one column, not the two whole cells an
+    // 8 px lane spans — it is taken off the box, not off the column count.
+    expect(gridForBox(575.67, 240, 7.333, 16)?.cols).toBe(78);
+    expect(gridForBox(575.67, 240, 7.333, 16, 8)?.cols).toBe(77);
+  });
+
+  it("refuses by the box, not by what the lane leaves, and floors what is left (#1029)", () => {
+    // A box with no area is still unmeasured with a lane on it (#810).
+    expect(gridForBox(0, 240, 8, 16, 8)).toBeUndefined();
+    // A measured box narrower than its lane is a layout the host chose: floored, like the fit path.
+    expect(gridForBox(6, 240, 8, 16, 8)).toEqual({ cols: MINIMUM_COLS, rows: 15 });
+    expect(asFit(6, 240, 8, 16, 8)).toEqual({ cols: MINIMUM_COLS, rows: 15 });
   });
 });
 
