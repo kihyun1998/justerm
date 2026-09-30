@@ -45,7 +45,9 @@ as both existed, and nothing compared them.
   reader decides where a row's text ends without trimming anything: `text_end`, the line-end rule's
   measure (#1031), by cell through `Cell::is_blank`. It moves a highlight span and a `\n` rather
   than a character, which is point 4 above, and it must agree with the `' '` trim or the copy and
-  the highlight disagree about where the text stopped
+  the highlight disagree about where the text stopped. A fourth, `select_all`'s own closure
+  (`c != ' ' || is_combined`), counts a wide glyph's spacer as padding; it agrees only because the
+  pair rule widens its end back over the spacer
 - [logical lines](../territory/logical-lines.md) — `viewport_logical_lines`, whose text feeds the
   consumer's URL detection and whose `cells` map must stay 1:1 with it through the trim
 - [settled-cell paint](../territory/settled-cell-paint.md) — `changed_logical_lines` and
