@@ -217,7 +217,7 @@ status.
   `selection_clear` / `select_all` / `selection_range` / `selection_text` / `accessible_text`; the three coordinate
   fixups `selection_shift_below_margin` / `selection_evict_oldest` / `selection_rotate_region`; and
   the private `resolve` / `Resolved` that turn a selection into absolute bounds, with
-  `finishes_row` / `text_end` for the line-end rule (#1031, its setter in `term.rs`). Extracted from
+  `start_past_text` / `end_past_text` (over `finishes_row` / `text_end`) for the line-end rule (#1031, its setter in `term.rs`). Extracted from
   `term.rs` in #587. As with search, the crate now has **two** files named `selection.rs` — the
   types in `src/selection.rs` above, the mechanism here — so a bare `selection.rs:NN` citation is
   ambiguous

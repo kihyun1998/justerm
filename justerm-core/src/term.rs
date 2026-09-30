@@ -1664,9 +1664,9 @@ impl Term {
     /// RIS (ESC c) — full reset to the power-on state (#53): rebuild `Term` from the
     /// constructor at the current dimensions and scrollback cap, and signal a full repaint.
     /// Carried across: the consumer-bound `replies`/`events`, the embedder's
-    /// `word_separators` and `selection_carries_line_end`, and the tracked-point and marker id counters and marker epoch. The
-    /// title stacks and retained strings are dropped and the palette is not announced (#823,
-    /// #835). Which survives and why: `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md`.
+    /// `word_separators` and `selection_carries_line_end`, and the tracked-point and marker id
+    /// counters and marker epoch. The title stacks and retained strings are dropped and the
+    /// palette is not announced (#823, #835). Which survives and why: `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md`.
     fn full_reset(&mut self) {
         let replies = std::mem::take(&mut self.replies);
         let mut events = std::mem::take(&mut self.events);

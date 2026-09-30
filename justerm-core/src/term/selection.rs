@@ -451,29 +451,13 @@ impl Term {
                 } else {
                     to
                 };
-                if !self.selection_carries_line_end {
-                    return Some(Resolved::Linear {
-                        start_line,
-                        from,
-                        end_line,
-                        to,
-                    });
-                }
-                // #1031: an end past a finished row's text — or at the edge of a row the text
-                // fills — becomes the next row's start, so the row's `\n` and a full-width span
-                // both follow from the one coordinate. A start in the padding moves the same way.
-                let (start_line, from) =
-                    if self.finishes_row(start_line) && from >= self.text_end(start_line) {
-                        (start_line + 1, 0)
-                    } else {
-                        (start_line, from)
-                    };
-                let (end_line, to) = if self.finishes_row(end_line)
-                    && (to > self.text_end(end_line) || to >= self.abs_line(end_line).len())
-                {
-                    (end_line + 1, 0)
+                let ((start_line, from), (end_line, to)) = if self.selection_carries_line_end {
+                    (
+                        self.start_past_text(start_line, from),
+                        self.end_past_text(end_line, to),
+                    )
                 } else {
-                    (end_line, to)
+                    ((start_line, from), (end_line, to))
                 };
                 Resolved::Linear {
                     start_line,
@@ -484,6 +468,29 @@ impl Term {
             }
             block => block,
         })
+    }
+
+    /// A run's start `(line, from)`, moved to the next row's start when it lies in the padding of a
+    /// finished row (#1031). Returns it unchanged otherwise.
+    fn start_past_text(&self, line: usize, from: usize) -> (usize, usize) {
+        if self.finishes_row(line) && from >= self.text_end(line) {
+            (line + 1, 0)
+        } else {
+            (line, from)
+        }
+    }
+
+    /// A run's exclusive end `(line, to)`, moved to the next row's start when it covers a blank
+    /// cell past a finished row's text or reaches the edge of a row the text fills (#1031). That
+    /// one coordinate is what makes the text end in the row's `\n` and the span fill the row.
+    /// Returns it unchanged otherwise.
+    fn end_past_text(&self, line: usize, to: usize) -> (usize, usize) {
+        if self.finishes_row(line) && (to > self.text_end(line) || to >= self.abs_line(line).len())
+        {
+            (line + 1, 0)
+        } else {
+            (line, to)
+        }
     }
 
     /// Whether absolute `line` is a finished line: not soft-wrapped, with a row below it.
