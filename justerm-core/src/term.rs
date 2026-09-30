@@ -18,7 +18,7 @@ use crate::input::{
     encode_paste,
 };
 use crate::search::Match;
-use crate::selection::{BufferPoint, Selection};
+use crate::selection::Selection;
 use crate::serialize::{Frame, FrameKind, MAX_SCROLL_COUNT, MarkerId, MarkerKind, Overlay, Span};
 
 /// Buffer-walk primitives shared by every read surface (#585). A child module, so
@@ -1243,18 +1243,8 @@ impl Term {
             self.cursor.set_point(r.cursor, rows, cols);
             self.normal_watch
                 .reflowed(&r.extras[watch_off..], r.evicted);
-            if let Some(sel) = &mut self.selection {
-                // A selection endpoint is UI state, so a `col == cols` result (#562) is clamped into the
-                // grid: UI state may not move the application's content to make room for itself.
-                sel.anchor.point = BufferPoint {
-                    line: r.extras[0].0.saturating_sub(r.evicted),
-                    col: r.extras[0].1.min(cols - 1),
-                };
-                sel.focus.point = BufferPoint {
-                    line: r.extras[1].0.saturating_sub(r.evicted),
-                    col: r.extras[1].1.min(cols - 1),
-                };
-            }
+            // A selection endpoint is UI state: a `col == cols` result (#562) is clamped into the grid.
+            self.selection_reflowed(&r.extras[..sel_pts.len()], r.evicted, cols);
             let marker_off = sel_pts.len();
             for (i, m) in self.normal_markers.iter_mut().enumerate() {
                 m.line = r.extras[marker_off + i].0.saturating_sub(r.evicted);

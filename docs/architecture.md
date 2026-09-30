@@ -698,8 +698,9 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   full that is a column the grid does not have — so the returned point is allowed to leave the grid
   (`col == new_cols`, or a row the fit has not created yet) and the **seam in `Term::resize` resolves
   it per kind**: the cursor reads it as the next write position (the row after), a command mark keeps
-  it as an **exclusive** bound meaning "all of this row" (`extract_lines` clips `[b, c)`), a selection
-  anchor is clamped. Deciding it inside `reflow` picked one kind's answer for all three — a mark then
+  it as an **exclusive** bound meaning "all of this row" (`extract_lines` clips `[b, c)`), each selection
+  endpoint (anchor and focus) is clamped to `(cols - 1, Right)` — the same boundary, after the last
+  cell (#1032). Deciding it inside `reflow` picked one kind's answer for all three — a mark then
   landed on the first row of the *next logical line* and swallowed that line's newline. Marker columns
   therefore have domain `[0, cols]`. The bound that keeps a raw-written anchor from indexing a row
   that does not exist lives at the seam too, against the **final** geometry (`scrollback + rows`):
@@ -725,7 +726,7 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   off-top), (b) **in-screen region/RI scroll** with `scroll_top > 0` or alt (rotate anchors within the
   region; an endpoint on the dropped line clears the selection — top-anchored scroll must NOT rotate),
   and (c) **resize reflow** (anchors reflow through `grid::reflow` alongside the cursor — it tracks N
-  points), plus the two this list omitted: (d) a **top-anchored sub-region scroll** growing
+  points; an endpoint on a line the reflow evicts goes by (a)'s rule, #1032), plus the two this list omitted: (d) a **top-anchored sub-region scroll** growing
   `scrollback.len()` while rows below the margin stay put, so their absolute index rises
   (`selection_shift_below_margin`, #449), and (e) a **shrinking resize on the alt screen**, where the
   pane does not reflow and the selection is therefore dropped rather than moved (#660).

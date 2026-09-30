@@ -159,17 +159,22 @@ status.
 
   | what moves it | handler |
   |---|---|
-  | scrollback cap eviction, and `ED 3` / `Engine::clear` (#936) | `Term::selection_evict_oldest(n)` — one line for the cap, all of history at once for the other two, where an endpoint on *any* dropped line clamps and a selection wholly inside them is cleared (`clear` then drops the selection outright). An endpoint on the evicted line clamps to column 0 / Left of the new top line (a Block keeps its columns), the rule the region rotate already applied. Until #935 it kept its column, so an indented top line lost its first cells on every evicted line. Select-all made that routine, because its start sits on the oldest line (xterm.js `handleTrim` resets to `[0,0]`) |
+  | scrollback cap eviction, and `ED 3` / `Engine::clear` (#936) | `Term::selection_evict_oldest(n)` — one line for the cap, all of history at once for the other two, and whatever a resize's reflow evicted (#1032), where an endpoint on *any* dropped line clamps and a selection wholly inside them is cleared (`clear` then drops the selection outright). An endpoint on the evicted line clamps to column 0 / Left of the new top line (a Block keeps its columns), the rule the region rotate already applied. Until #935 it kept its column, so an indented top line lost its first cells on every evicted line. Select-all made that routine, because its start sits on the oldest line (xterm.js `handleTrim` resets to `[0,0]`) |
   | an in-screen region / RI scroll moving content | `Term::selection_rotate_region` |
   | a **top-anchored sub-region** scroll growing scrollback while rows below the margin stay put, so their absolute index rises (#449) | `Term::selection_shift_below_margin` |
-  | reflow re-splitting logical lines | `grid.rs`'s `reflow`, via tracked points |
+  | reflow re-splitting logical lines | `grid.rs`'s `reflow`, via tracked points. An endpoint that comes back one past a full row (`col == cols`, #562) is clamped by `Term::selection_reflowed` (called from `Term::resize`) to `(cols - 1, Right)` — the boundary *after* the last cell, the same boundary the unclamped value named, and the same rule for the anchor and the focus, since the start of a range and its end both mean that boundary (#1032). Until then the clamp kept the endpoint's side, and on `Left` that is the boundary *before* the cell: an end past a row's text dropped its last character at the width that fills the row, and a start past it gained that character. The start then meets the "a start past a full row skips to the next line" normalisation, so a drag from past `abc` into the row below copies `next`, not `\nnext`, once the row is exactly full. The lines the reflow evicted then leave by the first row's handler, called from the same function: until #1032 `resize` saturated an endpoint on one to line 0 with its old column, so a selection of the oldest line copied `"ented"` — text it never covered — instead of being cleared |
   | a **shrinking** resize on the **alt** screen | **none — the selection is dropped** (`Term::resize`, #660). Not for want of machinery: the alt branch tracks points through its own `reflow_pane` call and already rotates *markers* with the returned `evicted`. A selection is two ordered endpoints, so a shrink that destroys the row under one and not the other has no "dispose" answer, and reusing the marker policy would move its ends by different rules. A grow moves nothing and keeps it |
 
   The third is the one a three-item list hides: nothing on screen moved and no line was evicted, yet
   every absolute index below the margin changed — because `scrollback.len()` grew and the coordinate
   is measured from the oldest line. It is the counter-case to the invariant directly above.
 - **`Side` (Left/Right)** — which edge of a cell the anchor sits on. Lets a drag include or exclude the
-  cell under the pointer; this is what makes mouse precision possible.
+  cell under the pointer; this is what makes mouse precision possible. On one point the `Left` end
+  orders first (`Selection::ordered`, and the Block arm's column pick), because the boundary before a
+  cell comes before the boundary after it — so the two edges of one cell bound it whichever end the
+  drag began at (#1032). Until then a tie went to the anchor: a drag from a cell's right half to its
+  left half selected nothing while the mirror selected the cell, and a resize clamp that put one end
+  on `(c, Right)` beside the other's `(c, Left)` emptied a reversed selection of `c`.
 - **Four types** — Char (runs across lines) / Word / Line / Block (rectangular).
 - **Two outputs** — `selection_range()` yields **per-viewport-row** `SelectionSpan { row, left, right }`
   and emits nothing for off-screen rows. `selection_text()` yields copy text, applying the wrap join,
@@ -221,8 +226,9 @@ status.
 - `justerm-core/src/selection.rs` — `SelectionType`, `Side`, `SelectionSpan`, `BufferPoint`, `Anchor`,
   `Selection::ordered`
 - `justerm-core/src/term/selection.rs` — `Term::selection_begin` / `selection_extend` /
-  `selection_clear` / `select_all` / `selection_range` / `selection_text` / `accessible_text`; the three coordinate
-  fixups `selection_shift_below_margin` / `selection_evict_oldest` / `selection_rotate_region`; and
+  `selection_clear` / `select_all` / `selection_range` / `selection_text` / `accessible_text`; the four coordinate
+  fixups `selection_shift_below_margin` / `selection_evict_oldest` / `selection_rotate_region` /
+  `selection_reflowed`; and
   the private `resolve` / `Resolved` that turn a selection into absolute bounds, with
   `covers_padding_only` / `end_past_text` (over `finishes_row` / `text_end`) for the line-end
   rule (#1031, its setter in `term.rs`). Extracted from `term.rs` in #587. As with search, the crate now has **two** files named `selection.rs` — the
@@ -343,6 +349,29 @@ Check these after changing this territory:
   that builds an `Anchor` without that function — would put `resolve` back in reach of its own
   arithmetic, and nothing checks for one. The clamp is deliberately not `debug_assert`ed: pointer
   input past the grid is ordinary (ADR-0026 D1).
+- **A resize forgets that a selection's end was past its row's text, so under
+  `set_selection_carries_line_end` the `\n` drops.** Measured on #1032: `abc\r\nnext` at 10 columns, a
+  drag from `a` to `(0, 8, Left)` copies `"abc\n"`; after `resize(20, _)` or `resize(5, _)` it copies
+  `"abc"`. The join in `reflow` records the endpoint as `poff.min(line.len())`, so "past the text"
+  arrives as "exactly at the text's end", and #1031's rule reads that as no blank cell covered. With
+  the option off the text is the same either way, so nothing shows. At the width the text fills, the
+  #1032 clamp brings the `\n` back through the full-row case — and an end *exactly at* the text's end
+  gains one there, since the row is now full and the end reaches its edge. A *start* past the text
+  shows the same width dependence without the option: a drag from past `abc` into `next` copies
+  `"\nnext"` at 10 or 5 columns and `"next"` at 3, where the start is past a full row. Kept out of
+  #1032 by the maintainer's scope call: the collapse is #562's open half, in the join, not the seam's
+  clamp.
+- **A Word endpoint past a row's text gains the row's last word across a narrowing resize.** Word
+  ignores `Side`, so the clamp moves the end off a blank onto `c`: a Word selection from past `abc`
+  into `next` copies `"\nnext"` at 10 columns and `"abc\nnext"` at 3 (#1032's lens; the same before
+  and after #1032). Word snaps to the word under each end, and a resize is the only producer that
+  lands an end on a glyph the gesture did not.
+- **The trailing-blank branch of `reflow` clamps a column to `new_cols - 1` and keeps the side.** It
+  never returns `col == cols`, so #1032's rule does not reach it. Measured by #1032's lens on an
+  endpoint of an absorbed blank line: an end at `(2, 8, Left)` highlights columns 0–3 of 5 rather
+  than 0–4 (same text), and a start at `(2, 8, Right)` copies `""` instead of `"\n"`. Applying the
+  `Right` rule there would make a `Left` start lose its `\n` too, so it is not the #1032 case moved
+  one branch over. Reached only by an endpoint on a trailing blank line.
 - **`SelectionController` remembers a selection core has dropped.** `hasSelection` is set on `begin`,
   while core clears the selection on a screen swap — so a Shift+click after leaving an
   alt-screen application extends nothing and selects nothing. Seen while working #902, which sidesteps

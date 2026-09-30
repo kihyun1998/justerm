@@ -74,9 +74,12 @@ pub(crate) struct Selection {
 }
 
 impl Selection {
-    /// The two anchors sorted so the first is the earlier buffer point.
+    /// The two anchors sorted so the first is the earlier buffer point, and on the same point the
+    /// `Left` one: the boundary before a cell comes before the boundary after it.
     pub fn ordered(&self) -> (Anchor, Anchor) {
-        if self.anchor.point <= self.focus.point {
+        if self.anchor.point < self.focus.point
+            || (self.anchor.point == self.focus.point && self.anchor.side == Side::Left)
+        {
             (self.anchor, self.focus)
         } else {
             (self.focus, self.anchor)
