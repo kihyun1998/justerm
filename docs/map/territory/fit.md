@@ -27,6 +27,35 @@ a CSS box and reads the grid back, rather than asking for 80×24 and being given
   the same call.
 - **The scrollbar width is an input.** A grid fitted without subtracting it overflows its container by
   exactly one scrollbar — which is why the parameter exists rather than being derived.
+- **The #112 `Scrollbar` is an overlay, and the lane for it is opt-in** (#1029). The track is
+  `position: absolute; right: 0` with no layout width, so a grid fitted to the whole box puts its last
+  column under the track whenever it shows — `trackWidth − (box mod cell)` px of it, all of it when
+  the remainder is small. `JustermRendererOptions.scrollbarWidth` (default `0`, the overlay) takes the
+  lane off the box on `resize`, and it is the same number `FitInput.scrollbarWidth` takes, so the two
+  box→grid paths keep one rule. The `Scrollbar` needs no change: at `right: 0` it lands in the lane,
+  and the ruler marks (#199, #500) on its track stop overpainting text with it.
+  - *Taken off the box, not off the column count.* `floor((box − lane) / cell)`, xterm.js's shape
+    (below, § Reference behaviour). The plausible alternative — whole columns minus the cells the
+    lane spans — agrees at some widths and costs an extra column at others (575.67 px, 7.333 px cell,
+    8 px lane: 77 against 76); `justerm-web/test/justerm-renderer.test.ts` holds both rows.
+  - *Reserved by the option, not by content.* The track shows by content (`scrollbarMetrics().visible`
+    is `total > rows`), so a lane that followed it would reflow the grid the moment the first line
+    scrolled into history. xterm.js reserves by option too; the renderer never learns the engine's
+    scrollback limit, so the opt-in *is* xterm's `scrollback === 0` gate — a terminal with no
+    scrollback leaves it `0`. When the track is hidden the lane is empty space.
+  - *`FitInput.scrollback` is the limit, not the history length.* `proposeDimensions` keeps the lane
+    only when it is non-zero, and `gridForBox` keeps it always, so the two agree only when the fit
+    path is handed the configured limit. Handed the current length — which is what the demo passed
+    until #1029 — a fresh terminal proposes 79 columns on the fit path against 77 from `resize`
+    (579.67 px box, 7.333 px cell, 8 px lane): the #547 shape, engine and renderer on different
+    grids, and then the reflow on the first history line the lane exists to avoid. Found by #1029's
+    completeness pass; the published docs on both options now name the condition.
+  - *Never in the grant read-back.* `applyGrid` re-runs `gridForBox` over the **drawing buffer**
+    (`cssWidth()`/`cssHeight()`), which is already `cols × cell` with the lane gone. Taking the lane
+    off again shrinks a sole tenant by one more column, measured (the #1029 e2e, 39 → 38). It shows
+    only in `terminalSize()`: the canvas display box was written from the grid before the read-back.
+  - *Read once, at `create` / `attach`*, with no runtime setter. A setter would carry the same re-fit
+    obligation as the spacing setters (the next bullet).
 - **A box with no area is refused, not floored** (#810). An element that is `display: none`,
   detached, or not yet laid out reports every metric as `0`, and `0` is finite — so the non-finite
   refusal never saw it while the `MINIMUM_COLS` floor turned it into a plausible `2x1`. Both paths
@@ -103,7 +132,9 @@ a CSS box and reads the grid back, rather than asking for 80×24 and being given
 ## Code
 
 - `justerm-web/src/fit.ts` — `FitPadding`, `ResizePort`, and the proposal arithmetic
-- `justerm-web/src/scrollbar.ts` — supplies the width this subtracts
+- `justerm-web/src/scrollbar.ts` — the overlay track whose width a lane keeps free
+- `justerm-web/src/justerm-renderer.ts` — `JustermRendererOptions.scrollbarWidth`, and
+  `JustermRenderer.resize`, the `gridForBox` caller that takes the lane off the box
 - `justerm-renderer/src/webgl/surface.rs` — `css_cell_width` / `css_cell_height`, the divisor
 - `justerm-core/src/lib.rs` — `Engine::resize`, the intent's destination, and `MIN_COLUMNS`
 
@@ -114,6 +145,9 @@ In `docs/agents/reference-facts.md` — **linked, never restated**.
 - [Who re-fits after a spacing change](../../agents/reference-facts.md) § *#578* — the consumer does,
   and it calls `resize()` rather than the fit; xterm draws the same line, alacritty differs because it
   owns its OS window
+- [A scrollbar lane](../../agents/reference-facts.md) § *#1029* — xterm.js's track is an overlay
+  too, and its fit keeps the lane by subtracting the width from the box, gated on the `scrollback`
+  option rather than on content
 - [When is a resize redundant — box, grid, or cell](../../agents/reference-facts.md) § *#632* — the
   three references **do not agree on one shape** (alacritty widens one key to box+cell; ghostty
   dedupes the box and leaves its cell path undeduped; xterm keeps no fit-side memory and dedupes at
@@ -161,6 +195,10 @@ names as its model — exactly the kind of detail that diverges quietly.
 ## Known holes / open
 
 - **Zero governing records** for a contract that inverts the usual direction of a terminal API.
+- **The lane width is written twice and nothing checks the two agree** (#1029): once to
+  `Scrollbar`'s `width`, once to `JustermRendererOptions.scrollbarWidth`. Each is written once per
+  construction rather than once per `resize`, which is what #1029 asked for; a `Scrollbar` wider than
+  the lane still covers up to `trackWidth − lane` px of the last column, silently.
 - **The engine's column clamp is invisible to a consumer that bypasses fit.** Fit itself floors at
   `MINIMUM_COLS` (#547, above), but a consumer that sizes the engine directly and asks for one column
   gets two, and nothing tells it — it must read the width back from the frame.

@@ -180,7 +180,9 @@ export function dragToDisplayOffset(topRatio: number, pos: ScrollPosition): numb
 }
 
 export interface ScrollbarOptions {
-  /** Bar width in px (xterm `overviewRuler.width`, default 14). */
+  /** Bar width in px (xterm `overviewRuler.width`, default 14). The bar floats over the grid; to
+   * keep the last column out from under it, build the renderer with the same number as
+   * `JustermRendererOptions.scrollbarWidth`. */
   width?: number;
   /** A drag requests this display offset; the consumer scrolls the backend there. */
   onScroll(displayOffset: number): void;

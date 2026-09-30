@@ -1790,6 +1790,7 @@ declare global {
   interface Window {
     __searchProbe?: () => SearchProbe;
     __thumbPressProbe?: () => ThumbPressProbe;
+    __scrollbarLaneProbe?: () => Promise<{ box: number; laned: ScrollbarLaneArm; overlay: ScrollbarLaneArm }>;
     __tickCount?: () => number;
     __selectionProbe?: () => { changes: number; primary: string };
     __linkProbe?: () => {
@@ -3265,6 +3266,71 @@ window.__zeroBoxFitProbe = (): {
   return { before, afterZeroBox, afterTinyBox };
 };
 
+/** One arm of {@link window.__scrollbarLaneProbe}: a pane, its grid and where the grid and the track sit. */
+interface ScrollbarLaneArm {
+  cols: number;
+  /** CSS px, from the canvas display box ÷ `cols`. */
+  cell: number;
+  canvasRight: number;
+  trackLeft: number;
+  trackRight: number;
+}
+
+/**
+ * #1029 — a terminal built with `scrollbarWidth` leaves the scrollbar's lane free on `resize(box)`.
+ *
+ * Two fresh sole-tenant renderers in two panes of the same box, one with an 8 px lane and one without,
+ * each with an 8 px `Scrollbar` mounted in the pane and showing. The box is chosen from the measured
+ * cell so its remainder (3 px) is smaller than the track: without the lane the last column is under
+ * it, which is the control.
+ */
+window.__scrollbarLaneProbe = async (): Promise<{ box: number; laned: ScrollbarLaneArm; overlay: ScrollbarLaneArm }> => {
+  const LANE = 8;
+  const arm = async (lane: number | undefined, box: number | undefined): Promise<ScrollbarLaneArm & { dispose(): void }> => {
+    const id = `lane-probe-${lane ?? 0}`;
+    const pane = document.createElement("div");
+    pane.style.cssText = `position:fixed;left:0;top:0;width:${box ?? 800}px;height:200px;`;
+    const cv = document.createElement("canvas");
+    cv.id = id;
+    pane.appendChild(cv);
+    document.body.appendChild(pane);
+    const r = await JustermRenderer.create({
+      canvasSelector: `#${id}`,
+      fontFamily: "monospace",
+      fontSize: 16,
+      ...(lane === undefined ? {} : { scrollbarWidth: lane }),
+      theme: { ansi: new Array(16).fill(0x808080), defaultFg: 0xffffff, defaultBg: 0x000000 },
+    });
+    r.resize(box ?? 800, 200);
+    const bar = new Scrollbar(pane, { width: LANE, onScroll: () => {} });
+    bar.update({ displayOffset: 0, scrollbackLen: 100, rows: r.terminalSize().rows });
+    const c = cv.getBoundingClientRect();
+    const t = pane.lastElementChild!.getBoundingClientRect();
+    const cols = r.terminalSize().cols;
+    return {
+      cols,
+      cell: c.width / cols,
+      canvasRight: c.right,
+      trackLeft: t.left,
+      trackRight: t.right,
+      dispose: () => {
+        bar.dispose();
+        r.dispose();
+        pane.remove();
+      },
+    };
+  };
+  // Measure the cell, then pick a box whose remainder is under the track.
+  const sizing = await arm(undefined, undefined);
+  sizing.dispose();
+  const box = sizing.cell * 40 + 3;
+  const { dispose: endLaned, ...laned } = await arm(LANE, box);
+  const { dispose: endOverlay, ...overlay } = await arm(undefined, box);
+  endLaned();
+  endOverlay();
+  return { box, laned, overlay };
+};
+
 /** One observation of the scrollbar drag: what the host was handed, and how often (#814). */
 interface ScrollbarDragStep {
   /** The host's current display offset — what `onScroll` last wrote. */
@@ -4423,7 +4489,8 @@ window.__seedRows = (n: number): { rows: number; scrollbackLen: number } => {
 // #114 S11: auto-fit. On container (viewport) resize, compute the grid from the CSS box +
 // the renderer's cell size and drive a debounced resize INTENT — the backend's job is to
 // apply Engine::resize + PTY SIGWINCH (here the demo just logs the intent so the fit path
-// is observable). The demo scrollbar is an overlay (no layout width), so scrollbarWidth 0.
+// is observable). The demo's renderer is built with no scrollbar lane, so scrollbarWidth 0 — the
+// same value as its `JustermRendererOptions.scrollbarWidth`, which keeps this path and `resize` agreeing.
 const readFitInput = (): FitInput => {
   // Measure the VIEWPORT, not the canvas: the JustermRenderer adapter pins the canvas's CSS box to
   // a grid-exact size, so measuring the canvas would feed back its own pinned size and never see the
@@ -4437,7 +4504,8 @@ const readFitInput = (): FitInput => {
     cellWidth: cell.width / dpr,
     cellHeight: cell.height / dpr,
     scrollbarWidth: 0,
-    scrollback: maxOffset(),
+    // The scrollback LIMIT, not the current history length: this page's log keeps every line.
+    scrollback: Number.POSITIVE_INFINITY,
   };
 };
 const fitPort: ResizePort = {

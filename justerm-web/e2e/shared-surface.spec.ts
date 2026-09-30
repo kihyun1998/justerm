@@ -16,6 +16,7 @@ import { readAsyncProbe as harvest } from "./probe";
 
 /** The probes `demo/shared-surface.ts` installs. */
 type AsyncProbe =
+  | "__attachLaneProbe"
   | "__independenceProbe"
   | "__surfaceLossProbe"
   | "__restoreDensityProbe"
@@ -115,6 +116,13 @@ const UNPAINTED = "0,0,0,0";
  * `BG_A`/`BG_B` are: a colour a consumer chose, not a number derived from a font. */
 const SELECTION_ACTIVE = "69,71,90,255"; // 0x45475a
 const SELECTION_INACTIVE = "48,49,61,255"; // 0x30313d
+
+test("an attached terminal leaves its scrollbarWidth lane free on resize (#1029)", async ({ page }) => {
+  const { laned, overlay } = await readAsyncProbe(page, "__attachLaneProbe");
+  // The box is 20 cells and 3 px, so without a lane it holds 20 columns and an 8 px lane costs one.
+  expect(overlay).toBe(20);
+  expect(laned).toBe(19);
+});
 
 test("two grids draw on one canvas, each in its own rect, with the buffer bare between them", async ({
   page,

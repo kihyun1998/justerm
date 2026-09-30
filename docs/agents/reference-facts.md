@@ -744,6 +744,15 @@ does X" cannot settle it — each row says which constraint makes its shape avai
 | **Direction: justerm-web converges with alacritty**, not with xterm. The `(cols, rows, cellWidth, cellHeight)` key is a live-updated snapshot widened to every input whose change can require an emit — alacritty's shape one layer up. This layer does **not** diverge alone, and there is no family parity fix to track | justerm-web | `justerm-web/src/fit.ts` `FitController.last` |
 | ⚠ **In-repo, the shape xterm uses does exist** — `JustermRenderer`'s `lastFrameGrid` compares against live `backend.cols()`/`rows()`. Cite *that* as the local example of "dedupe against authoritative live state", not `FitController` | justerm-web | `justerm-web/src/justerm-renderer.ts` `lastFrameGrid` |
 
+## A scrollbar lane — an overlay track, and a fit that leaves its width free (#1029, verified 2026-09-30)
+
+| Fact | Reference | Site |
+|---|---|---|
+| **xterm.js's scrollbar is an overlay too** — the VS Code scrollable element's track is `position: absolute`, anchored top-right. It takes no layout width, the same as justerm's #112 `Scrollbar` | xterm.js | `src/browser/scrollable/abstractScrollbar.ts:75`; `src/browser/scrollable/verticalScrollbar.ts:51-52` |
+| **So the lane is the fit's subtraction, not a layout property**: `proposeDimensions` takes the scrollbar width off the parent width before `floor(avail / cell)` | xterm.js | `addons/addon-fit/src/FitAddon.ts:89`, `:91` |
+| ⚠ **Reserved by option, not by content** — `scrollback === 0 \|\| !showScrollbar ? 0 : width`. A buffer with no history yet still has its lane kept, so the grid does not change width when the first line scrolls off | xterm.js | `addons/addon-fit/src/FitAddon.ts:71-74` |
+| The width when none is configured is 14 CSS px | xterm.js | `src/browser/shared/Constants.ts:7` (`DEFAULT_SCROLL_BAR_WIDTH`) |
+
 ## Resizing while the GL context is lost — the reference never asks the question (#639, verified 2026-08-03)
 
 A **negative result**, and the reason it is worth a section rather than a shrug: "xterm's `handleResize`

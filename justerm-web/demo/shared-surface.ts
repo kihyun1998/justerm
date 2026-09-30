@@ -639,6 +639,7 @@ interface MountFocusReport {
 declare global {
   interface Window {
     __surfaceProbe?: () => SurfaceSnapshot;
+    __attachLaneProbe?: () => Promise<{ laned: number; overlay: number }>;
     /**
      * Mount a **fresh** `Terminal` against a recording renderer and report what it was told about
      * focus before anything was focused (#912).
@@ -1294,6 +1295,33 @@ window.__teardownProbe = (order: "terminals-first" | "surface-only"): TeardownRe
     lateFrameThrew,
     addGridThrew,
   };
+};
+
+/**
+ * #1029 — the `scrollbarWidth` lane on the shared-surface path: two terminals attached to this page's
+ * surface, one with an 8 px lane and one without, fitted to the same box. The box's remainder (3 px)
+ * is under the lane, so the lane costs exactly one column.
+ */
+window.__attachLaneProbe = async (): Promise<{ laned: number; overlay: number }> => {
+  const dpr = window.devicePixelRatio || 1;
+  const attachTo = (lane: number | undefined): Promise<JustermRenderer> =>
+    JustermRenderer.attach(surface, {
+      fontFamily: FONT_FAMILY,
+      fontSize: 16,
+      ...(lane === undefined ? {} : { scrollbarWidth: lane }),
+      theme: themeFor(0xffffff, 0x000000),
+    });
+  const colsIn = async (lane: number | undefined, box: number): Promise<number> => {
+    const r = await attachTo(lane);
+    r.resize(box, 200);
+    const { cols } = r.terminalSize();
+    r.dispose();
+    return cols;
+  };
+  const sizing = await attachTo(undefined);
+  const box = (sizing.cellSize().width / dpr) * 20 + 3;
+  sizing.dispose();
+  return { laned: await colsIn(8, box), overlay: await colsIn(undefined, box) };
 };
 
 window.__surfaceProbe = (): SurfaceSnapshot => {
