@@ -3634,3 +3634,33 @@ tells iTerm2 free text from ConEmu progress and splits `notify;title;body`.
 
 **What justerm took.** The xterm.js split: the engine relays the payload raw and the consumer
 reads it, as ADR-0017 puts it. ghostty is the counterexample, doing the reading in the engine.
+
+## A selection past the end of a line's text, and its newline (#1031, verified 2026-09-30)
+
+Whether a selection ending past a row's written text copies that row's line ending, and how the
+highlight shows it. **Three drop it on purpose for a character selection; xterm alone carries it,
+unconditionally**. So the default is a vote of 3–1 against, and the one reference that carries it
+has no switch.
+
+| Fact | Reference | Site |
+|---|---|---|
+| `line_to_string` appends `'\n'` when the range reaches the row's last column and the row is not `WRAPLINE` | alacritty | `alacritty_terminal/src/term/mod.rs:616` |
+| …and `bounds_to_string` then strips the final one, so a `Simple` selection never ends in `\n` | alacritty | `alacritty_terminal/src/term/mod.rs:568` |
+| ⚠ its `Lines` selection appends `"\n"` back on — the one mode where alacritty carries it | alacritty | `alacritty_terminal/src/term/mod.rs:547` |
+| `selectionText` joins the selected rows with `\n` and adds nothing after the last, so a drag never ends in `\n` | xterm.js | `src/browser/services/SelectionService.ts:259` |
+| ⚠ *"Ensure the trailing EOL isn't included when the selection ends on the right edge"* is **not** the drag's answer: it sits in `finalSelectionEnd`'s `!selectionEnd \|\| reversed` branch, a click-length (word/line) selection wrapping at the right edge. Citing it for a Char drag is the mistake this row's first draft made | xterm.js | `src/browser/selection/SelectionModel.ts:82` |
+| A row's newline is deferred into `blank_rows` and written only when more content follows, so a trailing one never reaches the text | ghostty | `src/terminal/formatter.zig:1109`, `:1073` |
+| `okPosition`: a point past `LastTextCol + 1` moves to `(row + 1, 0)` when `row < max_row` — the end moves, no newline is appended | xterm | `button.c:3822` |
+| `Select_CHAR` applies it to **both** ends; a block selection is exempt (*"Allow block selecting past EOL"*) | xterm | `button.c:4218`, `:4223` |
+| A line selection ends at `(row + 1, 0)` when `cutNewline` is set, else at the text's end | xterm | `button.c:3840` |
+| …and `cutNewline` defaults to `True` | xterm | `charproc.c:435` |
+
+**What justerm took.** xterm's *shape* — one relocated end coordinate answering both text and
+highlight, block exempt, no cursor-row guard — behind an opt-in the three others support as the
+default (`Term::set_selection_carries_line_end`). Three parts are not xterm's: the full-row
+exception (reaching the edge of a row the text fills carries, where xterm clamps the column and
+cannot) is PenTerm's rule, kept as the maintainer's call; the text's end is `Cell::is_blank`, since
+justerm has no written bit where xterm's `LastTextCol` tests `CHARDRAWN`; and the **start is not
+moved**. xterm moves it too, which drops an empty line a drag or a triple-click begins on (its
+`LastTextCol` is −1 there, so column 0 is past it) — justerm instead resolves only a single-row
+Char/Word run over padding to empty, which is what the start move was for.

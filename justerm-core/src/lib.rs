@@ -461,6 +461,19 @@ impl Engine {
         self.term.word_separators()
     }
 
+    /// Choose whether a selection dragged past the end of a finished line takes that line's `\n`,
+    /// with the highlight filling the row to show it — consumer policy injected into a core
+    /// mechanism ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
+    /// Off by default; survives RIS. The rule is on [`Term::set_selection_carries_line_end`].
+    pub fn set_selection_carries_line_end(&mut self, on: bool) {
+        self.term.set_selection_carries_line_end(on);
+    }
+
+    /// Whether [`set_selection_carries_line_end`](Self::set_selection_carries_line_end) is on.
+    pub fn selection_carries_line_end(&self) -> bool {
+        self.term.selection_carries_line_end()
+    }
+
     /// Clear the selection.
     pub fn selection_clear(&mut self) {
         self.term.selection_clear();
@@ -477,6 +490,10 @@ impl Engine {
     /// selection that widening is per row, so the rectangle's rows can differ
     /// in width. [`selection_text`](Self::selection_text) widens identically;
     /// the two never disagree.
+    ///
+    /// With [`set_selection_carries_line_end`](Self::set_selection_carries_line_end)
+    /// on, a selection that has passed a finished line's text spans that row to
+    /// its right edge, matching the `\n` the text then ends with.
     pub fn selection_range(&self) -> Vec<SelectionSpan> {
         self.term.selection_range()
     }
@@ -488,6 +505,10 @@ impl Engine {
     /// [`selection_range`](Self::selection_range) is — a spacer extracts
     /// as nothing, so a range ending inside a pair would copy text the
     /// highlight does not show.
+    ///
+    /// Rows are joined with `\n` and nothing follows the last one, unless
+    /// [`set_selection_carries_line_end`](Self::set_selection_carries_line_end)
+    /// is on and the selection has passed the last row's text.
     pub fn selection_text(&self) -> Option<String> {
         self.term.selection_text()
     }

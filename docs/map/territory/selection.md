@@ -115,6 +115,40 @@ status.
     without it. A select-all made **during a live drag** is extended by that drag's next move to
     "buffer start → pointer"; xterm.js's flag outlives the drag. Unhandled, because it needs the
     shortcut pressed with the button held.
+- **A selection past a finished line's text can take its `\n` — opt-in, by moving the end** (#1031).
+  `Term::set_selection_carries_line_end` (off by default, survives RIS as configuration). When on,
+  `resolve`'s Linear arm moves an end that covers a blank cell past the row's text — or reaches the
+  edge of a row the text fills — to `(next row, 0)`; a single-row Char/Word run over padding alone
+  resolves empty instead. Five things about it are easy to get wrong:
+  - **What was the maintainer's and what was derived** (the record is on #1031). *Judgements*: opt-in
+    rather than default; "finished" is *not soft-wrapped and a row exists below*, with **no**
+    cursor-row guard, so a typed command on a prompt row carries its `\n` and executes when pasted;
+    Line follows the rule; the full-row exception stays. *Derivations*: the relocated coordinate
+    (xterm's shape — both observables read it, so `extract_lines` and `selection_range` did not
+    change and `extract_lines`' other callers cannot pick it up), the padding-only guard, block
+    exempt.
+  - **The padding-only guard is one row wide, and it is not xterm's start move.** Without a guard,
+    a drag inside one blank cell that crosses its midpoint, or a double-click on padding, copies a
+    lone `"\n"`, which is truthy, so the web's `copySelection` would write it to primary. xterm
+    guards by moving the *start* past padding too, and a first draft here copied that — which
+    dropped an empty line a drag or a triple-click *began* on, in both copy and highlight, because
+    column 0 of an empty row is past its text (#1031's completeness lens). Only a single-row run
+    can cover padding alone, so the guard is `same row && from >= text_end`, never on Line: a
+    triple-click on an empty line takes its `\n` and paints the row, as it paints it with the
+    setting off. `from >= text_end`, not xterm's `col > LastTextCol + 1`: the first blank cell is
+    already padding.
+  - **The text's end is `Cell::is_blank`, never `select_all`'s `c != ' ' || is_combined`.** A wide
+    glyph's spacer packs `' '`, so that closure measures a row ending in a wide glyph one cell short
+    and selecting exactly to the end of `가나` carries (measured, #1031's mutation run).
+  - **The wrap half of "finished" is observable only on a wrapped row ending in blanks.** On an
+    ordinary wrapped row the text reaches the edge, and moving the end to the next row's start
+    copies and paints the same thing — so a test on a plain wrapped row passes with the check
+    deleted. Spaces *written* over a wrapped row's tail keep the wrap (EL does not: it clears it).
+  - **It is decided when read, not at the gesture.** A full row parked on its deferred wrap carries
+    until the next glyph wraps it; the bottom row starts carrying once output scrolls a row under
+    it. Text and highlight change together, so they never disagree. Under the option, `select_all`
+    gains a trailing `\n` when its last non-blank row is exactly full, and the rotate clamp's
+    `(bottom, last_col, Right)` reaches the edge like a drag would.
 - **Anchors are absolute buffer coordinates** — `BufferPoint { line, col }`, where `line` indexes
   `[scrollback ++ screen]` from the oldest line. Not viewport coordinates.
 - **Why absolute**: it is invariant under a top-anchored scroll. A line evicted into scrollback grows
@@ -189,8 +223,9 @@ status.
 - `justerm-core/src/term/selection.rs` — `Term::selection_begin` / `selection_extend` /
   `selection_clear` / `select_all` / `selection_range` / `selection_text` / `accessible_text`; the three coordinate
   fixups `selection_shift_below_margin` / `selection_evict_oldest` / `selection_rotate_region`; and
-  the private `resolve` / `Resolved` that turn a selection into absolute bounds. Extracted from
-  `term.rs` in #587. As with search, the crate now has **two** files named `selection.rs` — the
+  the private `resolve` / `Resolved` that turn a selection into absolute bounds, with
+  `covers_padding_only` / `end_past_text` (over `finishes_row` / `text_end`) for the line-end
+  rule (#1031, its setter in `term.rs`). Extracted from `term.rs` in #587. As with search, the crate now has **two** files named `selection.rs` — the
   types in `src/selection.rs` above, the mechanism here — so a bare `selection.rs:NN` citation is
   ambiguous
 - `justerm-core/src/term/walk.rs` — the shared buffer-walk floor the selection reaches cells through:
@@ -217,6 +252,9 @@ at a recorded SHA; a paraphrase drops the pin).
   word-selecting the space in `"ab cd"` returns both words joined. That looks like a defect and is
   not: alacritty does the same and xterm.js does the opposite, so a **split reference makes this a
   product choice, not a correctness fix**. Recorded explicitly so it is not re-litigated
+- [A selection past the end of a line's text, and its newline](../../agents/reference-facts.md#a-selection-past-the-end-of-a-lines-text-and-its-newline-1031-verified-2026-09-30)
+  — 3–1 against carrying it by default for a character selection; xterm alone carries it, by
+  relocating the end, which is the shape justerm took behind an opt-in (#1031)
 - [Mapping a tracked point through reflow](../../agents/reference-facts.md#mapping-a-tracked-point-through-reflow-549-verified-2026-07-27)
   — how a reference carries an anchor across a re-split, which is what `reflow(points)` does with the
   selection

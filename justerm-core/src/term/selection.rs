@@ -451,6 +451,15 @@ impl Term {
                 } else {
                     to
                 };
+                let ((start_line, from), (end_line, to)) = if !self.selection_carries_line_end {
+                    ((start_line, from), (end_line, to))
+                } else if sel.ty != SelectionType::Line
+                    && self.covers_padding_only(start_line, from, end_line)
+                {
+                    ((start_line, from), (start_line, from))
+                } else {
+                    ((start_line, from), self.end_past_text(end_line, to))
+                };
                 Resolved::Linear {
                     start_line,
                     from,
@@ -460,6 +469,39 @@ impl Term {
             }
             block => block,
         })
+    }
+
+    /// Whether a run from `(line, from)` that ends on `end_line` lies wholly in the padding of one
+    /// finished row — the run the line-end rule (#1031) resolves to empty rather than to `\n`.
+    fn covers_padding_only(&self, line: usize, from: usize, end_line: usize) -> bool {
+        line == end_line && self.finishes_row(line) && from >= self.text_end(line)
+    }
+
+    /// A run's exclusive end `(line, to)`, moved to the next row's start when it covers a blank
+    /// cell past a finished row's text or reaches the edge of a row the text fills (#1031). That
+    /// one coordinate is what makes the text end in the row's `\n` and the span fill the row.
+    /// Returns it unchanged otherwise.
+    fn end_past_text(&self, line: usize, to: usize) -> (usize, usize) {
+        if self.finishes_row(line) && (to > self.text_end(line) || to >= self.abs_line(line).len())
+        {
+            (line + 1, 0)
+        } else {
+            (line, to)
+        }
+    }
+
+    /// Whether absolute `line` is a finished line: not soft-wrapped, with a row below it.
+    fn finishes_row(&self, line: usize) -> bool {
+        line + 1 < self.scrollback.len() + self.grid.rows() && !self.abs_row(line).is_wrapped()
+    }
+
+    /// The column just past the last non-blank cell of absolute `line`, in cells: a wide glyph's
+    /// spacer counts as text, and only a `Cell::is_blank` cell is padding.
+    fn text_end(&self, line: usize) -> usize {
+        self.abs_line(line)
+            .iter()
+            .rposition(|c| !c.is_blank())
+            .map_or(0, |i| i + 1)
     }
 
     /// Pull a range's **first** column left when it lands on a wide glyph's trailing spacer, so a
