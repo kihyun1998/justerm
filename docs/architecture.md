@@ -158,6 +158,10 @@ ADR-0017. Two properties of that seam are contract rather than detail: `' '` is 
 supplied set (a blank cell packs `' '`, and the walk stops on it both at a row's padding and as the
 wide-pair backstop), and the set **survives RIS**, because `ESC c` resets the terminal and not the
 embedder's configuration.
+**Whether a selection past a finished line's text takes that line's `\n` is the consumer's too**
+(`set_selection_carries_line_end`, off by default, survives RIS). When on, the engine moves the
+selection's end to the next row's start, so the text ends in `\n` and the highlight fills the row
+from the one coordinate — the two outputs cannot disagree about it.
 Cursor blink is *not* an engine concern (consumer-local animation); the engine only reports cursor
 position/style/visibility.
 

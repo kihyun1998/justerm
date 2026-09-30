@@ -995,7 +995,7 @@ impl Term {
     }
 
     /// Choose whether a Char, Word or Line selection whose end has passed the text of a finished
-    /// row takes that row's line ending (#1031) — policy injected into a core mechanism
+    /// row takes that row's line ending — policy injected into a core mechanism
     /// ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
     /// Off by default.
     ///

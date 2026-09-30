@@ -3,6 +3,7 @@
 //! default. Each case asserts **both** observables, the text and the span, because the two answer
 //! from one resolved coordinate and a rule applied to only one of them is the defect.
 
+use justerm_core::Side::{Left, Right};
 use justerm_core::{Engine, SelectionSpan, SelectionType, Side};
 
 fn carrying(cols: usize, rows: usize) -> Engine {
@@ -11,11 +12,18 @@ fn carrying(cols: usize, rows: usize) -> Engine {
     term
 }
 
+type At = (usize, usize, Side);
+
+/// A Char drag from `from` to `to`, each `(row, col, side)`.
+fn drag(term: &mut Engine, from: At, to: At) {
+    select(term, SelectionType::Char, from, to);
+}
+
 fn span(row: usize, left: usize, right: usize) -> SelectionSpan {
     SelectionSpan { row, left, right }
 }
 
-fn select(term: &mut Engine, ty: SelectionType, from: (usize, usize, Side), to: (usize, usize, Side)) {
+fn select(term: &mut Engine, ty: SelectionType, from: At, to: At) {
     term.selection_begin(from.0, from.1, from.2, ty);
     term.selection_extend(to.0, to.1, to.2);
 }
@@ -28,7 +36,7 @@ fn select(term: &mut Engine, ty: SelectionType, from: (usize, usize, Side), to: 
 fn a_drag_ending_exactly_at_the_text_carries_nothing() {
     let mut term = carrying(80, 24);
     term.feed(b"hello\r\nnext");
-    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, 4, Side::Right));
+    drag(&mut term, (0, 0, Left), (0, 4, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("hello"));
     assert_eq!(term.selection_range(), vec![span(0, 0, 4)]);
@@ -39,7 +47,7 @@ fn a_drag_ending_exactly_at_the_text_carries_nothing() {
 fn the_left_half_of_the_first_blank_cell_is_still_exactly_the_text() {
     let mut term = carrying(80, 24);
     term.feed(b"hello\r\nnext");
-    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, 5, Side::Left));
+    drag(&mut term, (0, 0, Left), (0, 5, Left));
 
     assert_eq!(term.selection_text().as_deref(), Some("hello"));
     assert_eq!(term.selection_range(), vec![span(0, 0, 4)]);
@@ -49,7 +57,7 @@ fn the_left_half_of_the_first_blank_cell_is_still_exactly_the_text() {
 fn a_drag_covering_one_blank_cell_carries_the_newline_and_fills_the_row() {
     let mut term = carrying(80, 24);
     term.feed(b"hello\r\nnext");
-    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, 5, Side::Right));
+    drag(&mut term, (0, 0, Left), (0, 5, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("hello\n"));
     assert_eq!(term.selection_range(), vec![span(0, 0, 79)]);
@@ -59,7 +67,7 @@ fn a_drag_covering_one_blank_cell_carries_the_newline_and_fills_the_row() {
 fn a_drag_far_past_the_text_carries_the_newline_once() {
     let mut term = carrying(80, 24);
     term.feed(b"hello\r\nnext");
-    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, 60, Side::Right));
+    drag(&mut term, (0, 0, Left), (0, 60, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("hello\n"));
     assert_eq!(term.selection_range(), vec![span(0, 0, 79)]);
@@ -71,7 +79,7 @@ fn off_by_default_the_same_drag_carries_nothing() {
     let mut term = Engine::new(80, 24);
     term.feed(b"hello\r\nnext");
     assert!(!term.selection_carries_line_end());
-    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, 5, Side::Right));
+    drag(&mut term, (0, 0, Left), (0, 5, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("hello"));
     assert_eq!(term.selection_range(), vec![span(0, 0, 5)]);
@@ -81,7 +89,7 @@ fn off_by_default_the_same_drag_carries_nothing() {
 fn the_last_row_of_a_multi_row_drag_carries_its_newline() {
     let mut term = carrying(80, 24);
     term.feed(b"ab\r\ncd\r\nef");
-    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (1, 5, Side::Right));
+    drag(&mut term, (0, 0, Left), (1, 5, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("ab\ncd\n"));
     assert_eq!(term.selection_range(), vec![span(0, 0, 79), span(1, 0, 79)]);
@@ -98,10 +106,18 @@ fn a_wide_row_selected_exactly_to_its_end_carries_nothing() {
     for end_col in [4, 5] {
         let mut term = carrying(80, 24);
         term.feed("가나다\r\nnext".as_bytes());
-        select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, end_col, Side::Right));
+        drag(&mut term, (0, 0, Left), (0, end_col, Right));
 
-        assert_eq!(term.selection_text().as_deref(), Some("가나다"), "end col {end_col}");
-        assert_eq!(term.selection_range(), vec![span(0, 0, 5)], "end col {end_col}");
+        assert_eq!(
+            term.selection_text().as_deref(),
+            Some("가나다"),
+            "end col {end_col}"
+        );
+        assert_eq!(
+            term.selection_range(),
+            vec![span(0, 0, 5)],
+            "end col {end_col}"
+        );
     }
 }
 
@@ -109,7 +125,7 @@ fn a_wide_row_selected_exactly_to_its_end_carries_nothing() {
 fn a_wide_row_selected_one_cell_past_its_end_carries_the_newline() {
     let mut term = carrying(80, 24);
     term.feed("가나다\r\nnext".as_bytes());
-    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, 6, Side::Right));
+    drag(&mut term, (0, 0, Left), (0, 6, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("가나다\n"));
     assert_eq!(term.selection_range(), vec![span(0, 0, 79)]);
@@ -120,7 +136,7 @@ fn a_wide_row_selected_one_cell_past_its_end_carries_the_newline() {
 fn a_wide_row_selected_part_way_carries_nothing() {
     let mut term = carrying(80, 24);
     term.feed("가나다\r\nnext".as_bytes());
-    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, 3, Side::Right));
+    drag(&mut term, (0, 0, Left), (0, 3, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("가나"));
     assert_eq!(term.selection_range(), vec![span(0, 0, 3)]);
@@ -136,7 +152,7 @@ fn a_wide_row_selected_part_way_carries_nothing() {
 fn a_full_row_carries_the_newline_when_the_drag_reaches_the_edge() {
     let mut term = carrying(10, 5);
     term.feed(b"0123456789\r\nnext");
-    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, 9, Side::Right));
+    drag(&mut term, (0, 0, Left), (0, 9, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("0123456789\n"));
     assert_eq!(term.selection_range(), vec![span(0, 0, 9)]);
@@ -146,7 +162,7 @@ fn a_full_row_carries_the_newline_when_the_drag_reaches_the_edge() {
 fn a_full_row_stopped_one_cell_short_carries_nothing() {
     let mut term = carrying(10, 5);
     term.feed(b"0123456789\r\nnext");
-    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, 8, Side::Right));
+    drag(&mut term, (0, 0, Left), (0, 8, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("012345678"));
     assert_eq!(term.selection_range(), vec![span(0, 0, 8)]);
@@ -157,7 +173,7 @@ fn a_full_row_stopped_one_cell_short_carries_nothing() {
 fn a_soft_wrapped_final_row_carries_nothing() {
     let mut term = carrying(10, 5);
     term.feed(b"0123456789abcde");
-    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, 9, Side::Right));
+    drag(&mut term, (0, 0, Left), (0, 9, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("0123456789"));
     assert_eq!(term.selection_range(), vec![span(0, 0, 9)]);
@@ -169,7 +185,7 @@ fn a_soft_wrapped_final_row_carries_nothing() {
 fn a_soft_wrapped_row_ending_in_blanks_carries_nothing() {
     let mut term = carrying(10, 5);
     term.feed(b"0123456789abcde\x1b[1;7H    ");
-    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, 7, Side::Right));
+    drag(&mut term, (0, 0, Left), (0, 7, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("012345"));
     assert_eq!(term.selection_range(), vec![span(0, 0, 7)]);
@@ -180,7 +196,7 @@ fn a_soft_wrapped_row_ending_in_blanks_carries_nothing() {
 fn the_buffers_last_row_carries_nothing() {
     let mut term = carrying(80, 3);
     term.feed(b"a\r\nb\r\nc");
-    select(&mut term, SelectionType::Char, (2, 0, Side::Left), (2, 40, Side::Right));
+    drag(&mut term, (2, 0, Left), (2, 40, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("c"));
     assert_eq!(term.selection_range(), vec![span(2, 0, 40)]);
@@ -192,7 +208,7 @@ fn the_buffers_last_row_carries_nothing() {
 fn the_cursor_row_is_finished_when_a_row_exists_below_it() {
     let mut term = carrying(80, 24);
     term.feed(b"$ ls");
-    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, 10, Side::Right));
+    drag(&mut term, (0, 0, Left), (0, 10, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("$ ls\n"));
     assert_eq!(term.selection_range(), vec![span(0, 0, 79)]);
@@ -219,7 +235,7 @@ fn a_bare_click_past_the_text_selects_nothing() {
 fn a_drag_over_padding_only_selects_nothing() {
     let mut term = carrying(80, 24);
     term.feed(b"hello\r\nnext");
-    select(&mut term, SelectionType::Char, (0, 10, Side::Left), (0, 10, Side::Right));
+    drag(&mut term, (0, 10, Left), (0, 10, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some(""));
     assert_eq!(term.selection_range(), vec![]);
@@ -231,7 +247,7 @@ fn a_drag_over_padding_only_selects_nothing() {
 fn a_drag_starting_in_the_padding_begins_on_the_next_row() {
     let mut term = carrying(80, 24);
     term.feed(b"ab\r\ncd\r\nef");
-    select(&mut term, SelectionType::Char, (0, 5, Side::Left), (1, 1, Side::Right));
+    drag(&mut term, (0, 5, Left), (1, 1, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("cd"));
     assert_eq!(term.selection_range(), vec![span(1, 0, 1)]);
@@ -242,7 +258,7 @@ fn a_drag_starting_in_the_padding_begins_on_the_next_row() {
 fn a_drag_starting_on_the_first_blank_cell_covers_padding_only() {
     let mut term = carrying(80, 24);
     term.feed(b"hello\r\nnext");
-    select(&mut term, SelectionType::Char, (0, 5, Side::Left), (0, 7, Side::Right));
+    drag(&mut term, (0, 5, Left), (0, 7, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some(""));
     assert_eq!(term.selection_range(), vec![]);
@@ -288,7 +304,7 @@ fn a_word_selection_ending_on_the_text_carries_nothing() {
 fn a_block_selection_past_the_text_carries_nothing() {
     let mut term = carrying(80, 24);
     term.feed(b"ab\r\ncd\r\nef");
-    select(&mut term, SelectionType::Block, (0, 0, Side::Left), (1, 5, Side::Right));
+    select(&mut term, SelectionType::Block, (0, 0, Left), (1, 5, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("ab\ncd"));
     assert_eq!(term.selection_range(), vec![span(0, 0, 5), span(1, 0, 5)]);
@@ -305,7 +321,7 @@ fn the_setting_survives_a_full_reset() {
     term.feed(b"\x1bc");
     assert!(term.selection_carries_line_end());
     term.feed(b"hello\r\nnext");
-    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, 5, Side::Right));
+    drag(&mut term, (0, 0, Left), (0, 5, Right));
 
     assert_eq!(term.selection_text().as_deref(), Some("hello\n"));
 }
@@ -314,7 +330,7 @@ fn the_setting_survives_a_full_reset() {
 fn turning_it_off_restores_the_plain_run() {
     let mut term = carrying(80, 24);
     term.feed(b"hello\r\nnext");
-    select(&mut term, SelectionType::Char, (0, 0, Side::Left), (0, 5, Side::Right));
+    drag(&mut term, (0, 0, Left), (0, 5, Right));
     term.set_selection_carries_line_end(false);
 
     assert_eq!(term.selection_text().as_deref(), Some("hello"));

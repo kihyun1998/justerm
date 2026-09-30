@@ -462,13 +462,12 @@ impl Term {
                 // #1031: an end past a finished row's text — or at the edge of a row the text
                 // fills — becomes the next row's start, so the row's `\n` and a full-width span
                 // both follow from the one coordinate. A start in the padding moves the same way.
-                let (start_line, from) = if self.finishes_row(start_line)
-                    && from >= self.text_end(start_line)
-                {
-                    (start_line + 1, 0)
-                } else {
-                    (start_line, from)
-                };
+                let (start_line, from) =
+                    if self.finishes_row(start_line) && from >= self.text_end(start_line) {
+                        (start_line + 1, 0)
+                    } else {
+                        (start_line, from)
+                    };
                 let (end_line, to) = if self.finishes_row(end_line)
                     && (to > self.text_end(end_line) || to >= self.abs_line(end_line).len())
                 {
