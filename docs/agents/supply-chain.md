@@ -17,7 +17,7 @@ it is itself SHA-pinned.
 - **Pinned version in our workflows:** currently `v0.3.0` (a full 40-char SHA + `# v0.3.0` comment).
   Dependabot advances the pin; do not hand-edit the SHA.
 - **Source lives next to this repo:** the sibling working copy is at `../just-shield`
-  (`D:\github\just-shield`). Its `README.md`, `CONTEXT.md`, and `docs/adr/` are the authority for rule
+  (`D:\github\just-shield`). Its `README.md`, `GLOSSARY.md`, and `docs/adr/` are the authority for rule
   semantics — read them there, don't re-derive.
 
 ## Reproduce a CI failure locally

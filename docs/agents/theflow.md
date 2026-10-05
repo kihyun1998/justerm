@@ -810,7 +810,7 @@ that *describes* the behavior:
   least of the four because its usage snippet is a **doctest** (`cargo test` runs
   it). Prose is not checkable, but a code block is — prefer putting a README's
   claims in a form something already executes.
-- **Glossary + decision trail** — `CONTEXT.md` (glossary) and `docs/adr/`. If a
+- **Glossary + decision trail** — `GLOSSARY.md` (glossary) and `docs/adr/`. If a
   domain term's *meaning* changed, update the glossary in the same change. **The
   ADRs are a *write* surface, not only the one you read at Step 0**: a change that
   falsifies an ADR's premise amends *that ADR* in the same change (0011 and 0012
@@ -982,7 +982,7 @@ cargo clippy --workspace --all-targets -- -D warnings   # the `-- -D warnings` i
 cargo check --manifest-path fuzz/Cargo.toml
 cargo build -p justerm-wasm-decode --tests --target wasm32-unknown-unknown
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps   # rustdoc lints ≠ clippy, ≠ doctests
-node .github/scripts/check-map-links.mjs docs CLAUDE.md CONTEXT.md README.md
+node .github/scripts/check-map-links.mjs docs CLAUDE.md GLOSSARY.md README.md
 bad=0; for f in docs/map/territory/*.md docs/map/invariant/*.md; do \
   node .github/scripts/check-map-note.mjs "$f" || bad=1; done; exit $bad   # note SCHEMA ≠ note LINKS
 node .github/scripts/check-tool-pins.mjs
@@ -1274,4 +1274,4 @@ precedents index inline.)
   ruler order partitions by position class first, `anchor` moves the colour span. Note its grading habit:
   most of xterm's behaviour here is only inferable from source, so it is cited as "the implementation
   does X (file:line)", never as "xterm specifies X".
-- Identity & invariants: `CLAUDE.md`. Glossary: `CONTEXT.md`. Release: `docs/agents/release.md`.
+- Identity & invariants: `CLAUDE.md`. Glossary: `GLOSSARY.md`. Release: `docs/agents/release.md`.

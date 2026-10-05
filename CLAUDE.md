@@ -40,7 +40,7 @@ to cover for another layer, stop and tell the user.
 | Before starting any change — what else moves, which decision the code came from | `docs/map/README.md` (editing the map: its § Conventions) |
 | Touching the cell · damage · viewport/scroll · cadence · selection · serialization · engine API contract | `docs/architecture.md` (authoritative) |
 | You need the reason behind a decision | `docs/adr/` |
-| A term is unclear | `CONTEXT.md` |
+| A term is unclear | `GLOSSARY.md` |
 | A crate's role, or the epic a slice belongs to | `README.md` |
 
 **ADR lists and statuses live only in `docs/adr/`**: the file name is the one-line summary and each
@@ -65,7 +65,7 @@ no gate list or count.
 
 ## Core rules
 
-- **Language**: comments, `CLAUDE.md`, `CONTEXT.md`, `docs/adr/` and `docs/map/` are English (LLM token
+- **Language**: comments, `CLAUDE.md`, `GLOSSARY.md`, `docs/adr/` and `docs/map/` are English (LLM token
   efficiency — agents read `docs/map/` at *every* start). Other human-facing docs are Korean.
 - **What a comment holds**: a comment says what the code *is*. Why it is this way, what it deliberately
   leaves out, the trap and the measured value go to the territory note under `docs/map/`; history goes to
