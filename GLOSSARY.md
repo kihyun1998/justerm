@@ -1,4 +1,4 @@
-# CONTEXT — justerm glossary
+# GLOSSARY — justerm
 
 The shared vocabulary for justerm. Glossary only — no implementation detail, no spec. When code,
 issues, or ADRs name a concept here, use this term and not a synonym.
