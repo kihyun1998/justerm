@@ -57,7 +57,7 @@ assert_eq!(term.grid().cell(0, 0).fg(), Color::Indexed(1));
 
 - [`docs/architecture.md`](https://github.com/kihyun1998/justerm/blob/master/docs/architecture.md) — the contract: cell, damage, viewport/scroll,
   cadence, selection, serialization, engine API.
-- [`CONTEXT.md`](https://github.com/kihyun1998/justerm/blob/master/CONTEXT.md) — glossary.
+- [`GLOSSARY.md`](https://github.com/kihyun1998/justerm/blob/master/GLOSSARY.md) — glossary.
 - [`docs/adr/`](https://github.com/kihyun1998/justerm/tree/master/docs/adr) — the decision records behind the design.
 
 ## Web consumers

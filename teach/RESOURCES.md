@@ -7,7 +7,7 @@
 |------|------|------|
 | **CLAUDE.md** | repo 루트 | 경계 invariant("이게 정체성"), 사고방식, 작업 flow, 게이트. 리뷰어의 성경. |
 | **docs/architecture.md** | repo | 셀·damage·뷰포트/스크롤·cadence·selection·직렬화·엔진 API 의 authoritative 스펙 + "Hidden VT state". |
-| **CONTEXT.md** | repo | 도메인 용어(ubiquitous language). |
+| **GLOSSARY.md** | repo | 도메인 용어(ubiquitous language). |
 | **docs/adr/0001–0018** | repo | 각 설계 결정의 근거 + 기각된 대안. "왜?"의 답. |
 | **docs/agents/** | repo | issue-tracker·release·supply-chain·triage 운영. |
 | **GitHub issues** | `gh issue list` | 진행 상태·slice·근거 토론. Epic #1 + slice #2–#12 가 빌드플랜. |

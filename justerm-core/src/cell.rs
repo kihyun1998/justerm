@@ -1,4 +1,4 @@
-//! The cell — one character position in the grid (see CONTEXT.md "Cell").
+//! The cell — one character position in the grid (see GLOSSARY.md "Cell").
 
 use crate::color::Color;
 

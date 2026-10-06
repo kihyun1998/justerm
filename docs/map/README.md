@@ -154,13 +154,13 @@ empty `## Reference behaviour`. A command in place of a stored answer is only be
 the question it claims to; an unscoped one is a stored answer with extra steps and more confidence.
 
 **The links are gated.** `.github/scripts/check-map-links.mjs` runs on every PR (the `test` job) and
-resolves every relative markdown link under `docs/`, `CLAUDE.md`, `CONTEXT.md` and `README.md` —
+resolves every relative markdown link under `docs/`, `CLAUDE.md`, `GLOSSARY.md` and `README.md` —
 **including `#anchors`**, whose failure mode is the reason the gate exists: a missing file is loud
 (404), while a missing anchor degrades *silently* to the top of the target document, and
 `reference-facts.md`'s headings embed issue numbers and verification dates that get edited.
 
 ```sh
-node .github/scripts/check-map-links.mjs docs CLAUDE.md CONTEXT.md README.md
+node .github/scripts/check-map-links.mjs docs CLAUDE.md GLOSSARY.md README.md
 ```
 
 **Verify a note as you finish it, not the batch at the end.** `check-map-note.mjs` takes one file and
@@ -269,7 +269,7 @@ find justerm-core/src justerm-renderer/src justerm-web/src -name '*.rs' -o -name
 
 ## Language
 
-English, deliberately, and this is a departure from `CLAUDE.md`'s default ("Korean except `CONTEXT.md`
+English, deliberately, and this is a departure from `CLAUDE.md`'s default ("Korean except `GLOSSARY.md`
 and `docs/adr/`"). The map is read by an agent at the **start of every task**, which is the same
 token-efficiency rationale that put the glossary in English. `CLAUDE.md`'s rule now names
 `docs/map/` alongside them.

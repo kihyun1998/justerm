@@ -2,7 +2,7 @@
 
 The detailed spec an implementer references. justerm is a **pure terminal engine**: bytes in →
 terminal state → viewport/damage/scroll/selection out. No I/O, no IPC, no rendering, theme-agnostic.
-See `CLAUDE.md` for the boundary invariants and `CONTEXT.md` for vocabulary. Key decisions with
+See `CLAUDE.md` for the boundary invariants and `GLOSSARY.md` for vocabulary. Key decisions with
 rejected alternatives are in `docs/adr/`. This contract was grilled and cross-validated against prior
 art (Mosh / Alacritty / Warp / VS Code / beamterm); the origin/rationale record is PenTerm's
 `.scratch/rust-terminal-engine/PRD.md` (history only — this file is justerm's authoritative spec).

@@ -40,7 +40,7 @@ running the engine itself rather than decoding frames from a native backend.
 ## Docs (start here)
 
 - [`CLAUDE.md`](./CLAUDE.md) — identity, boundary invariants, conventions, working method.
-- [`CONTEXT.md`](./CONTEXT.md) — glossary (the family's ubiquitous language).
+- [`GLOSSARY.md`](./GLOSSARY.md) — glossary (the family's ubiquitous language).
 - [`docs/architecture.md`](./docs/architecture.md) — the authoritative contract: cell, damage,
   viewport/scroll, cadence, selection, serialization, engine API, plus a **Hidden VT state** checklist.
 - [`docs/adr/`](./docs/adr/) — key decisions (build on `vte`; adopt then replace `beamterm` with the
