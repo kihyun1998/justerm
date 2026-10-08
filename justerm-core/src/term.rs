@@ -1355,7 +1355,8 @@ impl Term {
         encode_mouse(&ev, self.mouse_protocol, self.mouse_encoding)
     }
 
-    /// Encode pasted text under the current ?2004 state (see `input::encode_paste`).
+    /// Encode pasted text under the current ?2004 state, exactly as
+    /// [`Engine::encode_paste`](crate::Engine::encode_paste) describes.
     pub fn encode_paste(&self, text: &str) -> Vec<u8> {
         encode_paste(text, self.bracketed_paste)
     }

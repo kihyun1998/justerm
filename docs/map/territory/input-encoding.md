@@ -128,7 +128,7 @@ Nothing governs the encoding itself.
   closes the bracket and turns the rest into typed input. ESC becomes `␛` only *inside* the bracket —
   outside one nothing can tell paste from typing, so there is no guard to keep. **Stripping other
   control characters is policy and stays with the consumer** (PenTerm's paste setting; xterm keeps it
-  under a user switch too). No option, the maintainer's call (2026-10-08), made on the five-way table
+  under a user switch too). No option, the maintainer's call (2026-10-08), made on the four-reference table
   linked below.
 - **A consumer claims a key through `TerminalOptions.beforeKey`, asked after the IME gate** (#901).
   A composition key never reaches the consumer, and a key that finalizes a composition has committed
