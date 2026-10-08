@@ -3664,3 +3664,29 @@ justerm has no written bit where xterm's `LastTextCol` tests `CHARDRAWN`; and th
 moved**. xterm moves it too, which drops an empty line a drag or a triple-click begins on (its
 `LastTextCol` is −1 there, so column 0 is past it) — justerm instead resolves only a single-row
 Char/Word run over padding to empty, which is what the start move was for.
+
+## What a paste sends — line endings and ESC (#1036, verified 2026-10-08)
+
+The bytes a terminal writes for clipboard text. **On line endings the four split two ways, and on
+ESC four ways**; only xterm.js and alacritty have a rule scoped to the bracket itself.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Every `\r?\n` becomes `\r`, bracketed or not | xterm.js | `src/browser/Clipboard.ts:14` |
+| Inside a bracketed paste, every ESC becomes `␛` (U+241B); outside one, the text is untouched. No other control is touched | xterm.js | `src/browser/Clipboard.ts:27` |
+| Bracketed: ESC and `^C` are deleted (*"some shells incorrectly terminate bracketed paste when they receive"* `^C`); line endings are **not** changed | alacritty | `alacritty/src/event.rs:1386` |
+| Not bracketed: `\r\n` then `\n` become `\r`; with bracketed paste disabled by config, nothing is changed | alacritty | `alacritty/src/event.rs:1402`, `:1406` |
+| A fixed set (NUL, BS, ENQ, EOT, ESC, DEL and the stty characters `^C` `^\` `^U` `^Z` `^Q` `^S` `^W` `^V` `^R` `^O`) becomes a space **in both modes**, *"copied directly from xterm's source"* | ghostty | `src/input/paste.zig:51`, `:59`, `:88` |
+| Bracketed: line endings are not changed. Not bracketed: every `\n` becomes `\r`, so `\r\n` is `\r\r`, *"which does match xterm"* | ghostty | `src/input/paste.zig:95`, `:105` |
+| Every `\n` becomes `\r` unless `paste_literal_nl`, bracketed or not — `\r\n` is `\r\r` | xterm | `button.c:2544`, `:2548` |
+| `removeControls` turns the disallowed controls into spaces, by default `BS,DEL,ENQ,EOT,ESC,NUL,STTY`, in both modes; it runs on every chunk before the bracket is written | xterm | `button.c:2582`, `:2667`; default `main.h:143`; call `button.c:2840` |
+| ⚠ With `allowPasteControls` (default `False`) the whole filter is off, so an ESC inside a bracketed paste passes — xterm has no guard scoped to the bracket | xterm | `button.c:2587`; default `charproc.c:406` |
+
+**What justerm took.** xterm.js's contract, byte for byte (#1036 cross-checked 30 inputs against
+`Clipboard.ts`'s own functions). **Line endings**: `\r?\n` to `\r` in both modes. xterm's and
+ghostty's `\n`→`\r` sends `\r\r` for a Windows clipboard, which readline inside a bracket reads as two
+line breaks — the defect #1036 measured in PenTerm. **ESC**: neutralised only inside the bracket,
+because that is the guard the bracket needs; xterm and ghostty strip it everywhere, but under the
+same switch as every other control character, which makes it policy, and policy is the consumer's
+(PenTerm's "permit control characters in paste" is that switch). `␛` over deletion or a space is
+justerm's derivation: the marker stays visible.

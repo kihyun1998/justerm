@@ -199,8 +199,9 @@ impl Engine {
         self.term.encode_mouse(ev)
     }
 
-    /// Encode pasted text — wrapped in bracketed-paste markers when ?2004 is on,
-    /// raw otherwise.
+    /// Encode pasted text: every line ending (`\r\n`, `\n`, `\r`) becomes one `\r`,
+    /// and when ?2004 is on the text is wrapped in bracketed-paste markers with each
+    /// ESC in it sent as `␛` (U+241B), so it cannot close the bracket itself.
     pub fn encode_paste(&self, text: &str) -> Vec<u8> {
         self.term.encode_paste(text)
     }
