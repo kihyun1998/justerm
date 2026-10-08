@@ -134,6 +134,19 @@ the shell emits.
   run — measured, `a0` wearing `a1`'s `Some(2)`. Only `line` stays derived, because it is the half
   the movers above already maintain. The capture is bounded at `MAX_COMMAND_TEXT`, for the reason
   `MAX_MARKERS` exists: the *stream* chooses the distance between `B` and `C`.
+- **…and across records at `MAX_COMMAND_TEXT_TOTAL` (16 MiB), because two bounds on one product
+  bound nothing (#1038).** `MAX_MARKERS` × `MAX_COMMAND_TEXT` × 4 bytes is half a gigabyte, and a
+  line-less stream reaches it: `CSI H`, `133;B`, `CSI 59;1H`, `133;C`, repeated, retained 202 MiB from
+  0.74 MiB of input on 727865d (19.6 MiB after). A capture that would cross the budget is cut, at a
+  `char` boundary, to what is left — possibly nothing — and the record is still made, so
+  `command_lines` keeps listing the command with shorter text. The maintainer chose a total budget
+  with truncation over a lower per-command cap on 2026-10-08; the number is derived, from the
+  ordinary ceiling `MAX_MARKERS`' doc already records (about 40 000 live commands in a
+  default-scrollback session) at over 400 bytes each. **The refund rides `Drop`, not the disposal
+  sites.** A record's bytes are a `TextCharge` holding the pool, so every path that drops a marker —
+  the cap's `pop_front`, `markers_evict_oldest`, `dispose_markers_on_row`, `ED 3`, `Engine::clear`,
+  `RIS` — returns them without naming the budget. A counter decremented at each site would have been
+  a sixth call list beside the funnel #936 exists to have one of.
 - **Primary markers survive an alt-screen excursion.** That is the contract (#118/#158): a mark must
   outlive a `vim` session. `normal_markers` and `alt_markers` are separate populations, and an
   alt-screen scroll must **not** rotate primary markers or it silently disposes them — the alt grid

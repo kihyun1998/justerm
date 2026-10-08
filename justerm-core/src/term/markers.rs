@@ -14,6 +14,7 @@
 //! marks anchor **primary** content, which on the alt screen is the swapped-out grid.
 
 use std::collections::VecDeque;
+use std::sync::atomic::Ordering;
 
 use crate::cell::Cell;
 use crate::event::TermEvent;
@@ -21,8 +22,8 @@ use crate::grid::Grid;
 use crate::serialize::{MarkerId, MarkerKind, MarkerPosition};
 
 use super::{
-    CommandLine, CommandRecord, MAX_COMMAND_TEXT, MAX_MARKERS, Marker, MarkerEntry, MarkerIndex,
-    Term,
+    CommandLine, CommandRecord, MAX_COMMAND_TEXT, MAX_COMMAND_TEXT_TOTAL, MAX_MARKERS, Marker,
+    MarkerEntry, MarkerIndex, Term, TextCharge, prefix_chars,
 };
 
 impl Term {
@@ -169,21 +170,32 @@ impl Term {
         };
         let grid = self.primary_grid();
         let (b_line, b_col) = self.command_start(grid, b_line, b_col, c_line);
-        let mut text = self.extract_lines(grid, b_line, b_col, c_line, c_col);
+        let text = self.extract_lines(grid, b_line, b_col, c_line, c_col);
         // Bounded for `MAX_MARKERS`' reason: the stream chose the distance between `B`
-        // and `C`. Truncated at a `char` boundary so the answer stays valid text.
-        if text.chars().count() > MAX_COMMAND_TEXT {
-            let end = text
-                .char_indices()
-                .nth(MAX_COMMAND_TEXT)
-                .map_or(text.len(), |(i, _)| i);
-            text.truncate(end);
+        // and `C` — per record at `MAX_COMMAND_TEXT`, and across records at
+        // `MAX_COMMAND_TEXT_TOTAL`. Both cuts land on a `char` boundary so the answer stays
+        // valid text.
+        let mut text = prefix_chars(&text, MAX_COMMAND_TEXT);
+        let pool = &self.command_text_used;
+        let left = MAX_COMMAND_TEXT_TOTAL.saturating_sub(pool.load(Ordering::Relaxed));
+        if text.len() > left {
+            let end = (0..=left)
+                .rev()
+                .find(|&i| text.is_char_boundary(i))
+                .unwrap_or(0);
+            text = &text[..end];
         }
+        pool.fetch_add(text.len(), Ordering::Relaxed);
+        let record = CommandRecord {
+            text: text.into(),
+            exit: None,
+            _charge: TextCharge {
+                pool: pool.clone(),
+                bytes: text.len(),
+            },
+        };
         if let Some(m) = self.normal_markers.back_mut() {
-            m.command = Some(Box::new(CommandRecord {
-                text: text.into_boxed_str(),
-                exit: None,
-            }));
+            m.command = Some(Box::new(record));
         }
     }
 

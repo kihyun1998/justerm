@@ -102,7 +102,10 @@ originally: xterm.js *does* cap an OSC payload, at 10 000 000 chars, discarding
 the whole sequence silently. No bound is near `u16::MAX`, so #621's direction is unaffected —
 but read the correction notes in that section before citing it. Its first version concluded the
 opposite of its own citation, and its second extended a cluster-only finding to URIs without a
-URI-side row.
+URI-side row. **Since #1038 the engine caps both** (`MAX_CLUSTER_TAIL`, `MAX_LINK_URI`), for memory
+rather than for the wire, and the `u32` prefixes stay: they are the wire's contract with any
+producer, which is why `wire_capacity.rs` now lengthens its cluster on an engine frame rather than
+through `feed`.
 
 **The choice of format itself is still uncompared.** ADR-0005 argues against Mosh and xterm.js by
 description rather than by pinned rows, so the comparison that picked this shape has never been

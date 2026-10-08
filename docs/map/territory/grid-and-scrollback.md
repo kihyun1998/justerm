@@ -41,6 +41,16 @@ misdiagnosed** before it was understood.
   holders and missed the fourth (search highlights) — reusing the cap's funnel is what closed it.
 - **The row buffer is recycled; there is no ring.** The eviction's allocate-and-copy is the
   per-newline cost, not the row shift.
+- **Capacities are kept exact, because recycling carries them forever (#1038).** A recycled row and a
+  reused buffer keep whatever capacity they had, so slack made once is never given back. Three were
+  measured: `reflow_pane` hands the history-sized `all` buffer to the screen (a 24-row grid kept
+  16 384 slots, 1.7 MB) — `Grid::set_screen` now shrinks it to `rows`; a reflowed row's `to_vec` +
+  `resize` could double its cells (+2.1 MB on 60 %-width lines), and a row shrunk after a 65 535-
+  column resize kept 768 KiB — `Row::resize` now leaves the cell vector at exactly `cols`; and
+  history, rebuilt at exact length by reflow, doubled to 20 000 on its next push — `Term::push_history`
+  grows it no further than `scrollback_limit + 1`, the most it holds between a push and the cap's
+  pop. None of the three costs an allocation once history is full: pinned by
+  `size_bounds.rs::a_full_scrollback_scrolls_without_allocating`.
 - **The original diagnosis was wrong, and the correction is the useful part.** A flood profile blamed
   `rotate_left`; measured, that moves 24-byte `Vec` *handles* over a bounded screen height —
   sub-microsecond, never the bottleneck. The real cost was `linefeed`'s eviction copying ~2 KB and

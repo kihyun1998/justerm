@@ -42,19 +42,21 @@ const PAST_U16: usize = u16::MAX as usize + 1;
 
 #[test]
 fn a_combining_cluster_longer_than_the_old_prefix_survives_the_wire() {
-    // One cell, one very long grapheme cluster. `Row::push_combining` caps nothing — and
-    // no reference caps it either (xterm.js appends to a JS string, alacritty pushes onto
-    // an unbounded `Vec<char>`, ghostty's `GraphemeAllocOutOfMemory` is an allocator
-    // failure that its own caller resolves by *growing*), so the engine is right to hold
-    // this and the wire was wrong to be unable to describe it.
+    // One cell, one very long grapheme cluster. Since #1038 the engine keeps at most
+    // `MAX_CLUSTER_TAIL` code points after a base, so a stream can no longer build this one;
+    // the frame is the engine's, and its cluster is lengthened past the old prefix on the
+    // frame itself. The `u32` prefix is the wire's contract with any producer, and this is
+    // what still crosses it.
     let mut e = Engine::new(10, 2);
-    let mut stream = String::from("a");
-    for _ in 0..PAST_U16 {
-        stream.push('\u{0301}');
-    }
-    e.feed(stream.as_bytes());
+    e.feed("a\u{0301}".as_bytes());
 
-    let frame = e.frame();
+    let mut frame = e.frame();
+    let cluster = frame
+        .spans
+        .iter_mut()
+        .find_map(|s| s.combining.values_mut().next())
+        .expect("the engine's frame carries the cluster");
+    cluster.resize(PAST_U16, '\u{0301}');
     assert_eq!(
         decode(&encode(&frame)).expect("a long cluster must round-trip, not fail to decode"),
         frame,

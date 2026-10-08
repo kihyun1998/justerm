@@ -161,6 +161,8 @@ pub enum TermEvent {
     ///
     /// A title containing 15 or more `;` arrives cut short, because the parser this
     /// engine builds on passes at most 16 OSC fields; the shorter title is not marked.
+    /// One longer than [`MAX_TITLE`](crate::MAX_TITLE) `char`s arrives cut to it, also
+    /// unmarked.
     Title(String),
     /// The terminal bell rang (BEL, `0x07`).
     Bell,

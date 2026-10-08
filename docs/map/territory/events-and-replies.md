@@ -358,6 +358,10 @@ for the current one.
   waiting for it.
 - **No bound on either queue.** A consumer that never drains grows memory with no signal, and no
   document states whose problem that is.
+- **…and draining does not bound what one `feed` queues.** `CSI 22 t CSI 23 t` is 10 bytes and
+  queues one `Title` of up to `MAX_TITLE` chars, so 120 KB fed at once queued 10 001 titles, 156 MiB
+  (measured by the #1038 lens; before #1038's title cap, each could be the full title). The bytes
+  live until the drain that follows the `feed`, not past it.
 - **The web `ClipboardTarget` union is closed while core's is `#[non_exhaustive]`**, and
   `ClipboardController` passes the target to the provider unexamined — there is no decline arm for a
   target it does not know. No reachable consequence until core names `q` or a cut buffer, and

@@ -55,6 +55,27 @@ the decision has to be made per scalar, with no lookahead, against a cluster tha
   2..8), which is what lets `width_may_change` consult the oracle on the first join only.
 - **Storage is the row's combining map, gated by `COMBINED_PRESENT`.** The primary code point stays
   inline in the cell and the overflow sits beside it — the cell never grows.
+- **A cell holds at most `MAX_CLUSTER_TAIL` (9) code points after its base, and drops the rest
+  (#1038).** Unbounded, the tail was the one per-cell payload a stream could multiply: `REP` copies
+  the anchor's whole cluster into every cell it repeats into, so `a` + 100 marks + `CSI 65535 b`, 14
+  times — 2 926 bytes — retained 445 MiB (measured on 727865d; 80.8 MiB after, bounded by the
+  buffer). The value is derived, and the derivation is the part to keep: the longest RGI emoji
+  sequence in `emoji-zwj-sequences.txt` (Emoji 18.0) is 10 code points, so 9 is the smallest tail
+  that cuts no RGI emoji under mode 2027 — xterm's 2 (clamped to 5) would cut family and couple
+  sequences, and xterm can afford it only because it has no mode 2027 (reference-facts row 8).
+  **Overflow is dropped in silence, keeping the first nine**, as xterm's `addXtermCombining` does.
+  The maintainer chose this value and that overflow rule on 2026-10-08, from three options (9,
+  UAX #15's 30, xterm's 5) shown with their worst-case memory; it is theirs to reverse. Re-derive the
+  number when Unicode publishes a longer RGI sequence. **With mode 2027 off this diverges from
+  xterm on the very object xterm caps** — a plain combining-mark list, where xterm keeps 2 (at most
+  5) and justerm keeps 9. One cap serves both modes so that turning 2027 on or off never changes how
+  many marks a cell can hold; the divergence is in the direction of keeping text, not dropping it.
+  A scalar the cap drops moves nothing: in mode 2027 the join path checks for a full tail *before*
+  asking whether the width changes, because a width computed over a cluster the cell will not store
+  left a wide cell holding a width-1 cluster (found by the #1038 lens, pinned by
+  `a_scalar_dropped_by_the_cap_does_not_change_the_cell_width`). The mark vector grows by doubling
+  clamped at the cap (1, 4, 8, 9), so nine marks cost nine slots, not sixteen — an exact
+  reservation per mark cost 20 % on cells with three or more marks.
 - **Width is still per character** (see [wide glyph](wide-glyph.md)), which is why VS16 and keycap
   sequences arrive as `wide = false` and why the renderer classifies emoji by structure rather than by
   width. Mode 2027 is what would change that, and it is off.

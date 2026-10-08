@@ -8,7 +8,10 @@ use crate::event::{NotificationSequence, TermEvent, Terminator};
 use crate::input::{MouseEncoding, MouseProtocol};
 use crate::serialize::MarkerKind;
 
-use super::{Charset, LINK_IDS_FIRST_SWEEP, Term, param_or, version_number};
+use super::{
+    Charset, LINK_IDS_FIRST_SWEEP, MAX_LINK_ID, MAX_LINK_URI, MAX_TITLE, Term, param_or,
+    prefix_chars, version_number,
+};
 
 /// The `id=` value out of an OSC 8 `params` field, or `None` when it is absent or empty.
 ///
@@ -164,16 +167,26 @@ impl Term {
     /// The allocation an OSC 8 `id=` names: the live one if that id already named a link
     /// with this same URI, else a fresh one recorded under the key (#635).
     ///
-    /// Keyed on **id and URI together**, mirroring xterm.js's `_getEntryIdKey`
+    /// Keyed on **id and URI together** — the URI by its hash, checked against the live
+    /// link — mirroring xterm.js's `_getEntryIdKey`
     /// (`` `${id};;${uri}` ``, `OscLinkService.ts:87`). Keying on the id alone would follow
     /// a reused id to a stale target — an application saying "same link" about two
     /// different destinations has not said anything the engine should honour.
-    fn link_for_id(&mut self, id: &str, uri: &str) -> std::sync::Arc<str> {
-        let key = format!("{id};;{uri}");
+    fn link_for_id(&mut self, id: &str, uri: &str) -> crate::grid::LinkUri {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        uri.hash(&mut h);
+        let key: (Box<str>, u64) = (id.into(), h.finish());
         // A key whose link has left the buffer is *absent*, not stale — the group it named
         // is gone, so this open starts a new one. That is xterm.js's behaviour too, reached
-        // by deleting the entry rather than by letting a reference die.
-        if let Some(live) = self.link_ids.get(&key).and_then(std::sync::Weak::upgrade) {
+        // by deleting the entry rather than by letting a reference die. A live link under the
+        // same hash but another URI is a collision, and is treated as absent too.
+        if let Some(live) = self
+            .link_ids
+            .get(&key)
+            .and_then(std::sync::Weak::upgrade)
+            .filter(|live| ***live == *uri)
+        {
             return live;
         }
         // Amortised sweep before inserting, so dangling keys stay O(live) rather than
@@ -182,7 +195,7 @@ impl Term {
             self.link_ids.retain(|_, weak| weak.strong_count() > 0);
             self.link_ids_sweep_at = (self.link_ids.len() * 2).max(LINK_IDS_FIRST_SWEEP);
         }
-        let fresh: std::sync::Arc<str> = std::sync::Arc::from(uri);
+        let fresh: crate::grid::LinkUri = std::sync::Arc::new(uri.into());
         self.link_ids.insert(key, std::sync::Arc::downgrade(&fresh));
         fresh
     }
@@ -464,9 +477,11 @@ impl Perform for Term {
             // OSC is ignored where an empty field clears. `vte` hands over at most 16 fields (#840).
             b"0" | b"2" => {
                 if let Some(fields) = params.get(1..).filter(|f| !f.is_empty()) {
-                    let title = String::from_utf8_lossy(&fields.join(&b';')).into_owned();
+                    let joined = fields.join(&b';');
+                    let title =
+                        prefix_chars(&String::from_utf8_lossy(&joined), MAX_TITLE).to_owned();
                     if number == b"0" {
-                        self.icon_name.clone_from(&title);
+                        self.icon_name = title.clone();
                     }
                     self.set_window_title(title);
                 }
@@ -520,15 +535,25 @@ impl Perform for Term {
                 // One allocation per open, shared by that open's cells (#628); `id=` is the only
                 // dedup (#635, `docs/map/territory/hyperlinks.md`). The URI is `params[2..]` rejoined
                 // on `;` and never decoded (#650, ADR-0017); an empty one closes the link.
-                let uri: Vec<u8> = params.get(2..).unwrap_or_default().join(&b';');
+                // A URI past `MAX_LINK_URI` makes the whole sequence a no-op, and an id past
+                // `MAX_LINK_ID` is no id.
+                // Both bounds are on the stored text, after lossy decoding has grown any invalid
+                // byte to three.
+                let joined: Vec<u8> = params.get(2..).unwrap_or_default().join(&b';');
+                let uri = String::from_utf8_lossy(&joined);
+                if uri.len() > MAX_LINK_URI {
+                    return;
+                }
                 self.current_link = if uri.is_empty() {
                     None
                 } else {
-                    let uri = String::from_utf8_lossy(&uri);
-                    Some(match osc8_link_id(params.get(1).copied().unwrap_or(b"")) {
+                    let id = osc8_link_id(params.get(1).copied().unwrap_or(b""))
+                        .map(String::from_utf8_lossy)
+                        .filter(|id| id.len() <= MAX_LINK_ID);
+                    Some(match id {
                         // No id declared: fresh per open, the reference-correct default.
-                        None => std::sync::Arc::from(&*uri),
-                        Some(id) => self.link_for_id(&String::from_utf8_lossy(id), &uri),
+                        None => std::sync::Arc::new(Box::from(&*uri)),
+                        Some(id) => self.link_for_id(&id, &uri),
                     })
                 };
             }

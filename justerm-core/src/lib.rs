@@ -45,8 +45,9 @@ pub use serialize::{
 };
 
 pub use term::{
-    CommandLine, DEFAULT_WORD_SEPARATORS, Hyperlink, MAX_COLUMNS, MAX_COMMAND_TEXT, MAX_MARKERS,
-    MAX_ROWS, MIN_COLUMNS, MarkerEntry, MarkerIndex, Term, TrackedId,
+    CommandLine, DEFAULT_WORD_SEPARATORS, Hyperlink, MAX_CLUSTER_TAIL, MAX_COLUMNS,
+    MAX_COMMAND_TEXT, MAX_COMMAND_TEXT_TOTAL, MAX_LINK_ID, MAX_LINK_URI, MAX_MARKERS, MAX_ROWS,
+    MAX_TITLE, MIN_COLUMNS, MarkerEntry, MarkerIndex, Term, TrackedId,
 };
 
 use vte::Parser;

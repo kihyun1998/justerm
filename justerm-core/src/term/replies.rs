@@ -276,7 +276,7 @@ impl Term {
     /// come through here and fire the same `TermEvent::Title` (#823):
     /// `docs/map/territory/events-and-replies.md`.
     pub(super) fn set_window_title(&mut self, title: String) {
-        self.window_title.clone_from(&title);
+        self.window_title = title.clone();
         self.events.push(TermEvent::Title(title));
     }
 
