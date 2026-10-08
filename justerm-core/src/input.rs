@@ -985,17 +985,28 @@ fn push_utf8(out: &mut Vec<u8>, val: usize) {
     out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
 }
 
-/// Wrap pasted text in bracketed-paste markers when the mode is on, else return
-/// it raw. The markers let the app treat the payload as literal text, never as
-/// typed control sequences.
+/// The bytes a paste of `text` sends, following xterm.js's paste contract: every
+/// line ending (`\r\n`, `\n`, `\r`) becomes one `\r`, the byte Enter sends. With
+/// bracketed paste (`?2004`) on, the payload is wrapped in `ESC[200~` … `ESC[201~`
+/// and each ESC in it is sent as `␛` (U+241B), so the payload cannot close the
+/// bracket itself. Other control characters pass through unchanged.
 pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
-    if !bracketed {
-        return text.as_bytes().to_vec();
-    }
     let mut v = Vec::with_capacity(text.len() + 12);
-    v.extend_from_slice(b"\x1b[200~");
-    v.extend_from_slice(text.as_bytes());
-    v.extend_from_slice(b"\x1b[201~");
+    if bracketed {
+        v.extend_from_slice(b"\x1b[200~");
+    }
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' if chars.peek() == Some(&'\n') => {}
+            '\n' => v.push(b'\r'),
+            '\x1b' if bracketed => v.extend_from_slice("\u{241b}".as_bytes()),
+            c => v.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
+        }
+    }
+    if bracketed {
+        v.extend_from_slice(b"\x1b[201~");
+    }
     v
 }
 

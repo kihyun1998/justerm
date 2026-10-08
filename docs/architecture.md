@@ -926,6 +926,10 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   (c) **Focus reporting (`?1004`)**: emit `CSI I` on focus-in, `CSI O` on focus-out — only when set.
   (d) **Bracketed paste (`?2004`)**: wrap pasted text in `CSI 200~`…`CSI 201~` so the app never
   mistakes paste content for typed control sequences (a real injection-safety boundary, not cosmetic).
+  Inside the bracket every ESC is sent as `␛` (U+241B), so a payload holding `ESC[201~` cannot close
+  it early; outside a bracket ESC passes, since nothing can tell a paste from typing there anyway. In
+  both modes every line ending (`\r\n`, `\n`, `\r`) goes out as one `\r`, the byte Enter sends —
+  xterm.js's contract (#1036). Filtering other control characters is the consumer's policy.
   (e) **Backspace is DEL (`0x7f`), not BS (`0x08`)** — the standard PC-keyboard convention apps assume.
   **Alt is an ESC prefix on the key's own bytes** — a character and, since #941, Enter / Tab /
   Backspace / Escape too (`Alt+Backspace` = `ESC DEL`, readline's backward-kill-word).

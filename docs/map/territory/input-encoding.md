@@ -122,6 +122,14 @@ Nothing governs the encoding itself.
   ended").
 - **An IME confirmation is a raw text intent**, not a paste — bracketed-paste markers would tell the
   application something untrue about where the text came from.
+- **A paste sends one `\r` per line ending, and inside a bracket no ESC** (#1036). `encode_paste`
+  is the one encoder every consumer shares, so the floor lives there: a Windows clipboard's `\r\n`
+  sent as-is reaches readline inside the bracket as two line breaks, and an `ESC[201~` in the payload
+  closes the bracket and turns the rest into typed input. ESC becomes `␛` only *inside* the bracket —
+  outside one nothing can tell paste from typing, so there is no guard to keep. **Stripping other
+  control characters is policy and stays with the consumer** (PenTerm's paste setting; xterm keeps it
+  under a user switch too). No option, the maintainer's call (2026-10-08), made on the four-reference table
+  linked below.
 - **A consumer claims a key through `TerminalOptions.beforeKey`, asked after the IME gate** (#901).
   A composition key never reaches the consumer, and a key that finalizes a composition has committed
   its text before the consumer is asked. This is the reverse of xterm.js, which asks its custom key
@@ -241,9 +249,11 @@ Nothing governs the encoding itself.
 
 ## Reference behaviour
 
-**Two sections** in `docs/agents/reference-facts.md` — modifyOtherKeys (#890), which is also the
-first time this territory's encoders were read against the trees rather than described, and the
-kitty stack per screen plus legacy Alt on the C0 named keys (#941). Everything else is still
+**Three sections** in `docs/agents/reference-facts.md` — modifyOtherKeys (#890), which is also the
+first time this territory's encoders were read against the trees rather than described, the
+kitty stack per screen plus legacy Alt on the C0 named keys (#941), and
+[what a paste sends](../../agents/reference-facts.md#what-a-paste-sends--line-endings-and-esc-1036-verified-2026-10-08)
+(#1036). Everything else is still
 unpinned: the encoders are described as the legacy xterm
 baseline, and the IME delete case cites xterm's `C0.DEL` in a comment — an implementation claim about
 a named reference with no pinned row, in the area where a wrong byte is invisible until an
@@ -346,3 +356,7 @@ application misbehaves.
   Whether an AT tool or magnifier is a *third* reader is still unmeasured, and it is the open question
   on spine #640 that decides whether the focus-time re-sync can be dropped for xterm's
   `focus({ preventScroll: true })`.
+- **A C1 CSI inside a bracketed paste is not neutralised** (#1036 left it out). U+009B goes out as
+  UTF-8 `C2 9B`; whether any receiver reads the decoded character as CSI and so closes the bracket is
+  unmeasured. Raised for Windows Terminal's paste filter (microsoft/terminal#9034), which strips C1;
+  none of the four references above guards it inside the bracket.

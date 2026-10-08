@@ -128,9 +128,10 @@ export type Intent =
   | { kind: "paste"; text: string }
   | { kind: "focus"; focused: boolean }
   /** Committed text from an IME composition (#116) — RAW, unbracketed, unlike a
-   * clipboard `paste` (?2004). The backend encodes it with `encode_paste(text,
-   * false)` (core's raw path). Distinct kind so the backend picks the right
-   * `bracketed` — IME insertion behaves like typing, not a paste. */
+   * clipboard `paste` (?2004). The backend sends its bytes as typed, not through
+   * justerm-core's `encode_paste`, which brackets under ?2004 and turns every line
+   * ending into CR. Distinct kind because IME insertion behaves like typing, not a
+   * paste. */
   | { kind: "text"; text: string };
 
 /** The subset of a DOM `<textarea>` the IME composition controller reads (#116).
