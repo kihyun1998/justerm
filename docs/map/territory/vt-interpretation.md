@@ -202,7 +202,7 @@ for a terminal engine, that list is half the specification.
   title to `MAX_TITLE` (4096) `char`s before it reaches state, stack or `TermEvent::Title`, and the
   state is assigned rather than `clone_from`'d. Truncation, not discard, because a title is shown,
   not followed — the opposite of a URI, which `MAX_LINK_URI` drops whole. What remains of that
-  measurement (16 MiB) is vte's own OSC buffer, #1039's.
+  measurement (16 MiB) is the parser's OSC buffer, kept on purpose (#1039).
 - **A sequence can make the engine *retain* something it previously only relayed (#823).** XTWINOPS
   `CSI 22 t` / `CSI 23 t` push and pop the window title, and answering a pop requires holding the
   title — so parsing OSC 0/2 and forwarding the string, which had been enough since #12, stopped
@@ -432,6 +432,14 @@ Every stateful territory downstream, because this is where state is written.
 
 ## Known holes / open
 
+- **The parser keeps its largest OSC's capacity for the `Engine`'s life (#1039), kept on purpose.**
+  `vte` with `std` buffers an OSC in a `Vec` and ends it with `clear()`, so a 100 MiB OSC leaves
+  128 MiB — the largest single OSC seen, rounded up to a power of two; later ones reuse it and add
+  nothing. Intended in `vte`, and alacritty holds its parser the same way. The maintainer left it
+  unfixed on 2026-10-08: a high-water mark, not growth, ~16–32 MiB after an OSC 52 copy at
+  `MAX_CLIPBOARD_BASE64`, and the fix — replacing the parser after a large OSC via
+  `advance_until_terminated`, re-feeding `ESC` for an ST-terminated one — is a stateful path in
+  `feed`. Revisit when per-terminal memory matters to a consumer.
 - **The hidden-state catalogue is 30 entries and no territory owns most of them.** They are
   distributed across this map by subject, but the catalogue itself has no home in the graph — it is a
   section of a spec file, and the only artifact that knows what is *not* built.
