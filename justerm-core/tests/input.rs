@@ -308,6 +308,27 @@ fn paste_raw_then_bracketed() {
     assert_eq!(term.encode_paste("hi"), b"\x1b[200~hi\x1b[201~");
 }
 
+/// #1036: every line ending in a paste goes out as one CR, the byte Enter sends.
+#[test]
+fn paste_line_endings_become_one_cr() {
+    let mut term = Engine::new(80, 24);
+    assert_eq!(term.encode_paste("a\r\nb\nc\rd"), b"a\rb\rc\rd");
+    term.feed(b"\x1b[?2004h");
+    assert_eq!(term.encode_paste("a\r\nb"), b"\x1b[200~a\rb\x1b[201~");
+}
+
+/// #1036: an ESC inside a bracketed paste is sent as U+241B, so the payload cannot
+/// close the bracket early; outside a bracket the bytes are the ones typing would send.
+#[test]
+fn bracketed_paste_neutralises_esc() {
+    let mut term = Engine::new(80, 24);
+    assert_eq!(term.encode_paste("x\x1b[201~y"), b"x\x1b[201~y");
+    term.feed(b"\x1b[?2004h");
+    let out = term.encode_paste("x\x1b[201~y");
+    assert_eq!(out, "\x1b[200~x\u{241b}[201~y\x1b[201~".as_bytes());
+    assert_eq!(out.windows(6).filter(|w| w == b"\x1b[201~").count(), 1);
+}
+
 // ---- focus reporting ------------------------------------------------------
 
 #[test]
