@@ -5,6 +5,7 @@
 
 use crate::cell::Cell;
 use crate::color::Color;
+use crate::term::MAX_CLUSTER_TAIL;
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -27,13 +28,17 @@ type Combining = BTreeMap<usize, Vec<char>>;
 /// Links kept the pool only because #46 mirrored xterm's `_dataByLinkId` registry and
 /// ported the `_nextId++` half without the delete half.
 ///
-/// `Arc<str>` rather than `String` because cells genuinely share a URI: one OSC 8 open
+/// [`LinkUri`] rather than `String` because cells genuinely share a URI: one OSC 8 open
 /// covering a thousand cells is a thousand map entries pointing at one allocation, which
 /// is the sharing the pool existed to provide. It dies with the last row that holds it —
 /// no release path, no refcount of our own, no sweep. Alacritty's `Arc<HyperlinkInner>`
 /// is the same choice; `Rc` is **not** an option, because `Engine` is `Send + Sync` and
 /// `Rc` would remove that silently.
-type Links = BTreeMap<usize, Arc<str>>;
+type Links = BTreeMap<usize, LinkUri>;
+
+/// One OSC 8 open's URI, shared by every cell it covers. The bytes sit behind the box, so
+/// they are freed with the last cell even while a `Weak` to the link survives.
+pub(crate) type LinkUri = Arc<Box<str>>;
 
 /// A row's non-default underline colours (SGR 58, #520): column → the underline
 /// `Color` reference. Same per-row, flag-gated sparse-map design as [`Links`],
@@ -58,7 +63,7 @@ type UColors = BTreeMap<usize, Color>;
 /// a refcount bump and is what makes the reclamation automatic.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ExtAttrs {
-    link: Option<Arc<str>>,
+    link: Option<LinkUri>,
     ucolor: Option<Color>,
 }
 
@@ -67,7 +72,7 @@ impl ExtAttrs {
     /// (`Row::ext_attrs_at`). Every print-path site that stamps a freshly built cell
     /// goes through here, so the gating rules live in one place and a later rider is
     /// added once.
-    pub(crate) fn from_pen(link: Option<Arc<str>>, ucolor: Option<Color>) -> ExtAttrs {
+    pub(crate) fn from_pen(link: Option<LinkUri>, ucolor: Option<Color>) -> ExtAttrs {
         ExtAttrs { link, ucolor }
     }
 }
@@ -173,9 +178,14 @@ impl Row {
     }
 
     /// Resize to `cols`, padding with blanks or truncating; map entries for
-    /// dropped columns are pruned (xterm's shrink-prune).
+    /// dropped columns are pruned (xterm's shrink-prune). The cell allocation is
+    /// exactly `cols` afterwards.
     pub(crate) fn resize(&mut self, cols: usize) {
+        if self.cells.capacity() < cols {
+            self.cells.reserve_exact(cols - self.cells.len());
+        }
         self.cells.resize(cols, Cell::default());
+        self.cells.shrink_to(cols);
         if self
             .combining
             .keys()
@@ -208,7 +218,7 @@ impl Row {
     /// `Arc::as_ptr`. Stated because getting that wrong is a false failure, not a false
     /// pass: it was measured at 9 for a four-line buffer holding four links.
     #[cfg(test)]
-    pub(crate) fn owned_links(&self) -> impl Iterator<Item = &Arc<str>> {
+    pub(crate) fn owned_links(&self) -> impl Iterator<Item = &LinkUri> {
         self.links.values()
     }
 
@@ -291,7 +301,7 @@ impl Row {
 
     /// The hyperlink URI at `col`, or `None`. Flag-gated by the cell's `LINK_PRESENT`
     /// bit (mirror of [`Row::combining_at`]).
-    pub(crate) fn link_at(&self, col: usize) -> Option<&Arc<str>> {
+    pub(crate) fn link_at(&self, col: usize) -> Option<&LinkUri> {
         if self.cells[col].is_linked() {
             self.links.get(&col)
         } else {
@@ -312,11 +322,19 @@ impl Row {
 
     /// Attach a combining mark to `col`'s glyph. The first mark on a cell starts a
     /// fresh cluster — dropping any stale entry an overwrite left behind (the bit
-    /// was clear) — and sets the presence bit; subsequent marks append. Mirrors
-    /// xterm's `addCodepointToCell`.
+    /// was clear) — and sets the presence bit; subsequent marks append, up to
+    /// [`MAX_CLUSTER_TAIL`], past which a mark is dropped. Mirrors xterm's
+    /// `addCodepointToCell`.
     pub(crate) fn push_combining(&mut self, col: usize, mark: char) {
         if self.cells[col].is_combined() {
-            self.combining.entry(col).or_default().push(mark);
+            let marks = self.combining.entry(col).or_default();
+            if marks.len() < MAX_CLUSTER_TAIL {
+                if marks.len() == marks.capacity() {
+                    let want = (marks.len() * 2).clamp(4, MAX_CLUSTER_TAIL);
+                    marks.reserve_exact(want - marks.len());
+                }
+                marks.push(mark);
+            }
         } else {
             self.cells[col].set_combined(true);
             self.combining.insert(col, vec![mark]);
@@ -326,7 +344,7 @@ impl Row {
     /// Stamp `col`'s glyph with a hyperlink URI, setting the presence bit (the print
     /// path calls this on every cell written while a link is open). The `Arc` clone is
     /// a refcount bump, so a link over N cells is one allocation and N pointers.
-    pub(crate) fn set_link(&mut self, col: usize, link: Arc<str>) {
+    pub(crate) fn set_link(&mut self, col: usize, link: LinkUri) {
         self.cells[col].set_linked(true);
         self.links.insert(col, link);
     }
@@ -599,8 +617,9 @@ pub(crate) fn reflow(
                     .range(i..i + take)
                     .map(|(&col, &color)| (col - i, color))
                     .collect();
-                let mut row =
-                    Row::new(line[i..i + take].to_vec(), seg_comb, seg_links, seg_ucolors);
+                let mut cells = Vec::with_capacity(new_cols.max(take));
+                cells.extend_from_slice(&line[i..i + take]);
+                let mut row = Row::new(cells, seg_comb, seg_links, seg_ucolors);
                 row.resize(new_cols);
                 // Reflow is a *producer* of the wide-wrap artefact, so it owes the artefact's
                 // marker — the column just vacated is a blank the text extractors must skip, not
@@ -826,6 +845,7 @@ impl Grid {
             lines.push(Row::blank(cols));
         }
         lines.truncate(rows);
+        lines.shrink_to(rows);
         self.lines = lines;
         self.cols = cols;
         self.rows = rows;
@@ -923,7 +943,7 @@ mod tests {
     #[test]
     fn set_ext_attrs_clears_both_halves_of_the_gate() {
         let mut row = Row::blank(2);
-        let link: Arc<str> = Arc::from("https://example.com/a");
+        let link: LinkUri = Arc::new("https://example.com/a".into());
         row.set_link(0, link.clone());
         row.set_ucolor(0, Color::Indexed(3));
         assert_eq!(row.ext_attrs_at(0).link, Some(link));
@@ -946,7 +966,7 @@ mod tests {
     #[test]
     fn ext_attrs_round_trip_from_one_column_to_another() {
         let mut row = Row::blank(2);
-        let link: Arc<str> = Arc::from("https://example.com/b");
+        let link: LinkUri = Arc::new("https://example.com/b".into());
         row.set_link(0, link.clone());
         row.set_ucolor(0, Color::Rgb(1, 2, 3));
         let carried = row.ext_attrs_at(0);

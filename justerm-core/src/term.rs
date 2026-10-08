@@ -205,10 +205,11 @@ pub struct Term {
     /// The hyperlink currently open (OSC 8 with a URI), stamped onto every glyph written until
     /// closed (OSC 8 with empty URI). Ambient pen-like state — not part of the pen/SGR, and
     /// not cleared by an SGR reset.
-    current_link: Option<std::sync::Arc<str>>,
-    /// Live OSC 8 `id=` groups: `"id;;uri"` → the allocation that key already named, held
-    /// weakly so a group never outlives its cells (#635, `docs/map/territory/hyperlinks.md`).
-    link_ids: std::collections::HashMap<String, std::sync::Weak<str>>,
+    current_link: Option<crate::grid::LinkUri>,
+    /// Live OSC 8 `id=` groups: `(id, hash of the URI)` → the allocation that pair already
+    /// named, held weakly so a group never outlives its cells (#635,
+    /// `docs/map/territory/hyperlinks.md`). The URI itself is compared on the upgraded link.
+    link_ids: std::collections::HashMap<(Box<str>, u64), std::sync::Weak<Box<str>>>,
     /// Map length at which [`Self::link_ids`] is swept for dangling keys, doubling each time
     /// so the sweep is amortised O(1) per open and dead keys stay O(live).
     link_ids_sweep_at: usize,
@@ -262,6 +263,9 @@ pub struct Term {
     normal_markers: VecDeque<Marker>,
     alt_markers: VecDeque<Marker>,
     next_marker_id: u32,
+    /// Bytes of command text the live [`CommandRecord`]s hold, bounded at
+    /// [`MAX_COMMAND_TEXT_TOTAL`]; each record's [`TextCharge`] gives its share back.
+    command_text_used: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// The basis that keeps a pulled marker index valid without re-pulling (#490), reported by
     /// [`Term::marker_index`] and the frame header. `evicted_total` counts lines popped off the
     /// front of scrollback since startup or RIS (by the cap, `ED 3` and [`Term::clear`], #936);
@@ -385,11 +389,11 @@ pub const DEFAULT_WORD_SEPARATORS: &str = ",│`|:\"' ()[]{}<>\t\u{3000}";
 /// function accepts one, so the attribute would bind nothing.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Hyperlink {
-    uri: std::sync::Arc<str>,
+    uri: crate::grid::LinkUri,
 }
 
 impl Hyperlink {
-    pub(crate) fn new(uri: std::sync::Arc<str>) -> Self {
+    pub(crate) fn new(uri: crate::grid::LinkUri) -> Self {
         Hyperlink { uri }
     }
 
@@ -439,6 +443,47 @@ pub const MAX_MARKERS: usize = u16::MAX as usize;
 /// copy needs a bound; a prefix is a usable answer where an absent one is not. No ordinary
 /// command reaches it.
 pub const MAX_COMMAND_TEXT: usize = 4096;
+
+/// The most bytes of command text the live OSC-133 records hold together. A capture that
+/// would cross it is truncated, at a `char` boundary, to what is left; a disposed record
+/// returns its bytes. [`MAX_COMMAND_TEXT`] alone bounds one record, and [`MAX_MARKERS`]
+/// records of that size are half a gigabyte
+/// ([#1038](https://github.com/kihyun1998/justerm/issues/1038)).
+///
+/// Sized so that ordinary shell integration never reaches it: about 40 000 live commands in a
+/// default-scrollback session, at over 400 bytes each.
+pub const MAX_COMMAND_TEXT_TOTAL: usize = 16 * 1024 * 1024;
+
+/// The most code points a cell holds after its base: combining marks, and under mode 2027
+/// the rest of a grapheme cluster. Further ones are dropped, as xterm drops a mark once its
+/// `combiningChars` slots are full.
+///
+/// The longest RGI emoji sequence in Unicode's `emoji-zwj-sequences.txt` (Emoji 18.0) is 10
+/// code points, so no RGI emoji loses any of its own; text stacking more marks than this on one
+/// base (Zalgo) is cut.
+pub const MAX_CLUSTER_TAIL: usize = 9;
+
+/// The longest window title or icon name the engine keeps, in `char`s. A longer one is
+/// truncated at a `char` boundary, in the state, on the title stack and in
+/// [`TermEvent::Title`](crate::TermEvent::Title). No ordinary title reaches it.
+pub const MAX_TITLE: usize = 4096;
+
+/// The longest OSC 8 hyperlink URI, in bytes. An OSC 8 carrying a longer one is ignored
+/// whole, as if it never arrived — a link already open stays open — because a truncated URI
+/// is a different destination. The value is xterm.js's `PAYLOAD_LIMIT`, past which xterm.js
+/// likewise never runs the handler; xterm.js counts it over the whole OSC payload in UTF-16
+/// units, this over the URI in bytes.
+pub const MAX_LINK_URI: usize = 10_000_000;
+
+/// The longest OSC 8 `id=`, in bytes. A longer one is ignored and the link opens as if it
+/// declared none. The value is VTE's, as recorded by the
+/// [OSC 8 specification](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda#length-limits).
+pub const MAX_LINK_ID: usize = 250;
+
+/// The longest prefix of `s` holding at most `max` `char`s.
+pub(crate) fn prefix_chars(s: &str, max: usize) -> &str {
+    s.char_indices().nth(max).map_or(s, |(end, _)| &s[..end])
+}
 
 /// The longest `OSC 52` base64 payload the engine will decode, in bytes. A longer one is
 /// **dropped whole**, never truncated: a truncated clipboard is text the user would paste
@@ -493,6 +538,22 @@ struct Marker {
 struct CommandRecord {
     text: Box<str>,
     exit: Option<i32>,
+    /// `text`'s bytes, held against [`MAX_COMMAND_TEXT_TOTAL`] for as long as the record lives.
+    _charge: TextCharge,
+}
+
+/// A share of the command-text budget, returned to its pool when dropped — so every path that
+/// disposes a marker refunds its text without naming the budget.
+struct TextCharge {
+    pool: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    bytes: usize,
+}
+
+impl Drop for TextCharge {
+    fn drop(&mut self) {
+        self.pool
+            .fetch_sub(self.bytes, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// A stable handle to a tracked buffer position, handed out by
@@ -585,7 +646,8 @@ pub struct CommandLine {
     pub line: usize,
     /// The typed command text, prompt- and output-excluded (`B`→`C` columns), frozen when the
     /// command's `133;C` arrived rather than re-read from cells later. Bounded at
-    /// [`MAX_COMMAND_TEXT`] `char`s.
+    /// [`MAX_COMMAND_TEXT`] `char`s, and shorter — possibly empty — once the live commands
+    /// together hold [`MAX_COMMAND_TEXT_TOTAL`] bytes.
     pub command: String,
     /// The `CommandFinished` (`133;D`) exit code, if the shell reported one and the command has
     /// finished; recorded onto the closing mark when `D` is parsed.
@@ -676,6 +738,7 @@ impl Term {
             normal_markers: VecDeque::new(),
             alt_markers: VecDeque::new(),
             next_marker_id: 0,
+            command_text_used: std::sync::Arc::default(),
             evicted_total: 0,
             marker_epoch: 0,
             normal_tracked: Vec::new(),
@@ -1425,7 +1488,7 @@ impl Term {
                     );
                     evicted
                 };
-                self.scrollback.push_back(evicted);
+                self.push_history(evicted);
                 // Follow-bottom = stay: if the user is scrolled up, bump the
                 // offset so the same lines stay in view instead of being yanked
                 // to the bottom.
@@ -2112,7 +2175,10 @@ impl Term {
         // Snapshot once: the repeats move the anchor, so re-reading it per iteration
         // would repeat the growing run rather than the grapheme.
         let cluster = self.cluster_text(row, col);
-        let cap = (self.scrollback_limit + self.grid.rows()).saturating_mul(self.grid.cols());
+        let cap = self
+            .scrollback_limit
+            .saturating_add(self.grid.rows())
+            .saturating_mul(self.grid.cols());
         for _ in 0..count.min(cap.max(1)) {
             let before = self.repeat_anchor;
             for c in cluster.chars() {
@@ -2154,15 +2220,21 @@ impl Term {
         // when the width can actually move — the cluster text itself.
         let base = self.grid.cell(row, col).c();
         let base_is_wide = self.grid.cell(row, col).is_wide();
-        let (joins, first_join) = {
+        let (joins, first_join, full) = {
             let marks = self.grid.row_ref(row).combining_at(col).unwrap_or(&[]);
             (
                 crate::grapheme::joins_cluster(base, marks, c),
                 marks.is_empty(),
+                marks.len() >= MAX_CLUSTER_TAIL,
             )
         };
         if !joins {
             return None;
+        }
+        // A scalar past `MAX_CLUSTER_TAIL` belongs to the cluster and is dropped, so it moves
+        // nothing — the cell's width stays the stored cluster's.
+        if full {
+            return Some((row, col));
         }
         // Width promotion: a flag's second regional indicator, or a text-base + VS16, grows the
         // cluster to width 2. `UnicodeWidthStr` over the whole cluster remains the authority for
@@ -2625,6 +2697,18 @@ impl Term {
         self.mark_fully_damaged();
     }
 
+    /// Append `row` to history, growing its allocation no further than `scrollback_limit + 1`
+    /// rows — the most it holds between a push and the cap's eviction.
+    fn push_history(&mut self, row: Row) {
+        let len = self.scrollback.len();
+        if len == self.scrollback.capacity() {
+            let most = self.scrollback_limit.saturating_add(1);
+            let want = (len * 2).max(16).min(most).max(len + 1);
+            self.scrollback.reserve_exact(want - len);
+        }
+        self.scrollback.push_back(row);
+    }
+
     /// Repair every holder of an absolute line after `n` lines left the front of the buffer —
     /// the one funnel for the scrollback cap, `ED 3` and [`Term::clear`] — and count them in
     /// `evicted_total` (#490). Reflow is not counted here (`docs/map/territory/marker.md`). The
@@ -2667,7 +2751,7 @@ impl Term {
         // absolute lines are unchanged by the move, so no holder moves.
         for _ in 0..top {
             let row = self.grid.scroll_up_recycle(Row::blank(cols));
-            self.scrollback.push_back(row);
+            self.push_history(row);
         }
         let last = cursor - top;
         self.cursor.row = last;

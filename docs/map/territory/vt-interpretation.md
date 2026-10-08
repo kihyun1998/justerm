@@ -196,6 +196,13 @@ for a terminal engine, that list is half the specification.
   and resize/move/iconify are requests about a window the consumer owns. 22 and 23 are pure VT
   state, and were the single most-emitted unimplemented sequence in the capture sweep that produced
   #823; every other first parameter falls through and is ignored.
+- **A retained title is bounded in length, not only in stack depth (#1038).** Depth alone let a 10 MiB
+  title and ten `CSI 22 t` keep 236 MiB on 727865d — eleven copies on each of two axes, plus the
+  capacity `String::clone_from` keeps when a short title replaces a long one. OSC 0/2 now cut the
+  title to `MAX_TITLE` (4096) `char`s before it reaches state, stack or `TermEvent::Title`, and the
+  state is assigned rather than `clone_from`'d. Truncation, not discard, because a title is shown,
+  not followed — the opposite of a URI, which `MAX_LINK_URI` drops whole. What remains of that
+  measurement (16 MiB) is vte's own OSC buffer, #1039's.
 - **A sequence can make the engine *retain* something it previously only relayed (#823).** XTWINOPS
   `CSI 22 t` / `CSI 23 t` push and pop the window title, and answering a pop requires holding the
   title — so parsing OSC 0/2 and forwarding the string, which had been enough since #12, stopped
@@ -288,9 +295,9 @@ for a terminal engine, that list is half the specification.
   complete, as three params totalling 4 000 003 bytes. The consequence is easy to state backwards: a
   bound on a handler cannot stop the engine allocating, because the parser already did. What it
   stops is the *second* allocation — the decoded value and whatever the handler then hands a
-  consumer. `MAX_CLIPBOARD_BASE64` is the only one today; the payloads `OSC 0/2`, `OSC 7` and
-  `OSC 8` retain are bounded by nothing, which is a fact about this territory and not a claim that
-  it is wrong.
+  consumer. `MAX_CLIPBOARD_BASE64` was the only one until #1038 added `MAX_TITLE` (`OSC 0/2`,
+  truncated) and `MAX_LINK_URI` / `MAX_LINK_ID` (`OSC 8`, ignored whole / id dropped). `OSC 7` is
+  still bounded by nothing, and retains nothing either: it is relayed as an event.
 - **The bytes are unbounded, and the fields are not.** `vte` records at most 16 field boundaries
   per OSC (`src/lib.rs:531-532` in 0.15.0 and on master), so what lies past the 16th `;` never
   reaches `osc_dispatch`. A payload cut there arrives looking exactly like a complete 16-field one.

@@ -52,7 +52,7 @@ What those calls did not cover is recorded under *Design model* as derivations.
 ## Design model
 
 - **A declared link is a shared string, and it lives on the row.** The cell carries `LINK_PRESENT`
-  and the row's link map holds a column-keyed `Arc<str>` — so one OSC 8 open covering a thousand
+  and the row's link map holds a column-keyed `LinkUri` — so one OSC 8 open covering a thousand
   cells is a thousand map entries and one allocation.
 - **The consumer gets an owned handle, not a borrow.** `Engine::link_at` returns `Hyperlink` — a
   thin `Arc` wrapper — because a borrow into the row's map cannot outlive `&Engine`, and the caller
@@ -70,6 +70,27 @@ What those calls did not cover is recorded under *Design model* as derivations.
   is the *correct* answer, not a hole: the link it named has left the buffer, so a later open of that
   id is a new link. The sweep for dangling keys is affordable here for the reason #628's rejected
   sweep option was not — staleness is O(1) (`Weak::strong_count`) instead of an O(buffer) walk.
+- **A dangling key must not hold the URI, and until #1038 it held two copies.** The sweep is lazy —
+  it runs on the next id'd open once the map has doubled — so whatever a dead entry pins stays until
+  then, and measured on 727865d that was 103 MiB after `ED 3` + `ED 2` had erased every cell of 50
+  1-MiB id'd links. The two copies had two causes. The key was `"id;;uri"`, a second URI; it is now
+  `(id, hash of the URI)`, confirmed by comparing the upgraded link's URI, so a hash collision reads
+  as a miss and starts a new group rather than joining a wrong one. And the value was a
+  `Weak<str>`, whose allocation **is** the URI bytes — a weak count keeps an `ArcInner` alive, and
+  `Arc<str>` stores the string inline in it. `LinkUri = Arc<Box<str>>` puts the bytes behind the box,
+  freed with the last strong reference while the weak keeps only the 32-byte `ArcInner`. Sharing and
+  `Send + Sync` are unchanged, so #628's two grounds for `Arc<str>` both still hold; the cost is one
+  pointer hop on a link read and one extra allocation per *open* (not per cell). After: 3 MiB, the
+  dead entries being tens of bytes each.
+- **A URI past `MAX_LINK_URI` (10 000 000 bytes) opens no link; an `id=` past `MAX_LINK_ID` (250) is
+  no id (#1038).** The URI value is xterm.js's `PAYLOAD_LIMIT`, and its failure shape is xterm.js's
+  too — the whole sequence is discarded, never a truncated destination. VTE and iTerm2 cap at 2083
+  bytes (the OSC 8 specification's *Length limits*) and that was the first value tried; it was
+  dropped because it cut against #621, whose `wire_capacity.rs` pins a URI past `u16::MAX` as
+  legitimate engine state, and because a URI is not where the amplification was: `REP` and every
+  covered cell share one allocation, so URI memory grows 1:1 with input and the key copy above was
+  the only multiplier. The id cap is VTE's, and it bounds the one id-sized thing that outlives its
+  cells: the registry key.
 - **Two opens of one URI are two links, and nothing public can currently tell.** `uri() == uri()`
   says "same" where the engine says "different", and the `Arc::ptr_eq` accessor that would answer
   properly is deliberately unshipped — no consumer asks yet, and adding a method later is not a
@@ -196,6 +217,12 @@ claim about another implementation's bit layout, in a comment, with no row.
 
 ## Known holes / open
 
+- **Live URIs still grow 1:1 with input, kept on purpose (#1038).** Distinct links one cell each
+  hold up to `MAX_LINK_URI` bytes apiece for as long as their rows live, and a visible 9 MB link is
+  re-sent in every full-damage frame. The maintainer kept the 10 MB cap on 2026-10-08, shown three
+  options: keep it, lower it to VTE's 2083 (rewriting #621's URI test onto an engine frame), or a
+  live-URI byte budget on the command-text pattern. Not amplification — `REP` and covered cells share
+  one allocation — so it is a ceiling question, and theirs to reopen.
 - **Zero governing records** for either path, including the row-owned `Arc` design that makes a
   repeated URI cheap and bounds its lifetime.
 - **Whether a *public* accessor should answer "same link?"** is still open, and #635 made the question

@@ -851,7 +851,7 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   cell; each move took it further from the cell and the last one removed the index entirely, because
   nothing ever interned these clusters for it to point at. [#6, #45, #621]
 - **OSC 8 hyperlinks ride the *same* per-row-map machinery, gated by the `LINK_PRESENT` bit.** The `Row`
-  carries a second `BTreeMap<col, Arc<str>>` holding **the URI itself** (#628 — it held an index
+  carries a second `BTreeMap<col, LinkUri>` (`Arc<Box<str>>`, #1038) holding **the URI itself** (#628 — it held an index
   into a buffer-wide `hyperlink_pool` until then, and that pool was never reclaimed; `Arc` because
   cells genuinely share a URI, which is the one way links differ from combining marks), gated by the cell's `LINK_PRESENT` bit, which reuses
   xterm's `BgFlags.HAS_EXTENDED` (`0x10000000`, bg bit 28) **exactly**. Carry/reflow/recycle treat it
@@ -861,7 +861,7 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   hover handler could not hold it across the next `feed()`. Measured — the borrow reads at 0.75 ns but
   cannot be kept, and the caller's workaround (copying the string) costs 62.6 ns against the handle's
   17.9 ns, so the borrow saves nothing and moves a larger cost outward. A struct rather than a bare
-  `Arc<str>` keeps `Arc` out of the published signature and gives `id=` (#635) somewhere to land
+  `LinkUri` keeps `Arc` out of the published signature and gives `id=` (#635) somewhere to land
   without changing the return type again; alacritty's `Hyperlink` is the same shape for the same
   reasons. The decoded index rides `Span.links`. With this `Cell` is **12 bytes** — three packed `u32`, no `Option`
   field (the #43 epic target, matching xterm.js's `BufferLine` cell). [#26, #46]
@@ -1076,7 +1076,7 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   configuration / buffer coordinate / pending obligation / id counter: a retained title is none of
   those, and it dies because the *application* owns it, not the embedder. [#823]
 - **An OSC 8 hyperlink is ambient pen-like state stamped onto cells — not an event, and not closed by
-  an SGR reset.** `OSC 8 ; params ; URI` opens a link (one `Arc<str>` per open, shared by that open's cells and
+  an SGR reset.** `OSC 8 ; params ; URI` opens a link (one `LinkUri` per open, shared by that open's cells and
   becomes "current"); `OSC 8 ; ; ` (empty URI) closes it. Every glyph printed while open is stamped
   into the row's link map — both halves of a wide glyph, so a hover/selection over either agrees.
   The cell carries only the `LINK_PRESENT` bit; the handle rides *the row*, which is the unit that
@@ -1098,7 +1098,10 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   `%3B` stays a `%3B`. The group is held **weakly**: when the last row holding
   the link goes, the key is gone too, and a later open of the same id is genuinely a new link — which
   is why grouping did not reintroduce the pool #628 deleted (#635, xterm.js reaches the same lifetime
-  by deleting its `_entriesWithId` entry on last-marker disposal).
+  by deleting its `_entriesWithId` entry on last-marker disposal). The URI bytes sit behind a box
+  inside the shared allocation, so a dangling weak key holds tens of bytes, not the URI (#1038). A
+  URI longer than `MAX_LINK_URI` makes the whole `OSC 8` a no-op, and an `id=` longer than
+  `MAX_LINK_ID` is treated as absent.
   The catch: a hyperlink is **orthogonal to SGR** — `CSI 0 m` (reset attributes) must *not* close it;
   only an empty-URI OSC 8 does (and it persists across line-feeds until then). It is cell state, not a
   point-in-time event, which is why it is here and not on the `drain_events` surface (alacritty agrees —

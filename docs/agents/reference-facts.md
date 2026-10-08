@@ -616,8 +616,11 @@ without its enabling condition is how a correct rule lands in a codebase that ca
 Added 2026-07-29 while filing #621; **the conclusion corrected the same day** — see the note under the
 table, which is the more useful half of this section. Every row grepped at the pinned SHAs. The
 occasion: justerm's wire writes the grapheme cluster and the OSC 8 URI behind `u16` length prefixes
-(`serialize.rs`), and nothing on the producing side bounds either — so `feed()`ing 70000 combining
-marks produces a frame whose own `decode` answers `Err(BadTag)`.
+(`serialize.rs`), and nothing on the producing side bounded either — so `feed()`ing 70000 combining
+marks produced a frame whose own `decode` answered `Err(BadTag)`. **Since #1038 the producer bounds
+both** — a cell keeps at most `MAX_CLUSTER_TAIL` (9) code points after its base, and an `OSC 8` URI
+past `MAX_LINK_URI` (xterm.js's `PAYLOAD_LIMIT`) is ignored — while the wire keeps #621's `u32`
+prefixes, so the rows below now explain a value the engine chose, not one it was forced to.
 
 **Capping cluster length would not be justerm drifting alone — but the reference that caps is the
 one that does not have the feature.** xterm bounds a cell's stored zero-width marks at

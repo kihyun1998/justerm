@@ -59,8 +59,8 @@ the first; nothing governs this one.
 Storage: `Row { cells, combining, links, ucolors, wrapped }` in `justerm-core/src/grid.rs`; the
 combining and link maps share one implementation. They no longer store the same *kind* of value,
 though, and the difference is not arbitrary: combining and ucolor hold theirs inline because each is
-per-cell and unique, while the link map holds an `Arc<str>` because cells genuinely share a URI
-(#628). All three still die with the row, which is the property the rules below depend on.
+per-cell and unique, while the link map holds an `Arc` (`LinkUri`) because cells genuinely share a URI
+(#628; the bytes behind a box since #1038). All three still die with the row, which is the property the rules below depend on.
 
 ## What a violation looks like
 
