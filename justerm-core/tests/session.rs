@@ -283,3 +283,156 @@ fn a_paint_sends_a_frame_on_the_next_pump() {
         "a paint recolours cells, so the next frame differs"
     );
 }
+
+// --- Overlay-only changes (#1044): selection, search highlights, active match, markers ---
+
+/// A subscribed session showing `lines`, with that output already pumped and the recorder cleared.
+fn quiet(lines: &[u8]) -> (Session, Recorder) {
+    let (mut session, rec) = subscribed(20, 4);
+    session.feed(lines);
+    session.pump();
+    rec.0.lock().unwrap().clear();
+    (session, rec)
+}
+
+/// Apply one overlay change, check it left no cell damage (ADR-0014), pump, and return the one
+/// frame it produced.
+fn one_frame_after(
+    session: &mut Session,
+    rec: &Recorder,
+    change: impl FnOnce(&mut Engine),
+) -> justerm_core::Frame {
+    rec.0.lock().unwrap().clear();
+    session.edit(change);
+    assert!(
+        matches!(session.engine().damage(), TermDamage::Partial(ref lines) if lines.is_empty()),
+        "an overlay change is not cell damage (ADR-0014)"
+    );
+    session.pump();
+    let frames = rec.0.lock().unwrap();
+    assert_eq!(
+        frames.len(),
+        1,
+        "the overlay change sends exactly one frame on the next pump"
+    );
+    decode(&frames[0]).unwrap()
+}
+
+#[test]
+fn a_selection_begin_alone_sends_a_frame() {
+    let (mut s, rec) = quiet(b"hello world");
+    let f = one_frame_after(&mut s, &rec, |e| {
+        e.selection_begin(
+            0,
+            0,
+            justerm_core::Side::Left,
+            justerm_core::SelectionType::Word,
+        )
+    });
+    assert!(
+        !f.overlay.selection.is_empty(),
+        "a word selection covers `hello`"
+    );
+}
+
+#[test]
+fn a_selection_extend_sends_a_frame() {
+    let (mut s, rec) = quiet(b"hello world");
+    s.edit(|e| {
+        e.selection_begin(
+            0,
+            0,
+            justerm_core::Side::Left,
+            justerm_core::SelectionType::Char,
+        )
+    });
+    s.pump();
+    let f = one_frame_after(&mut s, &rec, |e| {
+        e.selection_extend(0, 8, justerm_core::Side::Right)
+    });
+    assert!(!f.overlay.selection.is_empty());
+}
+
+#[test]
+fn select_all_sends_a_frame() {
+    let (mut s, rec) = quiet(b"hello");
+    let f = one_frame_after(&mut s, &rec, |e| e.select_all());
+    assert!(!f.overlay.selection.is_empty());
+}
+
+#[test]
+fn clearing_a_selection_sends_a_frame_without_it() {
+    let (mut s, rec) = quiet(b"hello");
+    s.edit(|e| e.select_all());
+    s.pump();
+    let f = one_frame_after(&mut s, &rec, |e| e.selection_clear());
+    assert!(f.overlay.selection.is_empty());
+}
+
+#[test]
+fn setting_and_clearing_search_highlights_each_send_a_frame() {
+    let (mut s, rec) = quiet(b"ab ab ab");
+    let matches = s.engine().search("ab");
+    assert_eq!(matches.len(), 3);
+    let f = one_frame_after(&mut s, &rec, |e| e.set_search_highlights(matches));
+    assert_eq!(f.overlay.matches.len(), 3);
+    let f = one_frame_after(&mut s, &rec, |e| e.set_search_highlights(Vec::new()));
+    assert!(f.overlay.matches.is_empty());
+}
+
+#[test]
+fn designating_an_active_highlight_sends_a_frame() {
+    let (mut s, rec) = quiet(b"ab ab ab");
+    let matches = s.engine().search("ab");
+    s.edit(|e| e.set_search_highlights(matches));
+    s.pump();
+    let f = one_frame_after(&mut s, &rec, |e| e.set_active_search_highlight(Some(1)));
+    assert!(!f.overlay.active_match.is_empty());
+}
+
+#[test]
+fn designating_an_active_match_sends_a_frame() {
+    let (mut s, rec) = quiet(b"ab ab ab");
+    let m = s.engine().search("ab").remove(2);
+    let f = one_frame_after(&mut s, &rec, |e| e.set_active_search_match(Some(m)));
+    assert!(!f.overlay.active_match.is_empty());
+}
+
+#[test]
+fn adding_and_removing_a_marker_each_send_a_frame() {
+    let (mut s, rec) = quiet(b"one\r\ntwo");
+    let mut id = None;
+    let f = one_frame_after(&mut s, &rec, |e| id = Some(e.add_marker(1)));
+    assert_eq!(f.overlay.markers.len(), 1);
+    let f = one_frame_after(&mut s, &rec, |e| e.remove_marker(id.unwrap()));
+    assert!(f.overlay.markers.is_empty());
+}
+
+#[test]
+fn the_selection_resolution_setters_each_send_a_frame() {
+    let (mut s, rec) = quiet(b"a-b c");
+    s.edit(|e| {
+        e.selection_begin(
+            0,
+            0,
+            justerm_core::Side::Left,
+            justerm_core::SelectionType::Word,
+        )
+    });
+    s.pump();
+    one_frame_after(&mut s, &rec, |e| e.set_word_separators(" -"));
+    one_frame_after(&mut s, &rec, |e| e.set_selection_carries_line_end(true));
+}
+
+#[test]
+fn an_ended_session_sends_a_selection_change_without_a_pump() {
+    let (mut s, rec) = quiet(b"hello");
+    s.end();
+    rec.0.lock().unwrap().clear();
+    s.edit(|e| e.select_all());
+    assert_eq!(
+        rec.count(),
+        1,
+        "nothing pumps an ended session, so the selection flushes itself"
+    );
+}
