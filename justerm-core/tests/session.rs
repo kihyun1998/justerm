@@ -1,0 +1,199 @@
+//! The Session ([#1043](https://github.com/kihyun1998/justerm/issues/1043)): one Engine bound to one
+//! frame sink, driven through its public API with a sink that records every frame it is sent.
+
+use std::sync::{Arc, Mutex};
+
+use justerm_core::{Engine, FrameKind, MIN_COLUMNS, Session, TermDamage, TermEvent, decode};
+
+/// Records every encoded frame a Session sends, readable after the sink has been handed over.
+#[derive(Clone, Default)]
+struct Recorder(Arc<Mutex<Vec<Vec<u8>>>>);
+
+impl justerm_core::FrameSink for Recorder {
+    fn send_frame(&mut self, frame: Vec<u8>) {
+        self.0.lock().unwrap().push(frame);
+    }
+}
+
+impl Recorder {
+    fn count(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+    fn kinds(&self) -> Vec<FrameKind> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|f| decode(f).unwrap().kind)
+            .collect()
+    }
+}
+
+/// A Session with a recorder already subscribed and its subscribe frame cleared off.
+fn subscribed(cols: usize, rows: usize) -> (Session, Recorder) {
+    let mut session = Session::new(Engine::new(cols, rows));
+    let rec = Recorder::default();
+    session.subscribe(Box::new(rec.clone()));
+    rec.0.lock().unwrap().clear();
+    (session, rec)
+}
+
+#[test]
+fn a_pump_with_nothing_changed_sends_no_frame() {
+    let (mut session, rec) = subscribed(10, 3);
+    session.pump();
+    session.pump();
+    assert_eq!(rec.count(), 0);
+}
+
+#[test]
+fn feed_then_pump_sends_one_frame_and_the_next_pump_sends_none() {
+    let (mut session, rec) = subscribed(10, 3);
+    session.feed(b"hi");
+    session.pump();
+    assert_eq!(rec.count(), 1);
+    let frame = decode(&rec.0.lock().unwrap()[0]).unwrap();
+    let text: String = frame
+        .spans
+        .iter()
+        .flat_map(|s| s.cells.iter().map(|c| c.c()))
+        .collect();
+    assert!(
+        text.starts_with("hi"),
+        "the frame carries what was fed: {text:?}"
+    );
+    session.pump();
+    assert_eq!(rec.count(), 1);
+}
+
+#[test]
+fn a_query_comes_back_from_pump_as_reply_bytes_and_the_queue_is_then_empty() {
+    let (mut session, _rec) = subscribed(10, 3);
+    session.feed(b"\x1b[c");
+    assert_eq!(session.pump().replies, b"\x1b[?62;22c");
+    assert!(session.pump().replies.is_empty());
+}
+
+#[test]
+fn events_come_back_from_pump_unfiltered_and_the_queue_is_then_empty() {
+    let (mut session, _rec) = subscribed(10, 3);
+    session.feed(b"\x1b]2;work\x07\x07");
+    let events = session.pump().events;
+    assert!(
+        events.contains(&TermEvent::Title("work".into())),
+        "{events:?}"
+    );
+    assert!(events.contains(&TermEvent::Bell), "{events:?}");
+    assert!(session.pump().events.is_empty());
+}
+
+#[test]
+fn a_late_subscriber_starts_from_a_full_frame() {
+    let mut session = Session::new(Engine::new(10, 3));
+    session.feed(b"before anyone watched");
+    session.pump();
+    let rec = Recorder::default();
+    session.subscribe(Box::new(rec.clone()));
+    assert_eq!(rec.kinds(), vec![FrameKind::Full]);
+}
+
+#[test]
+fn subscribing_again_replaces_the_sink() {
+    let (mut session, first) = subscribed(10, 3);
+    let second = Recorder::default();
+    session.subscribe(Box::new(second.clone()));
+    session.feed(b"x");
+    session.pump();
+    assert_eq!(first.count(), 0, "the replaced sink receives nothing more");
+    assert_eq!(second.kinds(), vec![FrameKind::Full, FrameKind::Partial]);
+}
+
+#[test]
+fn resize_returns_the_size_the_engine_adopted() {
+    let (mut session, _rec) = subscribed(10, 3);
+    assert_eq!(session.resize(1, 5), (MIN_COLUMNS, 5));
+    assert_eq!(session.resize(12, 4), (12, 4));
+}
+
+#[test]
+fn a_resize_sends_a_frame_on_the_next_pump() {
+    let (mut session, rec) = subscribed(10, 3);
+    session.resize(12, 4);
+    session.pump();
+    assert_eq!(rec.count(), 1);
+    let frame = decode(&rec.0.lock().unwrap()[0]).unwrap();
+    assert_eq!((frame.cols, frame.rows), (12, 4));
+}
+
+#[test]
+fn a_user_scroll_sends_a_frame_on_the_next_pump() {
+    let (mut session, rec) = subscribed(10, 2);
+    session.feed(b"1\r\n2\r\n3\r\n4");
+    session.pump();
+    rec.0.lock().unwrap().clear();
+    session.edit(|engine| engine.scroll_up(1));
+    session.pump();
+    assert_eq!(rec.count(), 1);
+    assert_eq!(decode(&rec.0.lock().unwrap()[0]).unwrap().display_offset, 1);
+}
+
+#[test]
+fn an_ended_session_sends_a_view_change_without_a_pump() {
+    let (mut session, rec) = subscribed(10, 2);
+    session.feed(b"1\r\n2\r\n3\r\n4");
+    session.pump();
+    rec.0.lock().unwrap().clear();
+    session.end();
+    session.edit(|engine| engine.scroll_up(1));
+    assert_eq!(
+        rec.count(),
+        1,
+        "nothing pumps an ended session, so the change flushes itself"
+    );
+}
+
+#[test]
+fn a_live_session_waits_for_the_pump() {
+    let (mut session, rec) = subscribed(10, 2);
+    session.feed(b"1\r\n2\r\n3\r\n4");
+    session.pump();
+    rec.0.lock().unwrap().clear();
+    session.edit(|engine| engine.scroll_up(1));
+    assert_eq!(rec.count(), 0);
+}
+
+#[test]
+fn a_pump_without_a_sink_still_hands_back_replies() {
+    let mut session = Session::new(Engine::new(10, 3));
+    session.feed(b"\x1b[c");
+    assert_eq!(session.pump().replies, b"\x1b[?62;22c");
+}
+
+#[test]
+fn output_while_scrolled_up_sends_a_frame_though_it_leaves_no_damage() {
+    let (mut session, rec) = subscribed(10, 2);
+    session.feed(b"1\r\n2\r\n3\r\n4");
+    session.edit(|engine| engine.scroll_up(1));
+    session.pump();
+    rec.0.lock().unwrap().clear();
+    session.feed(b"\r\n5");
+    assert!(
+        matches!(session.engine().damage(), TermDamage::Partial(ref lines) if lines.is_empty()),
+        "the frozen viewport records no damage"
+    );
+    session.pump();
+    assert_eq!(rec.count(), 1, "the header's scroll position still moved");
+    let frame = decode(&rec.0.lock().unwrap()[0]).unwrap();
+    assert_eq!((frame.display_offset, frame.scrollback_len), (2, 3));
+}
+
+#[test]
+fn a_clear_sends_a_full_frame_on_the_next_pump() {
+    let (mut session, rec) = subscribed(10, 2);
+    session.feed(b"1\r\n2\r\n3");
+    session.pump();
+    rec.0.lock().unwrap().clear();
+    assert!(session.edit(|engine| engine.clear()));
+    session.pump();
+    assert_eq!(rec.kinds(), vec![FrameKind::Full]);
+}

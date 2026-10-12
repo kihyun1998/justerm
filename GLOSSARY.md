@@ -33,6 +33,19 @@ still does not render either way.
 An application that embeds the engine — feeds it bytes, transports its output, and pairs it with a
 renderer. The first consumer is PenTerm.
 
+## Session
+
+One **Engine** bound to one frame sink: the unit a **Consumer** feeds, **Pumps** and subscribes to. It
+has no clock and does no I/O — the byte source and the pacing stay outside it. A PenTerm session (one
+PTY or SSH connection) contains one. (#1042)
+_Avoid_: driver, NativeEngine
+
+## Pump
+
+One call that hands a **Session**'s pending **Frame** to its sink and returns the replies and events
+gathered since the last pump. Who calls it, and how often, is the caller's. (#1042)
+_Avoid_: tick (the **Overview ruler**'s word)
+
 ## WASM decoder
 
 The canonical web decoder: the engine's wire-format `decode` compiled to WASM and published to npm
