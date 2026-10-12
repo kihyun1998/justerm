@@ -366,15 +366,22 @@ fn a_resize_reaches_the_child_at_the_new_size() {
         "screen: {:?}",
         screen(&pty)
     );
-    let last = rec
-        .0
-        .lock()
-        .unwrap()
-        .last()
-        .cloned()
-        .expect("a frame was sent");
-    let frame = decode(&last).unwrap();
-    assert_eq!((frame.cols, frame.rows), (100, 30));
+    // The screen above is the engine's state, fed as the child writes; frames leave on the next
+    // pump. A fast child answers inside one pump period, so wait for the frame rather than read the
+    // last one sent so far.
+    let last_size = || {
+        rec.0
+            .lock()
+            .unwrap()
+            .last()
+            .map(|f| decode(f).unwrap())
+            .map(|f| (f.cols, f.rows))
+    };
+    assert!(
+        eventually(Duration::from_secs(10), || last_size() == Some((100, 30))),
+        "last frame size: {:?}",
+        last_size()
+    );
     pty.terminate();
     rx.recv_timeout(Duration::from_secs(20))
         .expect("terminated");
