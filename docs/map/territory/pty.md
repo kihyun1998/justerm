@@ -108,12 +108,17 @@ Not compared against a pinned reference yet. The layout peers (wezterm's `pty/` 
 - **The channel to the writer is unbounded.** A child that floods queries while never reading its
   stdin no longer stalls the reader. Its replies queue in memory instead, until the child exits.
 - **The reply tests are proven on Unix only**, for the conhost reason above. On Windows only the
-  start-up `ESC[6n` proves the reader's write-back, and no test there proves the pump's.
+  start-up `ESC[6n` proves the reader's write-back, and no test there proves the pump's. The Unix
+  proof was mutation-run on Linux under WSL (#1046), and each mutation reddened exactly its test:
+  - dropping the pump's hand-over → `a_reply_the_pump_drains_reaches_the_child`;
+  - dropping the reader's hand-over → `a_query_from_the_child_is_answered`;
+  - `terminate` sending `SIGHUP` only → `terminate_ends_a_child_that_ignores_sighup`.
 - **A grandchild holding a Unix pty open keeps the reader thread blocked** after the exit is reported.
   The reader has its own fd, so dropping the master does not release it. It feeds nothing once the
   Session has ended, so this is a parked thread rather than wrong output. A ConPTY reader is released
   by closing the pseudo-console.
 - **A spawn error keeps its `ErrorKind` only where `portable-pty` passed an `io::Error` through.**
   On Windows it formats a failed `CreateProcessW` into a string, so a missing program is `Other`.
-  The pid-reuse guard (`ChildState::exited`) and the Unix SIGKILL escalation can't be exercised on a
-  Windows workstation. CI's Linux and macOS runs are the first that reach them.
+- **No test reaches the pid-reuse guard** (`ChildState::exited`). A reused pid cannot be arranged
+  deterministically, so removing the guard stays green on every OS. It rests on reading
+  `portable-pty`'s Unix killer, which sends a bare `kill(pid, SIGHUP)`.
