@@ -10,8 +10,9 @@
 //! asked for them has been fed — not on the pump period, which paces frames only. A Windows
 //! ConPTY depends on it: it asks for the cursor position before the child may run at all.
 //!
-//! **Not yet complete.** Output is fed as the child wrote it: there is no encoding hook yet, so
-//! a child writing in a legacy encoding reaches the engine as ill-formed UTF-8.
+//! The engine reads its input as UTF-8. A child that writes another encoding is the consumer's to
+//! convert, through [`Options::decoder`] and [`Options::encoder`]; which encoding is in use stays
+//! the consumer's policy.
 
 use std::ffi::OsString;
 use std::io::{Read, Write};
@@ -76,19 +77,59 @@ impl Command {
     }
 }
 
+/// Converts the child's output to the UTF-8 the engine reads. It runs on the reader thread, on
+/// each chunk as it is read, before the chunk is fed.
+///
+/// A chunk can end partway through a multi-byte character. Keep the partial bytes and finish the
+/// character from the next chunk. [`finish`](Decode::finish) is called once when the output ends,
+/// for anything still held.
+pub trait Decode: Send {
+    /// The UTF-8 for `bytes`, as far as they complete characters.
+    fn decode(&mut self, bytes: &[u8]) -> Vec<u8>;
+
+    /// What is still held when the output ends. Nothing, by default.
+    fn finish(&mut self) -> Vec<u8> {
+        Vec::new()
+    }
+}
+
+/// Converts bytes bound for the child from UTF-8 to the child's encoding. It runs on the writer
+/// thread over everything written to the child, both the consumer's [`Pty::write`]s and the
+/// engine's replies, in order.
+pub trait Encode: Send {
+    /// `bytes` in the child's encoding.
+    fn encode(&mut self, bytes: &[u8]) -> Vec<u8>;
+}
+
 /// How a [`Pty`] runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Options {
     /// How often the session is pumped while the child runs. The pacing is the consumer's policy;
     /// this is only the default it may override.
     pub pump_every: Duration,
+    /// Converts the child's output to UTF-8 before the engine reads it. `None` feeds the output as
+    /// read, which is right for a UTF-8 child.
+    pub decoder: Option<Box<dyn Decode>>,
+    /// Converts what is written to the child out of UTF-8. `None` writes the bytes as they are.
+    pub encoder: Option<Box<dyn Encode>>,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Options {
             pump_every: Duration::from_millis(16),
+            decoder: None,
+            encoder: None,
         }
+    }
+}
+
+impl std::fmt::Debug for Options {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Options")
+            .field("pump_every", &self.pump_every)
+            .field("decoder", &self.decoder.is_some())
+            .field("encoder", &self.encoder.is_some())
+            .finish()
     }
 }
 
@@ -210,8 +251,9 @@ impl Pty {
         let input: Input = Arc::new(Mutex::new(Some(tx)));
         let eof = Arc::new(AtomicBool::new(false));
         let started = (|| {
-            spawn_writer(writer, rx)?;
+            spawn_writer(writer, rx, options.encoder)?;
             spawn_reader(
+                options.decoder,
                 reader,
                 Arc::clone(&session),
                 Arc::clone(&input),
@@ -324,6 +366,7 @@ fn write_back(input: &Input, bytes: &[u8]) -> bool {
 fn spawn_writer(
     mut writer: Box<dyn Write + Send>,
     rx: mpsc::Receiver<Vec<u8>>,
+    mut encoder: Option<Box<dyn Encode>>,
 ) -> std::io::Result<()> {
     thread::Builder::new()
         .name("justerm-pty writer".into())
@@ -331,6 +374,10 @@ fn spawn_writer(
             // Ends when every sender is gone, which happens at exit; dropping the writer then closes
             // the child's input.
             for bytes in rx {
+                let bytes = match encoder.as_mut() {
+                    Some(encoder) => encoder.encode(&bytes),
+                    None => bytes,
+                };
                 if writer
                     .write_all(&bytes)
                     .and_then(|()| writer.flush())
@@ -344,6 +391,7 @@ fn spawn_writer(
 }
 
 fn spawn_reader(
+    mut decoder: Option<Box<dyn Decode>>,
     mut reader: Box<dyn Read + Send>,
     session: Arc<Mutex<Session>>,
     input: Input,
@@ -360,21 +408,43 @@ fn spawn_reader(
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 };
-                let mut session = lock(&session);
-                // Output that arrives after the session has ended is not fed, because nothing may
-                // follow `on_exit`. This happens when a grandchild still holds a Unix pty open.
-                if session.is_ended() {
+                let decoded;
+                let chunk = match decoder.as_mut() {
+                    Some(decoder) => {
+                        decoded = decoder.decode(&buf[..n]);
+                        &decoded[..]
+                    }
+                    None => &buf[..n],
+                };
+                if !feed(&session, &input, chunk) {
                     break;
                 }
-                session.feed(&buf[..n]);
-                let replies = session.edit(|engine| engine.drain_replies());
-                // Handed over while the session is still locked, so replies reach the writer in
-                // the order they were drained. The send never blocks: the channel is unbounded.
-                write_back(&input, &replies);
+            }
+            if let Some(tail) = decoder.as_mut().map(|d| d.finish()) {
+                feed(&session, &input, &tail);
             }
             eof.store(true, Ordering::Release);
         })
         .map(drop)
+}
+
+/// Feed `bytes` and hand the replies they produced to the writer. Returns `false` once the session
+/// has ended: output arriving after that is not fed, because nothing may follow `on_exit`. That
+/// happens when a grandchild still holds a Unix pty open.
+fn feed(session: &Mutex<Session>, input: &Input, bytes: &[u8]) -> bool {
+    let mut session = lock(session);
+    if session.is_ended() {
+        return false;
+    }
+    if bytes.is_empty() {
+        return true;
+    }
+    session.feed(bytes);
+    let replies = session.edit(|engine| engine.drain_replies());
+    // Handed over while the session is still locked, so replies reach the writer in the order they
+    // were drained. The send never blocks: the channel is unbounded.
+    write_back(input, &replies);
+    true
 }
 
 /// The pump thread's state.

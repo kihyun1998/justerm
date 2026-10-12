@@ -317,8 +317,8 @@ same trace.
 
 ## Code
 
-- `justerm-core/README.md` · `justerm-wasm-decode/README.md` · `justerm-renderer/README.md` ·
-  `justerm-web/README.md` · `justerm-facade/README.md`
+- `justerm-core/README.md` · `justerm-pty/README.md` · `justerm-wasm-decode/README.md` ·
+  `justerm-renderer/README.md` · `justerm-web/README.md` · `justerm-facade/README.md`
 - `justerm-wasm-decode/tests/readme_pins.rs` — the constant pin (per-PR)
 - `justerm-core/tests/public_struct_reasons.rs` — every published struct carries the attribute or
   the reason it does not (#844), over a published set derived from `lib.rs` rather than listed

@@ -114,4 +114,7 @@ Each item below records whose call it was.
 - **`justerm-pty` stays `publish = false` until the loop is complete** (the maintainer's call, made at
   #1045's confirm). Publishing it before reply write-back and resize sync existed would ship a PTY
   loop that hangs a querying application. D6's lockstep holds from the release that first publishes
-  it: the publish step, the release table and the crates.io token for the new name land with #1047.
+  it: the publish step and the release table landed with #1047. crates.io takes a new crate's first
+  version only with an API token, never through trusted publishing. So that one publish is manual
+  (`docs/agents/release.md` § A new crate's first publish), and the workflow skips the crate until
+  it exists. The maintainer chose that at #1047, over keeping `publish = false` until release time.

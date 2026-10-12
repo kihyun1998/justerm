@@ -9,10 +9,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use justerm_core::{Engine, FrameSink, Session, decode};
-use justerm_pty::{Command, Exit, Options, Pty};
+use justerm_pty::{Command, Decode, Encode, Exit, Options, Pty};
 
 const HELPER: &str = "JUSTERM_PTY_HELPER";
 const MARKER: &str = "hello-from-the-child";
+const UTF8_SAMPLE: &str = "\u{d55c}\u{ae00} e\u{301}";
 
 /// What the child does, chosen by the value of `JUSTERM_PTY_HELPER`.
 fn helper(mode: &str) {
@@ -49,6 +50,29 @@ fn helper(mode: &str) {
             std::thread::sleep(Duration::from_secs(60));
         }
         // Read one line and print it back, control bytes made visible (`ESC` as `^[`).
+        // One two-byte legacy character (`B0 A1`, see `ToyLegacy`) written in two halves, so it
+        // reaches the reader split across two reads.
+        "split-legacy" => {
+            let mut out = std::io::stdout();
+            out.write_all(&[0xB0]).unwrap();
+            out.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            out.write_all(&[0xA1]).unwrap();
+            out.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        // A legacy lead byte with no second half, then exit: the decoder still holds it at EOF.
+        "lone-lead-then-exit" => {
+            let mut out = std::io::stdout();
+            out.write_all(&[0xB0]).unwrap();
+            out.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        // UTF-8 with a wide character and a combining sequence.
+        "print-utf8" => {
+            say(UTF8_SAMPLE);
+            std::thread::sleep(Duration::from_millis(300));
+        }
         "echo-line" => {
             say(&format!("GOT:{}", visible(&read_line())));
             std::thread::sleep(Duration::from_millis(300));
@@ -202,6 +226,7 @@ fn a_quiet_child_sends_no_frames() {
 fn the_pump_period_is_honoured() {
     let options = Options {
         pump_every: Duration::from_secs(3600),
+        ..Options::default()
     };
     let (pty, rec, rx) = spawn("print-then-sleep", options);
     std::thread::sleep(Duration::from_millis(1500));
@@ -405,6 +430,144 @@ fn a_too_narrow_resize_reaches_the_child_at_the_adopted_size() {
         .expect("terminated");
 }
 
+/// A stand-in legacy encoding with one two-byte character, enough to test a decoder that carries
+/// state between reads: `B0 A1` is U+AC00. A lone byte of `0x80` and above waits for its pair;
+/// anything else passes through.
+#[cfg(unix)]
+#[derive(Default)]
+struct ToyLegacy {
+    lead: Option<u8>,
+}
+
+#[cfg(unix)]
+impl Decode for ToyLegacy {
+    fn decode(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for &b in bytes {
+            match self.lead.take() {
+                Some(0xB0) if b == 0xA1 => out.extend_from_slice("\u{ac00}".as_bytes()),
+                Some(_) => {
+                    out.push(b'?');
+                    self.push(b, &mut out);
+                }
+                None => self.push(b, &mut out),
+            }
+        }
+        out
+    }
+
+    /// A lead byte still waiting for its pair when the output ends becomes `?`.
+    fn finish(&mut self) -> Vec<u8> {
+        self.lead.take().map(|_| b"?".to_vec()).unwrap_or_default()
+    }
+}
+
+#[cfg(unix)]
+impl ToyLegacy {
+    fn push(&mut self, b: u8, out: &mut Vec<u8>) {
+        if b >= 0x80 {
+            self.lead = Some(b);
+        } else {
+            out.push(b);
+        }
+    }
+}
+
+/// Rewrites `-` as `_`: a visible mark that output went through the decoder.
+struct DashToUnderscore;
+
+impl Decode for DashToUnderscore {
+    fn decode(&mut self, bytes: &[u8]) -> Vec<u8> {
+        bytes
+            .iter()
+            .map(|&b| if b == b'-' { b'_' } else { b })
+            .collect()
+    }
+}
+
+/// Rewrites `a` as `b`: a visible mark that input went through the encoder.
+struct AToB;
+
+impl Encode for AToB {
+    fn encode(&mut self, bytes: &[u8]) -> Vec<u8> {
+        bytes
+            .iter()
+            .map(|&b| if b == b'a' { b'b' } else { b })
+            .collect()
+    }
+}
+
+fn the_decoder_sees_the_output_before_the_engine() {
+    let options = Options {
+        decoder: Some(Box::new(DashToUnderscore)),
+        ..Options::default()
+    };
+    let (pty, _rec, rx) = spawn("print-exit-7", options);
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+    let text = screen(&pty);
+    assert!(text.contains("hello_from_the_child"), "screen: {text:?}");
+    assert!(!text.contains(MARKER), "screen: {text:?}");
+}
+
+fn the_encoder_sees_what_the_consumer_writes() {
+    let options = Options {
+        encoder: Some(Box::new(AToB)),
+        ..Options::default()
+    };
+    let (pty, _rec, rx) = spawn("echo-line", options);
+    pty.write(b"aaa\r").unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || screen(&pty).contains("GOT:bbb")),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+}
+
+fn utf8_passes_through_without_a_hook() {
+    let (pty, _rec, rx) = spawn("print-utf8", Options::default());
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+    let text = screen(&pty);
+    assert!(text.contains(UTF8_SAMPLE), "screen: {text:?}");
+}
+
+/// Unix only. On Windows a console child cannot put these bytes on the pseudo-terminal:
+/// - measured (#1047): Rust's std refuses to write non-UTF-8 to a console (`InvalidData`);
+/// - by ConPTY's design, not measured here: conhost re-emits console output as UTF-8.
+///
+/// So on Windows there is nothing for a decoder to reassemble. The decoder's placement is proven on
+/// every OS by `the_decoder_sees_the_output_before_the_engine`.
+#[cfg(unix)]
+fn a_legacy_character_split_across_reads_is_decoded_whole() {
+    let options = Options {
+        decoder: Some(Box::new(ToyLegacy::default())),
+        ..Options::default()
+    };
+    let (pty, _rec, rx) = spawn("split-legacy", options);
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+    let text = screen(&pty);
+    assert!(text.contains('\u{ac00}'), "screen: {text:?}");
+    assert!(!text.contains('?'), "screen: {text:?}");
+}
+
+/// Unix only, for the same reason as the test above.
+#[cfg(unix)]
+fn a_byte_the_decoder_still_holds_at_the_end_is_flushed() {
+    let options = Options {
+        decoder: Some(Box::new(ToyLegacy::default())),
+        ..Options::default()
+    };
+    let (pty, _rec, rx) = spawn("lone-lead-then-exit", options);
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+    let text = screen(&pty);
+    assert!(text.contains('?'), "screen: {text:?}");
+}
+
 fn main() {
     if let Ok(mode) = std::env::var(HELPER) {
         helper(&mode);
@@ -464,9 +627,29 @@ fn main() {
             "a_too_narrow_resize_reaches_the_child_at_the_adopted_size",
             a_too_narrow_resize_reaches_the_child_at_the_adopted_size,
         ),
+        (
+            "the_decoder_sees_the_output_before_the_engine",
+            the_decoder_sees_the_output_before_the_engine,
+        ),
+        (
+            "the_encoder_sees_what_the_consumer_writes",
+            the_encoder_sees_what_the_consumer_writes,
+        ),
+        (
+            "utf8_passes_through_without_a_hook",
+            utf8_passes_through_without_a_hook,
+        ),
     ];
     #[cfg(unix)]
     tests.extend([
+        (
+            "a_byte_the_decoder_still_holds_at_the_end_is_flushed",
+            a_byte_the_decoder_still_holds_at_the_end_is_flushed as fn(),
+        ),
+        (
+            "a_legacy_character_split_across_reads_is_decoded_whole",
+            a_legacy_character_split_across_reads_is_decoded_whole as fn(),
+        ),
         (
             "a_query_from_the_child_is_answered",
             a_query_from_the_child_is_answered as fn(),

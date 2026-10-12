@@ -57,7 +57,10 @@ Bump when there is a reason to (a fix you need, a `wasm-bindgen` floor, a securi
 re-tag. Staying put is a valid answer; not looking is not, which is the state #616 found (crates.io
 on 0.15.0 while a maintainer's local proofs ran on 0.14.0).
 
-1. Bump `[workspace.package] version` in `Cargo.toml`; refresh the lock (`cargo check --workspace`).
+1. Bump `[workspace.package] version` in `Cargo.toml`, and the `justerm-core` version that
+   `justerm-pty/Cargo.toml` requires. Then refresh the lock (`cargo check --workspace`). The second
+   bump is not optional: a path dependency must still satisfy its version, so leaving it fails the
+   check with "failed to select a version".
 2. Gate **the whole workspace** (not just the core crate): `cargo test --workspace` green,
    `cargo clippy --workspace --all-targets` clean. The `--workspace` is load-bearing — a bare
    `cargo test` / `cargo build --all-targets` only covers the current package, so a public-API change
@@ -76,7 +79,7 @@ That tag push is the publish trigger. Verify it:
 
 | Workflow | Publishes | Gate | Auth |
 | --- | --- | --- | --- |
-| `.github/workflows/publish-crate.yml` | `cargo publish -p justerm-core` → crates.io | tag (minus `v`) must equal the crate version, else fail | none — trusted publishing |
+| `.github/workflows/publish-crate.yml` | `cargo publish -p justerm-core`, then `-p justerm-pty` → crates.io | tag (minus `v`) must equal the crate version, else fail. `justerm-pty` is skipped with a warning while it is not on crates.io yet | none — trusted publishing |
 | `.github/workflows/publish-wasm.yml` | `wasm-pack build --target bundler` + `npm publish` → npm (`justerm-wasm-decode`) | tag must equal the wasm-pack package version, else fail | none — trusted publishing |
 
 Auth is § Registry auth below. `justerm-wasm-decode` is `publish = false` for cargo,
@@ -92,6 +95,7 @@ secret is used.** Each package needs a one-time entry on its registry naming the
 | Package | Registry | Workflow filename |
 | --- | --- | --- |
 | `justerm-core` | crates.io → crate → Settings → Trusted Publishing | `publish-crate.yml` |
+| `justerm-pty` | crates.io → crate → Settings → Trusted Publishing — only once it exists (below) | `publish-crate.yml` |
 | `justerm-wasm-decode` | npmjs.com → package → Settings → Trusted publishing | `publish-wasm.yml` |
 | `justerm-renderer` | npmjs.com → package → Settings → Trusted publishing | `publish-renderer.yml` |
 | `justerm-web` | npmjs.com → package → Settings → Trusted publishing | `publish-web.yml` |
@@ -111,6 +115,26 @@ runs only the `verify-auth` job, which exchanges the OIDC token (`.github/script
 and discards the result. It cannot check npm's `repository.url` match, which runs at publish only. Once a
 package has published this way, set its **Publishing access** to *Require two-factor authentication
 and disallow tokens* and delete the old repository secrets.
+
+## A new crate's first publish
+
+**crates.io takes a crate's first version only with an API token.** Its trusted-publishing page
+says: "Your crate must already be published to crates.io (initial publish requires an API token)".
+The trusted-publisher entry lives in the crate's own Settings, which a crate that does not exist
+yet has none of. This is the one sanctioned manual `cargo publish`. It happens once per crate.
+
+`justerm-pty` is the first crate to go through this (#1047).
+`publish-crate.yml` skips it with a warning while crates.io answers 404 for it, so the release that
+first carries it still ships `justerm-core`. Then, by hand, after that tag's `publish-crate` run has
+finished:
+
+1. `cargo publish -p justerm-pty --locked`, at the tagged commit, with an API token scoped to
+   publishing new crates. It needs the just-published `justerm-core` of the same version, which is
+   why it waits for the tag run.
+2. crates.io → `justerm-pty` → Settings → Trusted Publishing: add `publish-crate.yml`, the same
+   entry as `justerm-core`'s. Check it without publishing:
+   `gh workflow run publish-crate.yml --ref master`.
+3. Revoke the API token. From the next `v*` tag, the workflow publishes `justerm-pty` itself.
 
 ## The renderer publishes on its OWN track (`renderer-v*`, #394)
 
@@ -236,7 +260,7 @@ Every published package declares `MIT OR Apache-2.0`, so every published tarball
 texts. Two things are needed and **only having the first is the trap**:
 
 1. `LICENSE-MIT` + `LICENSE-APACHE` exist where the packer can see them — in `justerm-core/`,
-   `justerm-renderer/` and `justerm-web/` as in-tree copies, and copied from the repo root at build
+   `justerm-renderer/`, `justerm-web/` and `justerm-pty/` as in-tree copies, and copied from the repo root at build
    time for `justerm-wasm-decode` (`scripts/finish-pkg.mjs`).
 2. They are in `package.json`'s **`files`** allowlist. npm auto-includes `README`, `package.json` and
    `LICENSE`/`LICENSE.md` — but **not** the hyphenated `LICENSE-MIT` form. Anything not listed is
