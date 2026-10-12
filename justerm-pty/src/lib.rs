@@ -234,7 +234,7 @@ struct RawState {
     sink: Box<dyn RawSink>,
     /// The sink asked for a pause, and no resume has come.
     paused: bool,
-    /// The child has exited and the rest of the output is being read: a pause is ignored.
+    /// The child has exited and the rest of the output is being read: the reader does not wait.
     draining: bool,
     /// `on_exit` is about to run: nothing more reaches the sink.
     ended: bool,
@@ -586,7 +586,7 @@ fn feed_raw(raw: &Raw, on_output: &mut Option<OnOutput>, bytes: &[u8]) -> bool {
     if let Some(on_output) = on_output.as_mut() {
         on_output(bytes);
     }
-    if state.sink.output(bytes) == Flow::Pause && !state.draining {
+    if state.sink.output(bytes) == Flow::Pause {
         state.paused = true;
     }
     while state.paused && !state.draining && !state.ended {

@@ -937,6 +937,31 @@ fn a_paused_raw_sink_gets_nothing_until_resumed() {
         .expect("terminated");
 }
 
+/// Unix only, for the reason [`nothing_is_observed_after_on_exit`] gives.
+#[cfg(unix)]
+fn nothing_reaches_the_raw_sink_after_on_exit() {
+    let fed = RecordingDecode::default();
+    let seen = Observed::default();
+    let options = Options {
+        decoder: Some(Box::new(fed.clone())),
+        on_output: Some(seen.hook()),
+        ..Options::default()
+    };
+    let sink = RawRecorder::default();
+    let (_pty, rx, _exited) = spawn_raw("orphan-prints-late", options, sink.clone());
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+    let calls = sink.calls.load(Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(
+        String::from_utf8_lossy(&fed.0.lock().unwrap()).contains("LATE-OUTPUT"),
+        "positive control: the reader did read output that arrived after on_exit"
+    );
+    assert_eq!(sink.calls.load(Ordering::SeqCst), calls);
+    assert!(!sink.text().contains("LATE-OUTPUT"), "{:?}", sink.text());
+    assert!(!String::from_utf8_lossy(&seen.bytes.lock().unwrap()).contains("LATE-OUTPUT"));
+}
+
 fn a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported() {
     let sink = RawRecorder::default();
     sink.pause.store(true, Ordering::SeqCst);
@@ -1057,6 +1082,10 @@ fn main() {
         (
             "nothing_is_observed_after_on_exit",
             nothing_is_observed_after_on_exit as fn(),
+        ),
+        (
+            "nothing_reaches_the_raw_sink_after_on_exit",
+            nothing_reaches_the_raw_sink_after_on_exit as fn(),
         ),
         (
             "raw_mode_leaves_a_query_to_the_consumer",
