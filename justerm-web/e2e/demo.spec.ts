@@ -3194,6 +3194,7 @@ test("compositionstart anchors the IME where the composition starts, on the row 
 
   // Continuous CJK at offset 0: the commit is still in flight, so the frame's cursor has not moved —
   // the composition starts at the previous run's end, and so must the anchor.
+  expect(s.inFlight.cursor.row, "precondition: the cursor was read back on its own row").toBe(p.gridRow);
   expect(s.inFlight.runEnd, "precondition: the previous run's end is not the frame's cursor").not.toEqual(
     s.inFlight.cursor,
   );

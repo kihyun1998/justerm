@@ -174,7 +174,9 @@ export class CompositionController {
   }
 }
 
-/** Where the hidden textarea is anchored, in cells — the cursor cell a frame reported. */
+/** A cell, by column and row. Carries GRID cells (the cursor a frame reported, a composition's
+ * origin and run end) and VIEWPORT cells (where the hidden textarea is anchored); {@link viewportCell}
+ * maps the first onto the second. */
 export interface TextareaAnchor {
   col: number;
   row: number;
@@ -197,8 +199,9 @@ export function viewportCell(
 }
 
 /**
- * Whether the hidden textarea must move, and the cache key to remember (#631). The key is the
- * cursor's cell coordinate; `force` overrides it, for the callers that sit where something reads
+ * Whether the hidden textarea must move, and the cache key to remember (#631). `cursor` is the
+ * VIEWPORT cell the anchor is written at (see {@link viewportCell}), and the key is that cell's
+ * coordinate; `force` overrides it, for the callers that sit where something reads
  * the anchor. `composing` suppresses every path, forced or not, so the anchor stays put while a
  * composition is open (#637, #649). A suppressed or unchanged move is `undefined`, which leaves the
  * cache alone.

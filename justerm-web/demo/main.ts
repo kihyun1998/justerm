@@ -4931,7 +4931,7 @@ window.__preeditViewportProbe = async (): Promise<PreeditViewportProbe> => {
   });
   displayOffset = 0;
   column();
-  const inFlightCursor = { col: COL, row: gridRow };
+  const inFlightCursor = anchorCell(); // the frame writer just placed it on the cursor
   compose();
   const inFlightRunEnd = anchorCell();
   endCompose();

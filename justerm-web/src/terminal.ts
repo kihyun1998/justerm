@@ -188,8 +188,8 @@ export class Terminal {
   /** The OSC 52 router, when the consumer wired one. Held so `dispose()` can
    * end it — an in-flight clipboard read outlives the event subscription. */
   private clipboardController: ClipboardController | undefined;
-  /** Last cursor cell the textarea was moved to, so it repositions only on a move
-   * rather than on every frame. */
+  /** Last viewport cell a keyed writer moved the textarea to, so it repositions only when that cell
+   * changes rather than on every frame. */
   private textareaCell = "";
   /** The cursor cell the latest frame reported, retained so the anchor can be re-synced at a
    * point of use without waiting for a frame. Written by {@link Terminal.track} on every frame that
@@ -553,7 +553,7 @@ export class Terminal {
   }
 
   /** Move the hidden textarea over the cursor cell so the IME candidate window appears there.
-   * **The DOM write** is skipped when the cursor is absent or hidden; the retained cell is
+   * **The DOM write** is skipped when the cursor is absent, hidden, or off the bottom; the retained cell is
    * {@link Terminal.track}'s and is kept either way. Touches the DOM (a layout read via `getGeometry`
    * and two style writes) only when the cursor moved — a cache keyed on the viewport cell, which cannot
    * see a cell-size change; {@link Terminal.syncTextareaAnchor} is the path that can. */
