@@ -387,13 +387,22 @@ impl Engine {
     /// Whether the next [`Engine::frame`] may differ from the last one acked with
     /// [`Engine::reset_damage`] — the question a consumer asks before encoding a frame at all.
     ///
-    /// It is wider than [`Engine::damage`], which is cell content only: while the viewport is
-    /// scrolled up, output leaves no damage but still moves the header's scroll position. So it is
-    /// raised by [`feed`](Engine::feed), [`resize`](Engine::resize), [`clear`](Engine::clear),
-    /// an accepted [`paint_logical_line`](Engine::paint_logical_line),
-    /// [`mark_fully_damaged`](Engine::mark_fully_damaged) and every viewport scroll, and cleared
-    /// by `reset_damage`. Draining events or replies and reporting colours do not raise it. A
-    /// fresh engine starts with it raised, since none of its state has been sent.
+    /// It is wider than [`Engine::damage`], which is cell content only. Output while the viewport
+    /// is scrolled up leaves no damage but still moves the header's scroll position, and the
+    /// overlay — selection, search highlights, active match, markers — is never damage at all
+    /// ([ADR-0014](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0014-carry-interaction-overlays-in-the-frame.md)).
+    ///
+    /// So it is raised by:
+    /// - content and geometry: [`feed`](Engine::feed), [`resize`](Engine::resize),
+    ///   [`clear`](Engine::clear), an accepted [`paint_logical_line`](Engine::paint_logical_line),
+    ///   [`mark_fully_damaged`](Engine::mark_fully_damaged), every viewport scroll;
+    /// - the overlay: every selection call, the two settings the selection is resolved with
+    ///   ([`set_word_separators`](Engine::set_word_separators),
+    ///   [`set_selection_carries_line_end`](Engine::set_selection_carries_line_end)), setting search
+    ///   highlights or an active match, and adding or removing a marker.
+    ///
+    /// It is cleared by `reset_damage`. Draining events or replies and reporting colours do not
+    /// raise it. A fresh engine starts with it raised, since none of its state has been sent.
     pub fn frame_pending(&self) -> bool {
         self.frame_pending
     }
@@ -450,11 +459,13 @@ impl Engine {
     /// cell. Coordinates are viewport-relative (what a mouse event carries).
     pub fn selection_begin(&mut self, row: usize, col: usize, side: Side, ty: SelectionType) {
         self.term.selection_begin(row, col, side, ty);
+        self.frame_pending = true;
     }
 
     /// Extend the live selection to viewport cell `(row, col)`, on `side`.
     pub fn selection_extend(&mut self, row: usize, col: usize, side: Side) {
         self.term.selection_extend(row, col, side);
+        self.frame_pending = true;
     }
 
     /// Select the whole active buffer — scrollback and screen, or the alt screen alone —
@@ -462,6 +473,7 @@ impl Engine {
     /// selected when every cell is blank.
     pub fn select_all(&mut self) {
         self.term.select_all();
+        self.frame_pending = true;
     }
 
     /// Clear the screen and scrollback, keeping the cursor's line at the top — its
@@ -486,6 +498,7 @@ impl Engine {
     /// for why that floor is load-bearing rather than defensive.
     pub fn set_word_separators(&mut self, separators: &str) {
         self.term.set_word_separators(separators);
+        self.frame_pending = true;
     }
 
     /// The word-boundary set currently in force (including the forced `' '`).
@@ -499,6 +512,7 @@ impl Engine {
     /// Off by default; survives RIS. The rule is on [`Term::set_selection_carries_line_end`].
     pub fn set_selection_carries_line_end(&mut self, on: bool) {
         self.term.set_selection_carries_line_end(on);
+        self.frame_pending = true;
     }
 
     /// Whether [`set_selection_carries_line_end`](Self::set_selection_carries_line_end) is on.
@@ -509,6 +523,7 @@ impl Engine {
     /// Clear the selection.
     pub fn selection_clear(&mut self) {
         self.term.selection_clear();
+        self.frame_pending = true;
     }
 
     /// The selection projected onto the viewport: one inclusive-column span per
@@ -641,6 +656,7 @@ impl Engine {
     /// alongside the selection. An empty vec clears the highlights.
     pub fn set_search_highlights(&mut self, matches: Vec<Match>) {
         self.term.set_search_highlights(matches);
+        self.frame_pending = true;
     }
 
     /// Designate which member of the held highlight set is the *active* match
@@ -653,6 +669,7 @@ impl Engine {
     /// designation, so re-designate after every hand-over.
     pub fn set_active_search_highlight(&mut self, index: Option<usize>) {
         self.term.set_active_search_highlight(index);
+        self.frame_pending = true;
     }
 
     /// Designate the *active* match by its absolute span, independent of
@@ -669,6 +686,7 @@ impl Engine {
     /// alt-screen swaps), so re-designate after each hand-over.
     pub fn set_active_search_match(&mut self, m: Option<Match>) {
         self.term.set_active_search_match(m);
+        self.frame_pending = true;
     }
 
     /// Register a decoration marker at viewport `row`, returning its stable id.
@@ -683,13 +701,16 @@ impl Engine {
     /// `MarkerDisposed` event, so a consumer that already handles disposal needs no new
     /// handling; a consumer that ignores it can leave a decoration bound to a dead id.
     pub fn add_marker(&mut self, row: usize) -> MarkerId {
-        self.term.add_marker(row)
+        let id = self.term.add_marker(row);
+        self.frame_pending = true;
+        id
     }
 
     /// Remove a marker by id, firing `TermEvent::MarkerDisposed`. A no-op
     /// for an unknown or already-disposed id.
     pub fn remove_marker(&mut self, id: MarkerId) {
         self.term.remove_marker(id);
+        self.frame_pending = true;
     }
 
     /// Track absolute buffer `(line, col)`, returning a stable id: the

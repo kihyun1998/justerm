@@ -71,7 +71,9 @@ pixels either way — and its job is to keep a small update from costing a full 
   moves the header's scroll position, and a viewport scroll changes `display_offset`. The `Session`
   reads the signal, never `damage()`, and the predicate swap (`damage()` empty instead of the signal)
   is exactly what `output_while_scrolled_up_sends_a_frame_though_it_leaves_no_damage` reddens on.
-  Overlay-only changes (selection, search highlights) join the signal in #1044.
+  Overlay-only changes raise it too (#1044) — selection, search highlights, active match, markers,
+  and the two settings a live selection is resolved with — while still leaving no damage
+  (ADR-0014). This is what retires a consumer's own dirty flag.
 
 ## Code
 
