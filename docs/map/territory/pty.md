@@ -33,7 +33,15 @@ that does no I/O itself.
   ConPTY that makes conhost flush and end its output pipe, so the reader reaches EOF. Then the pump
   waits up to `DRAIN_AFTER_EXIT` for that EOF, ends the Session (which sends what is pending), and
   reports the exit. `output_written_just_before_exit_still_arrives` guards the tail: a child that
-  prints and exits at once.
+  prints and exits at once. The order changes latency, not correctness. Measured on Windows (#1045,
+  5 runs each, from spawn to the exit being reported):
+  - close first: median 49 ms;
+  - drain first: median 545 ms, since the 500 ms bound ran out every time.
+
+  No test asserts this timing, so swapping the order back stays green.
+- **Ending suppresses late output, but no test reaches it.** The reader checks `is_ended` only when
+  output arrives after the end, which needs a grandchild holding a Unix pty open. Removing the check
+  stays green.
 - **`on_exit` exactly once, even after a drop.** `Drop` is `terminate`, and the pump always runs to
   the exit, so the child is reaped (no Unix zombie) and the consumer is told. Once the Session has
   ended, the reader feeds nothing: the check sits under the same lock as `end`, so no frame follows
