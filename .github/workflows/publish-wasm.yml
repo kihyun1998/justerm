@@ -5,10 +5,10 @@
 # verify step below fails the publish if the tag and the built package version disagree, making the
 # lockstep a hard gate rather than a convention.
 #
-# Setup required once by the maintainer: add an `NPM_TOKEN` repository secret (an npm automation
-# token with publish rights for `justerm-wasm-decode`). No new third-party action is introduced — wasm-pack
-# is `cargo install`ed (as in fuzz.yml) and npm auth is a one-line ~/.npmrc, both matching the repo's
-# supply-chain posture (ADR-0006).
+# Auth is npm Trusted Publishing (OIDC, `id-token: write`): no repository secret. Setup once on
+# npmjs.com: justerm-wasm-decode → Settings → Trusted publishing (`docs/agents/release.md` § Registry
+# auth). No third-party action is introduced — wasm-pack is `cargo install`ed (as in fuzz.yml) and npm
+# upgrades itself, matching the repo's supply-chain posture (ADR-0006).
 name: publish-wasm
 
 on:
@@ -27,10 +27,16 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Trusted publishing: the registry exchanges this job's GitHub OIDC token for a short-lived
+    # publish credential, so no secret is stored (`docs/agents/release.md` § Registry auth).
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # No build cache here, deliberately: it keeps `NPM_TOKEN` away from any third-party action
+      # No build cache here, deliberately: it keeps the publish credential (`id-token: write`) away from
+      # any third-party action
       # (ADR-0006; `docs/map/territory/release.md`).
 
       # Reject a README claim that expires, before the build spends any time
@@ -64,11 +70,15 @@ jobs:
       # The dual-licence texts are handled by `finish-pkg.mjs` in the build step above: it copies them
       # into `pkg/` AND pushes them into `package.json`'s `files` — both are required (#472).
 
-      - name: Publish to npm
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Trusted publishing needs npm >= 11.5.1; the runner image ships npm 10
+      # (`docs/map/territory/release.md`).
+      - name: Upgrade npm for trusted publishing
         run: |
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          npm install -g npm@11
+          npm --version
+
+      - name: Publish to npm
+        run: |
           # `./` prefix: without it npm parses `justerm-wasm-decode/pkg` as a GitHub
           # owner/repo shorthand, not a local folder, and fails on git ls-remote.
           npm publish ./justerm-wasm-decode/pkg --access public

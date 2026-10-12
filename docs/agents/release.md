@@ -48,8 +48,8 @@ rg -n 'WASM_PACK_VERSION' .github/workflows/  # what we build with
 **Being behind crates.io is not by itself a reason to bump**, and this is the one place it is easy to
 get backwards. While the pin equals the version the GitHub runner image ships, the install
 short-circuits in ~0.2s; any other value makes cargo build wasm-pack from source, and the two publish
-jobs pay that **uncached** — they drop the cache action on purpose to keep `NPM_TOKEN` away from a
-third-party action. So moving the pin ahead of the image buys a newer tool at the cost of a cold
+jobs pay that **uncached** — they drop the cache action on purpose to keep the publish credential
+away from a third-party action. So moving the pin ahead of the image buys a newer tool at the cost of a cold
 compile inside the token-holding job, at tag time.
 
 Bump when there is a reason to (a fix you need, a `wasm-bindgen` floor, a security advisory), in the
@@ -74,13 +74,40 @@ That tag push is the publish trigger. Verify it:
 
 ## What CI does on a `v*` tag
 
-| Workflow | Publishes | Gate | Secret |
+| Workflow | Publishes | Gate | Auth |
 | --- | --- | --- | --- |
-| `.github/workflows/publish-crate.yml` | `cargo publish -p justerm-core` → crates.io | tag (minus `v`) must equal the crate version, else fail | `CARGO_REGISTRY_TOKEN` |
-| `.github/workflows/publish-wasm.yml` | `wasm-pack build --target bundler` + `npm publish` → npm (`justerm-wasm-decode`) | tag must equal the wasm-pack package version, else fail | `NPM_TOKEN` |
+| `.github/workflows/publish-crate.yml` | `cargo publish -p justerm-core` → crates.io | tag (minus `v`) must equal the crate version, else fail | none — trusted publishing |
+| `.github/workflows/publish-wasm.yml` | `wasm-pack build --target bundler` + `npm publish` → npm (`justerm-wasm-decode`) | tag must equal the wasm-pack package version, else fail | none — trusted publishing |
 
-Both secrets are one-time maintainer setup (repo secrets). `justerm-wasm-decode` is `publish = false` for cargo,
+Auth is § Registry auth below. `justerm-wasm-decode` is `publish = false` for cargo,
 so it never goes to crates.io; the core crate never goes to npm.
+
+## Registry auth — trusted publishing, no secrets
+
+All four publish jobs authenticate by **trusted publishing** (OIDC): the job holds
+`permissions: id-token: write`, GitHub signs a token naming this repo and workflow file, and the
+registry trades it for a short-lived publish credential. **No `CARGO_REGISTRY_TOKEN` / `NPM_TOKEN`
+secret is used.** Each package needs a one-time entry on its registry naming the workflow file:
+
+| Package | Registry | Workflow filename |
+| --- | --- | --- |
+| `justerm-core` | crates.io → crate → Settings → Trusted Publishing | `publish-crate.yml` |
+| `justerm-wasm-decode` | npmjs.com → package → Settings → Trusted publishing | `publish-wasm.yml` |
+| `justerm-renderer` | npmjs.com → package → Settings → Trusted publishing | `publish-renderer.yml` |
+| `justerm-web` | npmjs.com → package → Settings → Trusted publishing | `publish-web.yml` |
+
+Owner `kihyun1998`, repository `justerm`, environment empty. Two npm traps, both from npm's docs:
+
+- **Allowed actions**: an entry created after 2026-09-03 allows only `npm stage publish` by default.
+  The workflows run plain `npm publish`, so **direct publishing must be ticked**, or the publish is
+  refused.
+- **2-day window**: a new npm entry expires, uneditable, if no publish validates it within 2 days.
+  Create a package's entry when that track is about to be tagged, not in advance; an expired one is
+  deleted and recreated.
+
+npm does not validate an entry when it is saved, so a typo surfaces as a failed publish. Once a
+package has published this way, set its **Publishing access** to *Require two-factor authentication
+and disallow tokens* and delete the old repository secrets.
 
 ## The renderer publishes on its OWN track (`renderer-v*`, #394)
 
@@ -151,13 +178,12 @@ Cut a renderer release:
 3. Commit, then tag: `git tag -a --cleanup=verbatim renderer-vX.Y.Z -m "renderer-vX.Y.Z — …"`.
 4. Push the tag: `git push origin renderer-vX.Y.Z`.
 
-| Workflow | Trigger | Publishes | Gate | Secret |
+| Workflow | Trigger | Publishes | Gate | Auth |
 | --- | --- | --- | --- | --- |
-| `.github/workflows/publish-renderer.yml` | `renderer-v*` | `wasm-pack build --target bundler` + `npm publish` → npm (`justerm-renderer`) | tag (minus `renderer-v`) must equal the wasm-pack package version, else fail | `NPM_TOKEN` |
+| `.github/workflows/publish-renderer.yml` | `renderer-v*` | `wasm-pack build --target bundler` + `npm publish` → npm (`justerm-renderer`) | tag (minus `renderer-v`) must equal the wasm-pack package version, else fail | none — trusted publishing |
 
-Uses the same `NPM_TOKEN`, which must have publish rights for the **`justerm-renderer`** package too (a
-distinct npm package from `justerm-wasm-decode`; the first publish may need the token widened or a
-one-time manual `npm publish ./justerm-renderer/pkg --access public`). The bundler build is the
+Needs its own trusted-publisher entry on npm (a distinct package from `justerm-wasm-decode`; § Registry
+auth). The bundler build is the
 published artifact (justerm-web's Vite consumes it); the renderer's GL proofs use `--target web`
 separately, so the job builds its own bundler output. No `finish-pkg` step — the renderer ships pure
 wasm-bindgen output, no hand-written JS helpers.
@@ -188,15 +214,13 @@ Cut a web release:
 3. Commit, then tag: `git tag -a --cleanup=verbatim web-vX.Y.Z -m "web-vX.Y.Z — …"`.
 4. Push the tag: `git push origin web-vX.Y.Z`.
 
-| Workflow | Trigger | Publishes | Gate | Secret |
+| Workflow | Trigger | Publishes | Gate | Auth |
 | --- | --- | --- | --- | --- |
-| `.github/workflows/publish-web.yml` | `web-v*` | `pnpm build` (tsup) + `npm publish ./justerm-web` → npm (`justerm-web`) | tag (minus `web-v`) must equal `package.json` version, **and** the tarball must contain `dist/index.js` + `dist/index.d.ts`, else fail | `NPM_TOKEN` |
+| `.github/workflows/publish-web.yml` | `web-v*` | `pnpm build` (tsup) + `npm publish ./justerm-web` → npm (`justerm-web`) | tag (minus `web-v`) must equal `package.json` version, **and** the tarball must contain `dist/index.js` + `dist/index.d.ts`, else fail | none — trusted publishing |
 
 `files: ["dist"]` keeps the tarball to the tsup output (+ `README.md`/`package.json`, which npm always
-includes) — the demo, e2e and tests are not shipped. `NPM_TOKEN` must have publish rights for the
-**`justerm-web`** package, a distinct npm package from `justerm-wasm-decode` and `justerm-renderer`;
-a per-package-scoped token needs widening, and the first publish may need a one-time manual
-`npm publish ./justerm-web --access public` (the renderer hit exactly this).
+includes) — the demo, e2e and tests are not shipped. `justerm-web` needs its own trusted-publisher entry on npm
+(§ Registry auth).
 
 **Which version bump?** `justerm-web`'s public surface is `src/index.ts` (what `dist` re-exports) —
 *not* its dependencies' Rust symbols. Note the renderer's own versioning basis is still open (#465):
@@ -284,7 +308,7 @@ is not rewritten, so the repair is the Release page, not the tag.
 Two deliberate details:
 
 - **A separate job**, not a step in the publish job. It needs `contents: write`, which must not sit
-  in the job holding `NPM_TOKEN` — the same reasoning (ADR-0006) that keeps third-party actions out
+  in the job holding `id-token: write` — the same reasoning (ADR-0006) that keeps third-party actions out
   of that job.
 - **`--latest=false`.** The `Latest` badge belongs to the `v*` engine track; without the flag,
   whichever track tagged most recently steals it and `gh` does not warn. Check with

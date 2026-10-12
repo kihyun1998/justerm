@@ -9,11 +9,11 @@
 #
 # Supply-chain posture (ADR-0006): the only action used is GitHub-owned `actions/checkout`, SHA-pinned;
 # pnpm is installed with `npm install -g pnpm@10` rather than `pnpm/action-setup` deliberately, to keep
-# `NPM_TOKEN` away from a third-party action (`docs/map/territory/release.md`).
+# the publish credential (`id-token: write`) away from a third-party action
+# (`docs/map/territory/release.md`).
 #
-# Requires the `NPM_TOKEN` repository secret to have publish rights for the `justerm-web` package —
-# a *different* package from justerm-wasm-decode / justerm-renderer, so a token scoped per-package
-# needs widening (the renderer hit this on its first publish; see docs/agents/release.md).
+# Auth is npm Trusted Publishing (OIDC): no repository secret. Setup once on npmjs.com: justerm-web →
+# Settings → Trusted publishing (`docs/agents/release.md` § Registry auth).
 name: publish-web
 
 on:
@@ -27,6 +27,11 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Trusted publishing: the registry exchanges this job's GitHub OIDC token for a short-lived
+    # publish credential, so no secret is stored (`docs/agents/release.md` § Registry auth).
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -73,11 +78,15 @@ jobs:
           echo "tag=$tag package=$pkg"
           test "$tag" = "$pkg" || { echo "::error::tag web-v$tag != package version $pkg"; exit 1; }
 
-      - name: Publish to npm (idempotent — skip if the version is already on the registry)
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Trusted publishing needs npm >= 11.5.1; the runner image ships npm 10
+      # (`docs/map/territory/release.md`).
+      - name: Upgrade npm for trusted publishing
         run: |
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          npm install -g npm@11
+          npm --version
+
+      - name: Publish to npm (idempotent — skip if the version is already on the registry)
+        run: |
           pkg="$(node -p "require('./justerm-web/package.json').version")"
           # A version already on npm cannot be re-published (npm 403). Skip gracefully so re-tagging is
           # always safe. `npm view pkg@ver version` prints the version when it exists, empty when not.
@@ -89,7 +98,7 @@ jobs:
           fi
 
   # #474: a GitHub Release for this track, deliberately a separate job so `contents: write` never
-  # shares a job with NPM_TOKEN (`docs/map/territory/release.md`).
+  # shares a job with `id-token: write` (`docs/map/territory/release.md`).
   release:
     needs: publish
     runs-on: ubuntu-latest

@@ -85,8 +85,8 @@ What a stranger *reads* once it has shipped is a different concept — see
 - **Why the four publish workflows are shaped the way they are** — the facts their comments point
   here:
   - *No build cache in a publish job*: a third-party action sharing a job that holds the publish
-    token can read it, so dropping `rust-cache` (and using `npm install -g pnpm@10` rather than
-    `pnpm/action-setup`) keeps `CARGO_REGISTRY_TOKEN` / `NPM_TOKEN` away from any third-party action
+    credential can use it, so dropping `rust-cache` (and using `npm install -g pnpm@10` rather than
+    `pnpm/action-setup`) keeps every step able to mint one under `id-token: write` first-party
     (ADR-0006). A publish runs on a rare tag, so the cache bought little.
   - *The `wasm-pack` pin is for determinism, not speed* (#616): unpinned, two tags a week apart could
     ship differently-generated wasm from one source tree — live when written, with crates.io serving
@@ -107,10 +107,17 @@ What a stranger *reads* once it has shipped is a different concept — see
     `LICENSE`/`LICENSE.md`, not the hyphenated form — renderer 0.5.0/0.6.0 and web 0.7.0 shipped a
     licence declaration with no licence text. The decoder's `finish-pkg.mjs` and the renderer's inline
     step both add them; the web job asserts them, with the entry and its types, inside the tarball.
+  - *Trusted publishing, no secrets*: each publish job holds `id-token: write` instead of a stored
+    token. crates.io's exchange is three `curl` calls in one step — mint a GitHub OIDC JWT for
+    audience `crates.io`, POST it to `/api/v1/trusted_publishing/tokens`, DELETE the returned token
+    on exit — rather than `rust-lang/crates-io-auth-action`, which would put third-party code in the
+    credential-minting job (the protocol was read from that action's source). npm needs CLI
+    ≥ 11.5.1 while the runner image ships npm 10 (image 20261004: Node 22.23.3, npm 10.9.9), hence
+    `npm install -g npm@11` in each npm job; the image's Node already meets npm's ≥ 22.14.0.
   - *An already-published version is a green no-op*: npm refuses a re-publish (403), so each npm job
     checks `npm view pkg@ver version` first — re-tagging is always safe.
   - *A GitHub Release per npm track, in its own job* (#474): a registry publish carries no notes, and
-    the release job needs `contents: write`, which must not share a job with `NPM_TOKEN`. Created at
+    the release job needs `contents: write`, which must not share a job with `id-token: write`. Created at
     tag time, so `publishedAt` is right by construction; the body is the tag's annotation (a
     lightweight tag falls through to its commit message, verified); `--latest=false` keeps the Latest
     badge on the `v*` engine track.

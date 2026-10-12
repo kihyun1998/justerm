@@ -7,10 +7,10 @@
 # step fails the publish if the tag and the built package version disagree, making the lockstep a hard
 # gate rather than a convention (mirrors publish-wasm.yml).
 #
-# Setup required once by the maintainer: an `NPM_TOKEN` repository secret (npm automation token with
-# publish rights for the `justerm-renderer` package). No new third-party action is introduced —
-# wasm-pack is `cargo install`ed and npm auth is a one-line ~/.npmrc, matching the supply-chain posture
-# (ADR-0006). The publish artifact is the `--target bundler` build (Vite/webpack consumes it); the
+# Auth is npm Trusted Publishing (OIDC, `id-token: write`): no repository secret. Setup once on
+# npmjs.com: justerm-renderer → Settings → Trusted publishing (`docs/agents/release.md` § Registry
+# auth). No third-party action is introduced — wasm-pack is `cargo install`ed and npm upgrades itself,
+# matching the supply-chain posture (ADR-0006). The publish artifact is the `--target bundler` build (Vite/webpack consumes it); the
 # renderer's GL proofs build `--target web` separately, so this job builds its own bundler output.
 name: publish-renderer
 
@@ -31,10 +31,16 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Trusted publishing: the registry exchanges this job's GitHub OIDC token for a short-lived
+    # publish credential, so no secret is stored (`docs/agents/release.md` § Registry auth).
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # No build cache here, deliberately: it keeps `NPM_TOKEN` away from any third-party action
+      # No build cache here, deliberately: it keeps the publish credential (`id-token: write`) away from
+      # any third-party action
       # (ADR-0006). Why each step is shaped as it is: `docs/map/territory/release.md`.
 
       # Reject a README claim that expires, before the build spends any time
@@ -87,11 +93,15 @@ jobs:
           echo "tag=$tag package=$pkg"
           test "$tag" = "$pkg" || { echo "::error::tag renderer-v$tag != package version $pkg"; exit 1; }
 
-      - name: Publish to npm (idempotent — skip if the version is already on the registry)
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Trusted publishing needs npm >= 11.5.1; the runner image ships npm 10
+      # (`docs/map/territory/release.md`).
+      - name: Upgrade npm for trusted publishing
         run: |
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          npm install -g npm@11
+          npm --version
+
+      - name: Publish to npm (idempotent — skip if the version is already on the registry)
+        run: |
           pkg="$(node -p "require('./justerm-renderer/pkg/package.json').version")"
           # A version already on npm cannot be re-published (npm 403), so skip it: re-tagging is safe.
           if [ -n "$(npm view "justerm-renderer@$pkg" version 2>/dev/null || true)" ]; then
@@ -102,7 +112,7 @@ jobs:
           fi
 
   # #474: a GitHub Release for this track, deliberately a separate job so `contents: write` never
-  # shares a job with NPM_TOKEN (`docs/map/territory/release.md`).
+  # shares a job with `id-token: write` (`docs/map/territory/release.md`).
   release:
     needs: publish
     runs-on: ubuntu-latest
