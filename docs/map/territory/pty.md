@@ -42,8 +42,8 @@ that does no I/O itself.
 
 - `justerm-pty/src/lib.rs` — `Pty::spawn`, `Pty::terminate`, `Pump::run`, `spawn_reader`,
   `write_back`, `EXIT_POLL`, `DRAIN_AFTER_EXIT`
-- `justerm-pty/tests/pty.rs` — the harness-free runner. With `JUSTERM_PTY_HELPER` set it is the
-  child; without it, it runs the tests against itself.
+- `justerm-pty/tests/pty.rs` — `HELPER`, `helper`: the harness-free runner. With that variable set
+  it is the child; without it, it runs the tests against itself.
 
 ## Reference behaviour
 
@@ -66,4 +66,9 @@ Not compared against a pinned reference yet. The layout peers (wezterm's `pty/` 
 - No encoding hook. Output is fed as received: #1047.
 - `publish = false`: the publish step and crates.io token land with #1047.
 - The explicit cross-OS "query → reply arrives" test needs raw mode on Unix and comes with #1046. On
-  Windows, the start-up `ESC[6n` already proves write-back: without it, every test times out.
+  Windows, the start-up `ESC[6n` already proves the **reader's** write-back: without it, every test
+  times out.
+- **The pump's write-back is unproven.** Removing it leaves every test green (mutation run, #1045).
+  The replies it carries are the consumer's own, e.g. from `report_*`. A line-mode child receives
+  bytes without a trailing newline only once something else ends the line, which needs #1046's
+  consumer writer. Prove it there.
