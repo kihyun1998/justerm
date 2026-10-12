@@ -18,6 +18,8 @@ on:
   push:
     tags:
       - "renderer-v*"
+  # Verify-only: a manual run publishes nothing (`verify-auth` below).
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -30,6 +32,7 @@ env:
 
 jobs:
   publish:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # Trusted publishing: the registry exchanges this job's GitHub OIDC token for a short-lived
     # publish credential, so no secret is stored (`docs/agents/release.md` § Registry auth).
@@ -139,3 +142,20 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --verify-tag --latest=false \
               --title "$GITHUB_REF_NAME" --generate-notes
           fi
+
+  # A manual run proves the registry accepts this workflow's OIDC token for justerm-renderer, and publishes
+  # nothing (`docs/agents/release.md` § Registry auth).
+  verify-auth:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Upgrade npm for trusted publishing
+        run: |
+          npm install -g npm@11
+          npm --version
+      - name: Verify the trusted publisher (no publish)
+        run: bash .github/scripts/verify-trusted-publish.sh npm justerm-renderer

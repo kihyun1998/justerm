@@ -105,7 +105,10 @@ Owner `kihyun1998`, repository `justerm`, environment empty. Two npm traps, both
   Create a package's entry when that track is about to be tagged, not in advance; an expired one is
   deleted and recreated.
 
-npm does not validate an entry when it is saved, so a typo surfaces as a failed publish. Once a
+npm does not validate an entry when it is saved, so a typo would surface as a failed publish — so
+check it first, publishing nothing: `gh workflow run publish-<crate|wasm|renderer|web>.yml --ref master`
+runs only the `verify-auth` job, which exchanges the OIDC token (`.github/scripts/verify-trusted-publish.sh`)
+and discards the result. It cannot check npm's `repository.url` match, which runs at publish only. Once a
 package has published this way, set its **Publishing access** to *Require two-factor authentication
 and disallow tokens* and delete the old repository secrets.
 
