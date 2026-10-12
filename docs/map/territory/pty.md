@@ -3,10 +3,15 @@
 ## What it is
 
 The family's one I/O crate, `justerm-pty`. It spawns a consumer-chosen command in a pseudo-terminal
-and drives a core `Session` from it. A reader thread feeds the child's output in and writes the
-engine's replies straight back. A pump thread pumps the Session on a timer, hands its events to the
-consumer, and watches for the child's exit. Everything it does is wiring between the OS and an engine
-that does no I/O itself.
+and drives a core `Session` from it, using three threads:
+- **reader:** feeds the child's output into the Session and hands the engine's replies to the writer;
+- **pump:** pumps the Session on a timer, hands its events to the consumer, and watches for the
+  child's exit;
+- **writer:** the only thread that writes to the child. It writes the engine's replies and the
+  consumer's `Pty::write`s, in the order they were handed over.
+
+`Pty::resize` resizes the Session, then the pseudo-terminal to the size the engine adopted.
+Everything it does is wiring between the OS and an engine that does no I/O itself.
 
 ## Governing decisions
 
@@ -19,13 +24,29 @@ that does no I/O itself.
 
 ## Design model
 
-- **Two threads, one lock.** The reader and the pump share the Session behind one mutex, and the
-  consumer reaches the same one through `Pty::session`. Nothing holds it across a blocking call.
-- **Replies are written by whoever drained them, at once.** The reader writes the replies to what it
-  just fed. The pump writes replies that something else produced, such as a consumer's `report_*`.
-  Pacing them with frames would hold a Windows child for a whole period, because a ConPTY asks
-  `ESC[6n` before the child may run (measured #1045: answered, the child exited in 352 ms;
-  unanswered, nothing happened in 8 s).
+- **One lock for the Session, one channel for the child.** The reader and the pump share the Session
+  behind one mutex, and the consumer reaches the same one through `Pty::session`. Nothing holds it
+  across a blocking call. Every byte bound for the child goes through one `mpsc` channel to the
+  writer thread, which gives two guarantees:
+  - order holds between the engine's replies and the consumer's input;
+  - a blocking write never stalls the reader. Without that, a child flooding queries while never
+    reading its stdin used to fill the pty input queue and freeze the read loop.
+- **Replies are handed over by whoever drained them, at once.** The reader hands over the replies to
+  what it just fed. The pump hands over replies that something else produced, such as a consumer's
+  `report_*`, or bytes fed through `Session::edit`. Pacing them with frames would hold a Windows
+  child for a whole period, because a ConPTY asks `ESC[6n` before the child may run. Measured
+  (#1045): answered, the child exited in 352 ms; unanswered, nothing happened in 8 s.
+- **On Windows, conhost is the console's terminal.** Measured (#1046):
+  - conhost answered the child's DA1 itself, with `?61;6;7;21;22;23;24;28;32;42c`, never forwarding
+    it;
+  - it consumed a VT reply that arrived as input (`ESC[0n`), so the child read an empty line.
+
+  The engine's replies therefore matter on Windows only for conhost's own queries, such as the
+  start-up `ESC[6n`. The "a child's query is answered" and "a pump-drained reply reaches the child"
+  tests run on Unix only, where the tty passes the bytes through.
+- **Resize is engine first, then the pty at the adopted size.** The engine widens a too-narrow
+  width to its minimum. Telling the child the requested width would make the two disagree, so the
+  child is told the adopted one.
 - **Exit is polled, not awaited.** A ConPTY reader can stay blocked after the child has exited, so EOF
   cannot be the exit signal. The pump asks `try_wait` on its own tick, at most `EXIT_POLL`, so a long
   pump period does not delay it.
@@ -60,8 +81,8 @@ that does no I/O itself.
 
 ## Code
 
-- `justerm-pty/src/lib.rs` — `Pty::spawn`, `Pty::terminate`, `Pump::run`, `spawn_reader`,
-  `write_back`, `EXIT_POLL`, `DRAIN_AFTER_EXIT`
+- `justerm-pty/src/lib.rs` — `Pty::spawn`, `Pty::write`, `Pty::resize`, `Pty::terminate`,
+  `Pump::run`, `spawn_reader`, `spawn_writer`, `write_back`, `EXIT_POLL`, `DRAIN_AFTER_EXIT`
 - `justerm-pty/tests/pty.rs` — `HELPER`, `helper`: the harness-free runner. With that variable set
   it is the child; without it, it runs the tests against itself.
 
@@ -82,20 +103,12 @@ Not compared against a pinned reference yet. The layout peers (wezterm's `pty/` 
 
 ## Known holes
 
-- No writer for the consumer's own input, and a resize does not reach the pseudo-terminal: #1046.
 - No encoding hook. Output is fed as received: #1047.
 - `publish = false`: the publish step and crates.io token land with #1047.
-- The explicit cross-OS "query → reply arrives" test needs raw mode on Unix and comes with #1046. On
-  Windows, the start-up `ESC[6n` already proves the **reader's** write-back: without it, every test
-  times out.
-- **The pump's write-back is unproven.** Removing it leaves every test green (mutation run, #1045).
-  The replies it carries are the consumer's own, e.g. from `report_*`. A line-mode child receives
-  bytes without a trailing newline only once something else ends the line, which needs #1046's
-  consumer writer. Prove it there.
-- **A reply write can stall the reader** (low reach). The reader writes replies with a blocking
-  `write_all`. Consider a child that floods queries while never reading its stdin: once the input
-  queue fills, the reader blocks in the write, stops reading, and the child then blocks on output. A
-  separate writer thread would remove this, and #1046 redesigns the writer anyway.
+- **The channel to the writer is unbounded.** A child that floods queries while never reading its
+  stdin no longer stalls the reader. Its replies queue in memory instead, until the child exits.
+- **The reply tests are proven on Unix only**, for the conhost reason above. On Windows only the
+  start-up `ESC[6n` proves the reader's write-back, and no test there proves the pump's.
 - **A grandchild holding a Unix pty open keeps the reader thread blocked** after the exit is reported.
   The reader has its own fd, so dropping the master does not release it. It feeds nothing once the
   Session has ended, so this is a parked thread rather than wrong output. A ConPTY reader is released

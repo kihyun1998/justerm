@@ -23,6 +23,10 @@ anyhow = "1"
 name = "pty"
 harness = false
 
+[dev-dependencies]
+# The size-reporting helper child (tests/pty.rs) reads its own terminal size.
+terminal_size = "0.4"
+
 # The SIGHUP-ignoring helper child (tests/pty.rs) sets its signal disposition.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
