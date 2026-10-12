@@ -11,6 +11,10 @@ and drives a core `Session` from it, using three threads:
   consumer's `Pty::write`s, in the order they were handed over.
 
 `Pty::resize` resizes the Session, then the pseudo-terminal to the size the engine adopted.
+`Options::decoder` and `Options::encoder` let a consumer convert a child's legacy encoding, while
+choosing the encoding stays the consumer's policy:
+- the decoder runs on the reader before each chunk is fed;
+- the encoder runs on the writer over everything bound for the child.
 Everything it does is wiring between the OS and an engine that does no I/O itself.
 
 ## Governing decisions
@@ -103,8 +107,11 @@ Not compared against a pinned reference yet. The layout peers (wezterm's `pty/` 
 
 ## Known holes
 
-- No encoding hook. Output is fed as received: #1047.
-- `publish = false`: the publish step and crates.io token land with #1047.
+- **A legacy decoder is proven on Unix only.** On Windows a console child cannot put legacy bytes on
+  the pseudo-terminal. Measured (#1047): Rust's std refuses to write non-UTF-8 to a console with
+  `InvalidData`. By ConPTY's design, not measured here, conhost re-emits console output as UTF-8.
+  Windows proves where the decoder and encoder sit, with an ASCII rewrite, but not that a split
+  character is reassembled.
 - **The channel to the writer is unbounded.** A child that floods queries while never reading its
   stdin no longer stalls the reader. Its replies queue in memory instead, until the child exits.
 - **The reply tests are proven on Unix only**, for the conhost reason above. On Windows only the
