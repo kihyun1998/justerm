@@ -197,3 +197,43 @@ fn a_clear_sends_a_full_frame_on_the_next_pump() {
     session.pump();
     assert_eq!(rec.kinds(), vec![FrameKind::Full]);
 }
+
+#[test]
+fn every_viewport_scroll_sends_a_frame_on_the_next_pump() {
+    let (mut session, rec) = subscribed(10, 2);
+    session.feed(b"1\r\n2\r\n3\r\n4\r\n5");
+    session.pump();
+    let offsets = |rec: &Recorder| -> Vec<u32> {
+        rec.0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|f| decode(f).unwrap().display_offset)
+            .collect()
+    };
+    rec.0.lock().unwrap().clear();
+
+    session.edit(|engine| engine.scroll_up(3));
+    session.pump();
+    session.edit(|engine| engine.scroll_down(1));
+    session.pump();
+    session.edit(|engine| engine.scroll_to_bottom());
+    session.pump();
+    let m = session
+        .engine()
+        .search("1")
+        .into_iter()
+        .next()
+        .expect("1 is in history");
+    session.edit(|engine| engine.scroll_to_match(&m));
+    session.pump();
+    assert_eq!(offsets(&rec), vec![3, 2, 0, 3]);
+}
+
+#[test]
+fn marking_the_screen_fully_damaged_sends_a_full_frame_on_the_next_pump() {
+    let (mut session, rec) = subscribed(10, 2);
+    session.edit(|engine| engine.mark_fully_damaged());
+    session.pump();
+    assert_eq!(rec.kinds(), vec![FrameKind::Full]);
+}

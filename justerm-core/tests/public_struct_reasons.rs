@@ -46,6 +46,7 @@ const CORE_SOURCES: &[(&str, &str)] = &[
     ("search.rs", include_str!("../src/search.rs")),
     ("selection.rs", include_str!("../src/selection.rs")),
     ("serialize.rs", include_str!("../src/serialize.rs")),
+    ("session.rs", include_str!("../src/session.rs")),
     ("term.rs", include_str!("../src/term.rs")),
 ];
 

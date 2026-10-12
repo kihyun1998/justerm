@@ -11,6 +11,10 @@ pub trait FrameSink {
 
 /// What one [`Session::pump`] hands back: everything the engine produced for the caller since the
 /// last pump.
+///
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** The
+/// session builds it and no public function accepts one, so the attribute would bind nothing; it
+/// has a `Default` for a caller that wants one anyway.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Pumped {
     /// Reply bytes (DA, DSR, …) for the caller to write back to whatever feeds the session — the
@@ -28,6 +32,10 @@ pub struct Pumped {
 /// [`pump`](Session::pump): on a timer, after an ack, or in a test whenever it likes. A frame is
 /// encoded only when [`Engine::frame_pending`] says the next one may differ, and damage is reset
 /// as it is sent.
+///
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)).** Its
+/// fields are private, so there is no outside literal for the attribute to bind; it is built only
+/// by [`Session::new`].
 pub struct Session {
     engine: Engine,
     sink: Option<Box<dyn FrameSink + Send>>,
