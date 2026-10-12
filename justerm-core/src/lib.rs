@@ -23,6 +23,7 @@ mod paint;
 mod search;
 mod selection;
 mod serialize;
+mod session;
 mod term;
 
 pub use cell::{Cell, CellFlags, UnderlineStyle};
@@ -43,6 +44,7 @@ pub use serialize::{
     CELL_RECORD_LEN, DecodeError, Frame, FrameKind, MarkerId, MarkerKind, MarkerPosition, Overlay,
     Span, WIRE_VERSION, decode, encode, encode_cell_record, encode_color,
 };
+pub use session::{FrameSink, Pumped, Session};
 
 pub use term::{
     CommandLine, DEFAULT_WORD_SEPARATORS, Hyperlink, MAX_CLUSTER_TAIL, MAX_COLUMNS,
@@ -64,6 +66,8 @@ use vte::Parser;
 pub struct Engine {
     parser: Parser,
     term: Term,
+    /// What [`Engine::frame_pending`] answers.
+    frame_pending: bool,
 }
 
 impl Engine {
@@ -76,6 +80,7 @@ impl Engine {
         Engine {
             parser: Parser::new(),
             term: Term::new(cols, rows),
+            frame_pending: true,
         }
     }
 
@@ -85,6 +90,7 @@ impl Engine {
         Engine {
             parser: Parser::new(),
             term: Term::with_scrollback(cols, rows, scrollback_limit),
+            frame_pending: true,
         }
     }
 
@@ -126,6 +132,7 @@ impl Engine {
             rest = &rest[i + 1..];
         }
         self.parser.advance(&mut self.term, rest);
+        self.frame_pending = true;
     }
 
     /// Resize the screen to `cols` x `rows`. Rows that scroll off the top enter
@@ -161,6 +168,7 @@ impl Engine {
     /// value passed here, and size the PTY from that same width.
     pub fn resize(&mut self, cols: usize, rows: usize) {
         self.term.resize(cols, rows);
+        self.frame_pending = true;
     }
 
     /// The current screen grid.
@@ -373,6 +381,21 @@ impl Engine {
     /// Clear accumulated damage after a frame is applied (the consumer's ack).
     pub fn reset_damage(&mut self) {
         self.term.reset_damage();
+        self.frame_pending = false;
+    }
+
+    /// Whether the next [`Engine::frame`] may differ from the last one acked with
+    /// [`Engine::reset_damage`] — the question a consumer asks before encoding a frame at all.
+    ///
+    /// It is wider than [`Engine::damage`], which is cell content only: while the viewport is
+    /// scrolled up, output leaves no damage but still moves the header's scroll position. So it is
+    /// raised by [`feed`](Engine::feed), [`resize`](Engine::resize), [`clear`](Engine::clear),
+    /// an accepted [`paint_logical_line`](Engine::paint_logical_line),
+    /// [`mark_fully_damaged`](Engine::mark_fully_damaged) and every viewport scroll, and cleared
+    /// by `reset_damage`. Draining events or replies and reporting colours do not raise it. A
+    /// fresh engine starts with it raised, since none of its state has been sent.
+    pub fn frame_pending(&self) -> bool {
+        self.frame_pending
     }
 
     /// Force the next [`Engine::frame`] to be a `Full` frame (every row), even if
@@ -382,6 +405,7 @@ impl Engine {
     /// next `frame()` reports `FrameKind::Full`.
     pub fn mark_fully_damaged(&mut self) {
         self.term.mark_fully_damaged();
+        self.frame_pending = true;
     }
 
     /// The first-class scroll recorded since the last [`Engine::reset_damage`],
@@ -407,16 +431,19 @@ impl Engine {
     /// Scroll the viewport up by `n` lines into scrollback history.
     pub fn scroll_up(&mut self, n: usize) {
         self.term.scroll_up(n);
+        self.frame_pending = true;
     }
 
     /// Scroll the viewport down by `n` lines toward the live screen.
     pub fn scroll_down(&mut self, n: usize) {
         self.term.scroll_down(n);
+        self.frame_pending = true;
     }
 
     /// Jump the viewport back to the live screen (follow the bottom).
     pub fn scroll_to_bottom(&mut self) {
         self.term.scroll_to_bottom();
+        self.frame_pending = true;
     }
 
     /// Begin a selection of `ty` at viewport cell `(row, col)`, on `side` of the
@@ -448,7 +475,9 @@ impl Engine {
     /// Does nothing on the alt screen and returns `false`, so a consumer can leave
     /// the keystroke to the application; `true` otherwise.
     pub fn clear(&mut self) -> bool {
-        self.term.clear()
+        let cleared = self.term.clear();
+        self.frame_pending |= cleared;
+        cleared
     }
 
     /// Replace the characters that end a word for [`SelectionType::Word`] — consumer
@@ -564,7 +593,9 @@ impl Engine {
     /// named was rewritten or moved and is reported again — unless it has left the buffer, or it
     /// was on an alternate screen that has since closed.
     pub fn paint_logical_line(&mut self, at: LineRef, text: &str, spans: &[PaintSpan]) -> bool {
-        self.term.paint_logical_line(at, text, spans)
+        let painted = self.term.paint_logical_line(at, text, spans);
+        self.frame_pending |= painted;
+        painted
     }
 
     /// The whole buffer (scrollback + screen) as one text document for a
@@ -588,6 +619,7 @@ impl Engine {
     /// picks the match, the engine scrolls to it).
     pub fn scroll_to_match(&mut self, m: &Match) {
         self.term.search_scroll_to(m);
+        self.frame_pending = true;
     }
 
     /// The match projected onto the viewport as inclusive-column spans per
