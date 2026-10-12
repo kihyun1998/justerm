@@ -99,7 +99,9 @@ Not compared against a pinned reference yet. The layout peers (wezterm's `pty/` 
 ## Blast radius
 
 - A change to `Session`'s pump or flush contract changes what the pump thread sends.
-- `.github/workflows/test.yml`'s `pty` job runs this crate on macOS and Windows. Linux runs in `test`.
+- `.github/workflows/test.yml`'s `pty` job runs this crate on macOS and Windows; Linux runs in
+  `test`. To see another OS before CI does, follow
+  [`docs/agents/local-os-checks.md`](../../agents/local-os-checks.md).
 
 ## Known holes
 
