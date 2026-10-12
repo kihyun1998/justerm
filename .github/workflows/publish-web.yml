@@ -85,7 +85,8 @@ jobs:
       # (`docs/map/territory/release.md`).
       - name: Upgrade npm for trusted publishing
         run: |
-          npm install -g npm@11
+          # sudo: the image's global prefix leaves /usr/local/share/man unwritable to the runner user.
+          sudo npm install -g npm@11
           npm --version
 
       - name: Publish to npm (idempotent — skip if the version is already on the registry)
@@ -138,7 +139,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Upgrade npm for trusted publishing
         run: |
-          npm install -g npm@11
+          # sudo: the image's global prefix leaves /usr/local/share/man unwritable to the runner user.
+          sudo npm install -g npm@11
           npm --version
       - name: Verify the trusted publisher (no publish)
         run: bash .github/scripts/verify-trusted-publish.sh npm justerm-web
