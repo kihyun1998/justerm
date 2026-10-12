@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { Terminal, rendererNotifyingSink } from "../src/terminal";
 import { routeWheel, wheelGoesToApp, scrollsToBottomOnInput, wheelScrollTarget } from "../src/scroll-control";
 import { isUserInput } from "../src/input";
-import { textareaMove, preeditIntent, preeditLatch } from "../src/composition";
+import { textareaMove, preeditIntent, preeditLatch, viewportCell } from "../src/composition";
 import { suggestionCell } from "../src/suggestion";
 import { StubFrameSource } from "../src/frame-source";
 import { MouseEvents, StubInputSink } from "../src/input";
@@ -499,6 +499,32 @@ describe("preeditLatch — where a composition starts when a commit is in flight
     expect(preeditLatch(undefined, undefined, false)).toBeUndefined();
     // And a pending commit does not invent one: `preeditIntent` draws nothing without an origin.
     expect(preeditLatch(undefined, undefined, true)).toBeUndefined();
+  });
+});
+
+/**
+ * #917 — a grid cell as the viewport row it is shown at. The engine names cells by GRID row; the
+ * renderer and the hidden textarea live in VIEWPORT rows, and at display offset `d` grid row `r` is
+ * shown at `r + d` while that is `< rows`. Every writer that puts a grid cell on screen goes through
+ * this one mapping — the preedit run, the IME anchor, the suggestion.
+ */
+describe("viewportCell (#917)", () => {
+  it("is the cell itself at offset 0", () => {
+    expect(viewportCell({ col: 3, row: 33 }, 0, 37)).toEqual({ col: 3, row: 33 });
+  });
+
+  it("moves the row down by the offset, and leaves the column alone", () => {
+    expect(viewportCell({ col: 3, row: 33 }, 2, 37)).toEqual({ col: 3, row: 35 });
+  });
+
+  it("is undefined once the mapped row is off the bottom — the last row is still on screen", () => {
+    expect(viewportCell({ col: 3, row: 33 }, 3, 37)).toEqual({ col: 3, row: 36 });
+    expect(viewportCell({ col: 3, row: 33 }, 4, 37)).toBeUndefined();
+  });
+
+  it("is undefined with no cell, and before the first frame says how many rows there are", () => {
+    expect(viewportCell(undefined, 0, 37)).toBeUndefined();
+    expect(viewportCell({ col: 0, row: 0 }, 0, 0)).toBeUndefined();
   });
 });
 

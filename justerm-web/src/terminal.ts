@@ -12,7 +12,14 @@ import {
 import { PointerRouter, type LocalPointer } from "./pointer";
 import { SCROLLBAR_ATTRIBUTE } from "./scrollbar";
 import { routeWheel, scrollsToBottomOnInput, WheelScroller, type ScrollOptions } from "./scroll-control";
-import { CompositionController, preeditIntent, preeditLatch, textareaMove, type TextareaAnchor } from "./composition";
+import {
+  CompositionController,
+  preeditIntent,
+  preeditLatch,
+  textareaMove,
+  viewportCell,
+  type TextareaAnchor,
+} from "./composition";
 import { suggestionCell, suggestionColorRef, type SuggestionOptions } from "./suggestion";
 import { ClipboardController, type ClipboardOptions } from "./clipboard";
 import { dispatchTermEvent, type EventHandlers } from "./events";
@@ -181,8 +188,8 @@ export class Terminal {
   /** The OSC 52 router, when the consumer wired one. Held so `dispose()` can
    * end it — an in-flight clipboard read outlives the event subscription. */
   private clipboardController: ClipboardController | undefined;
-  /** Last cursor cell the textarea was moved to, so it repositions only on a move
-   * rather than on every frame. */
+  /** Last viewport cell a keyed writer moved the textarea to, so it repositions only when that cell
+   * changes rather than on every frame. */
   private textareaCell = "";
   /** The cursor cell the latest frame reported, retained so the anchor can be re-synced at a
    * point of use without waiting for a frame. Written by {@link Terminal.track} on every frame that
@@ -276,7 +283,7 @@ export class Terminal {
    * Re-anchors first: focusing is a moment something reads the element's position, and the cell
    * may have moved since the cursor last did. */
   focus(): void {
-    this.syncTextareaAnchor();
+    this.syncTextareaAnchor(this.cursorAnchor);
     this.textarea?.focus();
   }
 
@@ -445,15 +452,14 @@ export class Terminal {
     // controller, then clear the textarea once its deferred read has run.
     // The caret also stops blinking for the duration (#592).
     const onStart = (): void => {
-      // Re-anchor BEFORE the controller is told a composition began (#631): the guard in
-      // `textareaMove` keys on `composing`, which reads false here only because this runs before
-      // `compositionStart()`. Swapping the two silently disables the re-sync.
-      this.syncTextareaAnchor();
-      // Latch the origin, after the re-sync above made the cell current. `active`, not `composing`:
-      // read before `compositionStart()`, it means a commit is still queued behind its deferred read
-      // (#911, ADR-0028).
+      // Latch the origin. `active`, not `composing`: read before `compositionStart()`, it means a
+      // commit is still queued behind its deferred read (#911, ADR-0028).
       this.preeditOrigin = preeditLatch(this.cursorAnchor, this.preeditEnd, composition.active);
       this.preeditEnd = undefined;
+      // Re-anchor at that origin (#917), BEFORE the controller is told a composition began (#631):
+      // the guard in `textareaMove` keys on `composing`, which reads false here only because this
+      // runs before `compositionStart()`. Swapping the two silently disables the re-sync.
+      this.syncTextareaAnchor(this.preeditOrigin);
       composition.compositionStart();
       this.renderer.setComposing?.(true);
       if (this.paintSuggestion(false)) this.renderer.render();
@@ -547,31 +553,33 @@ export class Terminal {
   }
 
   /** Move the hidden textarea over the cursor cell so the IME candidate window appears there.
-   * **The DOM write** is skipped when the cursor is absent or hidden; the retained cell is
+   * **The DOM write** is skipped when the cursor is absent, hidden, or off the bottom; the retained cell is
    * {@link Terminal.track}'s and is kept either way. Touches the DOM (a layout read via `getGeometry`
-   * and two style writes) only when the cursor moved — a cache keyed on the coordinate, which cannot
+   * and two style writes) only when the cursor moved — a cache keyed on the viewport cell, which cannot
    * see a cell-size change; {@link Terminal.syncTextareaAnchor} is the path that can. */
   private positionTextarea(frame: DecodedFrame): void {
     if (frame.cursorRow === undefined || frame.cursorVisible === false) return;
-    // Built from the FRAME, not read back from `cursorAnchor`, so this has no ordering condition
-    // against `track` (docs/map/invariant/composition-is-browser-owned-state.md).
-    const cursor = { col: frame.cursorCol ?? 0, row: frame.cursorRow };
+    // Built from the FRAME, not read back from `cursorAnchor` or `frameOffset`, so this has no
+    // ordering condition against `track` (docs/map/invariant/composition-is-browser-owned-state.md).
+    const cursor = viewportCell({ col: frame.cursorCol ?? 0, row: frame.cursorRow }, frame.displayOffset ?? 0, frame.rows);
     this.applyTextareaAnchor(textareaMove(cursor, this.textareaCell, false, this.composition?.composing ?? false));
   }
 
   /**
-   * Re-anchor the textarea at the retained cursor cell, re-reading the geometry. Runs at the moments
-   * something reads the anchor — composition start and focus — because the coordinate cache cannot
-   * see a cell-size change. `composing` outranks `force`: a composition freezes the anchor for this
-   * caller too
+   * Re-anchor the textarea at `cell` — a GRID cell, written at the viewport row it is shown at, or not
+   * at all when that row is off the bottom — re-reading the geometry. Runs at the moments something
+   * reads the anchor: composition start (at the latched origin) and focus (at the retained cursor
+   * cell), because the coordinate cache cannot see a cell-size change. `composing` outranks `force`:
+   * a composition freezes the anchor for this caller too
    * ([`docs/map/invariant/composition-is-browser-owned-state.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/composition-is-browser-owned-state.md)).
    * Why these moments:
    * [`docs/map/invariant/cell-size-is-derived-state.md`](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/cell-size-is-derived-state.md);
    * the measured cost of a stale anchor at focus:
    * [`docs/agents/reference-facts.md`](https://github.com/kihyun1998/justerm/blob/master/docs/agents/reference-facts.md#the-ime-anchor-nobody-caches-it-and-xterm-shares-our-staleness-631-verified-2026-07-30-637-adjudicated-2026-07-30-649-measured-2026-07-31).
    */
-  private syncTextareaAnchor(): void {
-    this.applyTextareaAnchor(textareaMove(this.cursorAnchor, this.textareaCell, true, this.composition?.composing ?? false));
+  private syncTextareaAnchor(cell: TextareaAnchor | undefined): void {
+    const shown = viewportCell(cell, this.frameOffset, this.rows);
+    this.applyTextareaAnchor(textareaMove(shown, this.textareaCell, true, this.composition?.composing ?? false));
   }
 
   /** Write a decided move to the DOM. Both callers funnel here so the cache and the two style
@@ -605,8 +613,8 @@ export class Terminal {
   private paintPreedit(codepoints: Uint32Array, at: TextareaAnchor): void {
     // `rows` is 0 until the first frame; unreachable, since `preeditIntent` declines without an
     // origin (docs/map/territory/input-encoding.md).
-    const row = at.row + this.frameOffset;
-    if (row >= this.rows) {
+    const row = viewportCell(at, this.frameOffset, this.rows)?.row;
+    if (row === undefined) {
       // Clear what is drawn, if anything. `preeditEnd` is left as is.
       if (this.preeditPaintedRow !== undefined) {
         this.renderer.setPreedit?.(at.col, this.preeditPaintedRow, EMPTY_PREEDIT);
@@ -658,8 +666,7 @@ export class Terminal {
   private repaintPreedit(): void {
     const at = this.preeditOrigin;
     if (!at || this.preeditText.length === 0) return;
-    const want = at.row + this.frameOffset;
-    if ((want < this.rows ? want : undefined) === this.preeditPaintedRow) return;
+    if (viewportCell(at, this.frameOffset, this.rows)?.row === this.preeditPaintedRow) return;
     this.paintPreedit(Uint32Array.from(this.preeditText, (c) => c.codePointAt(0) ?? 0), at);
   }
 

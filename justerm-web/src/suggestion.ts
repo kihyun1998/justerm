@@ -1,4 +1,4 @@
-import type { TextareaAnchor } from "./composition";
+import { viewportCell, type TextareaAnchor } from "./composition";
 
 /** The colour a suggestion draws in. `"default"` and `indexed` follow a theme change. */
 export type SuggestionColor = "default" | { readonly indexed: number } | { readonly rgb: number };
@@ -30,7 +30,6 @@ export function suggestionCell(
   text: string,
   composing: boolean,
 ): TextareaAnchor | undefined {
-  if (!cursor || text === "" || composing) return undefined;
-  const row = cursor.row + displayOffset;
-  return row < rows ? { col: cursor.col, row } : undefined;
+  if (text === "" || composing) return undefined;
+  return viewportCell(cursor, displayOffset, rows);
 }

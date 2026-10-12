@@ -174,15 +174,34 @@ export class CompositionController {
   }
 }
 
-/** Where the hidden textarea is anchored, in cells — the cursor cell a frame reported. */
+/** A cell, by column and row. Carries GRID cells (the cursor a frame reported, a composition's
+ * origin and run end) and VIEWPORT cells (where the hidden textarea is anchored); {@link viewportCell}
+ * maps the first onto the second. */
 export interface TextareaAnchor {
   col: number;
   row: number;
 }
 
 /**
- * Whether the hidden textarea must move, and the cache key to remember (#631). The key is the
- * cursor's cell coordinate; `force` overrides it, for the callers that sit where something reads
+ * `cell`, a GRID cell, as the viewport cell it is shown at under display offset `displayOffset`, or
+ * `undefined` when its row is off the bottom of a `rows`-row viewport (or there is no cell). At
+ * offset `d` grid row `r` is shown at `r + d` while that is `< rows`. Why:
+ * `docs/map/invariant/composition-is-browser-owned-state.md`.
+ */
+export function viewportCell(
+  cell: TextareaAnchor | undefined,
+  displayOffset: number,
+  rows: number,
+): TextareaAnchor | undefined {
+  if (!cell) return undefined;
+  const row = cell.row + displayOffset;
+  return row < rows ? { col: cell.col, row } : undefined;
+}
+
+/**
+ * Whether the hidden textarea must move, and the cache key to remember (#631). `cursor` is the
+ * VIEWPORT cell the anchor is written at (see {@link viewportCell}), and the key is that cell's
+ * coordinate; `force` overrides it, for the callers that sit where something reads
  * the anchor. `composing` suppresses every path, forced or not, so the anchor stays put while a
  * composition is open (#637, #649). A suppressed or unchanged move is `undefined`, which leaves the
  * cache alone.
