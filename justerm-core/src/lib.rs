@@ -390,6 +390,7 @@ impl Engine {
     /// It is wider than [`Engine::damage`], which is cell content only: while the viewport is
     /// scrolled up, output leaves no damage but still moves the header's scroll position. So it is
     /// raised by [`feed`](Engine::feed), [`resize`](Engine::resize), [`clear`](Engine::clear),
+    /// an accepted [`paint_logical_line`](Engine::paint_logical_line),
     /// [`mark_fully_damaged`](Engine::mark_fully_damaged) and every viewport scroll, and cleared
     /// by `reset_damage`. Draining events or replies and reporting colours do not raise it. A
     /// fresh engine starts with it raised, since none of its state has been sent.
@@ -592,7 +593,9 @@ impl Engine {
     /// named was rewritten or moved and is reported again — unless it has left the buffer, or it
     /// was on an alternate screen that has since closed.
     pub fn paint_logical_line(&mut self, at: LineRef, text: &str, spans: &[PaintSpan]) -> bool {
-        self.term.paint_logical_line(at, text, spans)
+        let painted = self.term.paint_logical_line(at, text, spans);
+        self.frame_pending |= painted;
+        painted
     }
 
     /// The whole buffer (scrollback + screen) as one text document for a

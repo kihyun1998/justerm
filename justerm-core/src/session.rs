@@ -96,15 +96,18 @@ impl Session {
     /// Resize the engine and return the `(cols, rows)` it adopted — the size to give the PTY or
     /// SSH channel, which can be wider than asked (see [`Engine::resize`]).
     pub fn resize(&mut self, cols: usize, rows: usize) -> (usize, usize) {
-        self.engine.resize(cols, rows);
-        let grid = self.engine.grid();
-        (grid.cols(), grid.rows())
+        self.edit(|engine| {
+            engine.resize(cols, rows);
+            (engine.grid().cols(), engine.grid().rows())
+        })
     }
 
-    /// The source has ended: no pump will come, so every later [`edit`](Session::edit) sends its
-    /// own frame. The engine stays readable and scrollable until the session is dropped.
+    /// The source has ended: no pump will come, so whatever is pending is sent now, and every later
+    /// [`edit`](Session::edit) and [`resize`](Session::resize) sends its own frame. The engine stays
+    /// readable and scrollable until the session is dropped.
     pub fn end(&mut self) {
         self.ended = true;
+        self.flush();
     }
 
     /// Whether [`end`](Session::end) has been called.

@@ -118,6 +118,14 @@ already built in #4; the **pacing** (when to pull, RTT/vsync timing, ≤1-in-fli
 lives in the consumer's transport (PenTerm's Tauri Channel) — NOT in justerm (CLAUDE.md: no IPC). So
 #13's engine work is narrow: the viewport-vs-screen damage mapping above.
 
+**The Session packages the engine half of this loop, and still has no clock (#1043, ADR-0034 D2).**
+`Session::pump` encodes a frame only when `Engine::frame_pending` is raised, sends it, and resets
+damage as it sends — **the send is the ack**, which is right for a transport that does not drop frames
+(a Tauri channel, a local socket). A consumer that needs a real round-trip ack keeps driving `Engine`
+directly. `frame_pending` is deliberately **wider than damage**: output while the viewport is frozen
+leaves no damage (below) but still moves the header's `display_offset` / `scrollback_len`, which the
+consumer's scrollbar reads, so that frame is sent with no spans.
+
 **Viewport-vs-screen damage — settled in #13, and not by the mapping this section once predicted.**
 The problem is real: damage (#4) is recorded against the *screen*, but the consumer renders the
 *viewport*, and while scrolled up under follow-bottom "stay" (#3) the screen scrolls while the

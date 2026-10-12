@@ -237,3 +237,49 @@ fn marking_the_screen_fully_damaged_sends_a_full_frame_on_the_next_pump() {
     session.pump();
     assert_eq!(rec.kinds(), vec![FrameKind::Full]);
 }
+
+#[test]
+fn an_ended_session_sends_a_resize_without_a_pump() {
+    let (mut session, rec) = subscribed(10, 3);
+    session.end();
+    assert_eq!(session.resize(12, 4), (12, 4));
+    assert_eq!(rec.count(), 1, "resizing a dead pane is a view change too");
+    let frame = decode(&rec.0.lock().unwrap()[0]).unwrap();
+    assert_eq!((frame.cols, frame.rows), (12, 4));
+}
+
+#[test]
+fn ending_a_session_sends_the_output_that_arrived_after_the_last_pump() {
+    let (mut session, rec) = subscribed(10, 3);
+    session.feed(b"bye");
+    session.end();
+    assert_eq!(
+        rec.count(),
+        1,
+        "no pump will come for the source's last chunk"
+    );
+}
+
+#[test]
+fn a_paint_sends_a_frame_on_the_next_pump() {
+    let (mut session, rec) = subscribed(10, 3);
+    session.feed(b"ok");
+    session.pump();
+    rec.0.lock().unwrap().clear();
+    let line = session
+        .edit(|engine| engine.changed_logical_lines())
+        .remove(0);
+    let span = justerm_core::PaintSpan {
+        start: 0,
+        end: 2,
+        fg: Some(justerm_core::Color::Indexed(1)),
+        bg: None,
+    };
+    assert!(session.edit(|engine| engine.paint_logical_line(line.at, &line.text, &[span])));
+    session.pump();
+    assert_eq!(
+        rec.count(),
+        1,
+        "a paint recolours cells, so the next frame differs"
+    );
+}

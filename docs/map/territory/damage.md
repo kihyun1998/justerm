@@ -66,6 +66,12 @@ pixels either way — and its job is to keep a small update from costing a full 
 - **A frozen viewport reports nothing.** While [viewport](viewport.md) is scrolled up, `damage()`
   returns an *empty* `Partial`: changes the user cannot see are not damage. This is the one rule
   these two territories share, and it lives here because it is a statement about what damage *means*.
+- **Damage is not the answer to "is there a frame to send".** That question is
+  `Engine::frame_pending`, which is wider (#1043): a frozen viewport's output leaves no damage but
+  moves the header's scroll position, and a viewport scroll changes `display_offset`. The `Session`
+  reads the signal, never `damage()`, and the predicate swap (`damage()` empty instead of the signal)
+  is exactly what `output_while_scrolled_up_sends_a_frame_though_it_leaves_no_damage` reddens on.
+  Overlay-only changes (selection, search highlights) join the signal in #1044.
 
 ## Code
 
@@ -73,6 +79,10 @@ pixels either way — and its job is to keep a small update from costing a full 
   `undamaged`, `fully_damaged`, `is_damaged`, `reset`, `span`)
 - `justerm-core/src/term.rs` — `Term::damage`, `Term::frame_damage`, `Term::reset_damage`,
   `Term::mark_fully_damaged`, `Term::damage_span`
+- `justerm-core/src/lib.rs` — `Engine::frame_pending`, and the raise at the end of each mutator that
+  sets it
+- `justerm-core/src/session.rs` — `Session::pump`, `Session::subscribe`, `Session::edit` (the
+  ended-mode flush)
 
 ## Reference behaviour
 
