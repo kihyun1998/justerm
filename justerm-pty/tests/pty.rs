@@ -48,8 +48,44 @@ fn helper(mode: &str) {
             say(MARKER);
             std::thread::sleep(Duration::from_secs(60));
         }
+        // Read one line and print it back, control bytes made visible (`ESC` as `^[`).
+        "echo-line" => {
+            say(&format!("GOT:{}", visible(&read_line())));
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        // Ask the terminal for its attributes (DA1), then print the line that comes back.
+        "query-then-echo" => {
+            say("\x1b[c");
+            say(&format!("GOT:{}", visible(&read_line())));
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        // Print this terminal's size now, and again after every line read.
+        "size-on-line" => {
+            let size = || {
+                let (terminal_size::Width(w), terminal_size::Height(h)) =
+                    terminal_size::terminal_size().expect("stdout is a terminal");
+                format!("SIZE:{w}x{h};")
+            };
+            say(&size());
+            loop {
+                read_line();
+                say(&size());
+            }
+        }
         other => panic!("unknown helper mode {other}"),
     }
+}
+
+/// One line from stdin, without its line ending.
+fn read_line() -> String {
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).unwrap();
+    line.trim_end_matches(['\r', '\n']).to_owned()
+}
+
+/// `s` with `ESC` shown as `^[`, so a reply prints as text instead of being interpreted.
+fn visible(s: &str) -> String {
+    s.replace('\x1b', "^[")
 }
 
 /// Records the frames a Session sends.
@@ -250,12 +286,133 @@ fn a_missing_program_is_an_error_not_a_running_pty() {
     assert!(result.is_err(), "spawning a missing program fails");
 }
 
+/// The session's whole buffer as text, soft wraps joined — what the child has printed so far.
+fn screen(pty: &Pty) -> String {
+    pty.session().lock().unwrap().engine().accessible_text()
+}
+
+fn bytes_the_consumer_writes_reach_the_child() {
+    let (pty, _rec, rx) = spawn("echo-line", Options::default());
+    pty.write(b"typed\r").expect("the child is running");
+    assert!(
+        eventually(Duration::from_secs(10), || screen(&pty)
+            .contains("GOT:typed")),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+    assert!(
+        pty.write(b"late").is_err(),
+        "writing after exit is an error"
+    );
+}
+
+/// Unix only. A Windows ConPTY is itself the console's terminal: measured (#1046), conhost answered
+/// the child's DA1 with its own `?61;6;7;21;22;23;24;28;32;42c` and consumed a VT reply arriving
+/// as input, so neither the query nor the reply crosses it. Windows proves write-back through the
+/// `ESC[6n` conhost sends at start instead: without the reader's write-back no child runs.
+#[cfg(unix)]
+fn a_query_from_the_child_is_answered() {
+    let (pty, _rec, rx) = spawn("query-then-echo", Options::default());
+    // The reply has no line ending; end the line so a line-mode child hands it to read_line.
+    std::thread::sleep(Duration::from_millis(500));
+    pty.write(b"\r").unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || screen(&pty)
+            .contains("GOT:^[[?62;22c")),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+}
+
+/// Unix only. A Windows ConPTY is itself the console's terminal: measured (#1046), conhost answered
+/// the child's DA1 with its own `?61;6;7;21;22;23;24;28;32;42c` and consumed a VT reply arriving
+/// as input, so neither the query nor the reply crosses it. Windows proves write-back through the
+/// `ESC[6n` conhost sends at start instead: without the reader's write-back no child runs.
+#[cfg(unix)]
+fn a_reply_the_pump_drains_reaches_the_child() {
+    let (pty, _rec, rx) = spawn("echo-line", Options::default());
+    std::thread::sleep(Duration::from_millis(300));
+    // Fed through the session rather than read from the child, so the reader never sees it: only
+    // the pump drains this reply (a DSR status report, `ESC[0n`).
+    pty.session()
+        .lock()
+        .unwrap()
+        .edit(|engine| engine.feed(b"\x1b[5n"));
+    std::thread::sleep(Duration::from_millis(300));
+    pty.write(b"\r").unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || screen(&pty)
+            .contains("GOT:^[[0n")),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+}
+
+fn a_resize_reaches_the_child_at_the_new_size() {
+    let (pty, rec, rx) = spawn("size-on-line", Options::default());
+    assert!(eventually(Duration::from_secs(10), || screen(&pty)
+        .contains("SIZE:80x24;")));
+    assert_eq!(pty.resize(100, 30), (100, 30));
+    pty.write(b"\r").unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || screen(&pty)
+            .contains("SIZE:100x30;")),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    // The screen above is the engine's state, fed as the child writes; frames leave on the next
+    // pump. A fast child answers inside one pump period, so wait for the frame rather than read the
+    // last one sent so far.
+    let last_size = || {
+        rec.0
+            .lock()
+            .unwrap()
+            .last()
+            .map(|f| decode(f).unwrap())
+            .map(|f| (f.cols, f.rows))
+    };
+    assert!(
+        eventually(Duration::from_secs(10), || last_size() == Some((100, 30))),
+        "last frame size: {:?}",
+        last_size()
+    );
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
+fn a_too_narrow_resize_reaches_the_child_at_the_adopted_size() {
+    let (pty, _rec, rx) = spawn("size-on-line", Options::default());
+    assert!(eventually(Duration::from_secs(10), || screen(&pty)
+        .contains("SIZE:80x24;")));
+    let adopted = pty.resize(1, 12);
+    assert_eq!(adopted, (justerm_core::MIN_COLUMNS, 12));
+    pty.write(b"\r").unwrap();
+    let want = format!("SIZE:{}x12;", justerm_core::MIN_COLUMNS);
+    assert!(
+        eventually(Duration::from_secs(10), || screen(&pty).contains(&want)),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
 fn main() {
     if let Ok(mode) = std::env::var(HELPER) {
         helper(&mode);
         return;
     }
-    let tests: &[(&str, fn())] = &[
+    // Extended below on Unix only.
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut tests: Vec<(&str, fn())> = vec![
         (
             "the_childs_output_reaches_the_sink_as_a_frame",
             the_childs_output_reaches_the_sink_as_a_frame,
@@ -295,7 +452,30 @@ fn main() {
             "a_missing_program_is_an_error_not_a_running_pty",
             a_missing_program_is_an_error_not_a_running_pty,
         ),
+        (
+            "bytes_the_consumer_writes_reach_the_child",
+            bytes_the_consumer_writes_reach_the_child,
+        ),
+        (
+            "a_resize_reaches_the_child_at_the_new_size",
+            a_resize_reaches_the_child_at_the_new_size,
+        ),
+        (
+            "a_too_narrow_resize_reaches_the_child_at_the_adopted_size",
+            a_too_narrow_resize_reaches_the_child_at_the_adopted_size,
+        ),
     ];
+    #[cfg(unix)]
+    tests.extend([
+        (
+            "a_query_from_the_child_is_answered",
+            a_query_from_the_child_is_answered as fn(),
+        ),
+        (
+            "a_reply_the_pump_drains_reaches_the_child",
+            a_reply_the_pump_drains_reaches_the_child as fn(),
+        ),
+    ]);
     let filter: Vec<String> = std::env::args()
         .skip(1)
         .filter(|a| !a.starts_with('-'))
@@ -308,7 +488,7 @@ fn main() {
         let ok = std::panic::catch_unwind(test).is_ok();
         println!("test {name} ... {}", if ok { "ok" } else { "FAILED" });
         if !ok {
-            failed.push(*name);
+            failed.push(name);
         }
     }
     if failed.is_empty() {

@@ -10,14 +10,14 @@
 //! asked for them has been fed — not on the pump period, which paces frames only. A Windows
 //! ConPTY depends on it: it asks for the cursor position before the child may run at all.
 //!
-//! **Not yet complete.** There is no writer for the consumer's own input yet, and a resize does
-//! not reach the pseudo-terminal.
+//! **Not yet complete.** Output is fed as the child wrote it: there is no encoding hook yet, so
+//! a child writing in a legacy encoding reaches the engine as ill-formed UTF-8.
 
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -119,10 +119,12 @@ impl From<portable_pty::ExitStatus> for Exit {
 
 /// A command running in a pseudo-terminal, feeding a [`Session`].
 ///
-/// Two threads run for it:
+/// Three threads run for it:
 /// - one reads the child's output into the session;
-/// - the other pumps the session every [`Options::pump_every`], hands its events to the consumer,
-///   and watches for the child's exit.
+/// - one pumps the session every [`Options::pump_every`], hands its events to the consumer, and
+///   watches for the child's exit;
+/// - one writes to the child: the engine's replies and the consumer's [`write`](Pty::write)s, in the
+///   order they were handed over. A write therefore never blocks the reader or the pump.
 ///
 /// When the child exits, the pseudo-terminal is closed and the rest of the output is read. The
 /// session is then [ended](Session::end), which sends what is pending, and the exit is reported.
@@ -133,6 +135,8 @@ impl From<portable_pty::ExitStatus> for Exit {
 pub struct Pty {
     session: Arc<Mutex<Session>>,
     child: Arc<Mutex<ChildState>>,
+    input: Input,
+    master: Master,
 }
 
 /// The child, and whether it has been reaped. After a Unix reap its pid can be reused by an
@@ -142,6 +146,14 @@ struct ChildState {
     child: Box<dyn Child + Send + Sync>,
     exited: bool,
 }
+
+/// Where everything bound for the child is handed over: the writer thread's channel. `None` once
+/// the child has exited, which ends the writer thread and closes the pseudo-terminal's input.
+type Input = Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>;
+
+/// The pseudo-terminal's control side. It is held so the terminal stays open and so a resize can
+/// reach it. `None` once the child has exited.
+type Master = Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>;
 
 /// How long the pump waits, once the child has exited and the pseudo-terminal is closed, for the
 /// reader to drain the rest of the output.
@@ -169,12 +181,7 @@ impl Pty {
         on_exit: impl FnOnce(Exit) + Send + 'static,
     ) -> std::io::Result<Pty> {
         let grid = session.engine().grid();
-        let size = PtySize {
-            rows: u16::try_from(grid.rows()).unwrap_or(u16::MAX),
-            cols: u16::try_from(grid.cols()).unwrap_or(u16::MAX),
-            pixel_width: 0,
-            pixel_height: 0,
-        };
+        let size = pty_size(grid.cols(), grid.rows());
         let pair = native_pty_system().openpty(size).map_err(io_error)?;
         let mut child = pair
             .slave
@@ -193,24 +200,27 @@ impl Pty {
                 return Err(io_error(e));
             }
         };
-        let writer: Writer = Arc::new(Mutex::new(Some(writer)));
         let session = Arc::new(Mutex::new(session));
         let child = Arc::new(Mutex::new(ChildState {
             child,
             exited: false,
         }));
+        let master: Master = Arc::new(Mutex::new(Some(pair.master)));
+        let (tx, rx) = mpsc::channel();
+        let input: Input = Arc::new(Mutex::new(Some(tx)));
         let eof = Arc::new(AtomicBool::new(false));
         let started = (|| {
+            spawn_writer(writer, rx)?;
             spawn_reader(
                 reader,
                 Arc::clone(&session),
-                Arc::clone(&writer),
+                Arc::clone(&input),
                 Arc::clone(&eof),
             )?;
             let pump = Pump {
                 session: Arc::clone(&session),
-                master: Some(pair.master),
-                writer,
+                master: Arc::clone(&master),
+                input: Arc::clone(&input),
                 child: Arc::clone(&child),
                 eof,
                 period: options.pump_every,
@@ -224,13 +234,53 @@ impl Pty {
             let _ = lock(&child).child.kill();
             return Err(e);
         }
-        Ok(Pty { session, child })
+        Ok(Pty {
+            session,
+            child,
+            input,
+            master,
+        })
     }
 
     /// The session this pty drives: subscribe to it, read it, scroll or select. Lock it briefly,
     /// because the reader and the pump take the same lock.
     pub fn session(&self) -> Arc<Mutex<Session>> {
         Arc::clone(&self.session)
+    }
+
+    /// Send `bytes` to the child: what the user typed, or the consumer's own answer to a query the
+    /// engine leaves to policy (a colour or clipboard query). This queues the bytes and returns
+    /// without waiting, and they reach the child in the order written, interleaved with the
+    /// engine's replies.
+    ///
+    /// Fails with [`BrokenPipe`](std::io::ErrorKind::BrokenPipe) once the child has exited.
+    pub fn write(&self, bytes: &[u8]) -> std::io::Result<()> {
+        if write_back(&self.input, bytes) {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "the child has exited",
+            ))
+        }
+    }
+
+    /// Resize the session, then the pseudo-terminal to the size the engine **adopted**, and return
+    /// that size as `(cols, rows)`.
+    ///
+    /// The engine widens a too-narrow width to its minimum (see
+    /// [`Engine::resize`](justerm_core::Engine::resize)), and the child is told that width, never the
+    /// one asked for, so the two never disagree. After the child has exited only the session is
+    /// resized.
+    pub fn resize(&self, cols: usize, rows: usize) -> (usize, usize) {
+        // The session stays locked until the pty has its size, so two resizes racing cannot leave
+        // the engine at one size and the child told the other.
+        let mut session = lock(&self.session);
+        let adopted = session.resize(cols, rows);
+        if let Some(master) = lock(&self.master).as_ref() {
+            let _ = master.resize(pty_size(adopted.0, adopted.1));
+        }
+        adopted
     }
 
     /// End the child.
@@ -254,23 +304,49 @@ impl Drop for Pty {
     }
 }
 
-/// The pseudo-terminal's input side. Two threads share it: the reader writes replies to what it
-/// just fed, and the pump writes any other replies. `None` once the child has exited.
-type Writer = Arc<Mutex<Option<Box<dyn Write + Send>>>>;
+fn pty_size(cols: usize, rows: usize) -> PtySize {
+    PtySize {
+        rows: u16::try_from(rows).unwrap_or(u16::MAX),
+        cols: u16::try_from(cols).unwrap_or(u16::MAX),
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
 
-fn write_back(writer: &Writer, replies: &[u8]) {
-    if replies.is_empty() {
-        return;
+/// Hand `bytes` to the writer thread. Returns `false` once the child has exited.
+fn write_back(input: &Input, bytes: &[u8]) -> bool {
+    match lock(input).as_ref() {
+        Some(tx) => bytes.is_empty() || tx.send(bytes.to_vec()).is_ok(),
+        None => false,
     }
-    if let Some(w) = lock(writer).as_mut() {
-        let _ = w.write_all(replies).and_then(|()| w.flush());
-    }
+}
+
+fn spawn_writer(
+    mut writer: Box<dyn Write + Send>,
+    rx: mpsc::Receiver<Vec<u8>>,
+) -> std::io::Result<()> {
+    thread::Builder::new()
+        .name("justerm-pty writer".into())
+        .spawn(move || {
+            // Ends when every sender is gone, which happens at exit; dropping the writer then closes
+            // the child's input.
+            for bytes in rx {
+                if writer
+                    .write_all(&bytes)
+                    .and_then(|()| writer.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .map(drop)
 }
 
 fn spawn_reader(
     mut reader: Box<dyn Read + Send>,
     session: Arc<Mutex<Session>>,
-    writer: Writer,
+    input: Input,
     eof: Arc<AtomicBool>,
 ) -> std::io::Result<()> {
     thread::Builder::new()
@@ -284,17 +360,17 @@ fn spawn_reader(
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 };
-                let replies = {
-                    let mut session = lock(&session);
-                    // Output that arrives after the session has ended is not fed, because nothing
-                    // may follow `on_exit`. This happens when a grandchild still holds a Unix pty open.
-                    if session.is_ended() {
-                        break;
-                    }
-                    session.feed(&buf[..n]);
-                    session.edit(|engine| engine.drain_replies())
-                };
-                write_back(&writer, &replies);
+                let mut session = lock(&session);
+                // Output that arrives after the session has ended is not fed, because nothing may
+                // follow `on_exit`. This happens when a grandchild still holds a Unix pty open.
+                if session.is_ended() {
+                    break;
+                }
+                session.feed(&buf[..n]);
+                let replies = session.edit(|engine| engine.drain_replies());
+                // Handed over while the session is still locked, so replies reach the writer in
+                // the order they were drained. The send never blocks: the channel is unbounded.
+                write_back(&input, &replies);
             }
             eof.store(true, Ordering::Release);
         })
@@ -304,16 +380,15 @@ fn spawn_reader(
 /// The pump thread's state.
 struct Pump {
     session: Arc<Mutex<Session>>,
-    /// Held so the pseudo-terminal stays open; dropped once the child has exited.
-    master: Option<Box<dyn MasterPty + Send>>,
-    writer: Writer,
+    master: Master,
+    input: Input,
     child: Arc<Mutex<ChildState>>,
     eof: Arc<AtomicBool>,
     period: Duration,
 }
 
 impl Pump {
-    fn run(mut self, on_event: &mut impl FnMut(TermEvent), on_exit: impl FnOnce(Exit)) {
+    fn run(self, on_event: &mut impl FnMut(TermEvent), on_exit: impl FnOnce(Exit)) {
         let tick = self.period.min(EXIT_POLL);
         let mut next_pump = Instant::now() + self.period;
         let exit = loop {
@@ -330,8 +405,8 @@ impl Pump {
         };
         // Closing the pseudo-terminal lets a ConPTY flush and end its output pipe. The reader then
         // reaches EOF, instead of the drain waiting out its full bound.
-        lock(&self.writer).take();
-        drop(self.master.take());
+        lock(&self.input).take();
+        drop(lock(&self.master).take());
         let deadline = Instant::now() + DRAIN_AFTER_EXIT;
         while !self.eof.load(Ordering::Acquire) && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(5));
@@ -347,8 +422,13 @@ impl Pump {
     }
 
     fn pump(&self, on_event: &mut impl FnMut(TermEvent)) {
-        let pumped = lock(&self.session).pump();
-        write_back(&self.writer, &pumped.replies);
+        let pumped = {
+            let mut session = lock(&self.session);
+            let pumped = session.pump();
+            // Under the same lock as the reader's hand-over, so drain order is hand-over order.
+            write_back(&self.input, &pumped.replies);
+            pumped
+        };
         pumped.events.into_iter().for_each(on_event);
     }
 }
