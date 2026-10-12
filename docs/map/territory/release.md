@@ -84,8 +84,8 @@ What a stranger *reads* once it has shipped is a different concept — see
   rewritten — a correction opens a new note.
 - **Why the four publish workflows are shaped the way they are** — the facts their comments point
   here:
-  - *No build cache in a publish job*: just-shield R6 flags a third-party action sharing a job that
-    holds the publish token, so dropping `rust-cache` (and using `npm install -g pnpm@10` rather than
+  - *No build cache in a publish job*: a third-party action sharing a job that holds the publish
+    token can read it, so dropping `rust-cache` (and using `npm install -g pnpm@10` rather than
     `pnpm/action-setup`) keeps `CARGO_REGISTRY_TOKEN` / `NPM_TOKEN` away from any third-party action
     (ADR-0006). A publish runs on a rare tag, so the cache bought little.
   - *The `wasm-pack` pin is for determinism, not speed* (#616): unpinned, two tags a week apart could

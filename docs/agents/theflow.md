@@ -123,7 +123,7 @@ need the separate checks in the gate matrix below.
 ## Step 1 — reference routing table
 
 Read real source from the **local pinned reference trees** in `../.refs/` (sibling
-of the **main checkout**, same convention as `../just-shield`), with
+of the **main checkout**), with
 `rg -n <symbol> -A 8`. Working in a worktree, `../.refs/` is *not* that path and
 returns zero hits instead of an error — see Step 7 "What a worktree breaks".
 **WebFetch is banned** — it summarizes and drops method bodies (e.g. xterm.js
@@ -1076,17 +1076,12 @@ tool lands and where older trees on disk still sit, and it silently breaks every
 the entry check. Prefer the sibling; if something puts you under `.claude/worktrees/`
 anyway, read that section before using any `../` path here. → `feat(<scope>): … (#issue)` (**no `Co-Authored-By`
 trailer**) → squash PR (`Closes #issue`) → confirm CI jobs green:
-`test` / `wasm` / `renderer` / `renderer-proofs` / `web` / `web-e2e`. A PR touching
-`.github/workflows/**` also gets **`supply-chain`** (path-filtered, so it is absent
-otherwise) — reproduce it locally with
-`cargo run -- scan --strict <justerm repo root>` in `../just-shield`. **Point it at the
-repo root, not `.github/workflows`**: given the wrong path it reports "0 workflows
-scanned" *and* a green "no violations", a vacuous pass. Don't watch CI *during*
+`test` / `wasm` / `renderer` / `renderer-proofs` / `web` / `web-e2e`. Don't watch CI *during*
 implementation (local gates mirror it) — except wasm browser `wasm_bindgen_test`,
 which runs only in the CI wasm job, so check it once per wasm-decode-changing PR.
 
 **What a worktree breaks: every `../` in this document.** The sibling paths here
-(`../.refs/`, `../penterm/`, `../just-shield`) are written relative to the **main
+(`../.refs/`, `../penterm/`) are written relative to the **main
 checkout**, and a worktree sits somewhere else — so resolve them against the main
 checkout, never against the worktree's own `..`. This fails *silently*, which is why
 it is written down: `rg -n <symbol> ../.refs/alacritty` from a worktree is not an

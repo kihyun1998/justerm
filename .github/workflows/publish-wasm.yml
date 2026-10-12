@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # No build cache here, deliberately: it keeps `NPM_TOKEN` away from any third-party action
-      # (R6, ADR-0006; `docs/map/territory/release.md`).
+      # (ADR-0006; `docs/map/territory/release.md`).
 
       # Reject a README claim that expires, before the build spends any time
       # (`docs/map/territory/published-surface.md`). wasm-pack copies this README into the

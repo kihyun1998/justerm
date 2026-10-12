@@ -97,6 +97,6 @@ copied here.
 | Before reading an outside reference (xterm, alacritty, …) | `docs/agents/thegraph.md` — which sources, how each is reached, which bind — then `docs/agents/reference-facts.md` for what is already confirmed |
 | Filing, reading or labelling an issue | `docs/agents/issue-tracker.md` · `docs/agents/triage-labels.md` |
 | A skill consumes the domain docs | `docs/agents/domain.md` |
-| CI `supply-chain` is red, or a workflow action changes | `docs/agents/supply-chain.md` |
+| A workflow adds or changes an action | ADR-0006 (`docs/adr/`) — the pinning convention |
 | Consumer (penterm) wiring, the proof method per layer, architecture prior art | `docs/agents/theflow.md` § Crate / module map · § Step 4 · "Architecture prior art" |
 | `/teach` | `teach/README.md`, first |

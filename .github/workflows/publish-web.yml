@@ -9,7 +9,7 @@
 #
 # Supply-chain posture (ADR-0006): the only action used is GitHub-owned `actions/checkout`, SHA-pinned;
 # pnpm is installed with `npm install -g pnpm@10` rather than `pnpm/action-setup` deliberately, to keep
-# `NPM_TOKEN` away from a third-party action (R6; `docs/map/territory/release.md`).
+# `NPM_TOKEN` away from a third-party action (`docs/map/territory/release.md`).
 #
 # Requires the `NPM_TOKEN` repository secret to have publish rights for the `justerm-web` package —
 # a *different* package from justerm-wasm-decode / justerm-renderer, so a token scoped per-package

@@ -2,8 +2,8 @@
 
 ## What it is
 
-What actually runs before a change lands, and what protects the paths that publish. Seven workflows:
-one gate (`test`), one adversarial job (`fuzz`), one supply-chain scan, and four publishers.
+What actually runs before a change lands, and what protects the paths that publish. Six workflows:
+one gate (`test`), one adversarial job (`fuzz`), and four publishers.
 
 The territory's defining property is **coverage, not correctness** — every gate here is honest about
 what it inspects, and the recurring defect is a gate that passes over something it was never given.
@@ -11,7 +11,7 @@ what it inspects, and the recurring defect is a gate that passes over something 
 ## Governing decisions
 
 - [**ADR-0006 — supply-chain action pinning**](../../adr/0006-supply-chain-action-pinning.md) — every
-  GitHub Action reference is SHA-pinned and scanned `--strict` by a first-party tool
+  GitHub Action reference is SHA-pinned; a convention since its scanner was retired (2026-10-12)
 - [**ADR-0007 — robustness testing: property and fuzz**](../../adr/0007-robustness-testing-property-and-fuzz.md)
   — why a fuzz job exists beside the unit gate
 
@@ -19,7 +19,7 @@ Nothing governs the gate matrix itself — which checks exist, and what each is 
 
 ## Design model
 
-- **Seven workflows, and the jobs inside `test` are split on purpose.** The deterministic cargo gate
+- **Six workflows, and the jobs inside `test` are split on purpose.** The deterministic cargo gate
   is kept apart from anything that downloads a browser or depends on runner fonts, because *a gate
   people learn to ignore is not a gate* — one flaky job beside a reliable one degrades both.
 - **Every excluded crate needs its gate named for it.** `--workspace` and `--all` reach two crates;
@@ -133,14 +133,12 @@ Nothing governs the gate matrix itself — which checks exist, and what each is 
   - *wasm-pack vs cargo-fuzz*: both installed through cargo, not a third-party action, but only
     wasm-pack is version-pinned (#616) — `fuzz.yml` publishes nothing and runs a floating nightly, so
     pinning its tool would be theatre. While the pin matches the runner image, cargo installs nothing.
-- **The supply-chain scan is first-party** (`just-shield`, a sibling repo, itself SHA-pinned), which
-  makes the scanner a dependency of the same kind it exists to police.
 
 ## Code
 
 - `.github/workflows/test.yml` — the gate: `test`, `renderer`, `renderer-proofs`, `web`, `web-e2e`,
   `wasm`
-- `.github/workflows/fuzz.yml` · `supply-chain.yml`
+- `.github/workflows/fuzz.yml`
 - `.github/workflows/publish-crate.yml` · `publish-wasm.yml` · `publish-renderer.yml` ·
   `publish-web.yml`
 - `.github/scripts/check-map-links.mjs` · `check-map-note.mjs` · `check-tool-pins.mjs`
@@ -178,7 +176,7 @@ below run. **Which checks exist** still has no comparand.
 
 ## Blast radius
 
-- [release](release.md) — four of the seven workflows are publishers, and a tag is what fires them
+- [release](release.md) — four of the six workflows are publishers, and a tag is what fires them
 - [published surface](published-surface.md) — two of the checks exist solely to keep published prose
   honest, at two different moments
 - Every territory, indirectly: a gate that stops covering an area turns that area's other guarantees
@@ -188,8 +186,9 @@ below run. **Which checks exist** still has no comparand.
 
 - **The gate matrix has no governing record.** Which checks exist, and what each deliberately does
   not see, is documented operationally in a process file rather than decided anywhere.
-- **The scanner is a supply-chain dependency of the supply-chain gate.** First-party and pinned, but
-  the recursion is unaddressed in the record.
+- **Action pinning is a convention, not a gate.** The just-shield scan that enforced ADR-0006 was
+  retired (2026-10-12) as costing more than it caught; nothing now stops a `uses:` on a mutable tag,
+  or a third-party action entering a job that holds a publish token, except review.
 - **Coverage is asserted, not measured.** Nothing reports which crates a given gate actually visited,
   which is precisely the failure the invariant above describes — the fix each time has been to name
   the crate by hand after someone noticed.

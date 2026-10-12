@@ -1,6 +1,6 @@
 # ADR-0006: Pin third-party GitHub Actions to a commit SHA; least privilege
 
-Status: accepted (2026-06-19)
+Status: accepted (2026-06-19) — **amended 2026-10-12**: the just-shield scan that enforced this is retired; the pins and `permissions:` blocks stay as a convention (see § Amendment).
 
 ## Context
 
@@ -12,11 +12,11 @@ We already own the right tool: **just-shield** (`kihyun1998/just-shield`), a dep
 
 ## Decision
 
-Every workflow in this repo is bound by the following, mechanically enforced by just-shield (`supply-chain.yml`, `scan --strict`):
+Every workflow in this repo is bound by the following (enforced by just-shield until 2026-10-12; a convention since — see § Amendment):
 
-- **Third-party actions** (owner neither this repo's nor GitHub's) **must** be pinned to a full 40-character commit SHA, with the version in a trailing comment (`# v1.2.3`). Pin the SHA a tag *resolves to* (`^{commit}`), never an annotated-tag object (just-shield R5 rejects the latter as unreachable).
-- **GitHub-owned actions** (`actions/*`, `github/*`) **may** use a version tag — GitHub is a higher-trust publisher and the tj-actions class was a third-party action. We pin them too in practice, because `just-shield fix` makes it free.
-- Every workflow declares an explicit `permissions:` block; the default is `contents: read` (just-shield R7).
+- **Third-party actions** (owner neither this repo's nor GitHub's) **must** be pinned to a full 40-character commit SHA, with the version in a trailing comment (`# v1.2.3`). Pin the SHA a tag *resolves to* (`^{commit}`), never an annotated-tag object (it is not a commit, so the pin does not resolve).
+- **GitHub-owned actions** (`actions/*`, `github/*`) **may** use a version tag — GitHub is a higher-trust publisher and the tj-actions class was a third-party action. We pin them too in practice, because Dependabot keeps the pin current for free.
+- Every workflow declares an explicit `permissions:` block; the default is `contents: read`.
 
 The cost objection to SHA-pinning ("you freeze the action and stop getting updates, and updating the hash by hand is tedious") does not apply here: `just-shield fix` does the initial pin, and the `github-actions` Dependabot ecosystem (`.github/dependabot.yml`) opens weekly PRs that advance the pinned SHA and its version comment together. Pins stay immutable and current at once.
 
@@ -31,3 +31,9 @@ The cost objection to SHA-pinning ("you freeze the action and stop getting updat
 - **Trust tags (do nothing).** Rejected — it is exactly the posture the tj-actions/CVE-2025-30066 victims had.
 - **Require SHA pins for `actions/*` too, as a hard rule.** Rejected as the floor — it adds verbosity and Dependabot noise for the lowest-risk publisher (GitHub) with little marginal safety. We pin them in practice (free via `fix`) but do not gate on it.
 - **A third-party scanner (StepSecurity Harden-Runner, zizmor).** Rejected in favor of first-party just-shield — adopting an external scanner to defend the supply chain would itself add the kind of third-party CI trust being defended against.
+
+## Amendment (2026-10-12) — the scanner is retired, the policy stays
+
+The `supply-chain` workflow (just-shield `scan --strict`) is removed. The maintainer judged that it cost more time than it returned: keeping the scanner's own pin, its rule codes in workflow comments and its local reproduction current was recurring work on a policy the workflows already follow.
+
+What remains is the Decision above as a **convention**: the existing SHA pins and `permissions:` blocks stay, and Dependabot (`github-actions` ecosystem) keeps advancing the pins. What is lost is the gate — the first Consequence ("a new mutable reference cannot land without failing the supply-chain job") no longer holds, and a regression is now caught by review only. The second and third Consequences described the scanner and lapse with it.
