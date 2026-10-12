@@ -273,7 +273,10 @@ impl Pty {
     /// one asked for, so the two never disagree. After the child has exited only the session is
     /// resized.
     pub fn resize(&self, cols: usize, rows: usize) -> (usize, usize) {
-        let adopted = lock(&self.session).resize(cols, rows);
+        // The session stays locked until the pty has its size, so two resizes racing cannot leave
+        // the engine at one size and the child told the other.
+        let mut session = lock(&self.session);
+        let adopted = session.resize(cols, rows);
         if let Some(master) = lock(&self.master).as_ref() {
             let _ = master.resize(pty_size(adopted.0, adopted.1));
         }
@@ -357,16 +360,16 @@ fn spawn_reader(
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 };
-                let replies = {
-                    let mut session = lock(&session);
-                    // Output that arrives after the session has ended is not fed, because nothing
-                    // may follow `on_exit`. This happens when a grandchild still holds a Unix pty open.
-                    if session.is_ended() {
-                        break;
-                    }
-                    session.feed(&buf[..n]);
-                    session.edit(|engine| engine.drain_replies())
-                };
+                let mut session = lock(&session);
+                // Output that arrives after the session has ended is not fed, because nothing may
+                // follow `on_exit`. This happens when a grandchild still holds a Unix pty open.
+                if session.is_ended() {
+                    break;
+                }
+                session.feed(&buf[..n]);
+                let replies = session.edit(|engine| engine.drain_replies());
+                // Handed over while the session is still locked, so replies reach the writer in
+                // the order they were drained. The send never blocks: the channel is unbounded.
                 write_back(&input, &replies);
             }
             eof.store(true, Ordering::Release);
@@ -419,8 +422,13 @@ impl Pump {
     }
 
     fn pump(&self, on_event: &mut impl FnMut(TermEvent)) {
-        let pumped = lock(&self.session).pump();
-        write_back(&self.input, &pumped.replies);
+        let pumped = {
+            let mut session = lock(&self.session);
+            let pumped = session.pump();
+            // Under the same lock as the reader's hand-over, so drain order is hand-over order.
+            write_back(&self.input, &pumped.replies);
+            pumped
+        };
         pumped.events.into_iter().for_each(on_event);
     }
 }
