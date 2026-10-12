@@ -147,6 +147,33 @@ slows reading, and the doc says so.
 in both modes. What to do on it, such as expiring a deadline, stays the consumer's policy. This is
 D4's timer offered to the consumer; the pacing policy is unchanged.
 
+The tick runs **under the session lock, immediately before the pump**, and receives
+`Option<&Session>` (`None` in Raw mode). That gives a consumer two things:
+- It can ask `Engine::frame_pending()` whether anything changed since the last pump.
+- It can act on the answer before the pump resets it, atomically.
+
+This is how PenTerm gates its prompt-input scan. Running the tick before the pump but outside the
+lock would leave a window: output fed between the check and the pump is sent and reset, and its
+change would never be seen. Running it after the pump would make the consumer re-lock the session.
+
+The constraint is the same as `on_output`'s: the tick must not lock the session itself. This
+refinement was settled at the maintainer's call on #1057, after PenTerm's migration planning raised
+it.
+
+**R6 — `Session::send_pending()`: send the pending frame now, and drain nothing.** It is today's
+private flush, made public.
+
+Under a `Pty`, only `justerm-pty` writes replies back. A consumer that called `pump()` itself would
+drain replies no one then writes, and a querying application would wait forever. PenTerm's Output
+Rules need the opposite case: a paint sent at once, not on the next tick.
+
+So `Pty::session()` documents which `Session` calls are safe while the pty runs. `pump` and the
+`drain_*` calls are not.
+
+#1043 had left this call out, on the derivation that the next pump sends a paint within
+`pump_every`. A real consumer need, plus the pump trap, is the better derivation that reopened it,
+and the maintainer chose it on #1057.
+
 **R3 — Raw mode: `Pty::spawn_raw`.** A pty with no `Engine` hands the decoded output to a byte sink
 the consumer supplies. Raw mode widens D1's crate from "drives a `Session`" to "runs a PTY loop,
 with or without the engine". It was chosen over declaring raw mode out of scope. In that alternative
