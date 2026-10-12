@@ -174,10 +174,16 @@ impl From<portable_pty::ExitStatus> for Exit {
 /// terminates the child, and that exit is reported the same way as any other. Nothing is fed into
 /// the session after it has ended, so no frame follows `on_exit`.
 pub struct Pty {
-    session: Arc<Mutex<Session>>,
+    target: Target,
     child: Arc<Mutex<ChildState>>,
     input: Input,
     master: Master,
+}
+
+/// Where the child's output goes: into a [`Session`]'s engine.
+#[derive(Clone)]
+enum Target {
+    Frame(Arc<Mutex<Session>>),
 }
 
 /// The child, and whether it has been reaped. After a Unix reap its pid can be reused by an
@@ -218,78 +224,94 @@ impl Pty {
         command: Command,
         session: Session,
         options: Options,
-        mut on_event: impl FnMut(TermEvent) + Send + 'static,
+        on_event: impl FnMut(TermEvent) + Send + 'static,
         on_exit: impl FnOnce(Exit) + Send + 'static,
     ) -> std::io::Result<Pty> {
         let grid = session.engine().grid();
         let size = pty_size(grid.cols(), grid.rows());
-        let pair = native_pty_system().openpty(size).map_err(io_error)?;
-        let mut child = pair
-            .slave
-            .spawn_command(command.build())
-            .map_err(io_error)?;
-        // The slave stays open in this process otherwise, and a Unix reader would never see EOF.
-        drop(pair.slave);
-        let ends = pair
-            .master
-            .try_clone_reader()
-            .and_then(|r| Ok((r, pair.master.take_writer()?)));
-        let (reader, writer) = match ends {
-            Ok(ends) => ends,
-            Err(e) => {
-                let _ = child.kill();
-                return Err(io_error(e));
-            }
-        };
-        let session = Arc::new(Mutex::new(session));
-        let child = Arc::new(Mutex::new(ChildState {
-            child,
-            exited: false,
-        }));
-        let master: Master = Arc::new(Mutex::new(Some(pair.master)));
-        let (tx, rx) = mpsc::channel();
-        let input: Input = Arc::new(Mutex::new(Some(tx)));
-        let eof = Arc::new(AtomicBool::new(false));
-        let started = (|| {
-            spawn_writer(writer, rx, options.encoder)?;
-            spawn_reader(
-                options.decoder,
-                reader,
-                Arc::clone(&session),
-                Arc::clone(&input),
-                Arc::clone(&eof),
-            )?;
-            let pump = Pump {
-                session: Arc::clone(&session),
-                master: Arc::clone(&master),
-                input: Arc::clone(&input),
-                child: Arc::clone(&child),
-                eof,
-                period: options.pump_every,
-            };
-            thread::Builder::new()
-                .name("justerm-pty pump".into())
-                .spawn(move || pump.run(&mut on_event, on_exit))
-                .map(drop)
-        })();
-        if let Err(e) = started {
-            let _ = lock(&child).child.kill();
-            return Err(e);
-        }
-        Ok(Pty {
-            session,
-            child,
-            input,
-            master,
-        })
+        let target = Target::Frame(Arc::new(Mutex::new(session)));
+        start(command, size, target, options, on_event, on_exit)
     }
 
     /// The session this pty drives: subscribe to it, read it, scroll or select. Lock it briefly,
     /// because the reader and the pump take the same lock.
     pub fn session(&self) -> Arc<Mutex<Session>> {
-        Arc::clone(&self.session)
+        let Target::Frame(session) = &self.target;
+        Arc::clone(session)
     }
+}
 
+/// Open a pseudo-terminal of `size`, start `command` in it, and run the reader, writer and pump
+/// threads that carry its output to `target`.
+fn start(
+    command: Command,
+    size: PtySize,
+    target: Target,
+    options: Options,
+    mut on_event: impl FnMut(TermEvent) + Send + 'static,
+    on_exit: impl FnOnce(Exit) + Send + 'static,
+) -> std::io::Result<Pty> {
+    let pair = native_pty_system().openpty(size).map_err(io_error)?;
+    let mut child = pair
+        .slave
+        .spawn_command(command.build())
+        .map_err(io_error)?;
+    // The slave stays open in this process otherwise, and a Unix reader would never see EOF.
+    drop(pair.slave);
+    let ends = pair
+        .master
+        .try_clone_reader()
+        .and_then(|r| Ok((r, pair.master.take_writer()?)));
+    let (reader, writer) = match ends {
+        Ok(ends) => ends,
+        Err(e) => {
+            let _ = child.kill();
+            return Err(io_error(e));
+        }
+    };
+    let child = Arc::new(Mutex::new(ChildState {
+        child,
+        exited: false,
+    }));
+    let master: Master = Arc::new(Mutex::new(Some(pair.master)));
+    let (tx, rx) = mpsc::channel();
+    let input: Input = Arc::new(Mutex::new(Some(tx)));
+    let eof = Arc::new(AtomicBool::new(false));
+    let started = (|| {
+        spawn_writer(writer, rx, options.encoder)?;
+        spawn_reader(
+            options.decoder,
+            reader,
+            target.clone(),
+            Arc::clone(&input),
+            Arc::clone(&eof),
+        )?;
+        let pump = Pump {
+            target: target.clone(),
+            master: Arc::clone(&master),
+            input: Arc::clone(&input),
+            child: Arc::clone(&child),
+            eof,
+            period: options.pump_every,
+        };
+        thread::Builder::new()
+            .name("justerm-pty pump".into())
+            .spawn(move || pump.run(&mut on_event, on_exit))
+            .map(drop)
+    })();
+    if let Err(e) = started {
+        let _ = lock(&child).child.kill();
+        return Err(e);
+    }
+    Ok(Pty {
+        target,
+        child,
+        input,
+        master,
+    })
+}
+
+impl Pty {
     /// Send `bytes` to the child: what the user typed, or the consumer's own answer to a query the
     /// engine leaves to policy (a colour or clipboard query). This queues the bytes and returns
     /// without waiting, and they reach the child in the order written, interleaved with the
@@ -317,7 +339,8 @@ impl Pty {
     pub fn resize(&self, cols: usize, rows: usize) -> (usize, usize) {
         // The session stays locked until the pty has its size, so two resizes racing cannot leave
         // the engine at one size and the child told the other.
-        let mut session = lock(&self.session);
+        let Target::Frame(session) = &self.target;
+        let mut session = lock(session);
         let adopted = session.resize(cols, rows);
         if let Some(master) = lock(&self.master).as_ref() {
             let _ = master.resize(pty_size(adopted.0, adopted.1));
@@ -393,7 +416,7 @@ fn spawn_writer(
 fn spawn_reader(
     mut decoder: Option<Box<dyn Decode>>,
     mut reader: Box<dyn Read + Send>,
-    session: Arc<Mutex<Session>>,
+    target: Target,
     input: Input,
     eof: Arc<AtomicBool>,
 ) -> std::io::Result<()> {
@@ -416,12 +439,12 @@ fn spawn_reader(
                     }
                     None => &buf[..n],
                 };
-                if !feed(&session, &input, chunk) {
+                if !feed(&target, &input, chunk) {
                     break;
                 }
             }
             if let Some(tail) = decoder.as_mut().map(|d| d.finish()) {
-                feed(&session, &input, &tail);
+                feed(&target, &input, &tail);
             }
             eof.store(true, Ordering::Release);
         })
@@ -431,7 +454,8 @@ fn spawn_reader(
 /// Feed `bytes` and hand the replies they produced to the writer. Returns `false` once the session
 /// has ended: output arriving after that is not fed, because nothing may follow `on_exit`. That
 /// happens when a grandchild still holds a Unix pty open.
-fn feed(session: &Mutex<Session>, input: &Input, bytes: &[u8]) -> bool {
+fn feed(target: &Target, input: &Input, bytes: &[u8]) -> bool {
+    let Target::Frame(session) = target;
     let mut session = lock(session);
     if session.is_ended() {
         return false;
@@ -449,7 +473,7 @@ fn feed(session: &Mutex<Session>, input: &Input, bytes: &[u8]) -> bool {
 
 /// The pump thread's state.
 struct Pump {
-    session: Arc<Mutex<Session>>,
+    target: Target,
     master: Master,
     input: Input,
     child: Arc<Mutex<ChildState>>,
@@ -482,7 +506,8 @@ impl Pump {
             thread::sleep(Duration::from_millis(5));
         }
         let pumped = {
-            let mut session = lock(&self.session);
+            let Target::Frame(session) = &self.target;
+            let mut session = lock(session);
             let pumped = session.pump();
             session.end();
             pumped
@@ -493,7 +518,8 @@ impl Pump {
 
     fn pump(&self, on_event: &mut impl FnMut(TermEvent)) {
         let pumped = {
-            let mut session = lock(&self.session);
+            let Target::Frame(session) = &self.target;
+            let mut session = lock(session);
             let pumped = session.pump();
             // Under the same lock as the reader's hand-over, so drain order is hand-over order.
             write_back(&self.input, &pumped.replies);
