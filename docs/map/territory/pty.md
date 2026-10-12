@@ -76,8 +76,10 @@ Everything it does is wiring between the OS and an engine that does no I/O itsel
 - **Ending suppresses late output, and the observer with it.** The reader checks `is_ended` (in Raw
   mode, `RawState::ended`) under the lock, before `on_output` runs. Late output needs a grandchild
   holding a Unix pty open, and that grandchild must ignore `SIGHUP`. Otherwise the session leader's
-  exit hangs it up before it prints, and the test's positive control finds nothing. Measured under
-  WSL (#1057): removing the check, or calling the observer before it, reddens
+  exit hangs it up before it prints, and the test's positive control finds nothing. On macOS even
+  that is not enough: measured in CI (#1057), the grandchild's write after the leader's exit fails
+  with `EIO`, so the window exists on Linux only. Measured under WSL (#1057): removing the check, or
+  calling the observer before it, reddens
   `nothing_is_observed_after_on_exit` (Frame) and `nothing_reaches_the_raw_sink_after_on_exit`
   (Raw).
 - **The observer and the tick run under the lock.** `on_output` runs under the Session's lock (in
@@ -159,9 +161,9 @@ Not compared against a pinned reference yet. The layout peers (wezterm's `pty/` 
   by closing the pseudo-console.
 - **A spawn error keeps its `ErrorKind` only where `portable-pty` passed an `io::Error` through.**
   On Windows it formats a failed `CreateProcessW` into a string, so a missing program is `Other`.
-- **The "nothing after `on_exit`" tests and the Raw DA1 test run on Unix only.** The first need a
-  grandchild that outlives a pty, which a ConPTY ends with its pseudo-console. The second is the
-  conhost reason above.
+- **The "nothing after `on_exit`" tests run on Linux only, and the Raw DA1 test on Unix only.** The
+  first need a grandchild writing to a pty after the child's exit: a ConPTY ends with its
+  pseudo-console, and macOS fails the write with `EIO`. The second is the conhost reason above.
 - **No test reaches the paused-close order.** Terminating a Raw pty while its sink is paused
   reported the exit in 11 ms on Windows 11 build 26200 even with the release after the close
   (#1057 lens probe), so the documented `ClosePseudoConsole` wait did not occur on this build.

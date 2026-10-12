@@ -733,9 +733,9 @@ fn the_observer_sees_exactly_what_the_raw_sink_got() {
     assert_eq!(*seen.bytes.lock().unwrap(), *sink.bytes.lock().unwrap());
 }
 
-/// Unix only: the window needs a grandchild holding the pty open past the child's exit, and a
-/// ConPTY ends its output when the pseudo-console closes.
-#[cfg(unix)]
+/// Linux only: the window needs a grandchild writing to the pty after the child's exit. A ConPTY
+/// ends its output when the pseudo-console closes, and macOS fails that write with `EIO`.
+#[cfg(target_os = "linux")]
 fn nothing_is_observed_after_on_exit() {
     let fed = RecordingDecode::default();
     let seen = Observed::default();
@@ -937,8 +937,8 @@ fn a_paused_raw_sink_gets_nothing_until_resumed() {
         .expect("terminated");
 }
 
-/// Unix only, for the reason [`nothing_is_observed_after_on_exit`] gives.
-#[cfg(unix)]
+/// Linux only, for the reason [`nothing_is_observed_after_on_exit`] gives.
+#[cfg(target_os = "linux")]
 fn nothing_reaches_the_raw_sink_after_on_exit() {
     let fed = RecordingDecode::default();
     let seen = Observed::default();
@@ -1077,7 +1077,7 @@ fn main() {
             a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported as fn(),
         ),
     ]);
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     tests.extend([
         (
             "nothing_is_observed_after_on_exit",
@@ -1087,6 +1087,9 @@ fn main() {
             "nothing_reaches_the_raw_sink_after_on_exit",
             nothing_reaches_the_raw_sink_after_on_exit as fn(),
         ),
+    ]);
+    #[cfg(unix)]
+    tests.extend([
         (
             "raw_mode_leaves_a_query_to_the_consumer",
             raw_mode_leaves_a_query_to_the_consumer as fn(),
