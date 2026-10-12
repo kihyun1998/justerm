@@ -84,9 +84,12 @@ Everything it does is wiring between the OS and an engine that does no I/O itsel
   Raw mode, the raw state's), so it sees exactly the engine's input, in order. Locking the Session
   from inside it deadlocks. `on_tick` runs under the same lock just before the pump, so it sees
   `frame_pending()` before the pump resets it. In Raw mode it gets `None`.
-- **A paused Raw reader is released at exit.** The pump sets `draining` and wakes the reader before
-  it waits for EOF, so a child that exits while the sink has paused is still drained before
-  `on_exit`. Then `ended` is set, under the same lock the reader checks.
+- **A paused Raw reader is released at exit, before the pseudo-terminal closes.** The pump sets
+  `draining` and wakes the reader, so a child that exits while the sink has paused is still drained
+  before `on_exit`. Then `ended` is set, under the same lock the reader checks. The release comes
+  before the master is dropped because `ClosePseudoConsole` may write a last frame to the output
+  pipe. Microsoft documents that it can then wait indefinitely if nobody drains the pipe, and it
+  would wait on the pump thread with the master lock held.
 - **Raw mode on Windows: the consumer answers ConPTY's `ESC[6n`.** No engine answers it in Raw mode,
   and the child does not run until somebody does. The test sink answers it through `Pty::write`, as a
   consumer's terminal (xterm.js) would.
@@ -159,6 +162,10 @@ Not compared against a pinned reference yet. The layout peers (wezterm's `pty/` 
 - **The "nothing after `on_exit`" tests and the Raw DA1 test run on Unix only.** The first need a
   grandchild that outlives a pty, which a ConPTY ends with its pseudo-console. The second is the
   conhost reason above.
+- **No test reaches the paused-close order.** Terminating a Raw pty while its sink is paused
+  reported the exit in 11 ms on Windows 11 build 26200 even with the release after the close
+  (#1057 lens probe), so the documented `ClosePseudoConsole` wait did not occur on this build.
+  Swapping the order back stays green here; older Windows builds are the unmeasured risk.
 - **No test reaches the pid-reuse guard** (`ChildState::exited`). A reused pid cannot be arranged
   deterministically, so removing the guard stays green on every OS. It rests on reading
   `portable-pty`'s Unix killer, which sends a bare `kill(pid, SIGHUP)`.

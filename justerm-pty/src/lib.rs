@@ -116,7 +116,8 @@ pub struct Options {
     pub encoder: Option<Box<dyn Encode>>,
     /// Sees the child's output, decoded, on the reader thread: exactly the bytes the engine is fed
     /// (or, in [Raw mode](Pty::spawn_raw), that the sink is handed), in order. It is called under
-    /// the session's lock, so it must not lock the session itself, and never after `on_exit`.
+    /// the reader's lock — the session's, or in Raw mode the sink's — so it must not lock the
+    /// session or call [`Pty::resume`] itself. It is never called after `on_exit`.
     pub on_output: Option<OnOutput>,
     /// Runs on the pump thread every [`pump_every`](Options::pump_every), just before the pump and
     /// under the session's lock. It gets the session, or `None` in [Raw mode](Pty::spawn_raw). It
@@ -157,7 +158,8 @@ impl std::fmt::Debug for Options {
 /// Where a [Raw mode](Pty::spawn_raw) pty hands the child's output, decoded, on the reader thread.
 /// The consumer's own terminal reads it and answers the child's queries through [`Pty::write`].
 pub trait RawSink: Send {
-    /// Take one chunk of output, and say whether reading may go on.
+    /// Take one chunk of output, and say whether reading may go on. It runs under the reader's
+    /// lock, which [`Pty::resume`] takes too: resume from another thread, never from here.
     fn output(&mut self, bytes: &[u8]) -> Flow;
 }
 
@@ -201,18 +203,19 @@ impl From<portable_pty::ExitStatus> for Exit {
 /// [Raw mode](Pty::spawn_raw), a [`RawSink`]).
 ///
 /// Three threads run for it:
-/// - one reads the child's output into the session;
+/// - one reads the child's output into the session, or the [`RawSink`];
 /// - one pumps the session every [`Options::pump_every`], hands its events to the consumer, and
-///   watches for the child's exit;
+///   watches for the child's exit (in Raw mode it only ticks and watches);
 /// - one writes to the child: the engine's replies and the consumer's [`write`](Pty::write)s, in the
 ///   order they were handed over. A write therefore never blocks the reader or the pump.
 ///
 /// When the child exits, the pseudo-terminal is closed and the rest of the output is read. The
-/// session is then [ended](Session::end), which sends what is pending, and the exit is reported.
+/// session is then [ended](Session::end), which sends what is pending (in Raw mode, the sink is
+/// closed to further output), and the exit is reported.
 ///
 /// `on_exit` is called **exactly once**, including when the `Pty` is dropped first: dropping it
-/// terminates the child, and that exit is reported the same way as any other. Nothing is fed into
-/// the session after it has ended, so no frame follows `on_exit`.
+/// terminates the child, and that exit is reported the same way as any other. Nothing reaches the
+/// session or the sink after that, so no frame or output follows `on_exit`.
 pub struct Pty {
     target: Target,
     child: Arc<Mutex<ChildState>>,
@@ -656,12 +659,13 @@ impl Pump {
         };
         // Closing the pseudo-terminal lets a ConPTY flush and end its output pipe. The reader then
         // reaches EOF, instead of the drain waiting out its full bound.
-        lock(&self.input).take();
-        drop(lock(&self.master).take());
+        // A paused Raw reader is released before the pseudo-terminal closes.
         if let Target::Raw(raw) = &self.target {
             lock(&raw.state).draining = true;
             raw.wake.notify_all();
         }
+        lock(&self.input).take();
+        drop(lock(&self.master).take());
         let deadline = Instant::now() + DRAIN_AFTER_EXIT;
         while !self.eof.load(Ordering::Acquire) && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(5));
