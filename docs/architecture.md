@@ -126,6 +126,16 @@ directly. `frame_pending` is deliberately **wider than damage**: output while th
 leaves no damage (below) but still moves the header's `display_offset` / `scrollback_len`, which the
 consumer's scrollbar reads, so that frame is sent with no spans.
 
+**`justerm-pty` supplies a default pace, and the policy stays the consumer's (#1045, ADR-0034 D4).** Its
+pump thread pumps the Session on a timer: 16 ms by default (PenTerm's dogfooded value), set per pty
+through `Options::pump_every`. The timer paces **frames only**. Two things are deliberately left off it:
+- **Reply bytes** are written back to the child as soon as the output that asked for them is fed. A
+  Windows ConPTY sends `ESC[6n` at start and lets the child run only once it is answered, measured
+  #1045: with the reply, output arrived and the child exited in 352 ms; unanswered, there was neither
+  in 8 s. So a reply paced with frames would hold the child for a whole period.
+- **Exit detection** polls on its own short tick (at most 50 ms), so a long period does not delay
+  noticing that the child is gone.
+
 **Viewport-vs-screen damage — settled in #13, and not by the mapping this section once predicted.**
 The problem is real: damage (#4) is recorded against the *screen*, but the consumer renders the
 *viewport*, and while scrolled up under follow-bottom "stay" (#3) the screen scrolls while the
