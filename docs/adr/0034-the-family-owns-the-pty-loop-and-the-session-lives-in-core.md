@@ -116,5 +116,7 @@ Each item below records whose call it was.
   loop that hangs a querying application. D6's lockstep holds from the release that first publishes
   it: the publish step and the release table landed with #1047. crates.io takes a new crate's first
   version only with an API token, never through trusted publishing. So that one publish is manual
-  (`docs/agents/release.md` § A new crate's first publish), and the workflow skips the crate until
-  it exists. The maintainer chose that at #1047, over keeping `publish = false` until release time.
+  (`docs/agents/release.md` § A new crate's first publish). For `v0.27.0` the workflow skipped the
+  crate until it existed. The maintainer chose that at #1047, over keeping `publish = false` until
+  release time. Once `justerm-pty` 0.27.0 was published by hand, the skip was removed, because it
+  would otherwise let a failed lookup silently break the lockstep.

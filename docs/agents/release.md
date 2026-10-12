@@ -79,7 +79,7 @@ That tag push is the publish trigger. Verify it:
 
 | Workflow | Publishes | Gate | Auth |
 | --- | --- | --- | --- |
-| `.github/workflows/publish-crate.yml` | `cargo publish -p justerm-core`, then `-p justerm-pty` → crates.io | tag (minus `v`) must equal the crate version, else fail. `justerm-pty` is skipped with a warning while it is not on crates.io yet | none — trusted publishing |
+| `.github/workflows/publish-crate.yml` | `cargo publish -p justerm-core`, then `-p justerm-pty` → crates.io | tag (minus `v`) must equal the crate version, else fail | none — trusted publishing |
 | `.github/workflows/publish-wasm.yml` | `wasm-pack build --target bundler` + `npm publish` → npm (`justerm-wasm-decode`) | tag must equal the wasm-pack package version, else fail | none — trusted publishing |
 
 Auth is § Registry auth below. `justerm-wasm-decode` is `publish = false` for cargo,
@@ -95,7 +95,7 @@ secret is used.** Each package needs a one-time entry on its registry naming the
 | Package | Registry | Workflow filename |
 | --- | --- | --- |
 | `justerm-core` | crates.io → crate → Settings → Trusted Publishing | `publish-crate.yml` |
-| `justerm-pty` | crates.io → crate → Settings → Trusted Publishing — only once it exists (below) | `publish-crate.yml` |
+| `justerm-pty` | crates.io → crate → Settings → Trusted Publishing | `publish-crate.yml` |
 | `justerm-wasm-decode` | npmjs.com → package → Settings → Trusted publishing | `publish-wasm.yml` |
 | `justerm-renderer` | npmjs.com → package → Settings → Trusted publishing | `publish-renderer.yml` |
 | `justerm-web` | npmjs.com → package → Settings → Trusted publishing | `publish-web.yml` |
@@ -123,18 +123,20 @@ says: "Your crate must already be published to crates.io (initial publish requir
 The trusted-publisher entry lives in the crate's own Settings, which a crate that does not exist
 yet has none of. This is the one sanctioned manual `cargo publish`. It happens once per crate.
 
-`justerm-pty` is the first crate to go through this (#1047).
-`publish-crate.yml` skips it with a warning while crates.io answers 404 for it, so the release that
-first carries it still ships `justerm-core`. Then, by hand, after that tag's `publish-crate` run has
-finished:
+**Done for `justerm-pty`.** It took its first version, 0.27.0, by hand on 2026-10-12 (#1047). Its
+trusted publisher was added the same day. From `v0.28.0` on, `publish-crate.yml` publishes it, and
+that tag is the first proof the entry works: the `verify-auth` run checks `justerm-core` only.
 
-1. `cargo publish -p justerm-pty --locked`, at the tagged commit, with an API token scoped to
-   publishing new crates. It needs the just-published `justerm-core` of the same version, which is
-   why it waits for the tag run.
-2. crates.io → `justerm-pty` → Settings → Trusted Publishing: add `publish-crate.yml`, the same
-   entry as `justerm-core`'s. Check it without publishing:
-   `gh workflow run publish-crate.yml --ref master`.
-3. Revoke the API token. From the next `v*` tag, the workflow publishes `justerm-pty` itself.
+For the next new crate on the `v*` track, follow the same steps. It depends on a `justerm-core`
+version that is not on crates.io until its tag runs, so its first release cannot publish it:
+
+1. While the crate does not exist yet, keep it out of `publish-crate.yml` for that tag, or skip it.
+   This is what `v0.27.0` did, with a skip-if-absent guard that has since been removed. Leaving it in
+   fails the job right after `justerm-core` has shipped.
+2. After the tag's `publish-crate` run finishes, run `cargo publish -p <crate> --locked` at the tagged
+   commit, with an API token scoped to publishing new crates.
+3. crates.io → `<crate>` → Settings → Trusted Publishing: add `publish-crate.yml`.
+4. Revoke the token, and add the crate to `publish-crate.yml` for good.
 
 ## The renderer publishes on its OWN track (`renderer-v*`, #394)
 
