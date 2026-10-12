@@ -4782,6 +4782,28 @@ interface PreeditViewportProbe {
     anchorRowOffScreenBefore: number;
     anchorRowOffScreenAfter: number;
   };
+  /** #917 — the anchor `compositionstart` itself writes, read back with no update and no frame after
+   * it. Each reading is the IME anchor at the instant an IME that opens its candidate window at
+   * `compositionstart` would look for it. */
+  startAnchor: {
+    /** Arm 1's anchor row straight after `compositionstart`, view scrolled with the cell on screen. */
+    onScreen: number;
+    /** Arm 2's anchor row just BEFORE `compositionstart`, with the cell off the bottom — what a
+     * withheld write must leave in place (`pendingTrace.anchorRowOffScreenBefore` is after it). */
+    offScreenPrior: number;
+    /** Arm 3's anchor row straight after `compositionstart`, inside the #913 optimistic window: the
+     * widget's own offset is already 0, the screen still shows `offsetOnScreen`. */
+    pending: number;
+    /** Arm 4, at offset 0: a composition that starts while the previous syllable's commit is still in
+     * flight. `runEnd` is the anchor the previous syllable's update left (its run's end, in cells);
+     * `atStart` is the anchor straight after the next `compositionstart`; `cursor` is the frame's
+     * cursor, which the commit has not moved yet. */
+    inFlight: { cursor: { col: number; row: number }; runEnd: { col: number; row: number }; atStart: { col: number; row: number } };
+    /** Arm 5: `Terminal.focus()` with the view scrolled and the cell on screen, nothing composing. */
+    focusOnScreen: number;
+    /** Arm 5, then a frame at offset 0 with the cursor unmoved: the anchor must be back on `gridRow`. */
+    focusReturned: number;
+  };
 }
 
 window.__preeditViewportProbe = async (): Promise<PreeditViewportProbe> => {
@@ -4848,7 +4870,9 @@ window.__preeditViewportProbe = async (): Promise<PreeditViewportProbe> => {
   const anchorRow = (): number => Math.round(parseFloat(ta.style.top || "0") / ch);
   displayOffset = offsetOnScreen;
   const idleOnScreen = column();
-  compose();
+  startOnly();
+  const startOnScreen = anchorRow(); // after `compositionstart` alone — #917's instant
+  updateOnly();
   const anchorRowOnScreen = anchorRow(); // BEFORE any further render — see the field docs
   const composingOnScreen = column();
   endCompose();
@@ -4856,6 +4880,7 @@ window.__preeditViewportProbe = async (): Promise<PreeditViewportProbe> => {
 
   displayOffset = offsetOffScreen;
   const idleOffScreen = column();
+  const startOffScreenPrior = anchorRow();
   startOnly();
   const anchorRowOffScreenBefore = anchorRow();
   updateOnly();
@@ -4876,7 +4901,9 @@ window.__preeditViewportProbe = async (): Promise<PreeditViewportProbe> => {
   window.__deferScrollEcho = 0;
   ta.dispatchEvent(new KeyboardEvent("keydown", { keyCode: 229, key: "Process", bubbles: true }));
   const afterKeydown = displayOffset;
-  compose();
+  startOnly();
+  const startPending = anchorRow(); // #917: the start anchor must read the frame's offset too
+  updateOnly();
   const afterCompose = displayOffset;
   const anchorRowPending = anchorRow(); // BEFORE `column()` renders and the re-assert repairs it
   const composingPending = column(); // still inside the window — no `await` above
@@ -4894,6 +4921,43 @@ window.__preeditViewportProbe = async (): Promise<PreeditViewportProbe> => {
   endCompose();
   window.__deferScrollEcho = undefined;
   await settle();
+
+  // ARM 4 — #917 at offset 0: continuous CJK. The next `compositionstart` lands while the previous
+  // syllable's commit is still queued behind its deferred read (no `await` between end and start),
+  // so the frame's cursor has not moved and the composition really starts at the previous run's end.
+  const anchorCell = (): { col: number; row: number } => ({
+    col: Math.round(parseFloat(ta.style.left || "0") / cw),
+    row: anchorRow(),
+  });
+  displayOffset = 0;
+  column();
+  const inFlightCursor = { col: COL, row: gridRow };
+  compose();
+  const inFlightRunEnd = anchorCell();
+  endCompose();
+  startOnly();
+  const inFlightAtStart = anchorCell();
+  endCompose();
+  await settle();
+
+  // ARM 5 — #917: `Terminal.focus()` re-anchors from the retained cursor, and must map it too.
+  displayOffset = offsetOnScreen;
+  column();
+  focusTerminal();
+  const focusOnScreen = anchorRow();
+  // Back at the bottom with the cursor unmoved: the frame writer must not take the scrolled write's
+  // cache entry for its own cell.
+  displayOffset = 0;
+  column();
+  const focusReturned = anchorRow();
+  const startAnchor = {
+    onScreen: startOnScreen,
+    offScreenPrior: startOffScreenPrior,
+    pending: startPending,
+    inFlight: { cursor: inFlightCursor, runEnd: inFlightRunEnd, atStart: inFlightAtStart },
+    focusOnScreen,
+    focusReturned,
+  };
 
   displayOffset = 0;
   cursorDrift = savedDrift;
@@ -4914,6 +4978,7 @@ window.__preeditViewportProbe = async (): Promise<PreeditViewportProbe> => {
     idlePending,
     composingPending,
     pendingTrace,
+    startAnchor,
   };
 };
 

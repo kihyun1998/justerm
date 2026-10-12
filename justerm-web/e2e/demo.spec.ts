@@ -3167,6 +3167,51 @@ test("a composition draws on the viewport row its cell is shown at, or not at al
   ).toEqual([p.offsetOnScreen, p.offsetOnScreen, p.offsetOnScreen]);
 });
 
+// #917 — the anchor `compositionstart` writes BEFORE the first update re-aims it. An IME that opens
+// its candidate window at `compositionstart` reads it there, so it must already name where the
+// composition is, on the row the screen shows that cell at. Same probe as above; these are its
+// readings taken one event earlier.
+test("compositionstart anchors the IME where the composition starts, on the row the screen shows (#917)", async ({
+  page,
+}) => {
+  await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+  await page.locator("#term").dispatchEvent("mousedown");
+
+  const p = await readAsyncProbe(page, "__preeditViewportProbe");
+  const s = p.startAnchor;
+  const mapped = p.gridRow + p.offsetOnScreen;
+
+  // Scrolled, cell on screen: the mapped row, not the raw grid row — and already the row the first
+  // update will re-aim to, so the two surfaces never disagree.
+  expect(s.onScreen, `anchor after compositionstart, gridRow=${p.gridRow} offset=${p.offsetOnScreen}`).toBe(mapped);
+  expect(s.onScreen, "and the same row the first update re-aims to").toBe(p.pendingTrace.anchorRowOnScreen);
+
+  // Scrolled, cell off the bottom: no row on screen to name, so `compositionstart` writes nothing.
+  expect(
+    p.pendingTrace.anchorRowOffScreenBefore,
+    `anchor after compositionstart with the cell off screen (was ${s.offScreenPrior} before it)`,
+  ).toBe(s.offScreenPrior);
+
+  // Continuous CJK at offset 0: the commit is still in flight, so the frame's cursor has not moved —
+  // the composition starts at the previous run's end, and so must the anchor.
+  expect(s.inFlight.runEnd, "precondition: the previous run's end is not the frame's cursor").not.toEqual(
+    s.inFlight.cursor,
+  );
+  expect(s.inFlight.atStart, `anchor after an in-flight compositionstart, cursor=${JSON.stringify(s.inFlight.cursor)}`).toEqual(
+    s.inFlight.runEnd,
+  );
+
+  // Inside #913's optimistic window the widget's own offset is already 0 while the screen still shows
+  // the scrolled frame: the start anchor maps with the FRAME's offset, as the run does.
+  expect(s.pending, "anchor after compositionstart, mid-request").toBe(mapped);
+
+  // `focus()` re-anchors from the retained cursor through the same mapping.
+  expect(s.focusOnScreen, "anchor after focus(), view scrolled").toBe(mapped);
+  // And back at the bottom with the cursor unmoved, the frame writer puts it back on the cursor's
+  // row: the scrolled write's cache entry names the viewport cell it wrote, not the grid cell.
+  expect(s.focusReturned, "anchor after returning to the bottom").toBe(p.gridRow);
+});
+
 test("a composition begun after a scrolled-up excursion starts at the live cell (#921)", async ({
   page,
 }) => {

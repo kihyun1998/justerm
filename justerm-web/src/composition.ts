@@ -181,6 +181,22 @@ export interface TextareaAnchor {
 }
 
 /**
+ * `cell`, a GRID cell, as the viewport cell it is shown at under display offset `displayOffset`, or
+ * `undefined` when its row is off the bottom of a `rows`-row viewport (or there is no cell). At
+ * offset `d` grid row `r` is shown at `r + d` while that is `< rows`. Why:
+ * `docs/map/invariant/composition-is-browser-owned-state.md`.
+ */
+export function viewportCell(
+  cell: TextareaAnchor | undefined,
+  displayOffset: number,
+  rows: number,
+): TextareaAnchor | undefined {
+  if (!cell) return undefined;
+  const row = cell.row + displayOffset;
+  return row < rows ? { col: cell.col, row } : undefined;
+}
+
+/**
  * Whether the hidden textarea must move, and the cache key to remember (#631). The key is the
  * cursor's cell coordinate; `force` overrides it, for the callers that sit where something reads
  * the anchor. `composing` suppresses every path, forced or not, so the anchor stays put while a
