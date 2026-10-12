@@ -1,0 +1,22 @@
+[package]
+name = "justerm-pty"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Runs a command in a pseudo-terminal and drives a justerm Session from it: the read loop, the pump timer and exit detection."
+readme = "README.md"
+keywords = ["terminal", "pty", "conpty", "justerm"]
+categories = ["command-line-interface"]
+# Not on crates.io until the loop is complete — reply write-back and the encoding hook land in
+# later slices of #1042 (ADR-0034).
+publish = false
+
+[dependencies]
+justerm-core = { path = "../justerm-core", version = "0.26.2" }
+portable-pty = "0.9"
+
+# The test binary is also the child it spawns, so libtest's output must stay out of the terminal.
+[[test]]
+name = "pty"
+harness = false

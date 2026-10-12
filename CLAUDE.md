@@ -16,7 +16,8 @@ and writes a colour *reference* the consumer hands it into settled cells — the
 stays the consumer's (#967).
 
 justerm **does not** (and pulls none of these in as a dependency):
-- **No I/O** — reads no PTY/SSH/socket. The caller pushes bytes in with `feed()`.
+- **No I/O** — core reads no PTY/SSH/socket; the caller pushes bytes in with `feed()`. The family's
+  `justerm-pty` runs a PTY, as a separate crate (ADR-0034); core still pulls in no I/O.
 - **No IPC** — no Tauri/channel/transport. It provides the binary *format*; *transport* is the consumer's.
 - **No rendering** — core does no GPU/canvas/drawing. The family's `justerm-renderer` draws, as a separate
   crate; the full-stack pivot (ADR-0018) left this line where it was.

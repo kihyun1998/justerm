@@ -45,6 +45,8 @@ Where the sort comes out clean, the measured rule **is** the rule.
 justerm-core/          the engine crate — VT parsing, grid, scrollback, cursor, selection,
                        serialize. No I/O, no drawing
 justerm-wasm-decode/   the wasm binding crate and the npm artifact built from it
+justerm-pty/           the PTY crate — spawns a command in a pseudo-terminal and drives a core
+                       `Session` from it. The family's one I/O crate (ADR-0034)
 justerm-renderer/      the WebGL2 renderer crate (wasm32-only; carries its own [workspace])
 justerm-web/           the browser widget TS package
 justerm-facade/        the frozen `justerm` name tombstone. Directory name != package name — the
@@ -154,3 +156,12 @@ Resolving it is a decision this record deliberately does not make.
   on these facts — no file-backed test module existed anywhere in the repo, the rule's axis is access
   (module-internal vs public API) rather than form, and the move was not needed for #975's decant,
   only for reading the file. No peer comparison was run for it.
+- **Re-opened 2026-10-12 for `justerm-pty/` (#1045).** A new top-level crate, decided in
+  ADR-0034 D1. That record settled *that* the PTY loop is its own crate; this one records *where*:
+  a flat sibling of `justerm-core/`, per ADR-0010's prefix rule. Peer comparison, read the same day
+  as `gh api` tree listings (unpinned): wezterm keeps its PTY as the top-level `pty/` directory
+  (package `portable-pty`) beside `term/`, a sibling crate. alacritty keeps it as the `tty` module
+  inside `alacritty_terminal/src`, one crate with the terminal model. That second shape is the one
+  ADR-0034 rules out for this family, because core does no I/O. Its tests use `harness = false` and
+  re-run their own binary as the child process, so no `[[bin]]` or `examples/` helper is published
+  and no further area is needed.

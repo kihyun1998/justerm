@@ -97,3 +97,21 @@ Each item below is a judgement as well:
 - **GLOSSARY's family entry** gains `justerm-pty` when the crate ships. **Session** and **Pump** are
   defined there already.
 - **`docs/architecture.md:113`** is amended per D4.
+
+## Amended 2026-10-12, while building #1045
+
+Each item below records whose call it was.
+
+- **Reply write-back is not paced with frames** (a derivation). D4's timer paces frames. Replies are
+  written back as soon as the output that asked for them is fed. Measured on Windows: a ConPTY sends
+  `ESC[6n` at start and lets the child run only once it is answered. Unanswered, there was no output
+  and no exit in 8 s. Answered, the child printed and exited in 352 ms. This fact is new since the
+  grilling. It does not reopen D4, because pacing frames is still the consumer's policy. It adds the
+  rule that the pace never applies to replies.
+- **Write-back ships with the first slice** (the maintainer's call). It moved from #1046 into #1045,
+  because without it nothing runs on Windows at all, and D6 puts Windows in CI from the first slice.
+  #1046 keeps the consumer's writer and resize sync.
+- **`justerm-pty` stays `publish = false` until the loop is complete** (the maintainer's call, made at
+  #1045's confirm). Publishing it before reply write-back and resize sync existed would ship a PTY
+  loop that hangs a querying application. D6's lockstep holds from the release that first publishes
+  it: the publish step, the release table and the crates.io token for the new name land with #1047.

@@ -1,5 +1,5 @@
 [workspace]
-members = ["justerm-core", "justerm-wasm-decode"]
+members = ["justerm-core", "justerm-wasm-decode", "justerm-pty"]
 # `fuzz` (cargo-fuzz, nightly/libFuzzer) and `justerm-facade` (the one-shot `justerm`
 # 0.5.1 tombstone, frozen at its own version) are deliberately OUTSIDE the workspace:
 # the fuzz crate carries its own `[workspace]`, and the facade must not be dragged by

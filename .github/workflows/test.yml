@@ -180,6 +180,22 @@ jobs:
       - name: E2E (a11y, input, wheel, fit)
         run: pnpm run test:e2e
 
+  # justerm-pty against a real child process on the other two OSes (#1045, ADR-0034 D6). Linux is
+  # already the `test` job's `cargo test --workspace`. A pseudo-terminal differs per OS — a Windows
+  # ConPTY asks for the cursor position before the child may run, and its reader can outlive the
+  # child — so each OS runs the same helper-child tests.
+  pty:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - name: Test (justerm-pty, real child process)
+        run: cargo test -p justerm-pty
+
   # The WASM decoder (#34, ADR-0008): build both wasm-pack targets and run the JS-boundary tests on
   # the wasm32 target. Separate from `test` because it needs the wasm32 target + wasm-pack, and the
   # tests/web.rs cases call js_sys (they self-exclude off-wasm via #![cfg(target_arch = "wasm32")]).

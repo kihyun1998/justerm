@@ -6,7 +6,8 @@ issues, or ADRs name a concept here, use this term and not a synonym.
 ## justerm (family)
 
 `justerm` names the `-term`-family umbrella, not a single crate: the **Engine** (crate `justerm-core`),
-its WASM decoder (`justerm-wasm-decode`), the browser **widget** (`justerm-web`), and the first-party
+its WASM decoder (`justerm-wasm-decode`), the PTY crate that drives a **Session** from a real child
+process (`justerm-pty`, the family's one I/O crate — ADR-0034), the browser **widget** (`justerm-web`), and the first-party
 **Renderer** (`justerm-renderer`). `justerm-facade` is a one-shot tombstone for the pre-rename crate
 name. When the core engine crate specifically is meant, say `justerm-core`; "justerm" alone is the
 family. The family pivoted from an engine-only library to a **first-party full-stack** terminal
