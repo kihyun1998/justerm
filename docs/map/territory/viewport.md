@@ -167,7 +167,9 @@ model (#993), and have no reference-facts row.
   question at all: the widget was
   gating a *retained coordinate* on `cursorVisible`, a bit about **drawing**, so the retention moved
   to `Terminal.track` where every other frame-derived value already lives ungated. Adjacent to #917,
-  which is untouched — a different root (two surfaces disagreeing at the latch, not a stale source).
+  a different root (two surfaces disagreeing at the latch, not a stale source), since closed by
+  re-syncing the anchor at the latched origin through the same mapping
+  ([composition invariant](../invariant/composition-is-browser-owned-state.md)).
   **Its follow-up found the sharper half**: the origin is a *grid* row and the renderer draws the
   *viewport*, so a run drawn during an excursion landed `display_offset` rows above its own cell
   (measured: drawn on row 33 while row 35 showed the cell) and, written once, kept that row while

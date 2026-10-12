@@ -44,11 +44,12 @@ reading that one. The same shape as an absolute-index walk being rediscovered th
   driven by a `setComposing` notification off a browser event, because there is no frame field to key
   on. The rejected half is recorded below under *what is not part of this fact*
 - [widget lifecycle](../territory/widget-lifecycle.md) — the anchor is re-read at the moments something
-  reads it (composition start #631, focus), and frozen for **every** writer while a composition is open
+  reads it (composition start #631, at the latched origin since #917; focus, at the retained cursor
+  cell), and frozen for **every** writer while a composition is open
   (#637 the frame stream, #649 the forced re-sync) — while the *retained cell* those writers place
   from is kept on every frame regardless, in `Terminal.track` with the rest of the frame state
   (#921). `Terminal.focus`, `syncTextareaAnchor`, `positionTextarea`, `track` in
-  `justerm-web/src/terminal.ts`; `textareaMove` in `justerm-web/src/composition.ts`
+  `justerm-web/src/terminal.ts`; `textareaMove`, `viewportCell` in `justerm-web/src/composition.ts`
 - [accessibility](../territory/accessibility.md) — `AccessibilityController.onKey` must push a
   committed IME text intent **per code point**, because one commit arrives as a single multi-unit
   intent while `dedupTyped` drains one code point per echoed output char (#153 G9). And the textarea is
@@ -133,10 +134,9 @@ composition it never saw, so nothing throws and no test on the core side can fai
   drawn from a coordinate the engine gave for something else. Measured: a run whose cell was being
   shown on row 35 was drawn on row 33. The mapping now lives in the widget, with the frame's offset
   rather than the widget's requested one — #913 advances the latter to 0 the moment an
-  IME-swallowed key asks for the bottom, while the screen still shows the scrolled frame. **The
-  sibling writer still has it**: `syncTextareaAnchor` at `compositionstart` writes the raw grid row,
-  overwritten one event later by the first update, which is #917's window and its measurement.
-  The run is drawn at the viewport row its origin is shown at, or not at all (`paintPreedit`). Off
+  IME-swallowed key asks for the bottom, while the screen still shows the scrolled frame. That one
+  mapping is `viewportCell`, and every writer that puts a grid cell on screen goes through it — the
+  run, the suggestion, and the IME anchor (see the next bullet). The run is drawn at the viewport row its origin is shown at, or not at all (`paintPreedit`). Off
   the bottom it clears what is drawn — a view scrolled away mid-composition must not leave the run
   on scrollback — and waits, because `repaintPreedit` re-asserts it on the next frame that can
   place it: D5's every-frame rule, applied to the run as well as the caret, and cheap because it
@@ -149,6 +149,25 @@ composition it never saw, so nothing throws and no test on the core side can fai
   spends its whole life off screen hands on no end and the next one falls back to the frame stream:
   ADR-0028 D4's "a composition that draws nothing leaves no run end", reached by a second route,
   which needs a view that never returns to the bottom — a consumer that did not wire `onScroll`.
+- **Two surfaces answering "where is this composition" from two sources (#917).** Until #917 the
+  `compositionstart` re-sync wrote the anchor from `cursorAnchor` and only then latched the origin,
+  so between `compositionstart` and the first update the anchor named a different cell from the run:
+  the previous syllable's start in continuous CJK (the frame's cursor is stale while a commit is in
+  flight, #911), and while scrolled up a raw grid row with no bearing on the screen. Measured with
+  `__preeditViewportProbe`, cursor at grid row 33 of 37, view up 2: the anchor read back **33** after
+  `compositionstart` and **35** after the first update. Now the origin is latched first and the
+  re-sync writes *it*, through `viewportCell`, withheld off the bottom. `focus()` maps the retained
+  cursor the same way. The re-sync still runs before `compositionStart()`, so the freeze above does
+  not swallow it, and it still re-reads the geometry (#631).
+  **What it was decided on**: whether an IME that opens its candidate window at `compositionstart`
+  (Japanese, pinyin) reads the anchor before the first update is **still unmeasured**. It could not
+  decide the fix, though. If the IME reads it there, the old value was wrong. If it does not, the
+  corrected value costs nothing. A measurement would grade reach, not direction. Korean 2-beolsik
+  opens no candidate window until a Hanja conversion, so for it the window was invisible either way.
+  **The cache key is the viewport cell written, not the grid cell.** With a grid key, a `focus()`
+  while scrolled leaves key `r` on a textarea drawn at `r + d`. Back at the bottom with the cursor
+  unmoved, `positionTextarea` then sees an equal key and skips, which leaves the anchor `d` rows low.
+  `__preeditViewportProbe`'s `focusReturned` pins this, and a grid-keyed mutation reddens it.
 - **Reading a two-question predicate as one question.** The guard is keyed on
   `CompositionController.composing` (`isComposing`), *not* `active` (`isComposing ||
   isSendingComposition`). `active` outlives the candidate window by one deferred commit read, and a

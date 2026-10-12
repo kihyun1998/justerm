@@ -555,7 +555,7 @@ export class Terminal {
   /** Move the hidden textarea over the cursor cell so the IME candidate window appears there.
    * **The DOM write** is skipped when the cursor is absent or hidden; the retained cell is
    * {@link Terminal.track}'s and is kept either way. Touches the DOM (a layout read via `getGeometry`
-   * and two style writes) only when the cursor moved — a cache keyed on the coordinate, which cannot
+   * and two style writes) only when the cursor moved — a cache keyed on the viewport cell, which cannot
    * see a cell-size change; {@link Terminal.syncTextareaAnchor} is the path that can. */
   private positionTextarea(frame: DecodedFrame): void {
     if (frame.cursorRow === undefined || frame.cursorVisible === false) return;
