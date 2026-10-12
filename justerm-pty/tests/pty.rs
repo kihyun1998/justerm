@@ -106,13 +106,6 @@ fn helper(mode: &str) {
         }
         "late-print" => {
             std::thread::sleep(Duration::from_millis(1500));
-            if let Ok(log) = std::env::var("PROBE_LOG") {
-                let r = std::io::stdout()
-                    .write_all(b"LATE-OUTPUT\n")
-                    .and_then(|()| std::io::stdout().flush());
-                std::fs::write(log, format!("{r:?}")).unwrap();
-                return;
-            }
             say("LATE-OUTPUT\n");
         }
         "echo-line" => {
@@ -982,109 +975,6 @@ fn a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported() {
     );
 }
 
-// TEMPORARY PROBES (#1057 macOS CI) — removed before merge.
-#[cfg(unix)]
-fn probe_unread_output_after_exit() {
-    use std::io::Read;
-    use std::os::fd::FromRawFd;
-    use std::os::unix::process::CommandExt;
-    for (setsid, delay_ms) in [(false, 0u64), (false, 300), (true, 0), (true, 300)] {
-        let (mut m, mut s) = (0, 0);
-        let rc = unsafe {
-            libc::openpty(
-                &mut m,
-                &mut s,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
-        };
-        assert_eq!(rc, 0);
-        let slave = unsafe { std::fs::File::from_raw_fd(s) };
-        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
-        cmd.env(HELPER, "lines-then-exit")
-            .stdin(slave.try_clone().unwrap())
-            .stdout(slave.try_clone().unwrap())
-            .stderr(slave.try_clone().unwrap());
-        if setsid {
-            unsafe {
-                cmd.pre_exec(|| {
-                    libc::setsid();
-                    libc::ioctl(0, libc::TIOCSCTTY as _, 0);
-                    Ok(())
-                });
-            }
-        }
-        let mut child = cmd.spawn().unwrap();
-        drop(slave);
-        drop(cmd);
-        let status = child.wait().unwrap();
-        std::thread::sleep(Duration::from_millis(delay_ms));
-        let mut master = unsafe { std::fs::File::from_raw_fd(m) };
-        let mut got = Vec::new();
-        let mut buf = [0u8; 4096];
-        let mut ends = String::new();
-        let t = std::time::Instant::now();
-        loop {
-            match master.read(&mut buf) {
-                Ok(0) => {
-                    ends = "EOF".into();
-                    break;
-                }
-                Ok(n) => got.extend_from_slice(&buf[..n]),
-                Err(e) => {
-                    ends = format!("Err({e})");
-                    break;
-                }
-            }
-            if t.elapsed() > Duration::from_secs(3) {
-                ends = "timeout".into();
-                break;
-            }
-        }
-        let text = String::from_utf8_lossy(&got);
-        eprintln!(
-            "PROBE-A setsid={setsid} delay={delay_ms}ms status={status:?} bytes={} has_END={} end={ends}",
-            got.len(),
-            text.contains("END-OF-OUTPUT")
-        );
-    }
-}
-
-#[cfg(unix)]
-fn probe_orphan_write_after_leader_exit() {
-    let log = std::env::temp_dir().join(format!("jt-probe-{}", std::process::id()));
-    let _ = std::fs::remove_file(&log);
-    let fed = RecordingDecode::default();
-    let options = Options {
-        decoder: Some(Box::new(fed.clone())),
-        ..Options::default()
-    };
-    let (tx, rx) = mpsc::channel();
-    let mut session = Session::new(Engine::new(80, 24));
-    session.subscribe(Box::new(Recorder::default()));
-    let command = Command::new(std::env::current_exe().unwrap())
-        .env(HELPER, "orphan-prints-late")
-        .env("PROBE_LOG", &log);
-    let _pty = Pty::spawn(
-        command,
-        session,
-        options,
-        |_| {},
-        move |exit| {
-            let _ = tx.send(exit);
-        },
-    )
-    .unwrap();
-    rx.recv_timeout(Duration::from_secs(20)).unwrap();
-    std::thread::sleep(Duration::from_millis(2500));
-    eprintln!(
-        "PROBE-B grandchild write = {:?}; reader saw LATE = {}",
-        std::fs::read_to_string(&log),
-        String::from_utf8_lossy(&fed.0.lock().unwrap()).contains("LATE-OUTPUT")
-    );
-}
-
 fn main() {
     if let Ok(mode) = std::env::var(HELPER) {
         helper(&mode);
@@ -1185,17 +1075,6 @@ fn main() {
         (
             "a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported",
             a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported as fn(),
-        ),
-    ]);
-    #[cfg(unix)]
-    tests.extend([
-        (
-            "probe_unread_output_after_exit",
-            probe_unread_output_after_exit as fn(),
-        ),
-        (
-            "probe_orphan_write_after_leader_exit",
-            probe_orphan_write_after_leader_exit as fn(),
         ),
     ]);
     #[cfg(unix)]
