@@ -10,6 +10,9 @@
 //! asked for them has been fed — not on the pump period, which paces frames only. A Windows
 //! ConPTY depends on it: it asks for the cursor position before the child may run at all.
 //!
+//! In [Raw mode](Pty::spawn_raw) there is no session: the output goes to a consumer's [`RawSink`],
+//! and the consumer's own terminal answers the child.
+//!
 //! The engine reads its input as UTF-8. A child that writes another encoding is the consumer's to
 //! convert, through [`Options::decoder`] and [`Options::encoder`]; which encoding is in use stays
 //! the consumer's policy.
@@ -194,7 +197,8 @@ impl From<portable_pty::ExitStatus> for Exit {
     }
 }
 
-/// A command running in a pseudo-terminal, feeding a [`Session`].
+/// A command running in a pseudo-terminal, feeding a [`Session`] (or, in
+/// [Raw mode](Pty::spawn_raw), a [`RawSink`]).
 ///
 /// Three threads run for it:
 /// - one reads the child's output into the session;

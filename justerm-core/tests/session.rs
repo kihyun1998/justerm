@@ -448,8 +448,15 @@ fn send_pending_sends_the_pending_frame_and_leaves_replies_and_events_for_the_pu
     session.send_pending();
     assert_eq!(rec.count(), 1, "nothing was pending the second time");
     let pumped = session.pump();
-    assert_eq!(pumped.replies, b"\x1b[?62;22c", "the reply was left for whoever pumps");
-    assert!(pumped.events.contains(&TermEvent::Title("t".into())), "{:?}", pumped.events);
+    assert_eq!(
+        pumped.replies, b"\x1b[?62;22c",
+        "the reply was left for whoever pumps"
+    );
+    assert!(
+        pumped.events.contains(&TermEvent::Title("t".into())),
+        "{:?}",
+        pumped.events
+    );
 }
 
 #[test]

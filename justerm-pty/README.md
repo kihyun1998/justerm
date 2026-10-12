@@ -13,3 +13,8 @@ Runs a command in a pseudo-terminal and drives a [`justerm-core`](https://crates
   size the engine actually adopted.
 - **Encodings.** For a child that does not write UTF-8, inject a decoder and an encoder through
   `Options`. The engine itself reads UTF-8 only.
+- **State beside the engine.** `Options::on_output` sees exactly the bytes the engine is fed, and
+  `Options::on_tick` runs just before each pump.
+- **Raw mode.** `Pty::spawn_raw` runs the child with no engine and hands its output to your own
+  terminal (a `RawSink`). Your terminal answers the child's queries, and your sink can pause reading
+  until `Pty::resume`.
