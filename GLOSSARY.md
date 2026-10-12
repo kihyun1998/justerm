@@ -47,6 +47,14 @@ One call that hands a **Session**'s pending **Frame** to its sink and returns th
 gathered since the last pump. Who calls it, and how often, is the caller's. (#1042)
 _Avoid_: tick (the **Overview ruler**'s word)
 
+## Raw mode
+
+A PTY running with no **Engine**: the child's output goes, decoded, to a byte sink the **Consumer**
+supplies instead of into a **Session**, and the consumer's own terminal (xterm.js, for one) answers
+the child's queries. The sink can ask that reading pause, which is the only backpressure. The
+counterpart of *Frame mode* (see **Frame**). (#1057)
+_Avoid_: engineless, byte mode
+
 ## WASM decoder
 
 The canonical web decoder: the engine's wire-format `decode` compiled to WASM and published to npm

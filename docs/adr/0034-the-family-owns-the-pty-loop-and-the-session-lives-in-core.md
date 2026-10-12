@@ -120,3 +120,55 @@ Each item below records whose call it was.
   crate until it existed. The maintainer chose that at #1047, over keeping `publish = false` until
   release time. Once `justerm-pty` 0.27.0 was published by hand, the skip was removed, because it
   would otherwise let a failed lookup silently break the lockstep.
+
+## Amended 2026-10-12, #1057: an output observer, a tick, and Raw mode
+
+Each decision below is **a judgement made by the maintainer** during #1057's grilling. Every one was
+chosen from options presented with their consequences. They were decided on these facts, read from
+PenTerm (`src-tauri/src/pty/manager.rs` and the 2026-09-30 SPEC of
+`the-terminal-runs-on-our-own-engine`):
+
+- PenTerm's local read loop hands every decoded chunk to more than the engine: connect steps (a
+  login procedure that waits for text and expires a 10 s deadline on the 16 ms tick), an OSC 7
+  scanner, and a debug-only kitty-keyboard scan.
+- Its xterm.js path has no `Engine`. It sends bytes to the webview and stops issuing reads above
+  2 MB unacknowledged, resuming at 512 KB on the frontend's "drawn" ack. xterm.js answers the child's
+  queries, and its replies come back through the PTY writer.
+- PenTerm keeps xterm as its default "until [Native] has earned the flip", with no date set. So an
+  xterm path will exist for an open-ended time.
+
+**R1 — An output observer, `Options::on_output`.** It is called on the reader thread with the
+decoded bytes, the same bytes the engine or the raw sink receives, in order. It is called after the
+has-the-session-ended check, so never after `on_exit`. A pass-through `Decode` could already see the
+bytes, but it runs before that check, so it could observe one chunk after `on_exit`. A slow observer
+slows reading, and the doc says so.
+
+**R2 — A periodic tick, `Options::on_tick`.** It is called on the pump thread every `pump_every`,
+in both modes. What to do on it, such as expiring a deadline, stays the consumer's policy. This is
+D4's timer offered to the consumer; the pacing policy is unchanged.
+
+**R3 — Raw mode: `Pty::spawn_raw`.** A pty with no `Engine` hands the decoded output to a byte sink
+the consumer supplies. Raw mode widens D1's crate from "drives a `Session`" to "runs a PTY loop,
+with or without the engine". It was chosen over declaring raw mode out of scope. In that alternative
+PenTerm would keep a second local PTY loop for xterm, for an open-ended time, and that loop holds
+exactly the logic #1045's completeness pass found six defects in: a reaped-pid kill, no SIGKILL
+escalation, a zombie on drop, ConPTY EOF, and others. In Raw mode:
+- There is no pump and no engine replies; the consumer's own terminal answers through `Pty::write`.
+- `decoder`, `encoder`, `on_output` and `on_tick` all apply.
+- `session()` returns `None`.
+
+**R4 — Two constructors, not a generic `Pty<S>` or an enum argument.** `Pty::spawn` keeps its
+signature, `Pty::spawn_raw` is added, and both share one loop. The consumer's code barely moves. The
+alternatives were a generic, which is type-safe but has a heavier surface, and an enum argument,
+which breaks `spawn`.
+
+**R5 — Backpressure is pause and resume only.**
+- The raw sink answers each chunk with continue or pause. On pause the reader issues no further
+  read until `Pty::resume()`.
+- Thresholds and credit accounting stay the consumer's (ADR-0017, D4). PenTerm itself runs two
+  policies: 2 MB/512 KB local, 4 MB/1 MB SSH. Credit can be built on pause/resume in a few lines,
+  but the reverse is not possible.
+- At exit, a paused reader is released to drain within `DRAIN_AFTER_EXIT`, and no sink call
+  follows `on_exit`. Exit polling continues while paused.
+
+**Vocabulary.** **Raw mode**, the counterpart of *Frame mode*, is defined in GLOSSARY.
