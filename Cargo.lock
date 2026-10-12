@@ -393,7 +393,9 @@ dependencies = [
 name = "justerm-pty"
 version = "0.26.2"
 dependencies = [
+ "anyhow",
  "justerm-core",
+ "libc",
  "portable-pty",
 ]
 

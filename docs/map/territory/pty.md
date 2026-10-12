@@ -28,13 +28,25 @@ that does no I/O itself.
   unanswered, nothing happened in 8 s).
 - **Exit is polled, not awaited.** A ConPTY reader can stay blocked after the child has exited, so EOF
   cannot be the exit signal. The pump asks `try_wait` on its own tick, at most `EXIT_POLL`, so a long
-  pump period does not delay it. On exit it waits up to `DRAIN_AFTER_EXIT` for the reader to finish,
-  then drops the writer and the master, which releases the reader. Then it ends the Session (which
-  sends what is pending) and reports the exit once.
+  pump period does not delay it.
+- **Closing comes before draining.** On exit, the pump first drops the writer and the master. On a
+  ConPTY that makes conhost flush and end its output pipe, so the reader reaches EOF. Then the pump
+  waits up to `DRAIN_AFTER_EXIT` for that EOF, ends the Session (which sends what is pending), and
+  reports the exit. `output_written_just_before_exit_still_arrives` guards the tail: a child that
+  prints and exits at once.
+- **`on_exit` exactly once, even after a drop.** `Drop` is `terminate`, and the pump always runs to
+  the exit, so the child is reaped (no Unix zombie) and the consumer is told. Once the Session has
+  ended, the reader feeds nothing: the check sits under the same lock as `end`, so no frame follows
+  `on_exit`.
+- **Never signal a reaped child.** `ChildState::exited` is set under the lock `terminate` takes.
+  After a Unix reap the pid can belong to an unrelated process, and `portable-pty`'s killer sends a
+  bare `kill(pid, SIGHUP)`.
+- **Terminate escalates on Unix.** It calls the child's own `kill`, which is `SIGHUP` then `SIGKILL`
+  after about 250 ms, not the `clone_killer` handle, which sends `SIGHUP` only. On Windows it is
+  `TerminateProcess`, exit code 127. Either way the resulting exit is reported the same as a natural
+  one.
 - **The slave is dropped right after spawn.** Otherwise this process keeps it open and a Unix reader
   never sees EOF.
-- **Terminate is a kill.** The resulting exit travels the ordinary path, so it is reported exactly
-  like a natural one.
 - **Own public types only.** `Command`, `Options`, `Exit` wrap `portable_pty`'s, so a `portable-pty`
   major bump is not a breaking change here.
 
@@ -72,3 +84,15 @@ Not compared against a pinned reference yet. The layout peers (wezterm's `pty/` 
   The replies it carries are the consumer's own, e.g. from `report_*`. A line-mode child receives
   bytes without a trailing newline only once something else ends the line, which needs #1046's
   consumer writer. Prove it there.
+- **A reply write can stall the reader** (low reach). The reader writes replies with a blocking
+  `write_all`. Consider a child that floods queries while never reading its stdin: once the input
+  queue fills, the reader blocks in the write, stops reading, and the child then blocks on output. A
+  separate writer thread would remove this, and #1046 redesigns the writer anyway.
+- **A grandchild holding a Unix pty open keeps the reader thread blocked** after the exit is reported.
+  The reader has its own fd, so dropping the master does not release it. It feeds nothing once the
+  Session has ended, so this is a parked thread rather than wrong output. A ConPTY reader is released
+  by closing the pseudo-console.
+- **A spawn error keeps its `ErrorKind` only where `portable-pty` passed an `io::Error` through.**
+  On Windows it formats a failed `CreateProcessW` into a string, so a missing program is `Other`.
+  The pid-reuse guard (`ChildState::exited`) and the Unix SIGKILL escalation can't be exercised on a
+  Windows workstation. CI's Linux and macOS runs are the first that reach them.

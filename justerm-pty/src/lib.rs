@@ -22,7 +22,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use justerm_core::{Session, TermEvent};
-use portable_pty::{Child, ChildKiller, MasterPty, PtySize, native_pty_system};
+use portable_pty::{Child, MasterPty, PtySize, native_pty_system};
 
 /// The program to run in the pseudo-terminal, and how. Which shell, which environment and which
 /// directory are the consumer's choice; this only carries them.
@@ -119,22 +119,36 @@ impl From<portable_pty::ExitStatus> for Exit {
 
 /// A command running in a pseudo-terminal, feeding a [`Session`].
 ///
-/// Two threads run for it: one reads the child's output into the session, the other pumps the
-/// session every [`Options::pump_every`], hands its events to the consumer and watches for the
-/// child's exit. When the child exits the remaining output is read, the session is
-/// [ended](Session::end) — which sends what is pending — and the exit is reported once.
+/// Two threads run for it:
+/// - one reads the child's output into the session;
+/// - the other pumps the session every [`Options::pump_every`], hands its events to the consumer,
+///   and watches for the child's exit.
+///
+/// When the child exits, the pseudo-terminal is closed and the rest of the output is read. The
+/// session is then [ended](Session::end), which sends what is pending, and the exit is reported.
+///
+/// `on_exit` is called **exactly once**, including when the `Pty` is dropped first: dropping it
+/// terminates the child, and that exit is reported the same way as any other. Nothing is fed into
+/// the session after it has ended, so no frame follows `on_exit`.
 pub struct Pty {
     session: Arc<Mutex<Session>>,
-    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
-    stop: Arc<AtomicBool>,
+    child: Arc<Mutex<ChildState>>,
 }
 
-/// How long the pump waits, once the child has exited, for the reader to drain the rest of its
-/// output. A ConPTY reader can stay blocked past the child's exit, so the wait is bounded.
+/// The child, and whether it has been reaped. After a Unix reap its pid can be reused by an
+/// unrelated process, so nothing may signal it any more. The flag is set under the same lock that
+/// the kill takes.
+struct ChildState {
+    child: Box<dyn Child + Send + Sync>,
+    exited: bool,
+}
+
+/// How long the pump waits, once the child has exited and the pseudo-terminal is closed, for the
+/// reader to drain the rest of the output.
 const DRAIN_AFTER_EXIT: Duration = Duration::from_millis(500);
 
 /// The longest the pump thread goes without asking whether the child has exited, whatever the pump
-/// period — exit detection is not paced with the frames.
+/// period. Exit detection is not paced with the frames.
 const EXIT_POLL: Duration = Duration::from_millis(50);
 
 impl Pty {
@@ -142,6 +156,11 @@ impl Pty {
     ///
     /// `on_event` receives the engine's events, unfiltered, on the pump thread. `on_exit` is
     /// called once, on the pump thread, after the session has been ended.
+    ///
+    /// An error keeps its [`ErrorKind`](std::io::ErrorKind) only where `portable-pty` passed an
+    /// `std::io::Error` through. On Windows it formats a failed `CreateProcessW` into the message,
+    /// so a missing program there is `Other`. If the child was started and a later step then
+    /// failed, the child is killed before the error is returned.
     pub fn spawn(
         command: Command,
         session: Session,
@@ -156,66 +175,87 @@ impl Pty {
             pixel_width: 0,
             pixel_height: 0,
         };
-        let pair = native_pty_system().openpty(size).map_err(other)?;
-        let child = pair.slave.spawn_command(command.build()).map_err(other)?;
+        let pair = native_pty_system().openpty(size).map_err(io_error)?;
+        let mut child = pair
+            .slave
+            .spawn_command(command.build())
+            .map_err(io_error)?;
         // The slave stays open in this process otherwise, and a Unix reader would never see EOF.
         drop(pair.slave);
-        let reader = pair.master.try_clone_reader().map_err(other)?;
-        let writer: Writer = Arc::new(Mutex::new(Some(pair.master.take_writer().map_err(other)?)));
-        let killer = child.clone_killer();
-
-        let session = Arc::new(Mutex::new(session));
-        let stop = Arc::new(AtomicBool::new(false));
-        let eof = Arc::new(AtomicBool::new(false));
-
-        spawn_reader(
-            reader,
-            Arc::clone(&session),
-            Arc::clone(&writer),
-            Arc::clone(&eof),
-        );
-
-        let pump = Pump {
-            session: Arc::clone(&session),
-            master: Some(pair.master),
-            writer,
-            child,
-            stop: Arc::clone(&stop),
-            eof,
-            period: options.pump_every,
+        let ends = pair
+            .master
+            .try_clone_reader()
+            .and_then(|r| Ok((r, pair.master.take_writer()?)));
+        let (reader, writer) = match ends {
+            Ok(ends) => ends,
+            Err(e) => {
+                let _ = child.kill();
+                return Err(io_error(e));
+            }
         };
-        thread::Builder::new()
-            .name("justerm-pty pump".into())
-            .spawn(move || pump.run(&mut on_event, on_exit))?;
-
-        Ok(Pty {
-            session,
-            killer: Mutex::new(killer),
-            stop,
-        })
+        let writer: Writer = Arc::new(Mutex::new(Some(writer)));
+        let session = Arc::new(Mutex::new(session));
+        let child = Arc::new(Mutex::new(ChildState {
+            child,
+            exited: false,
+        }));
+        let eof = Arc::new(AtomicBool::new(false));
+        let started = (|| {
+            spawn_reader(
+                reader,
+                Arc::clone(&session),
+                Arc::clone(&writer),
+                Arc::clone(&eof),
+            )?;
+            let pump = Pump {
+                session: Arc::clone(&session),
+                master: Some(pair.master),
+                writer,
+                child: Arc::clone(&child),
+                eof,
+                period: options.pump_every,
+            };
+            thread::Builder::new()
+                .name("justerm-pty pump".into())
+                .spawn(move || pump.run(&mut on_event, on_exit))
+                .map(drop)
+        })();
+        if let Err(e) = started {
+            let _ = lock(&child).child.kill();
+            return Err(e);
+        }
+        Ok(Pty { session, child })
     }
 
-    /// The session this pty drives — to subscribe, read, scroll or select. Lock it briefly: the
-    /// reader and the pump take the same lock.
+    /// The session this pty drives: subscribe to it, read it, scroll or select. Lock it briefly,
+    /// because the reader and the pump take the same lock.
     pub fn session(&self) -> Arc<Mutex<Session>> {
         Arc::clone(&self.session)
     }
 
-    /// Kill the child. Its exit is reported through `on_exit` like any other.
+    /// End the child.
+    ///
+    /// - On Unix it is sent `SIGHUP`, then `SIGKILL` if it is still alive a moment later.
+    /// - On Windows it is terminated.
+    ///
+    /// Its exit is reported through `on_exit` like any other. Once the child has exited, this does
+    /// nothing.
     pub fn terminate(&self) {
-        let _ = lock(&self.killer).kill();
+        let mut state = lock(&self.child);
+        if !state.exited {
+            let _ = state.child.kill();
+        }
     }
 }
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        let _ = lock(&self.killer).kill();
+        self.terminate();
     }
 }
 
-/// The pseudo-terminal's input side, shared by the reader (replies to what it just fed) and the
-/// pump (replies to anything else). `None` once the child has exited.
+/// The pseudo-terminal's input side. Two threads share it: the reader writes replies to what it
+/// just fed, and the pump writes any other replies. `None` once the child has exited.
 type Writer = Arc<Mutex<Option<Box<dyn Write + Send>>>>;
 
 fn write_back(writer: &Writer, replies: &[u8]) {
@@ -232,37 +272,42 @@ fn spawn_reader(
     session: Arc<Mutex<Session>>,
     writer: Writer,
     eof: Arc<AtomicBool>,
-) {
-    let _ = thread::Builder::new()
+) -> std::io::Result<()> {
+    thread::Builder::new()
         .name("justerm-pty reader".into())
         .spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
             loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        let replies = {
-                            let mut session = lock(&session);
-                            session.feed(&buf[..n]);
-                            session.edit(|engine| engine.drain_replies())
-                        };
-                        write_back(&writer, &replies);
+                let n = match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                };
+                let replies = {
+                    let mut session = lock(&session);
+                    // Output that arrives after the session has ended is not fed, because nothing
+                    // may follow `on_exit`. This happens when a grandchild still holds a Unix pty open.
+                    if session.is_ended() {
+                        break;
                     }
-                }
+                    session.feed(&buf[..n]);
+                    session.edit(|engine| engine.drain_replies())
+                };
+                write_back(&writer, &replies);
             }
             eof.store(true, Ordering::Release);
-        });
+        })
+        .map(drop)
 }
 
 /// The pump thread's state.
 struct Pump {
     session: Arc<Mutex<Session>>,
-    /// Held so the pseudo-terminal stays open; dropped once the child has exited, which releases a
-    /// reader still blocked on it.
+    /// Held so the pseudo-terminal stays open; dropped once the child has exited.
     master: Option<Box<dyn MasterPty + Send>>,
     writer: Writer,
-    child: Box<dyn Child + Send + Sync>,
-    stop: Arc<AtomicBool>,
+    child: Arc<Mutex<ChildState>>,
     eof: Arc<AtomicBool>,
     period: Duration,
 }
@@ -277,19 +322,20 @@ impl Pump {
                 self.pump(on_event);
                 next_pump = Instant::now() + self.period;
             }
-            if let Ok(Some(status)) = self.child.try_wait() {
+            let mut state = lock(&self.child);
+            if let Ok(Some(status)) = state.child.try_wait() {
+                state.exited = true;
                 break Exit::from(status);
             }
-            if self.stop.load(Ordering::Relaxed) {
-                return;
-            }
         };
-        let deadline = Instant::now() + DRAIN_AFTER_EXIT;
-        while !self.eof.load(Ordering::Acquire) && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
+        // Closing the pseudo-terminal lets a ConPTY flush and end its output pipe. The reader then
+        // reaches EOF, instead of the drain waiting out its full bound.
         lock(&self.writer).take();
         drop(self.master.take());
+        let deadline = Instant::now() + DRAIN_AFTER_EXIT;
+        while !self.eof.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
         let pumped = {
             let mut session = lock(&self.session);
             let pumped = session.pump();
@@ -311,6 +357,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn other(e: impl std::fmt::Display) -> std::io::Error {
-    std::io::Error::other(e.to_string())
+/// `portable-pty` reports errors through `anyhow`. Where the error wraps a `std::io::Error`, return
+/// that one, so its kind survives.
+fn io_error(e: anyhow::Error) -> std::io::Error {
+    match e.downcast::<std::io::Error>() {
+        Ok(io) => io,
+        Err(other) => std::io::Error::other(other.to_string()),
+    }
 }

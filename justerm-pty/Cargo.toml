@@ -15,8 +15,14 @@ publish = false
 [dependencies]
 justerm-core = { path = "../justerm-core", version = "0.26.2" }
 portable-pty = "0.9"
+# portable-pty reports through anyhow without re-exporting it; named here to unwrap the io::Error inside.
+anyhow = "1"
 
 # The test binary is also the child it spawns, so libtest's output must stay out of the terminal.
 [[test]]
 name = "pty"
 harness = false
+
+# The SIGHUP-ignoring helper child (tests/pty.rs) sets its signal disposition.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
