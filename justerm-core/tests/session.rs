@@ -436,3 +436,33 @@ fn an_ended_session_sends_a_selection_change_without_a_pump() {
         "nothing pumps an ended session, so the selection flushes itself"
     );
 }
+
+// --- send_pending (#1057): send the pending frame now, and drain nothing ---
+
+#[test]
+fn send_pending_sends_the_pending_frame_and_leaves_replies_and_events_for_the_pump() {
+    let (mut session, rec) = subscribed(10, 3);
+    session.feed(b"\x1b[c\x1b]2;t\x07");
+    session.send_pending();
+    assert_eq!(rec.count(), 1, "the pending frame went out at once");
+    session.send_pending();
+    assert_eq!(rec.count(), 1, "nothing was pending the second time");
+    let pumped = session.pump();
+    assert_eq!(
+        pumped.replies, b"\x1b[?62;22c",
+        "the reply was left for whoever pumps"
+    );
+    assert!(
+        pumped.events.contains(&TermEvent::Title("t".into())),
+        "{:?}",
+        pumped.events
+    );
+}
+
+#[test]
+fn send_pending_without_a_sink_sends_nothing_and_keeps_the_frame_pending() {
+    let mut session = Session::new(Engine::new(10, 3));
+    session.feed(b"x");
+    session.send_pending();
+    assert!(session.engine().frame_pending());
+}

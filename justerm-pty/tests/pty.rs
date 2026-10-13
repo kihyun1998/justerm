@@ -4,12 +4,13 @@
 //! runs the same child with the same output and no shell is involved. `harness = false` keeps
 //! libtest's own output out of the child's terminal.
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use justerm_core::{Engine, FrameSink, Session, decode};
-use justerm_pty::{Command, Decode, Encode, Exit, Options, Pty};
+use justerm_pty::{Command, Decode, Encode, Exit, Flow, OnOutput, OnTick, Options, Pty, RawSink};
 
 const HELPER: &str = "JUSTERM_PTY_HELPER";
 const MARKER: &str = "hello-from-the-child";
@@ -72,6 +73,40 @@ fn helper(mode: &str) {
         "print-utf8" => {
             say(UTF8_SAMPLE);
             std::thread::sleep(Duration::from_millis(300));
+        }
+        // Many short lines, then stay alive: output keeps coming while a reader is paused.
+        "flood-then-sleep" => {
+            for i in 0..3000 {
+                say(&format!("L{i:04}\n"));
+            }
+            say("END-OF-FLOOD\n");
+            std::thread::sleep(Duration::from_secs(60));
+        }
+        // Some lines and an end mark, then exit at once.
+        "lines-then-exit" => {
+            for i in 0..50 {
+                say(&format!("line {i}\n"));
+            }
+            say("END-OF-OUTPUT\n");
+            std::process::exit(0);
+        }
+        // Leave a grandchild holding the pty that prints after this child has gone.
+        // The grandchild ignores SIGHUP (inherited across exec), or the session leader's exit
+        // hangs it up before it prints.
+        "orphan-prints-late" => {
+            #[cfg(unix)]
+            unsafe {
+                libc::signal(libc::SIGHUP, libc::SIG_IGN);
+            }
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .env(HELPER, "late-print")
+                .spawn()
+                .unwrap();
+            std::process::exit(0);
+        }
+        "late-print" => {
+            std::thread::sleep(Duration::from_millis(1500));
+            say("LATE-OUTPUT\n");
         }
         "echo-line" => {
             say(&format!("GOT:{}", visible(&read_line())));
@@ -254,7 +289,7 @@ fn the_session_stays_readable_after_exit() {
     let (pty, _rec, rx) = spawn("print-exit-7", Options::default());
     rx.recv_timeout(Duration::from_secs(20))
         .expect("the child exits");
-    let session = pty.session();
+    let session = pty.session().expect("a frame-mode pty has a session");
     let session = session.lock().unwrap();
     assert!(session.is_ended());
     assert!(session.engine().accessible_text().contains(MARKER));
@@ -313,7 +348,12 @@ fn a_missing_program_is_an_error_not_a_running_pty() {
 
 /// The session's whole buffer as text, soft wraps joined — what the child has printed so far.
 fn screen(pty: &Pty) -> String {
-    pty.session().lock().unwrap().engine().accessible_text()
+    pty.session()
+        .expect("a frame-mode pty has a session")
+        .lock()
+        .unwrap()
+        .engine()
+        .accessible_text()
 }
 
 fn bytes_the_consumer_writes_reach_the_child() {
@@ -364,6 +404,7 @@ fn a_reply_the_pump_drains_reaches_the_child() {
     // Fed through the session rather than read from the child, so the reader never sees it: only
     // the pump drains this reply (a DSR status report, `ESC[0n`).
     pty.session()
+        .unwrap()
         .lock()
         .unwrap()
         .edit(|engine| engine.feed(b"\x1b[5n"));
@@ -568,6 +609,410 @@ fn a_byte_the_decoder_still_holds_at_the_end_is_flushed() {
     assert!(text.contains('?'), "screen: {text:?}");
 }
 
+// --- #1057: the output observer, the tick, and Raw mode ---
+
+/// A pass-through decoder that records what it hands on: the bytes the engine is fed.
+#[derive(Clone, Default)]
+struct RecordingDecode(Arc<Mutex<Vec<u8>>>);
+
+impl Decode for RecordingDecode {
+    fn decode(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        bytes.to_vec()
+    }
+}
+
+/// An `on_output` that records what it sees, and whether anything arrived after `on_exit`.
+#[derive(Clone, Default)]
+struct Observed {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    exited: Arc<AtomicBool>,
+    after_exit: Arc<AtomicUsize>,
+}
+
+impl Observed {
+    fn hook(&self) -> OnOutput {
+        let me = self.clone();
+        Box::new(move |b: &[u8]| {
+            if me.exited.load(Ordering::SeqCst) {
+                me.after_exit.fetch_add(1, Ordering::SeqCst);
+            }
+            me.bytes.lock().unwrap().extend_from_slice(b);
+        })
+    }
+}
+
+/// A raw sink that records what it is handed and answers pause while `pause` is set.
+#[derive(Clone, Default)]
+struct RawRecorder {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    calls: Arc<AtomicUsize>,
+    pause: Arc<AtomicBool>,
+}
+
+impl RawSink for RawRecorder {
+    fn output(&mut self, bytes: &[u8]) -> Flow {
+        self.bytes.lock().unwrap().extend_from_slice(bytes);
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.pause.load(Ordering::SeqCst) {
+            Flow::Pause
+        } else {
+            Flow::Continue
+        }
+    }
+}
+
+impl RawRecorder {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.bytes.lock().unwrap()).into_owned()
+    }
+}
+
+/// A child in Raw mode. On Windows the consumer must answer ConPTY's start-up `ESC[6n` itself (no
+/// engine does it in Raw mode), so a thread answers it as the consumer's terminal would.
+fn spawn_raw(
+    mode: &str,
+    options: Options,
+    sink: RawRecorder,
+) -> (Arc<Pty>, mpsc::Receiver<Exit>, Arc<AtomicBool>) {
+    let (tx, rx) = mpsc::channel();
+    let exited = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&exited);
+    let command = Command::new(std::env::current_exe().unwrap()).env(HELPER, mode);
+    let pty = Pty::spawn_raw(command, 80, 24, options, sink.clone(), move |exit| {
+        flag.store(true, Ordering::SeqCst);
+        let _ = tx.send(exit);
+    })
+    .expect("spawn the helper in a raw pty");
+    let pty = Arc::new(pty);
+    #[cfg(windows)]
+    {
+        let pty = Arc::clone(&pty);
+        std::thread::spawn(move || {
+            if eventually(Duration::from_secs(10), || sink.text().contains("\x1b[6n")) {
+                let _ = pty.write(b"\x1b[1;1R");
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = sink;
+    (pty, rx, exited)
+}
+
+fn the_observer_sees_exactly_what_the_engine_was_fed() {
+    let fed = RecordingDecode::default();
+    let seen = Observed::default();
+    let options = Options {
+        decoder: Some(Box::new(fed.clone())),
+        on_output: Some(seen.hook()),
+        ..Options::default()
+    };
+    let (_pty, _rec, rx) = spawn("lines-then-exit", options);
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+    let seen = seen.bytes.lock().unwrap().clone();
+    let fed = fed.0.lock().unwrap().clone();
+    assert!(String::from_utf8_lossy(&seen).contains("END-OF-OUTPUT"));
+    assert_eq!(
+        seen, fed,
+        "the observer saw exactly the engine's input, in order"
+    );
+}
+
+fn the_observer_sees_exactly_what_the_raw_sink_got() {
+    let seen = Observed::default();
+    let sink = RawRecorder::default();
+    let options = Options {
+        on_output: Some(seen.hook()),
+        ..Options::default()
+    };
+    let (_pty, rx, _exited) = spawn_raw("lines-then-exit", options, sink.clone());
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+    assert!(sink.text().contains("END-OF-OUTPUT"), "{:?}", sink.text());
+    assert_eq!(*seen.bytes.lock().unwrap(), *sink.bytes.lock().unwrap());
+}
+
+/// Linux only: the window needs a grandchild writing to the pty after the child's exit. A ConPTY
+/// ends its output when the pseudo-console closes, and macOS fails that write with `EIO`.
+#[cfg(target_os = "linux")]
+fn nothing_is_observed_after_on_exit() {
+    let fed = RecordingDecode::default();
+    let seen = Observed::default();
+    let options = Options {
+        decoder: Some(Box::new(fed.clone())),
+        on_output: Some(seen.hook()),
+        ..Options::default()
+    };
+    let exited = Arc::clone(&seen.exited);
+    let (tx, rx) = mpsc::channel();
+    let mut session = Session::new(Engine::new(80, 24));
+    session.subscribe(Box::new(Recorder::default()));
+    let command = Command::new(std::env::current_exe().unwrap()).env(HELPER, "orphan-prints-late");
+    let _pty = Pty::spawn(
+        command,
+        session,
+        options,
+        |_| {},
+        move |exit| {
+            exited.store(true, Ordering::SeqCst);
+            let _ = tx.send(exit);
+        },
+    )
+    .unwrap();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(
+        String::from_utf8_lossy(&fed.0.lock().unwrap()).contains("LATE-OUTPUT"),
+        "positive control: the reader did read output that arrived after on_exit"
+    );
+    assert_eq!(seen.after_exit.load(Ordering::SeqCst), 0);
+    assert!(!String::from_utf8_lossy(&seen.bytes.lock().unwrap()).contains("LATE-OUTPUT"));
+}
+
+/// Counts ticks, the ones after `on_exit`, and which mode each was called in.
+#[derive(Clone, Default)]
+struct Ticks {
+    with_session: Arc<AtomicUsize>,
+    without: Arc<AtomicUsize>,
+    pending_seen: Arc<AtomicUsize>,
+    exited: Arc<AtomicBool>,
+    after_exit: Arc<AtomicUsize>,
+}
+
+impl Ticks {
+    fn hook(&self) -> OnTick {
+        let me = self.clone();
+        Box::new(move |session: Option<&Session>| {
+            if me.exited.load(Ordering::SeqCst) {
+                me.after_exit.fetch_add(1, Ordering::SeqCst);
+            }
+            match session {
+                Some(s) => {
+                    me.with_session.fetch_add(1, Ordering::SeqCst);
+                    if s.engine().frame_pending() {
+                        me.pending_seen.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+                None => {
+                    me.without.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        })
+    }
+}
+
+fn the_tick_runs_with_the_session_before_the_pump_and_stops_at_exit() {
+    let ticks = Ticks::default();
+    let options = Options {
+        on_tick: Some(ticks.hook()),
+        ..Options::default()
+    };
+    let exited = Arc::clone(&ticks.exited);
+    let mut session = Session::new(Engine::new(80, 24));
+    let rec = Recorder::default();
+    session.subscribe(Box::new(rec.clone()));
+    let (tx, rx) = mpsc::channel();
+    let command = Command::new(std::env::current_exe().unwrap()).env(HELPER, "print-then-sleep");
+    let pty = Pty::spawn(
+        command,
+        session,
+        options,
+        |_| {},
+        move |exit| {
+            exited.store(true, Ordering::SeqCst);
+            let _ = tx.send(exit);
+        },
+    )
+    .unwrap();
+    assert!(eventually(Duration::from_secs(10), || rec
+        .text()
+        .contains(MARKER)));
+    assert!(
+        ticks.pending_seen.load(Ordering::SeqCst) > 0,
+        "a tick saw frame_pending() before the pump reset it"
+    );
+    assert!(eventually(Duration::from_secs(5), || ticks
+        .with_session
+        .load(Ordering::SeqCst)
+        >= 3));
+    assert_eq!(ticks.without.load(Ordering::SeqCst), 0);
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(ticks.after_exit.load(Ordering::SeqCst), 0);
+}
+
+fn the_tick_runs_without_a_session_in_raw_mode() {
+    let ticks = Ticks::default();
+    let options = Options {
+        on_tick: Some(ticks.hook()),
+        ..Options::default()
+    };
+    let sink = RawRecorder::default();
+    let (pty, rx, exited) = spawn_raw("print-then-sleep", options, sink.clone());
+    assert!(eventually(Duration::from_secs(10), || sink
+        .text()
+        .contains(MARKER)));
+    assert!(eventually(Duration::from_secs(5), || ticks
+        .without
+        .load(Ordering::SeqCst)
+        >= 3));
+    assert_eq!(ticks.with_session.load(Ordering::SeqCst), 0);
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+    assert!(exited.load(Ordering::SeqCst));
+}
+
+fn raw_mode_hands_the_output_to_the_sink_with_no_session() {
+    let sink = RawRecorder::default();
+    let (pty, rx, _exited) = spawn_raw("print-exit-7", Options::default(), sink.clone());
+    let exit = rx
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+    assert_eq!(exit.code, 7);
+    assert!(sink.text().contains(MARKER), "{:?}", sink.text());
+    assert!(pty.session().is_none());
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the exit is reported once"
+    );
+}
+
+/// Unix only: on Windows conhost answers a child's DA1 itself, so nothing reaches the consumer.
+#[cfg(unix)]
+fn raw_mode_leaves_a_query_to_the_consumer() {
+    let sink = RawRecorder::default();
+    let (pty, rx, _exited) = spawn_raw("query-then-echo", Options::default(), sink.clone());
+    assert!(eventually(Duration::from_secs(10), || sink
+        .text()
+        .contains("\x1b[c")));
+    std::thread::sleep(Duration::from_millis(300));
+    pty.write(b"\x1b[?1;2c\r").unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || sink
+            .text()
+            .contains("GOT:^[[?1;2c")),
+        "{:?}",
+        sink.text()
+    );
+    assert!(
+        !sink.text().contains("62;22"),
+        "justerm did not answer: {:?}",
+        sink.text()
+    );
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+}
+
+fn a_paused_raw_sink_gets_nothing_until_resumed() {
+    let sink = RawRecorder::default();
+    sink.pause.store(true, Ordering::SeqCst);
+    let (pty, rx, _exited) = spawn_raw("flood-then-sleep", Options::default(), sink.clone());
+    assert!(eventually(Duration::from_secs(10), || sink
+        .calls
+        .load(Ordering::SeqCst)
+        >= 1));
+    let calls = sink.calls.load(Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(
+        sink.calls.load(Ordering::SeqCst),
+        calls,
+        "no output was read while the sink had paused"
+    );
+    assert!(!sink.text().contains("END-OF-FLOOD"));
+    sink.pause.store(false, Ordering::SeqCst);
+    pty.resume();
+    assert!(
+        eventually(Duration::from_secs(10), || sink
+            .text()
+            .contains("END-OF-FLOOD")),
+        "resume brings the rest"
+    );
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
+/// Linux only, for the reason [`nothing_is_observed_after_on_exit`] gives.
+#[cfg(target_os = "linux")]
+fn nothing_reaches_the_raw_sink_after_on_exit() {
+    let fed = RecordingDecode::default();
+    let seen = Observed::default();
+    let options = Options {
+        decoder: Some(Box::new(fed.clone())),
+        on_output: Some(seen.hook()),
+        ..Options::default()
+    };
+    let sink = RawRecorder::default();
+    let (_pty, rx, _exited) = spawn_raw("orphan-prints-late", options, sink.clone());
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+    let calls = sink.calls.load(Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(
+        String::from_utf8_lossy(&fed.0.lock().unwrap()).contains("LATE-OUTPUT"),
+        "positive control: the reader did read output that arrived after on_exit"
+    );
+    assert_eq!(sink.calls.load(Ordering::SeqCst), calls);
+    assert!(!sink.text().contains("LATE-OUTPUT"), "{:?}", sink.text());
+    assert!(!String::from_utf8_lossy(&seen.bytes.lock().unwrap()).contains("LATE-OUTPUT"));
+}
+
+/// Not on macOS: there the child cannot finish exiting while its output is unread, so the exit
+/// waits for `resume` ([`a_child_that_exits_while_paused_loses_nothing_once_resumed`]).
+#[cfg(not(target_os = "macos"))]
+fn a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported() {
+    let sink = RawRecorder::default();
+    sink.pause.store(true, Ordering::SeqCst);
+    let (_pty, rx, _exited) = spawn_raw("lines-then-exit", Options::default(), sink.clone());
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("an exit is reported while paused");
+    assert!(
+        sink.text().contains("END-OF-OUTPUT"),
+        "drained before on_exit: {:?}",
+        sink.text()
+    );
+}
+
+fn a_child_that_exits_while_paused_loses_nothing_once_resumed() {
+    let sink = RawRecorder::default();
+    sink.pause.store(true, Ordering::SeqCst);
+    let (pty, rx, exited) = spawn_raw("lines-then-exit", Options::default(), sink.clone());
+    assert!(eventually(Duration::from_secs(10), || sink
+        .calls
+        .load(Ordering::SeqCst)
+        >= 1));
+    std::thread::sleep(Duration::from_millis(1000));
+    sink.pause.store(false, Ordering::SeqCst);
+    pty.resume();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the exit is reported once reading resumes");
+    assert!(exited.load(Ordering::SeqCst));
+    assert!(
+        sink.text().contains("END-OF-OUTPUT"),
+        "the tail survived the child's exit: {:?}",
+        sink.text()
+    );
+}
+
+fn terminate_ends_a_paused_raw_pty() {
+    let sink = RawRecorder::default();
+    sink.pause.store(true, Ordering::SeqCst);
+    let (pty, rx, _exited) = spawn_raw("flood-then-sleep", Options::default(), sink.clone());
+    assert!(eventually(Duration::from_secs(10), || sink
+        .calls
+        .load(Ordering::SeqCst)
+        >= 1));
+    std::thread::sleep(Duration::from_millis(300));
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(5))
+        .expect("terminate ends the child without a resume");
+}
+
 fn main() {
     if let Ok(mode) = std::env::var(HELPER) {
         helper(&mode);
@@ -640,8 +1085,62 @@ fn main() {
             utf8_passes_through_without_a_hook,
         ),
     ];
+    tests.extend([
+        (
+            "the_observer_sees_exactly_what_the_engine_was_fed",
+            the_observer_sees_exactly_what_the_engine_was_fed as fn(),
+        ),
+        (
+            "the_observer_sees_exactly_what_the_raw_sink_got",
+            the_observer_sees_exactly_what_the_raw_sink_got as fn(),
+        ),
+        (
+            "the_tick_runs_with_the_session_before_the_pump_and_stops_at_exit",
+            the_tick_runs_with_the_session_before_the_pump_and_stops_at_exit as fn(),
+        ),
+        (
+            "the_tick_runs_without_a_session_in_raw_mode",
+            the_tick_runs_without_a_session_in_raw_mode as fn(),
+        ),
+        (
+            "raw_mode_hands_the_output_to_the_sink_with_no_session",
+            raw_mode_hands_the_output_to_the_sink_with_no_session as fn(),
+        ),
+        (
+            "a_paused_raw_sink_gets_nothing_until_resumed",
+            a_paused_raw_sink_gets_nothing_until_resumed as fn(),
+        ),
+        (
+            "a_child_that_exits_while_paused_loses_nothing_once_resumed",
+            a_child_that_exits_while_paused_loses_nothing_once_resumed as fn(),
+        ),
+        (
+            "terminate_ends_a_paused_raw_pty",
+            terminate_ends_a_paused_raw_pty as fn(),
+        ),
+    ]);
+    #[cfg(not(target_os = "macos"))]
+    tests.push((
+        "a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported",
+        a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported as fn(),
+    ));
+    #[cfg(target_os = "linux")]
+    tests.extend([
+        (
+            "nothing_is_observed_after_on_exit",
+            nothing_is_observed_after_on_exit as fn(),
+        ),
+        (
+            "nothing_reaches_the_raw_sink_after_on_exit",
+            nothing_reaches_the_raw_sink_after_on_exit as fn(),
+        ),
+    ]);
     #[cfg(unix)]
     tests.extend([
+        (
+            "raw_mode_leaves_a_query_to_the_consumer",
+            raw_mode_leaves_a_query_to_the_consumer as fn(),
+        ),
         (
             "a_byte_the_decoder_still_holds_at_the_end_is_flushed",
             a_byte_the_decoder_still_holds_at_the_end_is_flushed as fn(),

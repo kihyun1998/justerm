@@ -115,6 +115,16 @@ impl Session {
         self.ended
     }
 
+    /// Send the pending frame now, if there is one and a sink to take it. Unlike
+    /// [`pump`](Session::pump) it drains nothing: replies and events stay queued for whoever pumps.
+    ///
+    /// This is the call for a consumer that changed the view and wants it on screen at once, while
+    /// something else owns the pump, as `justerm-pty` does. Draining there would take replies that
+    /// only the pump's owner writes back, and an application waiting on one would wait forever.
+    pub fn send_pending(&mut self) {
+        self.flush();
+    }
+
     fn flush(&mut self) {
         if !self.engine.frame_pending() {
             return;

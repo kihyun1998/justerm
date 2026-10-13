@@ -10,6 +10,9 @@
 //! asked for them has been fed — not on the pump period, which paces frames only. A Windows
 //! ConPTY depends on it: it asks for the cursor position before the child may run at all.
 //!
+//! In [Raw mode](Pty::spawn_raw) there is no session: the output goes to a consumer's [`RawSink`],
+//! and the consumer's own terminal answers the child.
+//!
 //! The engine reads its input as UTF-8. A child that writes another encoding is the consumer's to
 //! convert, through [`Options::decoder`] and [`Options::encoder`]; which encoding is in use stays
 //! the consumer's policy.
@@ -17,13 +20,13 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, mpsc};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use justerm_core::{Session, TermEvent};
-use portable_pty::{Child, MasterPty, PtySize, native_pty_system};
+use portable_pty::{Child, MasterPty, PtySize, SlavePty, native_pty_system};
 
 /// The program to run in the pseudo-terminal, and how. Which shell, which environment and which
 /// directory are the consumer's choice; this only carries them.
@@ -111,7 +114,22 @@ pub struct Options {
     pub decoder: Option<Box<dyn Decode>>,
     /// Converts what is written to the child out of UTF-8. `None` writes the bytes as they are.
     pub encoder: Option<Box<dyn Encode>>,
+    /// Sees the child's output, decoded, on the reader thread: exactly the bytes the engine is fed
+    /// (or, in [Raw mode](Pty::spawn_raw), that the sink is handed), in order. It is called under
+    /// the reader's lock — the session's, or in Raw mode the sink's — so it must not lock the
+    /// session or call [`Pty::resume`] itself. It is never called after `on_exit`.
+    pub on_output: Option<OnOutput>,
+    /// Runs on the pump thread every [`pump_every`](Options::pump_every), just before the pump and
+    /// under the session's lock. It gets the session, or `None` in [Raw mode](Pty::spawn_raw). It
+    /// is not called after `on_exit`.
+    pub on_tick: Option<OnTick>,
 }
+
+/// The type of [`Options::on_output`].
+pub type OnOutput = Box<dyn FnMut(&[u8]) + Send>;
+
+/// The type of [`Options::on_tick`].
+pub type OnTick = Box<dyn FnMut(Option<&Session>) + Send>;
 
 impl Default for Options {
     fn default() -> Self {
@@ -119,6 +137,8 @@ impl Default for Options {
             pump_every: Duration::from_millis(16),
             decoder: None,
             encoder: None,
+            on_output: None,
+            on_tick: None,
         }
     }
 }
@@ -129,8 +149,34 @@ impl std::fmt::Debug for Options {
             .field("pump_every", &self.pump_every)
             .field("decoder", &self.decoder.is_some())
             .field("encoder", &self.encoder.is_some())
+            .field("on_output", &self.on_output.is_some())
+            .field("on_tick", &self.on_tick.is_some())
             .finish()
     }
+}
+
+/// Where a [Raw mode](Pty::spawn_raw) pty hands the child's output, decoded, on the reader thread.
+/// The consumer's own terminal reads it and answers the child's queries through [`Pty::write`].
+pub trait RawSink: Send {
+    /// Take one chunk of output, and say whether reading may go on. It runs under the reader's
+    /// lock, which [`Pty::resume`] takes too: resume from another thread, never from here.
+    fn output(&mut self, bytes: &[u8]) -> Flow;
+}
+
+/// What a [`RawSink`] answers after each chunk: the only backpressure a Raw mode pty has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flow {
+    /// Keep reading.
+    Continue,
+    /// Stop reading until [`Pty::resume`]. The child blocks once the pseudo-terminal's buffer
+    /// fills. Nothing the child wrote is lost:
+    /// - On Linux and Windows, when the child exits, reading resumes regardless, so the rest of
+    ///   the output arrives before `on_exit`.
+    /// - On macOS the child cannot finish exiting while its output is unread, so a pause holds
+    ///   its exit too, and the exit is reported after `resume`.
+    ///
+    /// [`Pty::terminate`], and dropping the `Pty`, end a pause.
+    Pause,
 }
 
 /// How the child ended.
@@ -158,26 +204,52 @@ impl From<portable_pty::ExitStatus> for Exit {
     }
 }
 
-/// A command running in a pseudo-terminal, feeding a [`Session`].
+/// A command running in a pseudo-terminal, feeding a [`Session`] (or, in
+/// [Raw mode](Pty::spawn_raw), a [`RawSink`]).
 ///
 /// Three threads run for it:
-/// - one reads the child's output into the session;
+/// - one reads the child's output into the session, or the [`RawSink`];
 /// - one pumps the session every [`Options::pump_every`], hands its events to the consumer, and
-///   watches for the child's exit;
+///   watches for the child's exit (in Raw mode it only ticks and watches);
 /// - one writes to the child: the engine's replies and the consumer's [`write`](Pty::write)s, in the
 ///   order they were handed over. A write therefore never blocks the reader or the pump.
 ///
 /// When the child exits, the pseudo-terminal is closed and the rest of the output is read. The
-/// session is then [ended](Session::end), which sends what is pending, and the exit is reported.
+/// session is then [ended](Session::end), which sends what is pending (in Raw mode, the sink is
+/// closed to further output), and the exit is reported.
 ///
 /// `on_exit` is called **exactly once**, including when the `Pty` is dropped first: dropping it
-/// terminates the child, and that exit is reported the same way as any other. Nothing is fed into
-/// the session after it has ended, so no frame follows `on_exit`.
+/// terminates the child, and that exit is reported the same way as any other. Nothing reaches the
+/// session or the sink after that, so no frame or output follows `on_exit`.
 pub struct Pty {
-    session: Arc<Mutex<Session>>,
+    target: Target,
     child: Arc<Mutex<ChildState>>,
     input: Input,
     master: Master,
+}
+
+/// Where the child's output goes: into a [`Session`]'s engine, or to a [`RawSink`].
+#[derive(Clone)]
+enum Target {
+    Frame(Arc<Mutex<Session>>),
+    Raw(Arc<Raw>),
+}
+
+/// A Raw mode pty's sink, and the reader's pause.
+struct Raw {
+    state: Mutex<RawState>,
+    /// Wakes a paused reader: on [`Pty::resume`], at exit, and when the sink is ended.
+    wake: Condvar,
+}
+
+struct RawState {
+    sink: Box<dyn RawSink>,
+    /// The sink asked for a pause, and no resume has come.
+    paused: bool,
+    /// The child has exited and the rest of the output is being read: the reader does not wait.
+    draining: bool,
+    /// `on_exit` is about to run: nothing more reaches the sink.
+    ended: bool,
 }
 
 /// The child, and whether it has been reaped. After a Unix reap its pid can be reused by an
@@ -200,6 +272,9 @@ type Master = Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>;
 /// reader to drain the rest of the output.
 const DRAIN_AFTER_EXIT: Duration = Duration::from_millis(500);
 
+/// How long the reader must sit in one `read` before a held slave is closed at exit.
+const READER_IDLE: Duration = Duration::from_millis(20);
+
 /// The longest the pump thread goes without asking whether the child has exited, whatever the pump
 /// period. Exit detection is not paced with the frames.
 const EXIT_POLL: Duration = Duration::from_millis(50);
@@ -218,78 +293,149 @@ impl Pty {
         command: Command,
         session: Session,
         options: Options,
-        mut on_event: impl FnMut(TermEvent) + Send + 'static,
+        on_event: impl FnMut(TermEvent) + Send + 'static,
         on_exit: impl FnOnce(Exit) + Send + 'static,
     ) -> std::io::Result<Pty> {
         let grid = session.engine().grid();
         let size = pty_size(grid.cols(), grid.rows());
-        let pair = native_pty_system().openpty(size).map_err(io_error)?;
-        let mut child = pair
-            .slave
-            .spawn_command(command.build())
-            .map_err(io_error)?;
-        // The slave stays open in this process otherwise, and a Unix reader would never see EOF.
-        drop(pair.slave);
-        let ends = pair
-            .master
-            .try_clone_reader()
-            .and_then(|r| Ok((r, pair.master.take_writer()?)));
-        let (reader, writer) = match ends {
-            Ok(ends) => ends,
-            Err(e) => {
-                let _ = child.kill();
-                return Err(io_error(e));
-            }
-        };
-        let session = Arc::new(Mutex::new(session));
-        let child = Arc::new(Mutex::new(ChildState {
-            child,
-            exited: false,
+        let target = Target::Frame(Arc::new(Mutex::new(session)));
+        start(command, size, target, options, on_event, on_exit)
+    }
+
+    /// Start `command` in a pseudo-terminal of `cols` × `rows` in **Raw mode**: no engine, and the
+    /// child's output, decoded, goes to `sink`. Nothing answers the child's queries but the
+    /// consumer, through [`write`](Pty::write); on Windows that includes the cursor-position query
+    /// a ConPTY sends before the child may run.
+    ///
+    /// `on_exit` is called once, on the pump thread, after the rest of the output has reached
+    /// `sink`. Errors are as for [`spawn`](Pty::spawn).
+    pub fn spawn_raw(
+        command: Command,
+        cols: u16,
+        rows: u16,
+        options: Options,
+        sink: impl RawSink + 'static,
+        on_exit: impl FnOnce(Exit) + Send + 'static,
+    ) -> std::io::Result<Pty> {
+        let size = pty_size(usize::from(cols), usize::from(rows));
+        let target = Target::Raw(Arc::new(Raw {
+            state: Mutex::new(RawState {
+                sink: Box::new(sink),
+                paused: false,
+                draining: false,
+                ended: false,
+            }),
+            wake: Condvar::new(),
         }));
-        let master: Master = Arc::new(Mutex::new(Some(pair.master)));
-        let (tx, rx) = mpsc::channel();
-        let input: Input = Arc::new(Mutex::new(Some(tx)));
-        let eof = Arc::new(AtomicBool::new(false));
-        let started = (|| {
-            spawn_writer(writer, rx, options.encoder)?;
-            spawn_reader(
-                options.decoder,
-                reader,
-                Arc::clone(&session),
-                Arc::clone(&input),
-                Arc::clone(&eof),
-            )?;
-            let pump = Pump {
-                session: Arc::clone(&session),
-                master: Arc::clone(&master),
-                input: Arc::clone(&input),
-                child: Arc::clone(&child),
-                eof,
-                period: options.pump_every,
-            };
-            thread::Builder::new()
-                .name("justerm-pty pump".into())
-                .spawn(move || pump.run(&mut on_event, on_exit))
-                .map(drop)
-        })();
-        if let Err(e) = started {
-            let _ = lock(&child).child.kill();
-            return Err(e);
-        }
-        Ok(Pty {
-            session,
-            child,
-            input,
-            master,
-        })
+        start(command, size, target, options, |_| {}, on_exit)
     }
 
-    /// The session this pty drives: subscribe to it, read it, scroll or select. Lock it briefly,
+    /// The session this pty drives, or `None` in [Raw mode](Pty::spawn_raw). Lock it briefly,
     /// because the reader and the pump take the same lock.
-    pub fn session(&self) -> Arc<Mutex<Session>> {
-        Arc::clone(&self.session)
+    ///
+    /// Through it, a consumer may [`subscribe`](Session::subscribe), read the
+    /// [`engine`](Session::engine), [`edit`](Session::edit) the view (scroll, select, search) and
+    /// [`send_pending`](Session::send_pending) to show an edit at once. It must not
+    /// [`pump`](Session::pump), which would take replies only this pty writes back to the child,
+    /// nor [`feed`](Session::feed) or [`end`](Session::end), which are the reader's and the pump's;
+    /// and it resizes through [`Pty::resize`], so the child learns the size too.
+    pub fn session(&self) -> Option<Arc<Mutex<Session>>> {
+        match &self.target {
+            Target::Frame(session) => Some(Arc::clone(session)),
+            Target::Raw(_) => None,
+        }
     }
 
+    /// Let a [Raw mode](Pty::spawn_raw) reader go on after its sink answered [`Flow::Pause`].
+    /// Does nothing when reading is not paused, or in frame mode.
+    pub fn resume(&self) {
+        if let Target::Raw(raw) = &self.target {
+            lock(&raw.state).paused = false;
+            raw.wake.notify_all();
+        }
+    }
+}
+
+/// Open a pseudo-terminal of `size`, start `command` in it, and run the reader, writer and pump
+/// threads that carry its output to `target`.
+fn start(
+    command: Command,
+    size: PtySize,
+    target: Target,
+    options: Options,
+    mut on_event: impl FnMut(TermEvent) + Send + 'static,
+    on_exit: impl FnOnce(Exit) + Send + 'static,
+) -> std::io::Result<Pty> {
+    let pair = native_pty_system().openpty(size).map_err(io_error)?;
+    let mut child = pair
+        .slave
+        .spawn_command(command.build())
+        .map_err(io_error)?;
+    // The slave stays open in this process otherwise, and a Unix reader would never see EOF. A
+    // macOS Raw mode pty keeps it until the exit drain is done.
+    let held_slave = if cfg!(target_os = "macos") && matches!(target, Target::Raw(_)) {
+        Some(pair.slave)
+    } else {
+        drop(pair.slave);
+        None
+    };
+    let ends = pair
+        .master
+        .try_clone_reader()
+        .and_then(|r| Ok((r, pair.master.take_writer()?)));
+    let (reader, writer) = match ends {
+        Ok(ends) => ends,
+        Err(e) => {
+            let _ = child.kill();
+            return Err(io_error(e));
+        }
+    };
+    let child = Arc::new(Mutex::new(ChildState {
+        child,
+        exited: false,
+    }));
+    let master: Master = Arc::new(Mutex::new(Some(pair.master)));
+    let (tx, rx) = mpsc::channel();
+    let input: Input = Arc::new(Mutex::new(Some(tx)));
+    let reading = Arc::new(Reading::default());
+    let started = (|| {
+        spawn_writer(writer, rx, options.encoder)?;
+        spawn_reader(
+            options.decoder,
+            options.on_output,
+            reader,
+            target.clone(),
+            Arc::clone(&input),
+            Arc::clone(&reading),
+        )?;
+        let pump = Pump {
+            target: target.clone(),
+            on_tick: options.on_tick,
+            master: Arc::clone(&master),
+            held_slave,
+            input: Arc::clone(&input),
+            child: Arc::clone(&child),
+            reading,
+            period: options.pump_every,
+        };
+        thread::Builder::new()
+            .name("justerm-pty pump".into())
+            .spawn(move || pump.run(&mut on_event, on_exit))
+            .map(drop)
+    })();
+    if let Err(e) = started {
+        let _ = lock(&child).child.kill();
+        return Err(e);
+    }
+    Ok(Pty {
+        target,
+        child,
+        input,
+        master,
+    })
+}
+
+impl Pty {
     /// Send `bytes` to the child: what the user typed, or the consumer's own answer to a query the
     /// engine leaves to policy (a colour or clipboard query). This queues the bytes and returns
     /// without waiting, and they reach the child in the order written, interleaved with the
@@ -313,11 +459,21 @@ impl Pty {
     /// The engine widens a too-narrow width to its minimum (see
     /// [`Engine::resize`](justerm_core::Engine::resize)), and the child is told that width, never the
     /// one asked for, so the two never disagree. After the child has exited only the session is
-    /// resized.
+    /// resized. In [Raw mode](Pty::spawn_raw) there is no engine: the child is told `cols` × `rows`
+    /// as asked, and that is returned.
     pub fn resize(&self, cols: usize, rows: usize) -> (usize, usize) {
+        let session = match &self.target {
+            Target::Frame(session) => session,
+            Target::Raw(_) => {
+                if let Some(master) = lock(&self.master).as_ref() {
+                    let _ = master.resize(pty_size(cols, rows));
+                }
+                return (cols, rows);
+            }
+        };
         // The session stays locked until the pty has its size, so two resizes racing cannot leave
         // the engine at one size and the child told the other.
-        let mut session = lock(&self.session);
+        let mut session = lock(session);
         let adopted = session.resize(cols, rows);
         if let Some(master) = lock(&self.master).as_ref() {
             let _ = master.resize(pty_size(adopted.0, adopted.1));
@@ -331,8 +487,13 @@ impl Pty {
     /// - On Windows it is terminated.
     ///
     /// Its exit is reported through `on_exit` like any other. Once the child has exited, this does
-    /// nothing.
+    /// nothing. In [Raw mode](Pty::spawn_raw) it also ends a [pause](Flow::Pause): reading goes on
+    /// until the exit, since on macOS the child cannot finish exiting while its output is unread.
     pub fn terminate(&self) {
+        if let Target::Raw(raw) = &self.target {
+            lock(&raw.state).draining = true;
+            raw.wake.notify_all();
+        }
         let mut state = lock(&self.child);
         if !state.exited {
             let _ = state.child.kill();
@@ -390,19 +551,35 @@ fn spawn_writer(
         .map(drop)
 }
 
+/// What the pump can see of the reader thread.
+#[derive(Default)]
+struct Reading {
+    /// The reader has reached the end of the output.
+    eof: AtomicBool,
+    /// The reader is inside a `read` call.
+    in_read: AtomicBool,
+    /// How many `read` calls have returned.
+    reads: AtomicUsize,
+}
+
 fn spawn_reader(
     mut decoder: Option<Box<dyn Decode>>,
+    mut on_output: Option<OnOutput>,
     mut reader: Box<dyn Read + Send>,
-    session: Arc<Mutex<Session>>,
+    target: Target,
     input: Input,
-    eof: Arc<AtomicBool>,
+    reading: Arc<Reading>,
 ) -> std::io::Result<()> {
     thread::Builder::new()
         .name("justerm-pty reader".into())
         .spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
             loop {
-                let n = match reader.read(&mut buf) {
+                reading.in_read.store(true, Ordering::Release);
+                let read = reader.read(&mut buf);
+                reading.in_read.store(false, Ordering::Release);
+                reading.reads.fetch_add(1, Ordering::AcqRel);
+                let n = match read {
                     Ok(0) => break,
                     Ok(n) => n,
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -416,28 +593,69 @@ fn spawn_reader(
                     }
                     None => &buf[..n],
                 };
-                if !feed(&session, &input, chunk) {
+                if !feed(&target, &input, &mut on_output, chunk) {
                     break;
                 }
             }
             if let Some(tail) = decoder.as_mut().map(|d| d.finish()) {
-                feed(&session, &input, &tail);
+                feed(&target, &input, &mut on_output, &tail);
             }
-            eof.store(true, Ordering::Release);
+            reading.eof.store(true, Ordering::Release);
         })
         .map(drop)
 }
 
-/// Feed `bytes` and hand the replies they produced to the writer. Returns `false` once the session
-/// has ended: output arriving after that is not fed, because nothing may follow `on_exit`. That
+/// Hand `bytes` to the target, showing them to `on_output` first. Returns `false` once the target
+/// has ended: output arriving after that goes nowhere, because nothing may follow `on_exit`. That
 /// happens when a grandchild still holds a Unix pty open.
-fn feed(session: &Mutex<Session>, input: &Input, bytes: &[u8]) -> bool {
+fn feed(target: &Target, input: &Input, on_output: &mut Option<OnOutput>, bytes: &[u8]) -> bool {
+    match target {
+        Target::Frame(session) => feed_session(session, input, on_output, bytes),
+        Target::Raw(raw) => feed_raw(raw, on_output, bytes),
+    }
+}
+
+/// Hand `bytes` to the sink, then wait while it has paused reading — until a resume, or until
+/// the child's exit releases the pause so the rest of the output can be drained.
+fn feed_raw(raw: &Raw, on_output: &mut Option<OnOutput>, bytes: &[u8]) -> bool {
+    let mut state = lock(&raw.state);
+    if state.ended {
+        return false;
+    }
+    if bytes.is_empty() {
+        return true;
+    }
+    if let Some(on_output) = on_output.as_mut() {
+        on_output(bytes);
+    }
+    if state.sink.output(bytes) == Flow::Pause {
+        state.paused = true;
+    }
+    while state.paused && !state.draining && !state.ended {
+        state = raw
+            .wake
+            .wait(state)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    }
+    true
+}
+
+/// Feed `bytes` and hand the replies they produced to the writer.
+fn feed_session(
+    session: &Mutex<Session>,
+    input: &Input,
+    on_output: &mut Option<OnOutput>,
+    bytes: &[u8],
+) -> bool {
     let mut session = lock(session);
     if session.is_ended() {
         return false;
     }
     if bytes.is_empty() {
         return true;
+    }
+    if let Some(on_output) = on_output.as_mut() {
+        on_output(bytes);
     }
     session.feed(bytes);
     let replies = session.edit(|engine| engine.drain_replies());
@@ -449,16 +667,19 @@ fn feed(session: &Mutex<Session>, input: &Input, bytes: &[u8]) -> bool {
 
 /// The pump thread's state.
 struct Pump {
-    session: Arc<Mutex<Session>>,
+    target: Target,
+    on_tick: Option<OnTick>,
     master: Master,
+    /// The slave this process keeps open until the exit drain is done (macOS Raw mode only).
+    held_slave: Option<Box<dyn SlavePty + Send>>,
     input: Input,
     child: Arc<Mutex<ChildState>>,
-    eof: Arc<AtomicBool>,
+    reading: Arc<Reading>,
     period: Duration,
 }
 
 impl Pump {
-    fn run(self, on_event: &mut impl FnMut(TermEvent), on_exit: impl FnOnce(Exit)) {
+    fn run(mut self, on_event: &mut impl FnMut(TermEvent), on_exit: impl FnOnce(Exit)) {
         let tick = self.period.min(EXIT_POLL);
         let mut next_pump = Instant::now() + self.period;
         let exit = loop {
@@ -475,25 +696,71 @@ impl Pump {
         };
         // Closing the pseudo-terminal lets a ConPTY flush and end its output pipe. The reader then
         // reaches EOF, instead of the drain waiting out its full bound.
+        // A paused Raw reader is released before the pseudo-terminal closes.
+        if let Target::Raw(raw) = &self.target {
+            lock(&raw.state).draining = true;
+            raw.wake.notify_all();
+        }
         lock(&self.input).take();
         drop(lock(&self.master).take());
         let deadline = Instant::now() + DRAIN_AFTER_EXIT;
-        while !self.eof.load(Ordering::Acquire) && Instant::now() < deadline {
+        if let Some(slave) = self.held_slave.take() {
+            self.wait_until_the_reader_is_idle(deadline);
+            drop(slave);
+        }
+        while !self.reading.eof.load(Ordering::Acquire) && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(5));
         }
-        let pumped = {
-            let mut session = lock(&self.session);
-            let pumped = session.pump();
-            session.end();
-            pumped
-        };
-        pumped.events.into_iter().for_each(&mut *on_event);
+        match &self.target {
+            Target::Frame(session) => {
+                let pumped = {
+                    let mut session = lock(session);
+                    let pumped = session.pump();
+                    session.end();
+                    pumped
+                };
+                pumped.events.into_iter().for_each(&mut *on_event);
+            }
+            Target::Raw(raw) => {
+                lock(&raw.state).ended = true;
+                raw.wake.notify_all();
+            }
+        }
         on_exit(exit);
     }
 
-    fn pump(&self, on_event: &mut impl FnMut(TermEvent)) {
+    /// Wait, until `deadline` at most, for the reader to sit in a `read` that has not returned for
+    /// [`READER_IDLE`]: everything already written has been read.
+    fn wait_until_the_reader_is_idle(&self, deadline: Instant) {
+        let mut seen = self.reading.reads.load(Ordering::Acquire);
+        let mut since = Instant::now();
+        while Instant::now() < deadline && !self.reading.eof.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(2));
+            let reads = self.reading.reads.load(Ordering::Acquire);
+            if reads != seen || !self.reading.in_read.load(Ordering::Acquire) {
+                seen = reads;
+                since = Instant::now();
+            } else if since.elapsed() >= READER_IDLE {
+                return;
+            }
+        }
+    }
+
+    fn pump(&mut self, on_event: &mut impl FnMut(TermEvent)) {
+        let session = match &self.target {
+            Target::Frame(session) => session,
+            Target::Raw(_) => {
+                if let Some(on_tick) = self.on_tick.as_mut() {
+                    on_tick(None);
+                }
+                return;
+            }
+        };
         let pumped = {
-            let mut session = lock(&self.session);
+            let mut session = lock(session);
+            if let Some(on_tick) = self.on_tick.as_mut() {
+                on_tick(Some(&session));
+            }
             let pumped = session.pump();
             // Under the same lock as the reader's hand-over, so drain order is hand-over order.
             write_back(&self.input, &pumped.replies);
