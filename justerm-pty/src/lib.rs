@@ -299,7 +299,9 @@ struct ChildState {
 }
 
 /// Where everything bound for the child is handed over: the writer thread's channel. `None` once
-/// the child has exited, which ends the writer thread and closes the pseudo-terminal's input.
+/// the child has exited, which ends the writer thread and closes the pseudo-terminal's input. A
+/// writer thread that stops (a failed write, or a panicking [`Encode`]) drops the receiver, so a
+/// send fails from then on.
 type Input = Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>;
 
 /// The pseudo-terminal's control side. It is held so the terminal stays open and so a resize can
@@ -500,14 +502,20 @@ impl Pty {
     /// without waiting, and they reach the child in the order written, interleaved with the
     /// engine's replies.
     ///
-    /// Fails with [`BrokenPipe`](std::io::ErrorKind::BrokenPipe) once the child has exited.
+    /// Fails with [`BrokenPipe`](std::io::ErrorKind::BrokenPipe) once the pty's input is closed.
+    /// That happens when the child has exited. It also happens once the writer thread has stopped,
+    /// because a write to the pseudo-terminal failed or the [`Encode`] hook panicked: the bytes it
+    /// had not yet written are then not delivered, and the cause is not reported. A write failing
+    /// while the child runs was not found on Linux (measured) or Windows (from `portable-pty`'s
+    /// source), and is unmeasured on macOS
+    /// ([#1064](https://github.com/kihyun1998/justerm/issues/1064)).
     pub fn write(&self, bytes: &[u8]) -> std::io::Result<()> {
         if write_back(&self.input, bytes) {
             Ok(())
         } else {
             Err(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
-                "the child has exited",
+                "the pty's input is closed",
             ))
         }
     }
@@ -575,7 +583,8 @@ fn pty_size(cols: usize, rows: usize) -> PtySize {
     }
 }
 
-/// Hand `bytes` to the writer thread. Returns `false` once the child has exited.
+/// Hand `bytes` to the writer thread. Returns `false` once the child has exited, or once the writer
+/// thread has stopped (a failed write, or a panicking [`Encode`]).
 fn write_back(input: &Input, bytes: &[u8]) -> bool {
     match lock(input).as_ref() {
         Some(tx) => bytes.is_empty() || tx.send(bytes.to_vec()).is_ok(),

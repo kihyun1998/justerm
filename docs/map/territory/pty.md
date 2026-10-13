@@ -257,6 +257,23 @@ Not compared against a pinned reference yet. The layout peers (wezterm's `pty/` 
   measurements above against two alternatives: terminate the child on a failed read, or close only
   the pseudo-terminal. It is theirs to reverse. It did not cover what a consumer shows meanwhile:
   it learns of the failure only from `on_exit`, so only after a `terminate`.
+- **A failed write ends the writer silently** (#1064). The writer thread stops on the first failed
+  `write_all`/`flush`, or when the consumer's `Encode` panics, and the cause is dropped. The chunk
+  that failed (possibly part-written) and the bytes still queued are lost, and every later non-empty
+  `Pty::write` fails with the same `BrokenPipe` ("the pty's input is closed") as after an exit. An
+  empty write still returns `Ok` then, because `write_back` short-circuits it while `Input` is
+  `Some`. It is left documented rather than reported because a failed write was not found while a
+  child runs:
+  - Linux, measured under WSL Ubuntu-24.04 at #1064's triage: with the slave left without an opener
+    (the child redirected its tty fds to `/dev/null` and stayed alive), three master writes each
+    succeeded, as did the control (child keeping the tty);
+  - Windows, from source: `filedescriptor` 0.8.3's `WriteFile` passes `BrokenPipe` through, but
+    conhost's input pipe closes only when the pump closes the pseudo-console at exit, after
+    `Input` is already `None`. conhost dying on its own is the remaining, unarrangeable case;
+  - macOS: unmeasured. #1057's `EIO` was a grandchild's *slave*-side write, a different case, so
+    it does not answer what a master write does there.
+
+  `a_write_after_the_exit_fails_with_broken_pipe` pins the kind and the message after an exit.
 - **A real failed read is proven through an injected reader only.** No real pty read failure can be
   arranged, so `a_failed_read_is_reported_on_the_exit` wraps the real reader (`start_with`).
 - **No test reaches the pid-reuse guard** (`ChildState::exited`). A reused pid cannot be arranged
