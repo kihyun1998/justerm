@@ -113,11 +113,19 @@ Everything it does is wiring between the OS and an engine that does no I/O itsel
   reads it: there the engine answers from its own cursor, which is the truth even for a Session fed
   before spawn.
 - **The start-up query is matched on the raw bytes, before the decoder.** It is conhost's output, not
-  the child's encoding, and withheld bytes must not enter a stateful decoder. Only a leading prefix
-  can match: a read that ends inside `ESC[6n` holds those bytes until the next read decides, and EOF
-  hands a held prefix on. Watching ends with the first byte handed on, so a later `ESC[6n` (on Unix,
-  a child's own) always reaches the sink. The reply goes through the writer, so the encoder applies
-  to it as to any engine reply.
+  the child's encoding, and withheld bytes must not enter a stateful decoder. Only DEC private mode
+  settings (`ESC[?…h`/`l`) may come before it: conhost's order differs by version, read in
+  microsoft/terminal `src/host/VtIo.cpp` — v1.12 and v1.17 send `ESC[?9001h` (with `ESC[?1004h`)
+  *before* `ESC[6n`, v1.21 after it, and `main` sends `ESC[6n` first then DA1, `?1004h`, `?9001h`.
+  Windows 10's inbox conhost is of the older line, so a "first bytes only" match would hang there.
+  Those settings are handed on as they come; any other byte ends watching, so a later `ESC[6n` always
+  reaches the sink. A read that ends inside the query or a setting holds those bytes (a setting at
+  most `MAX_MODE_SETTING`) until the next read decides, and EOF hands them on. The reply goes through
+  the writer, so the encoder applies to it as to any engine reply.
+- **`start_cursor` is a `CursorPosition`, 0-based** like core's `Cursor`, with named fields: the
+  crate's sizes are `(cols, rows)`, so a bare `(row, col)` tuple of the same type swaps silently.
+  #1060's agent brief said 1-based; the 0-based field was chosen at implementation, and
+  `cursor_report` adds the 1.
 - **What a consumer may do through `Pty::session`** is in its doc-comment: subscribe, read, edit,
   `send_pending`. It must not `pump`, because the drained replies would never reach the child. A
   consumer that wants an edit on screen at once calls `Session::send_pending`, which drains nothing.
@@ -165,7 +173,8 @@ Everything it does is wiring between the OS and an engine that does no I/O itsel
 - `justerm-pty/src/lib.rs` — `Pty::spawn`, `Pty::spawn_raw`, `Pty::session`, `Pty::resume`,
   `Pty::write`, `Pty::resize`, `Pty::terminate`, `start`, `Target`, `RawState`, `Reading`, `Pump::run`,
   `spawn_reader`, `decode_and_feed`, `feed_session`, `feed_raw`, `spawn_writer`, `write_back`,
-  `StartupQuery`, `STARTUP_QUERY`, `cursor_report`, `Options::start_cursor`, `EXIT_POLL`,
+  `StartupQuery`, `lead`, `STARTUP_QUERY`, `MAX_MODE_SETTING`, `cursor_report`, `CursorPosition`,
+  `Options::start_cursor`, `EXIT_POLL`,
   `DRAIN_AFTER_EXIT`, `READER_IDLE`, `Pump::wait_until_the_reader_is_idle`
 - `justerm-pty/tests/pty.rs` — `HELPER`, `helper`: the harness-free runner. With that variable set
   it is the child; without it, it runs the tests against itself.
@@ -209,9 +218,10 @@ Not compared against a pinned reference yet. The layout peers (wezterm's `pty/` 
   by closing the pseudo-console.
 - **A spawn error keeps its `ErrorKind` only where `portable-pty` passed an `io::Error` through.**
   On Windows it formats a failed `CreateProcessW` into a string, so a missing program is `Other`.
-- **A start-up query split across reads is proven by unit test only.** conhost writes it in one
-  piece, so no real-process test can force the split; `a_query_split_across_reads_is_still_recognised`
-  drives `StartupQuery` with every split point.
+- **A start-up query split across reads, and mode settings ahead of it, are proven by unit test
+  only.** conhost writes the query in one piece, and the measured build (Windows 11 26200) sends it
+  first, so no real-process test here reaches either: the unit tests drive `StartupQuery` with every
+  split point and with v1.17's order. An older conhost is the unmeasured case.
 - **The "nothing after `on_exit`" tests run on Linux only, and the Raw DA1 and CPR tests on Unix only.** The
   first need a grandchild writing to a pty after the child's exit: a ConPTY ends with its
   pseudo-console, and macOS fails the write with `EIO`. The second is the conhost reason above.

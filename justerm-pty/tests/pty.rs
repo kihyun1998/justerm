@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use justerm_core::{Engine, FrameSink, Session, decode};
-use justerm_pty::{Command, Decode, Encode, Exit, Flow, OnOutput, OnTick, Options, Pty, RawSink};
+use justerm_pty::{Command, CursorPosition, Decode, Encode, Exit, Flow, OnOutput, OnTick, Options, Pty, RawSink};
 
 const HELPER: &str = "JUSTERM_PTY_HELPER";
 const MARKER: &str = "hello-from-the-child";
@@ -688,7 +688,7 @@ fn spawn_raw(
     mode: &str,
     options: Options,
     sink: RawRecorder,
-) -> (Arc<Pty>, mpsc::Receiver<Exit>, Arc<AtomicBool>) {
+) -> (Pty, mpsc::Receiver<Exit>, Arc<AtomicBool>) {
     let (tx, rx) = mpsc::channel();
     let exited = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&exited);
@@ -698,7 +698,7 @@ fn spawn_raw(
         let _ = tx.send(exit);
     })
     .expect("spawn the helper in a raw pty");
-    (Arc::new(pty), rx, exited)
+    (pty, rx, exited)
 }
 
 fn the_observer_sees_exactly_what_the_engine_was_fed() {
@@ -908,7 +908,7 @@ fn a_raw_child_starts_with_no_consumer_write() {
 fn conhost_adopts_the_start_cursor() {
     let sink = RawRecorder::default();
     let options = Options {
-        start_cursor: (9, 4),
+        start_cursor: CursorPosition { row: 9, col: 4 },
         ..Options::default()
     };
     let (pty, rx, _exited) = spawn_raw("cpr-then-echo", options, sink.clone());
@@ -935,7 +935,7 @@ fn conhost_adopts_the_start_cursor() {
 #[cfg(windows)]
 fn frame_mode_ignores_the_start_cursor() {
     let options = Options {
-        start_cursor: (9, 4),
+        start_cursor: CursorPosition { row: 9, col: 4 },
         ..Options::default()
     };
     let (pty, _rec, rx) = spawn("cpr-then-echo", options);

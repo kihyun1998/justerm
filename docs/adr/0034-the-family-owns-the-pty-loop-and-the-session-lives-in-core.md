@@ -226,14 +226,20 @@ consumer with a stronger doc. It was decided on these facts:
   #1060's own criterion that "a child's `ESC[6n` still reaches the sink" holds on Unix only.
 
 **P2 — What it answers is the consumer's: `Options::start_cursor`, the terminal's cursor at spawn,
-defaulting to the top left.** **A judgement made by the maintainer**, over a fixed `1;1`. Decided on:
+defaulting to the top left.** Its type, a 0-based `CursorPosition { row, col }`, is a derivation made
+at implementation (the triage brief had said 1-based): 0-based like core's `Cursor`, and named
+because the crate's sizes run `(cols, rows)`. **A judgement made by the maintainer**, over a fixed `1;1`. Decided on:
 - conhost adopts the answer as fact (answered `10;5`, the child's later CPR read `10;10`), so a wrong
   answer puts conhost's cursor out of step with the consumer's terminal;
 - PenTerm's default local reconnect reuses the same xterm with its content and cursor.
 This is mechanism in the pty and the fact with the party that holds it. Frame mode never reads the
 field: the engine answers from its own cursor.
 
-**P3 — How the query is recognised** (a derivation): only as a leading byte prefix of the raw
-output, before the decoder; a read ending inside it holds the prefix for the next read; watching ends
-with the first byte handed on. Linux and macOS send no such query and are unchanged, which a Unix
+**P3 — How the query is recognised** (a derivation): at the start of the raw output, before the
+decoder, behind nothing but DEC private mode settings (`ESC[?…h`/`l`), which are handed on; a read
+ending inside the query or a setting holds it for the next read; any other byte ends watching. The
+settings are allowed because conhost's order differs by version (microsoft/terminal
+`src/host/VtIo.cpp`: v1.12 and v1.17 send `ESC[?9001h ESC[?1004h` before `ESC[6n`; v1.21 and
+Windows 11 26200 send the query first). The #1060 lens found this; a first-bytes-only match would
+have hung on Windows 10's inbox conhost. Linux and macOS send no such query and are unchanged, which a Unix
 test proves with a child whose first output is its own `ESC[6n`.
