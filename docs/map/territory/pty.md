@@ -222,6 +222,10 @@ Not compared against a pinned reference yet. The layout peers (wezterm's `pty/` 
   only.** conhost writes the query in one piece, and the measured build (Windows 11 26200) sends it
   first, so no real-process test here reaches either: the unit tests drive `StartupQuery` with every
   split point and with v1.17's order. An older conhost is the unmeasured case.
+- **conhost's `main` also sends DA1 (`ESC[c`) at start, after the cursor query** (microsoft/terminal
+  `src/host/VtIo.cpp`), and does not wait for its answer. In Raw mode it reaches the sink, and the
+  consumer's terminal answers it into the child's input. No shipped build measured here sends it
+  (Windows 11 26200 does not), so what conhost does with that answer is unmeasured.
 - **The "nothing after `on_exit`" tests run on Linux only, and the Raw DA1 and CPR tests on Unix only.** The
   first need a grandchild writing to a pty after the child's exit: a ConPTY ends with its
   pseudo-console, and macOS fails the write with `EIO`. The second is the conhost reason above.
