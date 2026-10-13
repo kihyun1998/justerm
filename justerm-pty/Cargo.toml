@@ -10,7 +10,7 @@ keywords = ["terminal", "pty", "conpty", "justerm"]
 categories = ["command-line-interface"]
 
 [dependencies]
-justerm-core = { path = "../justerm-core", version = "0.29.0" }
+justerm-core = { path = "../justerm-core", version = "0.30.0" }
 portable-pty = "0.9"
 # portable-pty reports through anyhow without re-exporting it; named here to unwrap the io::Error inside.
 anyhow = "1"
