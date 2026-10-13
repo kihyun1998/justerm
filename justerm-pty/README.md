@@ -17,4 +17,5 @@ Runs a command in a pseudo-terminal and drives a [`justerm-core`](https://crates
   `Options::on_tick` runs just before each pump.
 - **Raw mode.** `Pty::spawn_raw` runs the child with no engine and hands its output to your own
   terminal (a `RawSink`). Your terminal answers the child's queries, and your sink can pause reading
-  until `Pty::resume`.
+  until `Pty::resume`. On Windows the cursor-position query the ConPTY itself sends at start is
+  answered for you, from `Options::start_cursor` (where your terminal's cursor is at spawn).

@@ -20,8 +20,10 @@ Two more hooks serve a consumer that keeps state of its own beside the engine (#
 - `Options::on_tick` runs on the pump thread just before each pump.
 
 **Raw mode** (`Pty::spawn_raw`) runs the same three threads with no engine. The decoded output goes
-to a consumer `RawSink`, and only the consumer answers the child's queries. The sink's only
-backpressure is `Flow::Pause`, which stops the reader until `Pty::resume`.
+to a consumer `RawSink`, and only the consumer answers the child's queries. On Windows the reader
+answers the ConPTY's own start-up `ESC[6n` itself, from `Options::start_cursor`, and withholds it
+from the sink (#1060). The sink's only backpressure is `Flow::Pause`, which stops the reader until
+`Pty::resume`.
 Everything it does is wiring between the OS and an engine that does no I/O itself.
 
 ## Governing decisions
@@ -31,7 +33,8 @@ Everything it does is wiring between the OS and an engine that does no I/O itsel
   runtime, consumer supplies the command), D6 (workspace member, three OSes in CI), and its
   2026-10-12 amendment (replies are not paced; `publish = false` until the loop is complete), and
   its #1057 amendment R1–R6 (the observer, the tick, Raw mode, two constructors, pause/resume as
-  the only backpressure, `Session::send_pending`)
+  the only backpressure, `Session::send_pending`), and its #1060 amendment (a Raw pty answers its
+  ConPTY's start-up query from a consumer-supplied cursor)
 - [ADR-0030](../../adr/0030-which-directory-owns-what.md) — the `justerm-pty/` row and its re-open note
 - `docs/architecture.md` §Cadence — the timer paces frames only
 
@@ -92,9 +95,29 @@ Everything it does is wiring between the OS and an engine that does no I/O itsel
   before the master is dropped because `ClosePseudoConsole` may write a last frame to the output
   pipe. Microsoft documents that it can then wait indefinitely if nobody drains the pipe, and it
   would wait on the pump thread with the master lock held.
-- **Raw mode on Windows: the consumer answers ConPTY's `ESC[6n`.** No engine answers it in Raw mode,
-  and the child does not run until somebody does. The test sink answers it through `Pty::write`, as a
-  consumer's terminal (xterm.js) would.
+- **Raw mode on Windows: the pty answers ConPTY's start-up `ESC[6n`** (#1060, which replaced "the
+  consumer answers it"). The asker is conhost, not the child, and the child does not run until it is
+  answered. Left to the consumer, the answer has to cross the consumer's UI: PenTerm's xterm.js
+  answers through the same input path as typing, which a login procedure keeps closed from spawn, so
+  the shell never started. Measured on Windows 11 26200 (#1060 triage):
+  - unanswered, the child did not start in 8 s;
+  - conhost answers a *child's* CPR itself and never forwards it, as #1046 measured for DA1. So the
+    start-up query is the only `ESC[6n` a Windows Raw sink ever saw, and it was the first bytes of
+    output, ahead of `?9001h` and the title;
+  - conhost adopts the position it is told: answered `10;5`, a child that printed `START` then asked
+    read back `10;10`.
+- **What the reader answers is the consumer's fact, `Options::start_cursor`.** conhost draws from the
+  answer, so `1;1` is right only for a fresh terminal. PenTerm's default local reconnect keeps the
+  same xterm with its content and cursor (`clearOnReconnect` defaults to false, and xterm's `clear()`
+  keeps the cursor's column). The default, the top left, is the fresh-terminal case. Frame mode never
+  reads it: there the engine answers from its own cursor, which is the truth even for a Session fed
+  before spawn.
+- **The start-up query is matched on the raw bytes, before the decoder.** It is conhost's output, not
+  the child's encoding, and withheld bytes must not enter a stateful decoder. Only a leading prefix
+  can match: a read that ends inside `ESC[6n` holds those bytes until the next read decides, and EOF
+  hands a held prefix on. Watching ends with the first byte handed on, so a later `ESC[6n` (on Unix,
+  a child's own) always reaches the sink. The reply goes through the writer, so the encoder applies
+  to it as to any engine reply.
 - **What a consumer may do through `Pty::session`** is in its doc-comment: subscribe, read, edit,
   `send_pending`. It must not `pump`, because the drained replies would never reach the child. A
   consumer that wants an edit on screen at once calls `Session::send_pending`, which drains nothing.
@@ -141,7 +164,8 @@ Everything it does is wiring between the OS and an engine that does no I/O itsel
 
 - `justerm-pty/src/lib.rs` — `Pty::spawn`, `Pty::spawn_raw`, `Pty::session`, `Pty::resume`,
   `Pty::write`, `Pty::resize`, `Pty::terminate`, `start`, `Target`, `RawState`, `Reading`, `Pump::run`,
-  `spawn_reader`, `feed_session`, `feed_raw`, `spawn_writer`, `write_back`, `EXIT_POLL`,
+  `spawn_reader`, `decode_and_feed`, `feed_session`, `feed_raw`, `spawn_writer`, `write_back`,
+  `StartupQuery`, `STARTUP_QUERY`, `cursor_report`, `Options::start_cursor`, `EXIT_POLL`,
   `DRAIN_AFTER_EXIT`, `READER_IDLE`, `Pump::wait_until_the_reader_is_idle`
 - `justerm-pty/tests/pty.rs` — `HELPER`, `helper`: the harness-free runner. With that variable set
   it is the child; without it, it runs the tests against itself.
@@ -173,7 +197,8 @@ Not compared against a pinned reference yet. The layout peers (wezterm's `pty/` 
 - **The channel to the writer is unbounded.** A child that floods queries while never reading its
   stdin no longer stalls the reader. Its replies queue in memory instead, until the child exits.
 - **The reply tests are proven on Unix only**, for the conhost reason above. On Windows only the
-  start-up `ESC[6n` proves the reader's write-back, and no test there proves the pump's. The Unix
+  start-up `ESC[6n` proves the reader's write-back (in Frame mode; in Raw mode the reader's own
+  start-up answer), and no test there proves the pump's. The Unix
   proof was mutation-run on Linux under WSL (#1046), and each mutation reddened exactly its test:
   - dropping the pump's hand-over → `a_reply_the_pump_drains_reaches_the_child`;
   - dropping the reader's hand-over → `a_query_from_the_child_is_answered`;
@@ -184,7 +209,10 @@ Not compared against a pinned reference yet. The layout peers (wezterm's `pty/` 
   by closing the pseudo-console.
 - **A spawn error keeps its `ErrorKind` only where `portable-pty` passed an `io::Error` through.**
   On Windows it formats a failed `CreateProcessW` into a string, so a missing program is `Other`.
-- **The "nothing after `on_exit`" tests run on Linux only, and the Raw DA1 test on Unix only.** The
+- **A start-up query split across reads is proven by unit test only.** conhost writes it in one
+  piece, so no real-process test can force the split; `a_query_split_across_reads_is_still_recognised`
+  drives `StartupQuery` with every split point.
+- **The "nothing after `on_exit`" tests run on Linux only, and the Raw DA1 and CPR tests on Unix only.** The
   first need a grandchild writing to a pty after the child's exit: a ConPTY ends with its
   pseudo-console, and macOS fails the write with `EIO`. The second is the conhost reason above.
 - **No test reaches the paused-close order.** Terminating a Raw pty while its sink is paused

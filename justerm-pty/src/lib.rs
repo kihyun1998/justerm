@@ -11,7 +11,8 @@
 //! ConPTY depends on it: it asks for the cursor position before the child may run at all.
 //!
 //! In [Raw mode](Pty::spawn_raw) there is no session: the output goes to a consumer's [`RawSink`],
-//! and the consumer's own terminal answers the child.
+//! and the consumer's own terminal answers the child. On Windows the pty answers the one query the
+//! ConPTY itself asks at start, from [`Options::start_cursor`].
 //!
 //! The engine reads its input as UTF-8. A child that writes another encoding is the consumer's to
 //! convert, through [`Options::decoder`] and [`Options::encoder`]; which encoding is in use stays
@@ -314,8 +315,9 @@ impl Pty {
 
     /// Start `command` in a pseudo-terminal of `cols` × `rows` in **Raw mode**: no engine, and the
     /// child's output, decoded, goes to `sink`. Nothing answers the child's queries but the
-    /// consumer, through [`write`](Pty::write); on Windows that includes the cursor-position query
-    /// a ConPTY sends before the child may run.
+    /// consumer, through [`write`](Pty::write). The cursor-position query a Windows ConPTY sends
+    /// before the child may run is not the child's: the pty answers it with
+    /// [`Options::start_cursor`], and it never reaches `sink`.
     ///
     /// `on_exit` is called once, on the pump thread, after the rest of the output has reached
     /// `sink`. Errors are as for [`spawn`](Pty::spawn).

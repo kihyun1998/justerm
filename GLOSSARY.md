@@ -51,8 +51,9 @@ _Avoid_: tick (the **Overview ruler**'s word)
 
 A PTY running with no **Engine**: the child's output goes, decoded, to a byte sink the **Consumer**
 supplies instead of into a **Session**, and the consumer's own terminal (xterm.js, for one) answers
-the child's queries. The sink can ask that reading pause, which is the only backpressure. The
-counterpart of *Frame mode* (see **Frame**). (#1057)
+the child's queries. A query the pseudo-terminal itself asks (a Windows ConPTY's cursor-position
+query at start) is not the child's, and the PTY answers it. The sink can ask that reading pause,
+which is the only backpressure. The counterpart of *Frame mode* (see **Frame**). (#1057, #1060)
 _Avoid_: engineless, byte mode
 
 ## WASM decoder
