@@ -83,6 +83,14 @@ fn helper(mode: &str) {
             std::thread::sleep(Duration::from_secs(60));
         }
         // Some lines and an end mark, then exit at once.
+        "burst-then-exit" => {
+            let line = "x".repeat(99) + "\n";
+            for _ in 0..2000 {
+                say(&line);
+            }
+            say("END-OF-BURST\n");
+            std::process::exit(0);
+        }
         "lines-then-exit" => {
             for i in 0..50 {
                 say(&format!("line {i}\n"));
@@ -975,6 +983,112 @@ fn a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported() {
     );
 }
 
+// TEMPORARY PROBES (#1057 macOS tail loss) — removed before merge.
+#[cfg(unix)]
+fn probe_open(
+    mode: &str,
+    hold_slave: bool,
+) -> (std::fs::File, Option<std::fs::File>, std::process::Child) {
+    use std::os::fd::FromRawFd;
+    let (mut m, mut s) = (0, 0);
+    let rc = unsafe {
+        libc::openpty(
+            &mut m,
+            &mut s,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(rc, 0);
+    let slave = unsafe { std::fs::File::from_raw_fd(s) };
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .env(HELPER, mode)
+        .stdin(slave.try_clone().unwrap())
+        .stdout(slave.try_clone().unwrap())
+        .stderr(slave.try_clone().unwrap())
+        .spawn()
+        .unwrap();
+    let held = if hold_slave { Some(slave) } else { None };
+    (unsafe { std::fs::File::from_raw_fd(m) }, held, child)
+}
+
+/// Read until EOF/error, or until nothing arrives for `quiet` (non-blocking polls).
+#[cfg(unix)]
+fn probe_drain(master: &mut std::fs::File, quiet: Duration) -> (Vec<u8>, String) {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    unsafe {
+        let fl = libc::fcntl(master.as_raw_fd(), libc::F_GETFL);
+        libc::fcntl(master.as_raw_fd(), libc::F_SETFL, fl | libc::O_NONBLOCK);
+    }
+    let mut got = Vec::new();
+    let mut buf = [0u8; 65536];
+    let mut last = std::time::Instant::now();
+    let end = loop {
+        match master.read(&mut buf) {
+            Ok(0) => break "EOF".to_string(),
+            Ok(n) => {
+                got.extend_from_slice(&buf[..n]);
+                last = std::time::Instant::now();
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if last.elapsed() > quiet {
+                    break "quiet".to_string();
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(e) => break format!("Err({e})"),
+        }
+    };
+    (got, end)
+}
+
+#[cfg(unix)]
+fn probe_tail_loss() {
+    // D: a slave fd held by the parent keeps the unread output past the child's exit.
+    for hold in [false, true] {
+        let (mut master, held, mut child) = probe_open("lines-then-exit", hold);
+        child.wait().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let (got, end) = probe_drain(&mut master, Duration::from_millis(200));
+        let before_close = got.len();
+        drop(held);
+        let (more, end2) = probe_drain(&mut master, Duration::from_millis(200));
+        eprintln!(
+            "PROBE-D hold_slave={hold} read_after_exit={before_close} has_END={} end={end} after_slave_close={} end2={end2}",
+            String::from_utf8_lossy(&got).contains("END-OF-OUTPUT"),
+            more.len()
+        );
+    }
+    // C: an unpaused reader racing a child that bursts ~200 KB and exits at once.
+    for run in 0..5 {
+        let (mut master, held, mut child) = probe_open("burst-then-exit", false);
+        drop(held);
+        let reader = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut got = Vec::new();
+            let mut buf = [0u8; 65536];
+            let end = loop {
+                match master.read(&mut buf) {
+                    Ok(0) => break "EOF".to_string(),
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                    Err(e) => break format!("Err({e})"),
+                }
+            };
+            (got, end)
+        });
+        child.wait().unwrap();
+        let (got, end) = reader.join().unwrap();
+        eprintln!(
+            "PROBE-C run={run} bytes={} of {} has_END={} end={end}",
+            got.len(),
+            2000 * 101 + "END-OF-BURST\r\n".len(),
+            String::from_utf8_lossy(&got).contains("END-OF-BURST")
+        );
+    }
+}
+
 fn main() {
     if let Ok(mode) = std::env::var(HELPER) {
         helper(&mode);
@@ -1090,6 +1204,7 @@ fn main() {
     ]);
     #[cfg(unix)]
     tests.extend([
+        ("probe_tail_loss", probe_tail_loss as fn()),
         (
             "raw_mode_leaves_a_query_to_the_consumer",
             raw_mode_leaves_a_query_to_the_consumer as fn(),
