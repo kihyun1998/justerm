@@ -20,13 +20,13 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use justerm_core::{Session, TermEvent};
-use portable_pty::{Child, MasterPty, PtySize, native_pty_system};
+use portable_pty::{Child, MasterPty, PtySize, SlavePty, native_pty_system};
 
 /// The program to run in the pseudo-terminal, and how. Which shell, which environment and which
 /// directory are the consumer's choice; this only carries them.
@@ -267,6 +267,9 @@ type Master = Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>;
 /// reader to drain the rest of the output.
 const DRAIN_AFTER_EXIT: Duration = Duration::from_millis(500);
 
+/// How long the reader must sit in one `read` before a held slave is closed at exit.
+const READER_IDLE: Duration = Duration::from_millis(20);
+
 /// The longest the pump thread goes without asking whether the child has exited, whatever the pump
 /// period. Exit detection is not paced with the frames.
 const EXIT_POLL: Duration = Duration::from_millis(50);
@@ -363,8 +366,14 @@ fn start(
         .slave
         .spawn_command(command.build())
         .map_err(io_error)?;
-    // The slave stays open in this process otherwise, and a Unix reader would never see EOF.
-    drop(pair.slave);
+    // The slave stays open in this process otherwise, and a Unix reader would never see EOF. A
+    // macOS Raw mode pty keeps it until the exit drain is done.
+    let held_slave = if cfg!(target_os = "macos") && matches!(target, Target::Raw(_)) {
+        Some(pair.slave)
+    } else {
+        drop(pair.slave);
+        None
+    };
     let ends = pair
         .master
         .try_clone_reader()
@@ -383,7 +392,7 @@ fn start(
     let master: Master = Arc::new(Mutex::new(Some(pair.master)));
     let (tx, rx) = mpsc::channel();
     let input: Input = Arc::new(Mutex::new(Some(tx)));
-    let eof = Arc::new(AtomicBool::new(false));
+    let reading = Arc::new(Reading::default());
     let started = (|| {
         spawn_writer(writer, rx, options.encoder)?;
         spawn_reader(
@@ -392,15 +401,16 @@ fn start(
             reader,
             target.clone(),
             Arc::clone(&input),
-            Arc::clone(&eof),
+            Arc::clone(&reading),
         )?;
         let pump = Pump {
             target: target.clone(),
             on_tick: options.on_tick,
             master: Arc::clone(&master),
+            held_slave,
             input: Arc::clone(&input),
             child: Arc::clone(&child),
-            eof,
+            reading,
             period: options.pump_every,
         };
         thread::Builder::new()
@@ -531,20 +541,35 @@ fn spawn_writer(
         .map(drop)
 }
 
+/// What the pump can see of the reader thread.
+#[derive(Default)]
+struct Reading {
+    /// The reader has reached the end of the output.
+    eof: AtomicBool,
+    /// The reader is inside a `read` call.
+    in_read: AtomicBool,
+    /// How many `read` calls have returned.
+    reads: AtomicUsize,
+}
+
 fn spawn_reader(
     mut decoder: Option<Box<dyn Decode>>,
     mut on_output: Option<OnOutput>,
     mut reader: Box<dyn Read + Send>,
     target: Target,
     input: Input,
-    eof: Arc<AtomicBool>,
+    reading: Arc<Reading>,
 ) -> std::io::Result<()> {
     thread::Builder::new()
         .name("justerm-pty reader".into())
         .spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
             loop {
-                let n = match reader.read(&mut buf) {
+                reading.in_read.store(true, Ordering::Release);
+                let read = reader.read(&mut buf);
+                reading.in_read.store(false, Ordering::Release);
+                reading.reads.fetch_add(1, Ordering::AcqRel);
+                let n = match read {
                     Ok(0) => break,
                     Ok(n) => n,
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -565,7 +590,7 @@ fn spawn_reader(
             if let Some(tail) = decoder.as_mut().map(|d| d.finish()) {
                 feed(&target, &input, &mut on_output, &tail);
             }
-            eof.store(true, Ordering::Release);
+            reading.eof.store(true, Ordering::Release);
         })
         .map(drop)
 }
@@ -635,9 +660,11 @@ struct Pump {
     target: Target,
     on_tick: Option<OnTick>,
     master: Master,
+    /// The slave this process keeps open until the exit drain is done (macOS Raw mode only).
+    held_slave: Option<Box<dyn SlavePty + Send>>,
     input: Input,
     child: Arc<Mutex<ChildState>>,
-    eof: Arc<AtomicBool>,
+    reading: Arc<Reading>,
     period: Duration,
 }
 
@@ -667,7 +694,11 @@ impl Pump {
         lock(&self.input).take();
         drop(lock(&self.master).take());
         let deadline = Instant::now() + DRAIN_AFTER_EXIT;
-        while !self.eof.load(Ordering::Acquire) && Instant::now() < deadline {
+        if let Some(slave) = self.held_slave.take() {
+            self.wait_until_the_reader_is_idle(deadline);
+            drop(slave);
+        }
+        while !self.reading.eof.load(Ordering::Acquire) && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(5));
         }
         match &self.target {
@@ -686,6 +717,23 @@ impl Pump {
             }
         }
         on_exit(exit);
+    }
+
+    /// Wait, until `deadline` at most, for the reader to sit in a `read` that has not returned for
+    /// [`READER_IDLE`]: everything already written has been read.
+    fn wait_until_the_reader_is_idle(&self, deadline: Instant) {
+        let mut seen = self.reading.reads.load(Ordering::Acquire);
+        let mut since = Instant::now();
+        while Instant::now() < deadline && !self.reading.eof.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(2));
+            let reads = self.reading.reads.load(Ordering::Acquire);
+            if reads != seen || !self.reading.in_read.load(Ordering::Acquire) {
+                seen = reads;
+                since = Instant::now();
+            } else if since.elapsed() >= READER_IDLE {
+                return;
+            }
+        }
     }
 
     fn pump(&mut self, on_event: &mut impl FnMut(TermEvent)) {
