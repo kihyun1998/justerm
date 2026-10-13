@@ -258,6 +258,15 @@ fn a_child_that_exits_reports_no_read_error() {
     assert_eq!(exit.read_error, None, "raw mode");
 }
 
+fn a_write_after_the_exit_fails_with_broken_pipe() {
+    let (pty, _rec, rx) = spawn("print-exit-7", Options::default());
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+    let err = pty.write(b"late").expect_err("the input is closed");
+    assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+    assert_eq!(err.to_string(), "the pty's input is closed");
+}
+
 fn frames_arrive_on_the_default_timer_while_the_child_runs() {
     assert_eq!(Options::default().pump_every, Duration::from_millis(16));
     let (pty, rec, rx) = spawn("print-then-sleep", Options::default());
@@ -1140,6 +1149,10 @@ fn main() {
             the_childs_output_reaches_the_sink_as_a_frame,
         ),
         ("the_exit_code_is_reported", the_exit_code_is_reported),
+        (
+            "a_write_after_the_exit_fails_with_broken_pipe",
+            a_write_after_the_exit_fails_with_broken_pipe,
+        ),
         (
             "a_child_that_exits_reports_no_read_error",
             a_child_that_exits_reports_no_read_error,
