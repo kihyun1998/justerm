@@ -924,6 +924,31 @@ fn conhost_adopts_the_start_cursor() {
         .expect("the child exits");
 }
 
+/// Windows only: in Frame mode the engine answers the start-up query from its own cursor, and
+/// `start_cursor` is not read.
+#[cfg(windows)]
+fn frame_mode_ignores_the_start_cursor() {
+    let options = Options {
+        start_cursor: (9, 4),
+        ..Options::default()
+    };
+    let (pty, _rec, rx) = spawn("cpr-then-echo", options);
+    assert!(
+        eventually(Duration::from_secs(10), || screen(&pty).contains(";6R")),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    pty.write(b"\r").unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || screen(&pty)
+            .contains("GOT:^[[1;6R")),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+}
+
 /// Unix only: a child's cursor-position query reaches the sink, and only the consumer answers it.
 #[cfg(unix)]
 fn raw_mode_leaves_a_cpr_to_the_consumer() {
@@ -1207,6 +1232,10 @@ fn main() {
         (
             "conhost_adopts_the_start_cursor",
             conhost_adopts_the_start_cursor as fn(),
+        ),
+        (
+            "frame_mode_ignores_the_start_cursor",
+            frame_mode_ignores_the_start_cursor as fn(),
         ),
     ]);
     #[cfg(unix)]
