@@ -11,12 +11,14 @@
 //! ConPTY depends on it: it asks for the cursor position before the child may run at all.
 //!
 //! In [Raw mode](Pty::spawn_raw) there is no session: the output goes to a consumer's [`RawSink`],
-//! and the consumer's own terminal answers the child.
+//! and the consumer's own terminal answers the child. On Windows the pty answers the one query the
+//! ConPTY itself asks at start, from [`Options::start_cursor`].
 //!
 //! The engine reads its input as UTF-8. A child that writes another encoding is the consumer's to
 //! convert, through [`Options::decoder`] and [`Options::encoder`]; which encoding is in use stays
 //! the consumer's policy.
 
+use std::borrow::Cow;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -117,12 +119,30 @@ pub struct Options {
     /// Sees the child's output, decoded, on the reader thread: exactly the bytes the engine is fed
     /// (or, in [Raw mode](Pty::spawn_raw), that the sink is handed), in order. It is called under
     /// the reader's lock — the session's, or in Raw mode the sink's — so it must not lock the
-    /// session or call [`Pty::resume`] itself. It is never called after `on_exit`.
+    /// session or call [`Pty::resume`] itself. It is never called after `on_exit`. In Raw mode on
+    /// Windows it does not see the ConPTY's start-up cursor query, which the pty answers (see
+    /// [`start_cursor`](Options::start_cursor)).
     pub on_output: Option<OnOutput>,
     /// Runs on the pump thread every [`pump_every`](Options::pump_every), just before the pump and
     /// under the session's lock. It gets the session, or `None` in [Raw mode](Pty::spawn_raw). It
     /// is not called after `on_exit`.
     pub on_tick: Option<OnTick>,
+    /// Where the consumer's terminal cursor is at spawn. Read only in
+    /// [Raw mode](Pty::spawn_raw) on Windows: a ConPTY is created with
+    /// `PSEUDOCONSOLE_INHERIT_CURSOR`, so it asks for the cursor position (`ESC[6n`) before it runs
+    /// the child, and the pty answers with this. conhost then draws from there. The default, the
+    /// top left, is right for a fresh terminal; a consumer that starts a pty in a terminal still
+    /// holding output passes its real cursor. Clamped to the pty's size.
+    pub start_cursor: CursorPosition,
+}
+
+/// A cell position, 0-based from the top left, as [`Options::start_cursor`] takes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CursorPosition {
+    /// The row, 0 at the top.
+    pub row: u16,
+    /// The column, 0 at the left.
+    pub col: u16,
 }
 
 /// The type of [`Options::on_output`].
@@ -139,6 +159,7 @@ impl Default for Options {
             encoder: None,
             on_output: None,
             on_tick: None,
+            start_cursor: CursorPosition::default(),
         }
     }
 }
@@ -151,6 +172,7 @@ impl std::fmt::Debug for Options {
             .field("encoder", &self.encoder.is_some())
             .field("on_output", &self.on_output.is_some())
             .field("on_tick", &self.on_tick.is_some())
+            .field("start_cursor", &self.start_cursor)
             .finish()
     }
 }
@@ -304,8 +326,9 @@ impl Pty {
 
     /// Start `command` in a pseudo-terminal of `cols` × `rows` in **Raw mode**: no engine, and the
     /// child's output, decoded, goes to `sink`. Nothing answers the child's queries but the
-    /// consumer, through [`write`](Pty::write); on Windows that includes the cursor-position query
-    /// a ConPTY sends before the child may run.
+    /// consumer, through [`write`](Pty::write). The cursor-position query a Windows ConPTY sends
+    /// before the child may run is not the child's: the pty answers it with
+    /// [`Options::start_cursor`], and it never reaches `sink`.
     ///
     /// `on_exit` is called once, on the pump thread, after the rest of the output has reached
     /// `sink`. Errors are as for [`spawn`](Pty::spawn).
@@ -398,9 +421,14 @@ fn start(
     let (tx, rx) = mpsc::channel();
     let input: Input = Arc::new(Mutex::new(Some(tx)));
     let reading = Arc::new(Reading::default());
+    let startup = StartupQuery::new(
+        (cfg!(windows) && matches!(target, Target::Raw(_)))
+            .then(|| cursor_report(options.start_cursor, size)),
+    );
     let started = (|| {
         spawn_writer(writer, rx, options.encoder)?;
         spawn_reader(
+            startup,
             options.decoder,
             options.on_output,
             reader,
@@ -563,6 +591,7 @@ struct Reading {
 }
 
 fn spawn_reader(
+    mut startup: StartupQuery,
     mut decoder: Option<Box<dyn Decode>>,
     mut on_output: Option<OnOutput>,
     mut reader: Box<dyn Read + Send>,
@@ -585,24 +614,36 @@ fn spawn_reader(
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 };
-                let decoded;
-                let chunk = match decoder.as_mut() {
-                    Some(decoder) => {
-                        decoded = decoder.decode(&buf[..n]);
-                        &decoded[..]
-                    }
-                    None => &buf[..n],
-                };
-                if !feed(&target, &input, &mut on_output, chunk) {
+                let (reply, read) = startup.take(&buf[..n]);
+                if let Some(reply) = reply {
+                    write_back(&input, &reply);
+                }
+                if !decode_and_feed(&mut decoder, &target, &input, &mut on_output, &read) {
                     break;
                 }
             }
+            let held = startup.finish();
+            decode_and_feed(&mut decoder, &target, &input, &mut on_output, &held);
             if let Some(tail) = decoder.as_mut().map(|d| d.finish()) {
                 feed(&target, &input, &mut on_output, &tail);
             }
             reading.eof.store(true, Ordering::Release);
         })
         .map(drop)
+}
+
+/// Decode `bytes` (as read) and [`feed`] them. Returns what `feed` does.
+fn decode_and_feed(
+    decoder: &mut Option<Box<dyn Decode>>,
+    target: &Target,
+    input: &Input,
+    on_output: &mut Option<OnOutput>,
+    bytes: &[u8],
+) -> bool {
+    match decoder.as_mut() {
+        Some(decoder) => feed(target, input, on_output, &decoder.decode(bytes)),
+        None => feed(target, input, on_output, bytes),
+    }
 }
 
 /// Hand `bytes` to the target, showing them to `on_output` first. Returns `false` once the target
@@ -770,6 +811,109 @@ impl Pump {
     }
 }
 
+/// The cursor-position query a ConPTY sends before it runs the child.
+const STARTUP_QUERY: &[u8] = b"\x1b[6n";
+
+/// The longest DEC private mode setting [`StartupQuery`] holds while it is incomplete.
+const MAX_MODE_SETTING: usize = 32;
+
+/// Watches the start of the output for [`STARTUP_QUERY`]: found there, it is withheld and the
+/// reply is handed back to be written to the pty. DEC private mode settings (`ESC[?…h`, `ESC[?…l`)
+/// ahead of it are handed on and watching goes on; anything else ends watching.
+struct StartupQuery {
+    /// The reply to write, or `None` once watching has ended (or was never on).
+    reply: Option<Vec<u8>>,
+    /// An incomplete query or mode setting, held until the next read completes it.
+    held: Vec<u8>,
+}
+
+/// What the start of some output is, to [`StartupQuery`].
+#[derive(Debug, PartialEq)]
+enum Lead {
+    /// The query.
+    Query,
+    /// A whole DEC private mode setting of this many bytes.
+    ModeSetting(usize),
+    /// Possibly the query or a mode setting, not yet complete.
+    Incomplete,
+    /// Neither.
+    Other,
+}
+
+fn lead(bytes: &[u8]) -> Lead {
+    if bytes.starts_with(STARTUP_QUERY) {
+        return Lead::Query;
+    }
+    if STARTUP_QUERY.starts_with(bytes) {
+        return Lead::Incomplete;
+    }
+    let Some(params) = bytes.strip_prefix(b"[?") else {
+        return if b"[?".starts_with(bytes) {
+            Lead::Incomplete
+        } else {
+            Lead::Other
+        };
+    };
+    match params
+        .iter()
+        .position(|b| !(b.is_ascii_digit() || *b == b';'))
+    {
+        Some(i) if i > 0 && matches!(params[i], b'h' | b'l') => Lead::ModeSetting(3 + i + 1),
+        Some(_) => Lead::Other,
+        None if bytes.len() < MAX_MODE_SETTING => Lead::Incomplete,
+        None => Lead::Other,
+    }
+}
+
+impl StartupQuery {
+    fn new(reply: Option<Vec<u8>>) -> Self {
+        StartupQuery {
+            reply,
+            held: Vec::new(),
+        }
+    }
+
+    /// Take one read: the reply to write, if the query was just completed, and the bytes to hand on.
+    fn take<'a>(&mut self, bytes: &'a [u8]) -> (Option<Vec<u8>>, Cow<'a, [u8]>) {
+        if self.reply.is_none() {
+            return (None, Cow::Borrowed(bytes));
+        }
+        let mut seen = std::mem::take(&mut self.held);
+        seen.extend_from_slice(bytes);
+        let mut at = 0;
+        loop {
+            match lead(&seen[at..]) {
+                Lead::Query => {
+                    seen.drain(at..at + STARTUP_QUERY.len());
+                    return (self.reply.take(), Cow::Owned(seen));
+                }
+                Lead::ModeSetting(len) => at += len,
+                Lead::Incomplete => {
+                    self.held = seen.split_off(at);
+                    return (None, Cow::Owned(seen));
+                }
+                Lead::Other => {
+                    self.reply = None;
+                    return (None, Cow::Owned(seen));
+                }
+            }
+        }
+    }
+
+    /// End watching, and return a held prefix that was never completed.
+    fn finish(&mut self) -> Vec<u8> {
+        self.reply = None;
+        std::mem::take(&mut self.held)
+    }
+}
+
+/// The 1-based cursor-position report for `cursor`, clamped to `size`.
+fn cursor_report(cursor: CursorPosition, size: PtySize) -> Vec<u8> {
+    let row = cursor.row.min(size.rows.saturating_sub(1)) + 1;
+    let col = cursor.col.min(size.cols.saturating_sub(1)) + 1;
+    format!("\x1b[{row};{col}R").into_bytes()
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -780,5 +924,129 @@ fn io_error(e: anyhow::Error) -> std::io::Error {
     match e.downcast::<std::io::Error>() {
         Ok(io) => io,
         Err(other) => std::io::Error::other(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn watching() -> StartupQuery {
+        StartupQuery::new(Some(b"\x1b[1;1R".to_vec()))
+    }
+
+    #[test]
+    fn a_leading_query_is_answered_and_withheld() {
+        let mut q = watching();
+        let (reply, pass) = q.take(b"\x1b[6n\x1b[?25hhello");
+        assert_eq!(reply.as_deref(), Some(&b"\x1b[1;1R"[..]));
+        assert_eq!(&*pass, b"\x1b[?25hhello");
+        let (reply, pass) = q.take(b"\x1b[6n");
+        assert_eq!(reply, None, "only the first query is the pty's");
+        assert_eq!(&*pass, b"\x1b[6n");
+    }
+
+    #[test]
+    fn a_query_split_across_reads_is_still_recognised() {
+        for split in 1..4 {
+            let mut q = watching();
+            let (reply, pass) = q.take(&b"\x1b[6n"[..split]);
+            assert_eq!(reply, None);
+            assert!(pass.is_empty(), "split {split}: a partial query is held");
+            let mut rest = b"\x1b[6n"[split..].to_vec();
+            rest.extend_from_slice(b"after");
+            let (reply, pass) = q.take(&rest);
+            assert!(reply.is_some(), "split {split}");
+            assert_eq!(&*pass, b"after", "split {split}");
+        }
+    }
+
+    #[test]
+    fn output_that_does_not_start_with_the_query_passes_untouched() {
+        let mut q = watching();
+        let (reply, pass) = q.take(b"hi\x1b[6n");
+        assert_eq!(reply, None);
+        assert_eq!(&*pass, b"hi\x1b[6n");
+        let (reply, pass) = q.take(b"\x1b[6n");
+        assert_eq!(reply, None, "watching ends with the first byte handed on");
+        assert_eq!(&*pass, b"\x1b[6n");
+    }
+
+    #[test]
+    fn private_mode_settings_ahead_of_the_query_pass_and_watching_goes_on() {
+        let mut q = watching();
+        let (reply, pass) = q.take(b"\x1b[?9001h\x1b[?1004h\x1b[6nhello");
+        assert!(reply.is_some());
+        assert_eq!(&*pass, b"\x1b[?9001h\x1b[?1004hhello");
+    }
+
+    #[test]
+    fn a_mode_setting_split_across_reads_is_held_until_it_completes() {
+        let mut q = watching();
+        let (reply, pass) = q.take(b"\x1b[?9001h\x1b[?10");
+        assert_eq!(reply, None);
+        assert_eq!(&*pass, b"\x1b[?9001h");
+        let (reply, pass) = q.take(b"04h\x1b[6");
+        assert_eq!(reply, None);
+        assert_eq!(&*pass, b"\x1b[?1004h");
+        let (reply, pass) = q.take(b"n");
+        assert!(reply.is_some());
+        assert!(pass.is_empty());
+    }
+
+    #[test]
+    fn any_other_sequence_ahead_of_the_query_ends_watching() {
+        let mut q = watching();
+        let (reply, pass) = q.take(b"\x1b[?25h\x1b[31m\x1b[6n");
+        assert_eq!(reply, None);
+        assert_eq!(&*pass, b"\x1b[?25h\x1b[31m\x1b[6n");
+        let mut q = watching();
+        let (reply, pass) = q.take(b"\x1b[?6n\x1b[6n");
+        assert_eq!(reply, None, "a private query is not a mode setting");
+        assert_eq!(&*pass, b"\x1b[?6n\x1b[6n");
+    }
+
+    #[test]
+    fn an_unterminated_mode_setting_is_not_held_forever() {
+        let mut q = watching();
+        let mut long = b"\x1b[?".to_vec();
+        long.extend(std::iter::repeat_n(b'1', 64));
+        let (reply, pass) = q.take(&long);
+        assert_eq!(reply, None);
+        assert_eq!(&*pass, &long[..]);
+    }
+
+    #[test]
+    fn a_held_prefix_that_turns_out_not_to_be_the_query_is_handed_on_whole() {
+        let mut q = watching();
+        assert!(q.take(b"\x1b[").1.is_empty());
+        let (reply, pass) = q.take(b"31mred");
+        assert_eq!(reply, None);
+        assert_eq!(&*pass, b"\x1b[31mred");
+    }
+
+    #[test]
+    fn a_held_prefix_is_handed_on_at_the_end() {
+        let mut q = watching();
+        assert!(q.take(b"\x1b[6").1.is_empty());
+        assert_eq!(q.finish(), b"\x1b[6");
+        assert!(q.finish().is_empty());
+    }
+
+    #[test]
+    fn nothing_is_watched_without_a_reply() {
+        let mut q = StartupQuery::new(None);
+        let (reply, pass) = q.take(b"\x1b[6n");
+        assert_eq!(reply, None);
+        assert_eq!(&*pass, b"\x1b[6n");
+    }
+
+    #[test]
+    fn the_report_is_one_based_and_clamped_to_the_size() {
+        let size = pty_size(80, 24);
+        let at = |row, col| CursorPosition { row, col };
+        assert_eq!(cursor_report(at(0, 0), size), b"\x1b[1;1R");
+        assert_eq!(cursor_report(at(9, 4), size), b"\x1b[10;5R");
+        assert_eq!(cursor_report(at(500, 500), size), b"\x1b[24;80R");
     }
 }

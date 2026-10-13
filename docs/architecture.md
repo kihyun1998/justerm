@@ -132,7 +132,9 @@ through `Options::pump_every`. The timer paces **frames only**. Two things are d
 - **Reply bytes** are written back to the child as soon as the output that asked for them is fed. A
   Windows ConPTY sends `ESC[6n` at start and lets the child run only once it is answered, measured
   #1045: with the reply, output arrived and the child exited in 352 ms; unanswered, there was neither
-  in 8 s. So a reply paced with frames would hold the child for a whole period.
+  in 8 s. So a reply paced with frames would hold the child for a whole period. In Raw mode, with no
+  engine, the reader answers that start-up query itself, from the consumer's `Options::start_cursor`
+  (#1060).
 - **Exit detection** polls on its own short tick (at most 50 ms), so a long period does not delay
   noticing that the child is gone.
 

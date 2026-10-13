@@ -208,3 +208,38 @@ which breaks `spawn`.
     node-pty and portable-pty do), was declined.
 
 **Vocabulary.** **Raw mode**, the counterpart of *Frame mode*, is defined in GLOSSARY.
+
+## Amended 2026-10-13, #1060: a Raw pty answers its ConPTY's start-up query
+
+**P1 — On Windows, a Raw mode pty answers the ConPTY's start-up `ESC[6n` itself and withholds it
+from the sink.** This narrows R3's "the consumer's own terminal answers" to the *child's* queries.
+**A judgement made by the maintainer** at #1060's triage, over two alternatives shown with their
+consequences: an `Options` switch to turn it off (no known consumer wants it), and leaving it to the
+consumer with a stronger doc. It was decided on these facts:
+- `portable-pty` 0.9 creates every ConPTY with `PSEUDOCONSOLE_INHERIT_CURSOR` (0.8.1 did not), so
+  conhost asks for the cursor position before it runs the child, and runs nothing unanswered
+  (measured in Raw mode: no start in 8 s). The asker is the pseudo-terminal, not the child.
+- PenTerm's xterm.js answers through the same input path as typing, which a login procedure keeps
+  closed from spawn: the answer was dropped and the shell never started.
+- Measured on Windows 11 26200: conhost answers a *child's* CPR itself and never forwards it, as
+  #1046 measured for DA1. So on Windows the consumer was only ever answering this one query, and
+  #1060's own criterion that "a child's `ESC[6n` still reaches the sink" holds on Unix only.
+
+**P2 — What it answers is the consumer's: `Options::start_cursor`, the terminal's cursor at spawn,
+defaulting to the top left.** Its type, a 0-based `CursorPosition { row, col }`, is a derivation made
+at implementation (the triage brief had said 1-based): 0-based like core's `Cursor`, and named
+because the crate's sizes run `(cols, rows)`. **A judgement made by the maintainer**, over a fixed `1;1`. Decided on:
+- conhost adopts the answer as fact (answered `10;5`, the child's later CPR read `10;10`), so a wrong
+  answer puts conhost's cursor out of step with the consumer's terminal;
+- PenTerm's default local reconnect reuses the same xterm with its content and cursor.
+This is mechanism in the pty and the fact with the party that holds it. Frame mode never reads the
+field: the engine answers from its own cursor.
+
+**P3 — How the query is recognised** (a derivation): at the start of the raw output, before the
+decoder, behind nothing but DEC private mode settings (`ESC[?…h`/`l`), which are handed on; a read
+ending inside the query or a setting holds it for the next read; any other byte ends watching. The
+settings are allowed because conhost's order differs by version (microsoft/terminal
+`src/host/VtIo.cpp`: v1.12 and v1.17 send `ESC[?9001h ESC[?1004h` before `ESC[6n`; v1.21 and
+Windows 11 26200 send the query first). The #1060 lens found this; a first-bytes-only match would
+have hung on Windows 10's inbox conhost. Linux and macOS send no such query and are unchanged, which a Unix
+test proves with a child whose first output is its own `ESC[6n`.

@@ -17,8 +17,8 @@ proves that the others cannot:
 
 | OS | What only it shows |
 |---|---|
-| Windows (ConPTY) | conhost asks `ESC[6n` before the child may run: the reader's write-back. Exit may come without EOF |
-| Linux / macOS | the reply paths end to end. Two tests are `#[cfg(unix)]`, because conhost answers a child's queries itself. Also SIGHUP→SIGKILL escalation |
+| Windows (ConPTY) | conhost asks `ESC[6n` before the child may run: the reader's write-back, and in Raw mode its own start-up answer. Exit may come without EOF |
+| Linux / macOS | the reply paths end to end. The reply-path tests are `#[cfg(unix)]`, because conhost answers a child's queries itself. Also SIGHUP→SIGKILL escalation |
 | macOS | its own timing: #1046's resize test raced there and nowhere else |
 
 ## Per host
