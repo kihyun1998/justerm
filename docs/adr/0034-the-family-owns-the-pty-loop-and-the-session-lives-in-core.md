@@ -197,5 +197,14 @@ which breaks `spawn`.
   but the reverse is not possible.
 - At exit, a paused reader is released to drain within `DRAIN_AFTER_EXIT`, and no sink call
   follows `on_exit`. Exit polling continues while paused.
+- **macOS refinement (#1057, maintainer's call after CI measurement).** XNU discards output nobody
+  has read when the last slave fd closes. A paused child that exited would lose its tail.
+  - A macOS Raw pty therefore keeps the slave open until the exit drain.
+  - The kernel then holds the child's exit (a killed one too) until its output is read. On macOS a
+    pause holds the child's exit as well, and the exit is reported after `resume`, with nothing
+    lost.
+  - `terminate` (and so `Drop`) releases a pause, so ending the child always completes.
+  - The alternative shown, dropping the slave and recording the tail loss as a known hole (as
+    node-pty and portable-pty do), was declined.
 
 **Vocabulary.** **Raw mode**, the counterpart of *Frame mode*, is defined in GLOSSARY.

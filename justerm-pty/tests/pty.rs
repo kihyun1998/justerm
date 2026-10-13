@@ -962,6 +962,9 @@ fn nothing_reaches_the_raw_sink_after_on_exit() {
     assert!(!String::from_utf8_lossy(&seen.bytes.lock().unwrap()).contains("LATE-OUTPUT"));
 }
 
+/// Not on macOS: there the child cannot finish exiting while its output is unread, so the exit
+/// waits for `resume` ([`a_child_that_exits_while_paused_loses_nothing_once_resumed`]).
+#[cfg(not(target_os = "macos"))]
 fn a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported() {
     let sink = RawRecorder::default();
     sink.pause.store(true, Ordering::SeqCst);
@@ -973,6 +976,41 @@ fn a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported() {
         "drained before on_exit: {:?}",
         sink.text()
     );
+}
+
+fn a_child_that_exits_while_paused_loses_nothing_once_resumed() {
+    let sink = RawRecorder::default();
+    sink.pause.store(true, Ordering::SeqCst);
+    let (pty, rx, exited) = spawn_raw("lines-then-exit", Options::default(), sink.clone());
+    assert!(eventually(Duration::from_secs(10), || sink
+        .calls
+        .load(Ordering::SeqCst)
+        >= 1));
+    std::thread::sleep(Duration::from_millis(1000));
+    sink.pause.store(false, Ordering::SeqCst);
+    pty.resume();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the exit is reported once reading resumes");
+    assert!(exited.load(Ordering::SeqCst));
+    assert!(
+        sink.text().contains("END-OF-OUTPUT"),
+        "the tail survived the child's exit: {:?}",
+        sink.text()
+    );
+}
+
+fn terminate_ends_a_paused_raw_pty() {
+    let sink = RawRecorder::default();
+    sink.pause.store(true, Ordering::SeqCst);
+    let (pty, rx, _exited) = spawn_raw("flood-then-sleep", Options::default(), sink.clone());
+    assert!(eventually(Duration::from_secs(10), || sink
+        .calls
+        .load(Ordering::SeqCst)
+        >= 1));
+    std::thread::sleep(Duration::from_millis(300));
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(5))
+        .expect("terminate ends the child without a resume");
 }
 
 fn main() {
@@ -1073,10 +1111,19 @@ fn main() {
             a_paused_raw_sink_gets_nothing_until_resumed as fn(),
         ),
         (
-            "a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported",
-            a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported as fn(),
+            "a_child_that_exits_while_paused_loses_nothing_once_resumed",
+            a_child_that_exits_while_paused_loses_nothing_once_resumed as fn(),
+        ),
+        (
+            "terminate_ends_a_paused_raw_pty",
+            terminate_ends_a_paused_raw_pty as fn(),
         ),
     ]);
+    #[cfg(not(target_os = "macos"))]
+    tests.push((
+        "a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported",
+        a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported as fn(),
+    ));
     #[cfg(target_os = "linux")]
     tests.extend([
         (

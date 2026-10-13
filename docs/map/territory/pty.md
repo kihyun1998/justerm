@@ -109,17 +109,40 @@ Everything it does is wiring between the OS and an engine that does no I/O itsel
   after about 250 ms, not the `clone_killer` handle, which sends `SIGHUP` only. On Windows it is
   `TerminateProcess`, exit code 127. Either way the resulting exit is reported the same as a natural
   one.
-- **The slave is dropped right after spawn.** Otherwise this process keeps it open and a Unix reader
-  never sees EOF.
+- **The slave is dropped right after spawn, except for a macOS Raw mode pty.** Otherwise this
+  process keeps it open and a Unix reader never sees EOF.
+- **macOS discards output nobody has read when the last slave fd closes.** XNU's `ptsclose` →
+  `ttyclose` runs `ttyflush(tp, FREAD | FWRITE)`, and the master then reads 0 bytes and EOF. Linux's
+  `pty_close` only marks the other side closed and delivers what is buffered.
+  - Measured in CI (#1057, macos-latest): a child writes 455 bytes and exits, and the parent reads
+    afterwards. With the slave dropped, it got 0 bytes and EOF; with the slave held, 455/455, and EOF
+    once the slave was closed. Linux read 455/455 both ways.
+  - A reader that keeps reading is not hit: 5 runs of a 202 KB burst followed by an immediate exit
+    all arrived whole on macOS. Frame mode keeps its old path.
+  - A paused Raw reader is hit. A Raw pty on macOS therefore keeps the slave until the exit drain:
+    the pump releases the reader, waits for it to sit in one `read` for `READER_IDLE`, then drops
+    the slave so EOF arrives. All of it stays within `DRAIN_AFTER_EXIT`.
+  - **With the slave held, the kernel holds the child's exit until its output is read.** That
+    includes a killed child. Measured in CI (#1057), with the sink paused: a `terminate` went
+    unreported for 10 s, then was reported at once after `resume`. A natural exit was sometimes
+    reported at once and sometimes held past 20 s. On Windows both took about 25 ms. So on macOS a
+    pause holds the exit too (the ADR-0034 macOS refinement), and `terminate` releases the pause
+    before it kills.
+  - `a_child_that_exits_while_paused_loses_nothing_once_resumed` is the macOS proof that the tail
+    survives. Without the held slave the same scenario read 0 of 455 bytes. On Linux and Windows
+    nothing is discarded, so it cannot redden there. `terminate_ends_a_paused_raw_pty` is the macOS
+    proof of the release; it is green on Windows with or without the release.
+  - Prior art does not fix this: node-pty, portable-pty, alacritty and creack/pty drop the slave;
+    pexpect#662 was closed unfixed; Go's `cmd/go` tests delay the child's exit instead.
 - **Own public types only.** `Command`, `Options`, `Exit` wrap `portable_pty`'s, so a `portable-pty`
   major bump is not a breaking change here.
 
 ## Code
 
 - `justerm-pty/src/lib.rs` — `Pty::spawn`, `Pty::spawn_raw`, `Pty::session`, `Pty::resume`,
-  `Pty::write`, `Pty::resize`, `Pty::terminate`, `start`, `Target`, `RawState`, `Pump::run`,
+  `Pty::write`, `Pty::resize`, `Pty::terminate`, `start`, `Target`, `RawState`, `Reading`, `Pump::run`,
   `spawn_reader`, `feed_session`, `feed_raw`, `spawn_writer`, `write_back`, `EXIT_POLL`,
-  `DRAIN_AFTER_EXIT`
+  `DRAIN_AFTER_EXIT`, `READER_IDLE`, `Pump::wait_until_the_reader_is_idle`
 - `justerm-pty/tests/pty.rs` — `HELPER`, `helper`: the harness-free runner. With that variable set
   it is the child; without it, it runs the tests against itself.
 

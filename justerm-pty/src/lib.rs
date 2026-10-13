@@ -169,8 +169,13 @@ pub enum Flow {
     /// Keep reading.
     Continue,
     /// Stop reading until [`Pty::resume`]. The child blocks once the pseudo-terminal's buffer
-    /// fills. When the child exits, reading resumes regardless, so the rest of the output arrives
-    /// before `on_exit`.
+    /// fills. Nothing the child wrote is lost:
+    /// - On Linux and Windows, when the child exits, reading resumes regardless, so the rest of
+    ///   the output arrives before `on_exit`.
+    /// - On macOS the child cannot finish exiting while its output is unread, so a pause holds
+    ///   its exit too, and the exit is reported after `resume`.
+    ///
+    /// [`Pty::terminate`], and dropping the `Pty`, end a pause.
     Pause,
 }
 
@@ -482,8 +487,13 @@ impl Pty {
     /// - On Windows it is terminated.
     ///
     /// Its exit is reported through `on_exit` like any other. Once the child has exited, this does
-    /// nothing.
+    /// nothing. In [Raw mode](Pty::spawn_raw) it also ends a [pause](Flow::Pause): reading goes on
+    /// until the exit, since on macOS the child cannot finish exiting while its output is unread.
     pub fn terminate(&self) {
+        if let Target::Raw(raw) = &self.target {
+            lock(&raw.state).draining = true;
+            raw.wake.notify_all();
+        }
         let mut state = lock(&self.child);
         if !state.exited {
             let _ = state.child.kill();
