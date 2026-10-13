@@ -126,6 +126,12 @@ fn helper(mode: &str) {
             say(&format!("GOT:{}", visible(&read_line())));
             std::thread::sleep(Duration::from_millis(300));
         }
+        // Ask for the cursor position before any other output, then print the line that comes back.
+        "cpr-first-then-echo" => {
+            say("\x1b[6n");
+            say(&format!("GOT:{}", visible(&read_line())));
+            std::thread::sleep(Duration::from_millis(300));
+        }
         // Print this terminal's size now, and again after every line read.
         "size-on-line" => {
             let size = || {
@@ -949,14 +955,20 @@ fn frame_mode_ignores_the_start_cursor() {
         .expect("the child exits");
 }
 
-/// Unix only: a child's cursor-position query reaches the sink, and only the consumer answers it.
+/// Unix only: a child's cursor-position query reaches the sink, and only the consumer answers it,
+/// even as the very first output, where a Windows pty answers its ConPTY's.
 #[cfg(unix)]
 fn raw_mode_leaves_a_cpr_to_the_consumer() {
     let sink = RawRecorder::default();
-    let (pty, rx, _exited) = spawn_raw("cpr-then-echo", Options::default(), sink.clone());
+    let (pty, rx, _exited) = spawn_raw("cpr-first-then-echo", Options::default(), sink.clone());
     assert!(eventually(Duration::from_secs(10), || sink
         .text()
-        .contains("START\x1b[6n")));
+        .contains("\x1b[6n")));
+    assert!(
+        sink.text().starts_with("\x1b[6n"),
+        "the query is not the first output: {:?}",
+        sink.text()
+    );
     std::thread::sleep(Duration::from_millis(300));
     pty.write(b"\x1b[3;7R\r").unwrap();
     rx.recv_timeout(Duration::from_secs(20))
