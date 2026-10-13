@@ -962,59 +962,6 @@ fn nothing_reaches_the_raw_sink_after_on_exit() {
     assert!(!String::from_utf8_lossy(&seen.bytes.lock().unwrap()).contains("LATE-OUTPUT"));
 }
 
-// TEMPORARY PROBE (#1057 macOS held slave) — removed before merge.
-fn probe_paused_exit() {
-    for terminate in [false, true] {
-        let sink = RawRecorder::default();
-        sink.pause.store(true, Ordering::SeqCst);
-        let mode = if terminate {
-            "flood-then-sleep"
-        } else {
-            "lines-then-exit"
-        };
-        let (pty, rx, _exited) = spawn_raw(mode, Options::default(), sink.clone());
-        let t = std::time::Instant::now();
-        let while_paused = rx.recv_timeout(Duration::from_secs(2));
-        eprintln!(
-            "PROBE-E terminate={terminate} exit_while_paused={:?} after={:?} has_END={}",
-            while_paused.is_ok(),
-            t.elapsed(),
-            sink.text().contains("END-OF")
-        );
-        if terminate {
-            let t = std::time::Instant::now();
-            pty.terminate();
-            let r = rx.recv_timeout(Duration::from_secs(10));
-            eprintln!(
-                "PROBE-E terminate_while_paused reported={:?} after={:?}",
-                r.is_ok(),
-                t.elapsed()
-            );
-            if r.is_err() {
-                sink.pause.store(false, Ordering::SeqCst);
-                pty.resume();
-                let r = rx.recv_timeout(Duration::from_secs(10));
-                eprintln!(
-                    "PROBE-E terminate_then_resume reported={:?} after={:?}",
-                    r.is_ok(),
-                    t.elapsed()
-                );
-            }
-        } else if while_paused.is_err() {
-            let t = std::time::Instant::now();
-            sink.pause.store(false, Ordering::SeqCst);
-            pty.resume();
-            let r = rx.recv_timeout(Duration::from_secs(10));
-            eprintln!(
-                "PROBE-E resume reported={:?} after={:?} has_END={}",
-                r.is_ok(),
-                t.elapsed(),
-                sink.text().contains("END-OF-OUTPUT")
-            );
-        }
-    }
-}
-
 fn a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported() {
     let sink = RawRecorder::default();
     sink.pause.store(true, Ordering::SeqCst);
@@ -1129,7 +1076,6 @@ fn main() {
             "a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported",
             a_child_that_exits_while_the_reader_is_paused_is_drained_and_reported as fn(),
         ),
-        ("probe_paused_exit", probe_paused_exit as fn()),
     ]);
     #[cfg(target_os = "linux")]
     tests.extend([
