@@ -118,6 +118,14 @@ fn helper(mode: &str) {
             say(&format!("GOT:{}", visible(&read_line())));
             std::thread::sleep(Duration::from_millis(300));
         }
+        // Print a marker, ask the terminal for the cursor position (CPR), then print the line that
+        // comes back.
+        "cpr-then-echo" => {
+            say("START");
+            say("\x1b[6n");
+            say(&format!("GOT:{}", visible(&read_line())));
+            std::thread::sleep(Duration::from_millis(300));
+        }
         // Print this terminal's size now, and again after every line read.
         "size-on-line" => {
             let size = || {
@@ -668,8 +676,8 @@ impl RawRecorder {
     }
 }
 
-/// A child in Raw mode. On Windows the consumer must answer ConPTY's start-up `ESC[6n` itself (no
-/// engine does it in Raw mode), so a thread answers it as the consumer's terminal would.
+/// A child in Raw mode. Nothing is written to it: on Windows the pty answers ConPTY's start-up
+/// `ESC[6n` itself.
 fn spawn_raw(
     mode: &str,
     options: Options,
@@ -684,19 +692,7 @@ fn spawn_raw(
         let _ = tx.send(exit);
     })
     .expect("spawn the helper in a raw pty");
-    let pty = Arc::new(pty);
-    #[cfg(windows)]
-    {
-        let pty = Arc::clone(&pty);
-        std::thread::spawn(move || {
-            if eventually(Duration::from_secs(10), || sink.text().contains("\x1b[6n")) {
-                let _ = pty.write(b"\x1b[1;1R");
-            }
-        });
-    }
-    #[cfg(not(windows))]
-    let _ = sink;
-    (pty, rx, exited)
+    (Arc::new(pty), rx, exited)
 }
 
 fn the_observer_sees_exactly_what_the_engine_was_fed() {
@@ -879,6 +875,73 @@ fn raw_mode_hands_the_output_to_the_sink_with_no_session() {
     assert!(
         rx.recv_timeout(Duration::from_millis(300)).is_err(),
         "the exit is reported once"
+    );
+}
+
+/// Windows only: a ConPTY asks for the cursor position before it runs the child, and the pty
+/// answers it, so the child runs with nothing written and the query never reaches the sink.
+#[cfg(windows)]
+fn a_raw_child_starts_with_no_consumer_write() {
+    let sink = RawRecorder::default();
+    let (_pty, rx, _exited) = spawn_raw("print-exit-7", Options::default(), sink.clone());
+    let exit = rx
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the child runs and exits with nothing written to it");
+    assert_eq!(exit.code, 7);
+    assert!(sink.text().contains(MARKER), "{:?}", sink.text());
+    assert!(
+        !sink.text().contains("\x1b[6n"),
+        "the start-up query reached the sink: {:?}",
+        sink.text()
+    );
+}
+
+/// Windows only: the position the pty reports at start is the one conhost then holds, so a child's
+/// own CPR (which conhost answers) counts from it: `START` moves the column on by five.
+#[cfg(windows)]
+fn conhost_adopts_the_start_cursor() {
+    let sink = RawRecorder::default();
+    let options = Options {
+        start_cursor: (9, 4),
+        ..Options::default()
+    };
+    let (pty, rx, _exited) = spawn_raw("cpr-then-echo", options, sink.clone());
+    // conhost echoes the reply it put in the child's input; once it shows, the line can be ended.
+    assert!(
+        eventually(Duration::from_secs(10), || sink.text().contains("[10;10R")),
+        "{:?}",
+        sink.text()
+    );
+    pty.write(b"\r").unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || sink
+            .text()
+            .contains("GOT:^[[10;10R")),
+        "{:?}",
+        sink.text()
+    );
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+}
+
+/// Unix only: a child's cursor-position query reaches the sink, and only the consumer answers it.
+#[cfg(unix)]
+fn raw_mode_leaves_a_cpr_to_the_consumer() {
+    let sink = RawRecorder::default();
+    let (pty, rx, _exited) = spawn_raw("cpr-then-echo", Options::default(), sink.clone());
+    assert!(eventually(Duration::from_secs(10), || sink
+        .text()
+        .contains("START\x1b[6n")));
+    std::thread::sleep(Duration::from_millis(300));
+    pty.write(b"\x1b[3;7R\r").unwrap();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+    let text = sink.text();
+    let got = text.split("GOT:").nth(1).unwrap_or_default();
+    assert_eq!(
+        got.trim_end(),
+        "^[[3;7R",
+        "the child read something besides the consumer's answer: {text:?}"
     );
 }
 
@@ -1135,11 +1198,26 @@ fn main() {
             nothing_reaches_the_raw_sink_after_on_exit as fn(),
         ),
     ]);
+    #[cfg(windows)]
+    tests.extend([
+        (
+            "a_raw_child_starts_with_no_consumer_write",
+            a_raw_child_starts_with_no_consumer_write as fn(),
+        ),
+        (
+            "conhost_adopts_the_start_cursor",
+            conhost_adopts_the_start_cursor as fn(),
+        ),
+    ]);
     #[cfg(unix)]
     tests.extend([
         (
             "raw_mode_leaves_a_query_to_the_consumer",
             raw_mode_leaves_a_query_to_the_consumer as fn(),
+        ),
+        (
+            "raw_mode_leaves_a_cpr_to_the_consumer",
+            raw_mode_leaves_a_cpr_to_the_consumer as fn(),
         ),
         (
             "a_byte_the_decoder_still_holds_at_the_end_is_flushed",
