@@ -201,17 +201,27 @@ pub enum Flow {
     Pause,
 }
 
-/// How the child ended.
+/// How the child ended, and whether reading its output failed first.
+///
+/// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing
+/// outside this crate has a reason to build one.** A consumer only receives it, through `on_exit`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Exit {
     /// The exit code. A child ended by a signal reports `1` here and names the signal below.
     pub code: u32,
     /// The signal that ended the child, on Unix, as the platform names it.
     pub signal: Option<String>,
+    /// Why reading the child's output stopped early, when a read failed before the exit was
+    /// reported. `None` when no read failed: the output ran to its end, which is how a child that
+    /// exits (or is terminated) ends it on every platform, or reading was still going on when the
+    /// exit was reported (a Unix grandchild holding the pty open). After a failed read the rest of
+    /// the output is not read, so nothing of it reaches the session or the sink.
+    pub read_error: Option<std::io::ErrorKind>,
 }
 
 impl Exit {
-    /// Whether the child exited with code `0` and was not killed by a signal.
+    /// Whether the child exited with code `0` and was not killed by a signal. This is the child's
+    /// status alone: it does not look at [`read_error`](Exit::read_error).
     pub fn success(&self) -> bool {
         self.code == 0 && self.signal.is_none()
     }
@@ -222,6 +232,7 @@ impl From<portable_pty::ExitStatus> for Exit {
         Exit {
             code: status.exit_code(),
             signal: status.signal().map(str::to_owned),
+            read_error: None,
         }
     }
 }
@@ -243,6 +254,11 @@ impl From<portable_pty::ExitStatus> for Exit {
 /// `on_exit` is called **exactly once**, including when the `Pty` is dropped first: dropping it
 /// terminates the child, and that exit is reported the same way as any other. Nothing reaches the
 /// session or the sink after that, so no frame or output follows `on_exit`.
+///
+/// If reading the child's output fails, reading stops, and the failure is reported on the exit as
+/// [`Exit::read_error`]. Nothing reads the child's output after that, so a child that keeps writing
+/// can block in its own write and not exit until [`terminate`](Pty::terminate) is called, or the
+/// `Pty` is dropped.
 pub struct Pty {
     target: Target,
     child: Arc<Mutex<ChildState>>,
@@ -305,7 +321,8 @@ impl Pty {
     /// Start `command` in a pseudo-terminal sized to `session`'s grid, and drive `session` from it.
     ///
     /// `on_event` receives the engine's events, unfiltered, on the pump thread. `on_exit` is
-    /// called once, on the pump thread, after the session has been ended.
+    /// called once, on the pump thread, after the session has been ended. Its
+    /// [`read_error`](Exit::read_error) says whether reading the output failed first.
     ///
     /// An error keeps its [`ErrorKind`](std::io::ErrorKind) only where `portable-pty` passed an
     /// `std::io::Error` through. On Windows it formats a failed `CreateProcessW` into the message,
@@ -331,7 +348,8 @@ impl Pty {
     /// [`Options::start_cursor`], and it never reaches `sink`.
     ///
     /// `on_exit` is called once, on the pump thread, after the rest of the output has reached
-    /// `sink`. Errors are as for [`spawn`](Pty::spawn).
+    /// `sink`, with [`read_error`](Exit::read_error) as for [`spawn`](Pty::spawn). Errors are as
+    /// for `spawn`.
     pub fn spawn_raw(
         command: Command,
         cols: u16,
@@ -386,6 +404,19 @@ fn start(
     size: PtySize,
     target: Target,
     options: Options,
+    on_event: impl FnMut(TermEvent) + Send + 'static,
+    on_exit: impl FnOnce(Exit) + Send + 'static,
+) -> std::io::Result<Pty> {
+    start_with(command, size, target, options, |r| r, on_event, on_exit)
+}
+
+/// [`start`], with the reader of the pseudo-terminal's output passed through `wrap` first.
+fn start_with(
+    command: Command,
+    size: PtySize,
+    target: Target,
+    options: Options,
+    wrap: impl FnOnce(Box<dyn Read + Send>) -> Box<dyn Read + Send>,
     mut on_event: impl FnMut(TermEvent) + Send + 'static,
     on_exit: impl FnOnce(Exit) + Send + 'static,
 ) -> std::io::Result<Pty> {
@@ -431,7 +462,7 @@ fn start(
             startup,
             options.decoder,
             options.on_output,
-            reader,
+            wrap(reader),
             target.clone(),
             Arc::clone(&input),
             Arc::clone(&reading),
@@ -588,6 +619,8 @@ struct Reading {
     in_read: AtomicBool,
     /// How many `read` calls have returned.
     reads: AtomicUsize,
+    /// The error the reader stopped on. Set before `eof`.
+    error: Mutex<Option<std::io::ErrorKind>>,
 }
 
 fn spawn_reader(
@@ -612,7 +645,10 @@ fn spawn_reader(
                     Ok(0) => break,
                     Ok(n) => n,
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(_) => break,
+                    Err(e) => {
+                        *lock(&reading.error) = Some(e.kind());
+                        break;
+                    }
                 };
                 let (reply, read) = startup.take(&buf[..n]);
                 if let Some(reply) = reply {
@@ -723,7 +759,7 @@ impl Pump {
     fn run(mut self, on_event: &mut impl FnMut(TermEvent), on_exit: impl FnOnce(Exit)) {
         let tick = self.period.min(EXIT_POLL);
         let mut next_pump = Instant::now() + self.period;
-        let exit = loop {
+        let mut exit = loop {
             thread::sleep(tick);
             if Instant::now() >= next_pump {
                 self.pump(on_event);
@@ -752,6 +788,7 @@ impl Pump {
         while !self.reading.eof.load(Ordering::Acquire) && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(5));
         }
+        exit.read_error = *lock(&self.reading.error);
         match &self.target {
             Target::Frame(session) => {
                 let pumped = {
@@ -1039,6 +1076,122 @@ mod tests {
         let (reply, pass) = q.take(b"\x1b[6n");
         assert_eq!(reply, None);
         assert_eq!(&*pass, b"\x1b[6n");
+    }
+
+    /// Passes the pty's reads through until the output has carried [`MARK`], then answers the next
+    /// read with `then` instead of reading, and sets `injected`.
+    struct FailAfterMark {
+        inner: Box<dyn Read + Send>,
+        seen: Vec<u8>,
+        then: Option<std::io::ErrorKind>,
+        injected: Arc<AtomicBool>,
+    }
+
+    const MARK: &[u8] = b"READ-ERROR-MARK";
+
+    impl Read for FailAfterMark {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.seen.windows(MARK.len()).any(|w| w == MARK)
+                && let Some(kind) = self.then.take()
+            {
+                self.injected.store(true, Ordering::Release);
+                return Err(kind.into());
+            }
+            let n = self.inner.read(buf)?;
+            self.seen.extend_from_slice(&buf[..n]);
+            Ok(n)
+        }
+    }
+
+    fn print_mark() -> Command {
+        let mark = String::from_utf8(MARK.to_vec()).unwrap();
+        if cfg!(windows) {
+            Command::new("cmd.exe")
+                .arg("/c")
+                .arg(format!("echo {mark}"))
+        } else {
+            Command::new("sh").arg("-c").arg(format!("echo {mark}"))
+        }
+    }
+
+    /// Run [`print_mark`] with its reader failing with `then` after the mark, in Frame mode or
+    /// Raw mode, and return its exit.
+    fn exit_after(then: std::io::ErrorKind, raw: bool) -> Exit {
+        struct Discard;
+        impl RawSink for Discard {
+            fn output(&mut self, _: &[u8]) -> Flow {
+                Flow::Continue
+            }
+        }
+        let target = if raw {
+            Target::Raw(Arc::new(Raw {
+                state: Mutex::new(RawState {
+                    sink: Box::new(Discard),
+                    paused: false,
+                    draining: false,
+                    ended: false,
+                }),
+                wake: Condvar::new(),
+            }))
+        } else {
+            Target::Frame(Arc::new(Mutex::new(Session::new(
+                justerm_core::Engine::new(80, 24),
+            ))))
+        };
+        let (tx, rx) = mpsc::channel();
+        let injected = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&injected);
+        let _pty = start_with(
+            print_mark(),
+            pty_size(80, 24),
+            target,
+            Options::default(),
+            move |inner| {
+                Box::new(FailAfterMark {
+                    inner,
+                    seen: Vec::new(),
+                    then: Some(then),
+                    injected: flag,
+                })
+            },
+            |_| {},
+            move |exit| {
+                let _ = tx.send(exit);
+            },
+        )
+        .expect("spawn");
+        let exit = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the child exits");
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the exit is reported once"
+        );
+        assert!(
+            injected.load(Ordering::Acquire),
+            "the read after the mark answered {then:?}"
+        );
+        exit
+    }
+
+    #[test]
+    fn a_failed_read_is_reported_on_the_exit() {
+        for raw in [false, true] {
+            let exit = exit_after(std::io::ErrorKind::ConnectionReset, raw);
+            assert_eq!(
+                exit.read_error,
+                Some(std::io::ErrorKind::ConnectionReset),
+                "raw: {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_interrupted_read_is_retried_not_reported() {
+        for raw in [false, true] {
+            let exit = exit_after(std::io::ErrorKind::Interrupted, raw);
+            assert_eq!(exit.read_error, None, "raw: {raw}");
+        }
     }
 
     #[test]

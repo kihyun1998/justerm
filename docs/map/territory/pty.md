@@ -165,13 +165,22 @@ Everything it does is wiring between the OS and an engine that does no I/O itsel
     proof of the release; it is green on Windows with or without the release.
   - Prior art does not fix this: node-pty, portable-pty, alacritty and creack/pty drop the slave;
     pexpect#662 was closed unfixed; Go's `cmd/go` tests delay the child's exit instead.
+- **A failed read is reported on `Exit::read_error`, with no timing test** (#1062). The dependencies
+  already turn the ordinary end into `Ok(0)`: `filedescriptor` 0.8.3's Windows `read` maps
+  `ReadFile`'s `BrokenPipe` to `Ok(0)`, and `portable-pty` 0.9.0's Unix `PtyFd::read` maps `EIO`
+  (slave closed) to `Ok(0)`. So any other `Err` but `Interrupted` is a real failure, whether or not
+  the child is still running, and the reader keeps its kind in `Reading::error` before setting
+  `eof`. The pump copies it into the `Exit` after the drain wait. The error rides on `on_exit`
+  rather than a callback of its own, so "exactly once, and last" needed no second ordering rule.
+  `a_child_that_exits_reports_no_read_error` and the terminate test are what notice a dependency
+  bump that stops mapping the end to `Ok(0)`. `Exit::success()` stays the child's status alone.
 - **Own public types only.** `Command`, `Options`, `Exit` wrap `portable_pty`'s, so a `portable-pty`
   major bump is not a breaking change here.
 
 ## Code
 
 - `justerm-pty/src/lib.rs` — `Pty::spawn`, `Pty::spawn_raw`, `Pty::session`, `Pty::resume`,
-  `Pty::write`, `Pty::resize`, `Pty::terminate`, `start`, `Target`, `RawState`, `Reading`, `Pump::run`,
+  `Pty::write`, `Pty::resize`, `Pty::terminate`, `start`, `start_with`, `Exit::read_error`, `Target`, `RawState`, `Reading`, `Pump::run`,
   `spawn_reader`, `decode_and_feed`, `feed_session`, `feed_raw`, `spawn_writer`, `write_back`,
   `StartupQuery`, `lead`, `STARTUP_QUERY`, `MAX_MODE_SETTING`, `cursor_report`, `CursorPosition`,
   `Options::start_cursor`, `EXIT_POLL`,
@@ -233,6 +242,23 @@ Not compared against a pinned reference yet. The layout peers (wezterm's `pty/` 
   reported the exit in 11 ms on Windows 11 build 26200 even with the release after the close
   (#1057 lens probe), so the documented `ClosePseudoConsole` wait did not occur on this build.
   Swapping the order back stays green here; older Windows builds are the unmeasured risk.
+- **After a failed read, a child that keeps writing can block, and `on_exit` waits for
+  `terminate`** (#1062). Nothing reads its output any more, so once the pipe fills the child stalls
+  in its own write and never exits. Measured through `start_with` with a reader failing after a
+  mark, and a child printing 300 000 lines:
+  - Windows 11 26200 (`cmd` loop): intact reader, exit in 15.2 s; failed reader, no exit after 60 s,
+    and `terminate` then reported `read_error: Some(ConnectionReset)`;
+  - Linux under WSL Ubuntu-24.04 (`sh` loop): intact, 2.6 s; failed, no exit after 60 s, then
+    `signal: Hangup` with the same `read_error`.
+
+  macOS is unmeasured.
+
+  **Leaving it documented is the maintainer's judgement (2026-10-13, #1062)**, made on the two
+  measurements above against two alternatives: terminate the child on a failed read, or close only
+  the pseudo-terminal. It is theirs to reverse. It did not cover what a consumer shows meanwhile:
+  it learns of the failure only from `on_exit`, so only after a `terminate`.
+- **A real failed read is proven through an injected reader only.** No real pty read failure can be
+  arranged, so `a_failed_read_is_reported_on_the_exit` wraps the real reader (`start_with`).
 - **No test reaches the pid-reuse guard** (`ChildState::exited`). A reused pid cannot be arranged
   deterministically, so removing the guard stays green on every OS. It rests on reading
   `portable-pty`'s Unix killer, which sends a bare `kill(pid, SIGHUP)`.

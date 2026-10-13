@@ -245,6 +245,19 @@ fn the_exit_code_is_reported() {
     assert_eq!(exit.code, 7);
 }
 
+fn a_child_that_exits_reports_no_read_error() {
+    let (_pty, _rec, rx) = spawn("print-exit-7", Options::default());
+    let exit = rx
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+    assert_eq!(exit.read_error, None);
+    let (_pty, rx, _exited) = spawn_raw("print-exit-7", Options::default(), RawRecorder::default());
+    let exit = rx
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the raw child exits");
+    assert_eq!(exit.read_error, None, "raw mode");
+}
+
 fn frames_arrive_on_the_default_timer_while_the_child_runs() {
     assert_eq!(Options::default().pump_every, Duration::from_millis(16));
     let (pty, rec, rx) = spawn("print-then-sleep", Options::default());
@@ -297,6 +310,7 @@ fn terminate_ends_the_child_and_reports_its_exit() {
         .recv_timeout(Duration::from_secs(20))
         .expect("a terminated child is reported");
     assert!(!exit.success(), "{exit:?}");
+    assert_eq!(exit.read_error, None, "a terminate is not a failed read");
 }
 
 fn the_session_stays_readable_after_exit() {
@@ -1126,6 +1140,10 @@ fn main() {
             the_childs_output_reaches_the_sink_as_a_frame,
         ),
         ("the_exit_code_is_reported", the_exit_code_is_reported),
+        (
+            "a_child_that_exits_reports_no_read_error",
+            a_child_that_exits_reports_no_read_error,
+        ),
         (
             "frames_arrive_on_the_default_timer_while_the_child_runs",
             frames_arrive_on_the_default_timer_while_the_child_runs,
