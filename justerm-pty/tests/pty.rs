@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use justerm_core::{Engine, FrameSink, Session, decode};
-use justerm_pty::{Command, CursorPosition, Decode, Encode, Exit, Flow, OnOutput, OnTick, Options, Pty, RawSink};
+use justerm_pty::{
+    Command, CursorPosition, Decode, Encode, Exit, Flow, OnOutput, OnTick, Options, Pty, RawSink,
+};
 
 const HELPER: &str = "JUSTERM_PTY_HELPER";
 const MARKER: &str = "hello-from-the-child";

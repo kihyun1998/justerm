@@ -854,7 +854,10 @@ fn lead(bytes: &[u8]) -> Lead {
             Lead::Other
         };
     };
-    match params.iter().position(|b| !(b.is_ascii_digit() || *b == b';')) {
+    match params
+        .iter()
+        .position(|b| !(b.is_ascii_digit() || *b == b';'))
+    {
         Some(i) if i > 0 && matches!(params[i], b'h' | b'l') => Lead::ModeSetting(3 + i + 1),
         Some(_) => Lead::Other,
         None if bytes.len() < MAX_MODE_SETTING => Lead::Incomplete,
