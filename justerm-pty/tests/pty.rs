@@ -614,7 +614,7 @@ fn utf8_passes_through_without_a_hook() {
 
 /// Unix only. On Windows a console child cannot put these bytes on the pseudo-terminal:
 /// - measured (#1047): Rust's std refuses to write non-UTF-8 to a console (`InvalidData`);
-/// - by ConPTY's design, not measured here: conhost re-emits console output as UTF-8.
+/// - measured (#1066): conhost re-emits console output as UTF-8, under any console code page.
 ///
 /// So on Windows there is nothing for a decoder to reassemble. The decoder's placement is proven on
 /// every OS by `the_decoder_sees_the_output_before_the_engine`.

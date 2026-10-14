@@ -12,7 +12,9 @@ Runs a command in a pseudo-terminal and drives a [`justerm-core`](https://crates
 - **Input and resize.** `Pty::write` queues bytes for the child. `Pty::resize` tells the child the
   size the engine actually adopted.
 - **Encodings.** For a child that does not write UTF-8, inject a decoder and an encoder through
-  `Options`. The engine itself reads UTF-8 only.
+  `Options`. The engine itself reads UTF-8 only. On Windows leave both unset: the ConPTY carries
+  UTF-8 both ways, whatever the child's encoding, and a child's legacy encoding is set through its
+  console code page (`chcp`).
 - **State beside the engine.** `Options::on_output` sees exactly the bytes the engine is fed, and
   `Options::on_tick` runs just before each pump.
 - **Raw mode.** `Pty::spawn_raw` runs the child with no engine and hands its output to your own
