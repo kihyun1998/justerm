@@ -17,6 +17,13 @@
 //! The engine reads its input as UTF-8. A child that writes another encoding is the consumer's to
 //! convert, through [`Options::decoder`] and [`Options::encoder`]; which encoding is in use stays
 //! the consumer's policy.
+//!
+//! On Windows a ConPTY speaks UTF-8 at both ends, whatever encoding the child uses: conhost decodes
+//! the child's output by the console code page before the ConPTY sends it, and encodes what is
+//! written to the child into that code page. So a decoder there only ever receives UTF-8, and an
+//! encoder must hand back UTF-8; a legacy one garbles the text either way. On Windows a
+//! legacy-encoding child is set up through its console code page (for example `chcp` in the
+//! command), not through a hook.
 
 use std::borrow::Cow;
 use std::ffi::OsString;
@@ -88,6 +95,10 @@ impl Command {
 /// A chunk can end partway through a multi-byte character. Keep the partial bytes and finish the
 /// character from the next chunk. [`finish`](Decode::finish) is called once when the output ends,
 /// for anything still held.
+///
+/// On Windows every chunk is UTF-8 already: conhost has decoded the child's output by the console
+/// code page before the ConPTY sends it. A legacy decoder there misreads it (see the
+/// [crate docs](crate)).
 pub trait Decode: Send {
     /// The UTF-8 for `bytes`, as far as they complete characters.
     fn decode(&mut self, bytes: &[u8]) -> Vec<u8>;
@@ -101,6 +112,10 @@ pub trait Decode: Send {
 /// Converts bytes bound for the child from UTF-8 to the child's encoding. It runs on the writer
 /// thread over everything written to the child, both the consumer's [`Pty::write`]s and the
 /// engine's replies, in order.
+///
+/// On Windows what is written must stay UTF-8: the ConPTY takes UTF-8, and conhost encodes it into
+/// the console code page for the child. A legacy encoder there garbles it (see the
+/// [crate docs](crate)).
 pub trait Encode: Send {
     /// `bytes` in the child's encoding.
     fn encode(&mut self, bytes: &[u8]) -> Vec<u8>;
@@ -112,9 +127,10 @@ pub struct Options {
     /// this is only the default it may override.
     pub pump_every: Duration,
     /// Converts the child's output to UTF-8 before the engine reads it. `None` feeds the output as
-    /// read, which is right for a UTF-8 child.
+    /// read, which is right for a UTF-8 child, and for every child on Windows (see [`Decode`]).
     pub decoder: Option<Box<dyn Decode>>,
-    /// Converts what is written to the child out of UTF-8. `None` writes the bytes as they are.
+    /// Converts what is written to the child out of UTF-8. `None` writes the bytes as they are,
+    /// which is right for a UTF-8 child, and for every child on Windows (see [`Encode`]).
     pub encoder: Option<Box<dyn Encode>>,
     /// Sees the child's output, decoded, on the reader thread: exactly the bytes the engine is fed
     /// (or, in [Raw mode](Pty::spawn_raw), that the sink is handed), in order. It is called under

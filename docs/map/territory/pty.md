@@ -15,6 +15,12 @@ and drives a core `Session` from it, using three threads:
 choosing the encoding stays the consumer's policy:
 - the decoder runs on the reader before each chunk is fed;
 - the encoder runs on the writer over everything bound for the child.
+On Windows the ConPTY speaks UTF-8 at both ends (#1066), and conhost converts to and from the console
+code page itself: the decoder only ever receives UTF-8, and the encoder must hand back UTF-8. A
+legacy hook there garbles the text, so on
+Windows a legacy child's encoding is set by its console code page, not by a hook. The public docs
+(crate header, `Decode`, `Encode`, both `Options` fields, README) say so because PenTerm, reading
+them without it, passed its CP949 decoder on Windows too and rendered Korean as `�쓿�` (#1048).
 Two more hooks serve a consumer that keeps state of its own beside the engine (#1057):
 - `Options::on_output` sees each decoded chunk on the reader, exactly what the engine is fed;
 - `Options::on_tick` runs on the pump thread just before each pump.
@@ -209,9 +215,22 @@ Not compared against a pinned reference yet. The layout peers (wezterm's `pty/` 
 
 - **A legacy decoder is proven on Unix only.** On Windows a console child cannot put legacy bytes on
   the pseudo-terminal. Measured (#1047): Rust's std refuses to write non-UTF-8 to a console with
-  `InvalidData`. By ConPTY's design, not measured here, conhost re-emits console output as UTF-8.
-  Windows proves where the decoder and encoder sit, with an ASCII rewrite, but not that a split
-  character is reassembled.
+  `InvalidData`. And conhost converts both directions, measured (#1066, Windows 11, OEMCP=ACP=949):
+  - output: a child writing the bytes `C7 D1 B1 DB` (`한글` in CP949) reached a Raw mode sink, with
+    no decoder, as UTF-8 `한글` under `chcp 949` and as `EF BF BD D1 B1 EF BF BD` under `chcp 65001`.
+    So conhost decodes by the console code page, and what it sends is UTF-8 either way. PenTerm's
+    `type` of a CP949 file came out as `한글` under both code pages; that `type` converts the file
+    itself and writes UTF-16, bypassing the code page, is the likely reason, not measured;
+  - input: `한글` written as UTF-8 reached a `chcp 949` child as `C7 D1 B1 DB`, and as `???` through
+    a CP949 encoder. Under `chcp 65001` it arrived as UTF-8, and as `EF BF BD D1 B1 EF BF BD` through
+    the encoder.
+
+  Both children were Python with `PYTHONLEGACYWINDOWSSTDIO=1`, so they wrote and read raw bytes
+  (`WriteFile`/`ReadFile`), and the input child printed what it read as hex, which the output
+  conversion cannot touch.
+
+  Neither is a test: it is conhost's behaviour, not this crate's. Windows proves where the decoder
+  and encoder sit, with an ASCII rewrite, but not that a split character is reassembled.
 - **The channel to the writer is unbounded.** A child that floods queries while never reading its
   stdin no longer stalls the reader. Its replies queue in memory instead, until the child exits.
 - **The reply tests are proven on Unix only**, for the conhost reason above. On Windows only the
