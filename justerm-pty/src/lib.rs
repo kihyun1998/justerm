@@ -18,11 +18,12 @@
 //! convert, through [`Options::decoder`] and [`Options::encoder`]; which encoding is in use stays
 //! the consumer's policy.
 //!
-//! On Windows both hooks only ever see UTF-8, whatever encoding the child uses. A ConPTY carries
-//! UTF-8 both ways: conhost decodes the child's output by the console code page before the ConPTY
-//! sends it, and encodes what is written to the child into that code page. A legacy decoder or
-//! encoder there misreads the UTF-8 and garbles the text. On Windows a legacy-encoding child is set
-//! up through its console code page (for example `chcp` in the command), not through a hook.
+//! On Windows a ConPTY speaks UTF-8 at both ends, whatever encoding the child uses: conhost decodes
+//! the child's output by the console code page before the ConPTY sends it, and encodes what is
+//! written to the child into that code page. So a decoder there only ever receives UTF-8, and an
+//! encoder must hand back UTF-8; a legacy one garbles the text either way. On Windows a
+//! legacy-encoding child is set up through its console code page (for example `chcp` in the
+//! command), not through a hook.
 
 use std::borrow::Cow;
 use std::ffi::OsString;
