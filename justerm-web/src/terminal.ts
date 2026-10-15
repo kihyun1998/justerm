@@ -94,6 +94,13 @@ export interface TerminalOptions {
    * `Ctrl+V` / `Ctrl+Shift+V` goes on to fire `paste` on the input textarea, which the widget sends
    * as a paste intent. Call `ev.preventDefault()` here for any chord whose default you replace.
    *
+   * **Shift+Insert and Ctrl+Insert are never encoded** — on Windows and Linux they are the system
+   * paste and copy. A key let through leaves its default to the browser: Shift+Insert's `paste`
+   * becomes a paste intent like `Ctrl+V`'s, and Ctrl+Insert's `copy` event bubbles up from the input
+   * textarea unanswered. **Answering `copy` is yours**: the widget holds no clipboard, and the
+   * selection text is async while `clipboardData` can only be set during dispatch, so cancel the
+   * event and write the selection with `navigator.clipboard.writeText` instead.
+   *
    * **It cannot stop all input.** An IME commit is a text intent, not a key, so returning `false` for
    * everything still lets composed text through; drop intents at {@link input} for that.
    */

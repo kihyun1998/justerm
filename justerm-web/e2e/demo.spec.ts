@@ -854,6 +854,46 @@ test.describe("a consumer claims a key before Terminal encodes it (#901)", () =>
     expect(intents.filter((l) => l.includes('"char":"V"'))).toEqual([]);
   });
 
+  // #1068 — the browser's own paste and copy for these chords fire only if the keydown is left alone.
+  test("Shift+Insert pastes and Ctrl+Insert fires the browser's copy event; bare Insert is still a key", async ({
+    page,
+  }) => {
+    const intents = recordInput(page);
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    await page.evaluate(() => {
+      const d = document.body.dataset;
+      d.copies = "0";
+      document.addEventListener("copy", () => (d.copies = String(Number(d.copies) + 1)));
+    });
+    const insertKeys = () => intents.filter((l) => l.includes('"type":"insert"'));
+
+    // Control: bare Insert still becomes a key intent, so the silence below is the chord, not dead capture.
+    await page.keyboard.press("Insert");
+    await expect.poll(() => insertKeys().length).toBe(1);
+
+    await page.keyboard.press("Shift+Insert");
+    await page.keyboard.press("Control+Insert");
+    await page.keyboard.press("a"); // a marker intent: everything the chords caused lands before it
+    await expect.poll(() => intents.filter((l) => l.includes('"char":"a"')).length).toBe(1);
+    expect(insertKeys()).toHaveLength(1);
+    expect(intents.filter((l) => l.includes("[input] paste"))).toHaveLength(1);
+    expect(await page.evaluate(() => document.body.dataset.copies)).toBe("1");
+
+    // A consumer's claim is still asked first: a claimed, cancelled Shift+Insert pastes nothing.
+    intents.length = 0;
+    await page.evaluate(() => {
+      window.__keyClaim = (e) => {
+        if (!(e.shiftKey && e.key === "Insert")) return true;
+        e.preventDefault();
+        return false;
+      };
+    });
+    await page.keyboard.press("Shift+Insert");
+    await page.keyboard.press("a");
+    await expect.poll(() => intents.filter((l) => l.includes('"char":"a"')).length).toBe(1);
+    expect(intents.filter((l) => l.includes("[input] paste") || l.includes('"type":"insert"'))).toEqual([]);
+  });
+
   test("a composition key is never offered to the consumer, and a claimed Enter is asked only after the commit went out", async ({
     page,
   }) => {
