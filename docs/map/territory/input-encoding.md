@@ -144,6 +144,21 @@ Nothing governs the encoding itself.
   the letter arrives as an ordinary key and the consumer can claim it. A Shift chord is still
   unmeasured (see the rows). Rows in
   [`reference-facts.md`](../../agents/reference-facts.md).
+- **Shift+Insert and Ctrl+Insert are left to the browser, not encoded** (#1068). On Windows and
+  Linux they are the system paste and copy, and both work only through the default the keydown
+  triggers — a `paste` or `copy` event on the focused textarea. `isSystemClipboardChord` is asked
+  **after `beforeKey`**, so a consumer can still claim either chord, and Shift+Insert's paste goes
+  through the existing `paste` listener (bracketed paste and the #116 textarea guard unchanged). xterm.js
+  does the same (`Keyboard.ts` `case 45`) with a wider predicate — Shift *or* Ctrl, whatever else is
+  held; here it is exactly one of the two with no Alt or Meta, so Ctrl+Shift+Insert and Alt-chords
+  still reach the application as keys. No platform branch, as at xterm.js: macOS keyboards have no
+  Insert key. **The widget leaves the `copy` event alone — copying is the consumer's.** xterm.js
+  answers it with `clipboardData.setData(selectionText)`, which needs the text *synchronously during
+  dispatch*; here `Terminal` holds no `SelectionPort` (the selection controller is the consumer's,
+  handed in as `selection`) and `SelectionPort.text()` is async (a backend round trip in frame mode),
+  and the widget holds no clipboard at all (`clipboard.ts`). So with nothing listening, Ctrl+Insert
+  copies nothing — it simply no longer sends `ESC [ 2 ; 5 ~`. The maintainer's call (2026-10-15),
+  made against a widget copy hook (a new published option), which was shown and not chosen.
 - **The widget owns the pointer, and the route is decided at the press** (#902, implementing
   ADR-0016's *"mouse routing consults the same bits"*, which until then only the wheel did).
   `PointerRouter` sends a press to the application when the mask's DOWN bit is set and Shift is not
@@ -298,6 +313,10 @@ application misbehaves.
 
 - **Zero governing records for the encoding**, in a territory where being wrong produces a
   misbehaving application rather than an error.
+- **Shift+Insert and Ctrl+Insert on macOS are unmeasured** (#1068). If a Mac browser reports a PC
+  keyboard's Insert as `key === "Insert"`, both chords are left to a default Blink's mac key table does
+  not have, so they do nothing — before #1068 they reached the application as keys. xterm.js has the
+  same shape (no platform branch). A key log on a Mac with a PC keyboard settles it.
 - **No same-cell motion dedup** (#902 left it out, maintainer's call). All three references drop a
   repeated motion report, and core is stateless, so `?1003` repeats a cell at pointer rate. The key is
   the unresolved part: a cell key drops the sub-cell motion `?1016` exists to carry and a pixel key

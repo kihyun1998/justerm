@@ -360,6 +360,17 @@ export function keyFromDom(ev: KeyboardEventLike): KeyEvent {
   return { key: keyOf(ev.key), mods: modsOf(ev), action: "press" };
 }
 
+/**
+ * Whether this keydown is Shift+Insert or Ctrl+Insert, the system paste and copy chords on Windows
+ * and Linux (#1068). {@link captureInput} leaves such a key to the browser — no intent, no
+ * `preventDefault` — so its `paste` or `copy` event fires. Insert with any other modifier set is
+ * still a key.
+ */
+export function isSystemClipboardChord(ev: KeyboardEventLike): boolean {
+  if (ev.key !== "Insert" || ev.altKey || ev.metaKey) return false;
+  return ev.shiftKey !== ev.ctrlKey;
+}
+
 export interface CaptureOptions {
   /**
    * Current canvas origin + cell size (read per event — it changes on resize).
@@ -384,24 +395,28 @@ export interface CaptureOptions {
    * A gate consulted on each keydown before it becomes a key intent. When
    * it returns `false` the key is left alone — no intent, no `preventDefault` — so
    * an IME can own it (a `keyCode` 229 composition key, or a key that finalizes a
-   * composition). Return `true` (the default when absent) to send it as a key.
+   * composition). Return `true` (the default when absent) to send it as a key —
+   * except Shift+Insert and Ctrl+Insert, which are left to the browser's paste and copy.
    */
   beforeKey?(ev: KeyboardEvent): boolean;
 }
 
 /**
  * Attach DOM listeners to `target` that normalise events and push intents to
- * `sink`. Keys always report (unless {@link CaptureOptions.beforeKey} vetoes them
- * for an IME); mouse/wheel report only when `mouseReporting()` (else the consumer
+ * `sink`. Keys report unless {@link CaptureOptions.beforeKey} vetoes them, except
+ * Shift+Insert and Ctrl+Insert, whose default the browser keeps so its paste and
+ * copy fire; mouse/wheel report only when `mouseReporting()` (else the consumer
  * handles them locally). Returns a disposer.
  *
  * Browser-only glue — not unit-tested; the per-event normalisation it calls
- * ({@link keyFromDom} / {@link mouseFromDom} / {@link wheelMouseFromDom}) is.
+ * ({@link keyFromDom} / {@link mouseFromDom} / {@link wheelMouseFromDom} / the
+ * Insert-chord test) is.
  */
 export function captureInput(target: HTMLElement, sink: InputSink, opts: CaptureOptions): () => void {
   const reporting = (): boolean => opts.mouseReporting?.() ?? false;
   const onKey = (e: KeyboardEvent): void => {
     if (opts.beforeKey && !opts.beforeKey(e)) return; // an IME owns this key
+    if (isSystemClipboardChord(e)) return; // the browser pastes or copies (#1068)
     e.preventDefault();
     sink.send({ kind: "key", event: keyFromDom(e) });
   };

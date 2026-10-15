@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   geometryViolations,
+  isSystemClipboardChord,
   keyFromDom,
   Mod,
   mouseFromDom,
@@ -332,5 +333,28 @@ describe("the geometry signal (#672)", () => {
     wheelMouseFromDom({ clientX: 5, clientY: 25, button: 0, buttons: 0, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false }, -1, okGeom);
 
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+// #1068 — on Windows and Linux, Shift+Insert pastes and Ctrl+Insert copies, through the browser
+// default a keydown triggers. Only those two exact chords are left to it; Insert with any other
+// modifier set is still a key the application can bind.
+describe("isSystemClipboardChord", () => {
+  it("leaves Shift+Insert and Ctrl+Insert to the browser", () => {
+    expect(isSystemClipboardChord(key({ key: "Insert", shiftKey: true }))).toBe(true);
+    expect(isSystemClipboardChord(key({ key: "Insert", ctrlKey: true }))).toBe(true);
+  });
+
+  it("keeps bare Insert and every other Insert chord as a key", () => {
+    expect(isSystemClipboardChord(key({ key: "Insert" }))).toBe(false);
+    expect(isSystemClipboardChord(key({ key: "Insert", shiftKey: true, ctrlKey: true }))).toBe(false);
+    expect(isSystemClipboardChord(key({ key: "Insert", shiftKey: true, altKey: true }))).toBe(false);
+    expect(isSystemClipboardChord(key({ key: "Insert", ctrlKey: true, metaKey: true }))).toBe(false);
+    expect(isSystemClipboardChord(key({ key: "Insert", altKey: true }))).toBe(false);
+  });
+
+  it("is about Insert alone", () => {
+    expect(isSystemClipboardChord(key({ key: "Delete", shiftKey: true }))).toBe(false);
+    expect(isSystemClipboardChord(key({ key: "c", ctrlKey: true }))).toBe(false);
   });
 });
