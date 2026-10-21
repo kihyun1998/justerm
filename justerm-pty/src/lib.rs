@@ -97,8 +97,8 @@ impl Command {
 /// for anything still held.
 ///
 /// On Windows every chunk is UTF-8 already: conhost has decoded the child's output by the console
-/// code page before the ConPTY sends it. A legacy decoder there misreads it (see the
-/// [crate docs](crate)).
+/// code page before the ConPTY sends it. A legacy decoder there misreads it; a legacy-encoding
+/// child is set up through its console code page instead (see the [crate docs](crate)).
 pub trait Decode: Send {
     /// The UTF-8 for `bytes`, as far as they complete characters.
     fn decode(&mut self, bytes: &[u8]) -> Vec<u8>;
@@ -114,8 +114,8 @@ pub trait Decode: Send {
 /// engine's replies, in order.
 ///
 /// On Windows what is written must stay UTF-8: the ConPTY takes UTF-8, and conhost encodes it into
-/// the console code page for the child. A legacy encoder there garbles it (see the
-/// [crate docs](crate)).
+/// the console code page for the child. A legacy encoder there garbles it; a legacy-encoding
+/// child is set up through its console code page instead (see the [crate docs](crate)).
 pub trait Encode: Send {
     /// `bytes` in the child's encoding.
     fn encode(&mut self, bytes: &[u8]) -> Vec<u8>;
@@ -127,10 +127,12 @@ pub struct Options {
     /// this is only the default it may override.
     pub pump_every: Duration,
     /// Converts the child's output to UTF-8 before the engine reads it. `None` feeds the output as
-    /// read, which is right for a UTF-8 child, and for every child on Windows (see [`Decode`]).
+    /// read, which is right for a UTF-8 child, and for every child on Windows, where a
+    /// legacy-encoding child is set up through its console code page (see [`Decode`]).
     pub decoder: Option<Box<dyn Decode>>,
     /// Converts what is written to the child out of UTF-8. `None` writes the bytes as they are,
-    /// which is right for a UTF-8 child, and for every child on Windows (see [`Encode`]).
+    /// which is right for a UTF-8 child, and for every child on Windows, where a legacy-encoding
+    /// child is set up through its console code page (see [`Encode`]).
     pub encoder: Option<Box<dyn Encode>>,
     /// Sees the child's output, decoded, on the reader thread: exactly the bytes the engine is fed
     /// (or, in [Raw mode](Pty::spawn_raw), that the sink is handed), in order. It is called under
@@ -521,9 +523,8 @@ impl Pty {
     /// Fails with [`BrokenPipe`](std::io::ErrorKind::BrokenPipe) once the pty's input is closed.
     /// That happens when the child has exited. It also happens once the writer thread has stopped,
     /// because a write to the pseudo-terminal failed or the [`Encode`] hook panicked: the bytes it
-    /// had not yet written are then not delivered, and the cause is not reported. A write failing
-    /// while the child runs was not found on Linux (measured) or Windows (from `portable-pty`'s
-    /// source), and is unmeasured on macOS
+    /// had not yet written are then not delivered, and the cause is not reported. On Linux and
+    /// Windows a write is not known to fail while the child runs; on macOS that is open
     /// ([#1064](https://github.com/kihyun1998/justerm/issues/1064)).
     pub fn write(&self, bytes: &[u8]) -> std::io::Result<()> {
         if write_back(&self.input, bytes) {
@@ -879,6 +880,9 @@ const STARTUP_QUERY: &[u8] = b"\x1b[6n";
 /// The longest DEC private mode setting [`StartupQuery`] holds while it is incomplete.
 const MAX_MODE_SETTING: usize = 32;
 
+/// How a DEC private mode setting (`ESC [ ? Pm h` / `l`) starts.
+const MODE_SETTING_LEAD: &[u8] = b"\x1b[?";
+
 /// Watches the start of the output for [`STARTUP_QUERY`]: found there, it is withheld and the
 /// reply is handed back to be written to the pty. DEC private mode settings (`ESC[?…h`, `ESC[?…l`)
 /// ahead of it are handed on and watching goes on; anything else ends watching.
@@ -909,8 +913,8 @@ fn lead(bytes: &[u8]) -> Lead {
     if STARTUP_QUERY.starts_with(bytes) {
         return Lead::Incomplete;
     }
-    let Some(params) = bytes.strip_prefix(b"[?") else {
-        return if b"[?".starts_with(bytes) {
+    let Some(params) = bytes.strip_prefix(MODE_SETTING_LEAD) else {
+        return if MODE_SETTING_LEAD.starts_with(bytes) {
             Lead::Incomplete
         } else {
             Lead::Other
@@ -920,7 +924,9 @@ fn lead(bytes: &[u8]) -> Lead {
         .iter()
         .position(|b| !(b.is_ascii_digit() || *b == b';'))
     {
-        Some(i) if i > 0 && matches!(params[i], b'h' | b'l') => Lead::ModeSetting(3 + i + 1),
+        Some(i) if i > 0 && matches!(params[i], b'h' | b'l') => {
+            Lead::ModeSetting(MODE_SETTING_LEAD.len() + i + 1)
+        }
         Some(_) => Lead::Other,
         None if bytes.len() < MAX_MODE_SETTING => Lead::Incomplete,
         None => Lead::Other,
