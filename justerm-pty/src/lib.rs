@@ -880,6 +880,9 @@ const STARTUP_QUERY: &[u8] = b"\x1b[6n";
 /// The longest DEC private mode setting [`StartupQuery`] holds while it is incomplete.
 const MAX_MODE_SETTING: usize = 32;
 
+/// How a DEC private mode setting (`ESC [ ? Pm h` / `l`) starts.
+const MODE_SETTING_LEAD: &[u8] = b"\x1b[?";
+
 /// Watches the start of the output for [`STARTUP_QUERY`]: found there, it is withheld and the
 /// reply is handed back to be written to the pty. DEC private mode settings (`ESC[?…h`, `ESC[?…l`)
 /// ahead of it are handed on and watching goes on; anything else ends watching.
@@ -910,8 +913,8 @@ fn lead(bytes: &[u8]) -> Lead {
     if STARTUP_QUERY.starts_with(bytes) {
         return Lead::Incomplete;
     }
-    let Some(params) = bytes.strip_prefix(b"[?") else {
-        return if b"[?".starts_with(bytes) {
+    let Some(params) = bytes.strip_prefix(MODE_SETTING_LEAD) else {
+        return if MODE_SETTING_LEAD.starts_with(bytes) {
             Lead::Incomplete
         } else {
             Lead::Other
@@ -921,7 +924,9 @@ fn lead(bytes: &[u8]) -> Lead {
         .iter()
         .position(|b| !(b.is_ascii_digit() || *b == b';'))
     {
-        Some(i) if i > 0 && matches!(params[i], b'h' | b'l') => Lead::ModeSetting(3 + i + 1),
+        Some(i) if i > 0 && matches!(params[i], b'h' | b'l') => {
+            Lead::ModeSetting(MODE_SETTING_LEAD.len() + i + 1)
+        }
         Some(_) => Lead::Other,
         None if bytes.len() < MAX_MODE_SETTING => Lead::Incomplete,
         None => Lead::Other,
