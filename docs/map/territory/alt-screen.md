@@ -92,7 +92,9 @@ From reading the source and tests at HEAD 7bb31f7.
   `?47`/`?1047`/`?1049` from the one `on_alt` flag. `Term::accessible_text` shows only the alt buffer,
   and a wrapped alt line joins without primary bleed (`tests/accessible.rs`). PenTerm reads the flag
   to gate typed-command injection: `penterm 7dadc3c95 src-tauri/src/engine/native.rs — gate_of`,
-  which builds a whole `engine.frame()` to read `alt_screen` because the engine has no getter for it.
+  which builds a whole `engine.frame()` per keypress to read `alt_screen`. `Engine::alt_screen`
+  answers the same flag without a frame; `tests/alt_screen.rs` pins that the two agree across
+  `?47` / `?1047` / `?1049` and RIS. PenTerm moves to it once it takes a core release carrying it.
 - **Outside input** is only the four DECSET/DECRST numbers and RIS; nothing here takes a size.
 
 ## Code
@@ -107,6 +109,7 @@ From reading the source and tests at HEAD 7bb31f7.
   `1049` arms
 - `justerm-core/src/term/replies.rs` — `Term::decrqm` (the alt-buffer modes)
 - `justerm-core/src/term/walk.rs` — `Term::abs_floor`
+- `justerm-core/src/lib.rs` — `Engine::alt_screen`, over `Term::alt_screen` (`term.rs`)
 - `justerm-core/src/term/viewport.rs` — `Term::set_display_offset` (no-op on alt)
 - `justerm-core/src/term/markers.rs` — `Term::add_command_mark` (ignored on alt)
 - `justerm-core/src/serialize.rs` — `Frame` (`alt_screen`)
@@ -159,8 +162,8 @@ Tests that pin it: `justerm-core/tests/alt_screen.rs`, `alt_no_reflow.rs`, `alt_
 
 ## Known holes / open
 
-- **No engine getter for the alt flag.** It reaches a consumer only in the frame header, so PenTerm
-  builds a full frame per keypress to read one bool (`gate_of` above).
+- **PenTerm still reads the alt flag through a whole frame** (`gate_of` above) until it takes the
+  core release carrying `Engine::alt_screen`.
 - **`decsc` is one slot shared by both screens.** A DECSC on the primary followed by a DECRC inside an
   alt application restores the primary's position; whether the references keep a saved cursor per
   screen was not compared.

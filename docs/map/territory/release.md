@@ -196,5 +196,7 @@ consumes its own wasm package through a version range.
   change spans tracks; #429's comments missed exactly that.
 - **The consumer can step outside the widget's declared range.** penterm's `pnpm.overrides` runs
   `justerm-web` against a decoder its published types were never gated against; nothing on this side
-  can see that combination.
+  can see that combination. Inert today: no commit since the widget took `^0.22.0` (4ed55d3) changed
+  `justerm-wasm-decode/src` or `serialize.rs`, so 0.22.0 and 0.30.0 are the same decoder. It opens
+  the first time decoder source changes while the range stands.
 - **No reference comparison** for the release model (§ Reference behaviour).

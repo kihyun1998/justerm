@@ -1109,6 +1109,11 @@ impl Term {
         self.win32_input_mode
     }
 
+    /// Whether the alternate screen (DEC ?47 / ?1047 / ?1049) is active.
+    pub fn alt_screen(&self) -> bool {
+        self.on_alt
+    }
+
     // ---- selection -----------------------------------------------------------
 
     /// Resize the screen to `cols` x `rows`, reflowing soft-wrapped lines on the primary
