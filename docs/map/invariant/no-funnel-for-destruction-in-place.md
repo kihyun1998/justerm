@@ -1,116 +1,105 @@
-# Cross-cutting invariant — the write path funnels motion and does not funnel destruction
+# Invariant — the write path funnels motion and does not funnel destruction
 
 ## The fact
 
-Several structures in `justerm-core` sit **outside** the cells and assert something about the
-content at a buffer position: a marker's line, a search highlight's span, a tracked point, a
-selection's endpoints. Every one of them can stop being true in two unrelated ways.
+Several structures in `justerm-core` sit outside the cells and assert something about the content at a
+buffer position: a marker's line, a search highlight's span, a tracked point, a selection's endpoints,
+the settled-cell paint change record. Each can stop being true two unrelated ways.
 
-1. **The content moved.** The write path has a *complete, enforced funnel* for this. Every mover
-   calls a fixup trio (a quartet since #691) on adjacent lines — `selection_*`, `markers_*`,
-   `tracked_*` for `shift_below_margin` / `evict_oldest` / `rotate_region` — and
-   `invalidate_search_highlights` sits beside them. A new mover that forgets one is visible as a
-   missing call next to three present ones.
-2. **The content died where it stood.** There is **no funnel at all.** An erase or an overwrite
-   leaves the row exactly where it is, so no mover runs, nothing is announced, and every one of
-   these structures keeps asserting a fact about characters that are gone.
+1. **The content moved.** The write path has a complete funnel. Every mover calls the per-structure
+   fixups side by side — `selection_*`, `markers_*`, `tracked_*` for `shift_below_margin` /
+   `evict_oldest` / `rotate_region`, with `invalidate_search_highlights` beside them. Eviction goes
+   through one function, `justerm-core/src/term.rs — Term::lines_left_the_front`, which at HEAD 7bb31f7
+   calls five: `selection_evict_oldest`, `invalidate_search_highlights`, `markers_evict_oldest`,
+   `tracked_evict_oldest`, `watches_evict_oldest` (the last added by #967; the old note said "a
+   quartet"). A new mover that forgets one shows as a missing call beside present ones.
+2. **The content died where it stood.** There is no funnel. An erase or overwrite leaves the row in
+   place, no mover runs, nothing is announced, and each structure keeps asserting a fact about
+   characters that are gone.
 
-The invariant is not *"destruction must retire"* — that is false for two of the four. It is:
+The invariant is not "destruction must retire" — false for most of them. It is:
 
-> **A structure that asserts a fact about content at a position owes an answer for destruction as
-> well as for motion, and it must say which of the three answers it takes: retire, heal, or be
-> positional. There is nothing to inherit, because no funnel decides it for you.**
+> A structure that asserts a fact about content at a position owes an answer for destruction as well as
+> motion, and must say which it takes — **retire**, **heal**, or **be positional**. No funnel decides
+> it for you.
 
-The three answers, each with the site that takes it:
-
-| Answer | Structure | Why it is the right one there |
+| Answer | Structure | Why there |
 |---|---|---|
-| **retire** | OSC-133 command marks (#750) | the mark asserts *a command happened here*; nothing re-derives `command_lines`, so a wrong answer reproduces on every ask, forever |
-| **heal** | search highlights | the consumer re-runs the query after a debounce on output, and an erase *is* output — so the staleness window is one debounce (`invalidate_search_highlights` owns this decision and its grounds) |
-| **be positional** | tracked points, selection | the structure never claimed the characters. `anchoredIndex` asks "which occurrence was I on" and resolves by nearest position; a selection is a region of the screen and showing what is now under it is the semantics |
+| retire | OSC 133 command marks (#750), `term/markers.rs — Term::dispose_markers_on_row` | the mark asserts a command happened here; nothing re-derives `command_lines`, so a wrong answer reproduces on every ask |
+| heal | search highlights, `term/search.rs — Term::invalidate_search_highlights` | the consumer re-runs the query after a debounce on output, and an erase is output, so staleness lasts one debounce (the helper's doc owns this decision) |
+| heal | settled-cell paint change record, `term/paint.rs — Term::content_changed_at` | a destroyed line is a changed line; it is reported again and the consumer re-matches it |
+| be positional | tracked points, selection | the structure never claimed the characters: `anchoredIndex` (`justerm-web/src/search.ts`, `SearchPort`) resolves by nearest position; a selection is a screen region, and showing what is now under it is the semantics |
 
 ## Why it is cross-cutting
 
-**Four structures, three answers, and no two of them arrived together.** Markers (#118), search
-highlights (#108), selection and tracked points (#691) were built years and epics apart, and share
-only the constraint that they name a position they do not own. Nothing in the code brings the four
-into contact, so each one's destruction answer was decided — or, in the marker's case, never
-decided — in isolation.
+The structures arrived years and epics apart — markers (#118), search highlights (#108), selection and
+tracked points (#691), the paint record (#967) — and share only that they name a position they do not
+own. Their fixups do not call each other; nothing brings them into contact, so each destruction answer
+was decided (or, for the marker, never decided) in isolation.
 
-The motion half is the reason this stays invisible. It is so thoroughly funnelled that "the anchor
-fixups" reads as *the* maintenance story, and
-[marker](../territory/marker.md)'s own module doc said exactly that for three years: *"the three
-fixups that keep a mark on its content while the buffer moves under it."* Every clause of that
-sentence is true, and it is why a whole class of staleness had no home.
+The motion half hides it: it is so thoroughly funnelled that "the anchor fixups" reads as the whole
+maintenance story; marker's module doc said "the three fixups that keep a mark on its content while
+the buffer moves under it" for three years — true in every clause, and why the staleness class had no
+home.
 
-Distinct from [row-keyed side maps](row-keyed-side-maps.md), which is the same shape one layer
-down and gets the answer for free: those maps are gated by a presence bit **inside the cell**, so
-`cell.reset()` retires the fact whether the author thought about it or not (rule 3 there). None of
-the four structures here rides in a cell, which is precisely why each owes an explicit answer.
+Distinct from [row-keyed side maps](row-keyed-side-maps.md), the same shape one layer down that gets
+the answer free: those maps are gated by a presence bit inside the cell, so `cell.reset()` retires the
+fact regardless. None of these structures rides in a cell.
 
 ## Territories it holds in
 
-- [marker](../territory/marker.md) — `dispose_markers_on_row`, the *retire* answer, added by #750
-  after a `clear` was measured reporting four commands that did not exist and then duplicating
-  every later one
-- [search](../territory/search.md) — the *heal* answer, recorded in
-  `invalidate_search_highlights`'s doc-comment. Its reference clause was measured half false by
-  #750 and corrected there
-- [selection](../territory/selection.md) — the *positional* answer, and the discriminator that
-  keeps this note honest: a selection over rewritten cells showing the new text is correct
+- [marker](../territory/marker.md) — `dispose_markers_on_row`, the retire answer, added by #750 after a
+  `clear` was measured reporting four commands that did not exist.
+- [search](../territory/search.md) — the heal answer in `invalidate_search_highlights`'s doc-comment;
+  its reference clause was measured half false by #750 and corrected there.
+- [selection](../territory/selection.md) — the positional answer, the discriminator that keeps this
+  note honest: a selection over rewritten cells showing the new text is correct.
+- [tracked points](../territory/tracked-points.md) — positional; `term/tracked.rs —
+  Term::tracked_shift_below_margin` / `tracked_rotate_region` / `tracked_evict_oldest` are its motion
+  fixups and it has no destruction hook. Added here (new territory; the old note filed tracked points
+  under selection).
+- [settled-cell paint](../territory/settled-cell-paint.md) — heal; the change record rides damage, so
+  a destruction site that bypassed damage would also bypass the record (none known). Added here; this
+  territory already linked back.
 - [logical lines](../territory/logical-lines.md) — the read surface where a retained-but-false
-  assertion becomes a wrong string rather than a wrong colour, which is what makes the marker case
-  the severe one
+  assertion becomes a wrong string rather than a wrong colour, which makes the marker case severe.
 
 ## What a violation looks like
 
-- **A query answers about content that is gone**, with no error and no event. The marker case:
-  `command_lines()` returned `[(0,""),(1,""),(2,""),(3,"")]` after `ESC[H ESC[2J` with **zero**
-  `MarkerDisposed` events and `marker_count` unchanged — so a consumer holding an index had no
-  channel telling it anything had happened.
-- **A query answers with somebody else's content.** The same marks, after the shell redrew its
-  prompt onto the columns they bound: `(0, "grepo")` for a command nobody ran. A screen reader
-  announces it as a command.
-- **An answer is duplicated rather than wrong.** The residue of the above: two real commands plus
-  their four corpses is `n=4`, the corpses at the same document lines, so the list grows by one
-  dead pair per `clear` and never shrinks.
-- **A structure that should have healed did not, because its consumer changed.** The *heal* answer
-  is a claim about the consumer, not about core — if the re-search is removed or debounced past
-  usefulness, the search highlights silently join the first bullet.
+- **A query answers about content that is gone**, with no error and no event. Marker case (#750):
+  `command_lines()` returned `[(0,""),(1,""),(2,""),(3,"")]` after `ESC[H ESC[2J` with zero
+  `MarkerDisposed` events and `marker_count` unchanged.
+- **A query answers with someone else's content** — the same marks after the shell redrew its prompt
+  onto their columns: `(0, "grepo")` for a command nobody ran, announced by a screen reader.
+- **Duplicated rather than wrong** — two real commands plus four corpses at the same document lines,
+  growing by one dead pair per `clear`.
+- **A heal that stopped healing because its consumer changed** — the heal answer is a claim about the
+  consumer; remove or over-debounce the re-search and highlights join the first bullet.
 
 ## Discovery history
 
 | Event | Site | Issue |
 |---|---|---|
-| Motion funnel established | selection anchors + marker anchors, called side by side | #118 |
-| Motion funnel extended, still motion-only | `invalidate_search_highlights` | #108 / #449 |
-| Destruction answered *deliberately* for one structure — recorded in a doc-comment, and nowhere a neighbour would read it | search highlights: heal, on the consumer's debounced re-search | #108 |
-| Motion funnel became a quartet, destruction still unasked | tracked points | #691 |
-| Destruction found unanswered for the one structure that needed *retire* | OSC-133 marks: `command_lines` phantoms + re-borrowed text | #750 |
+| Motion funnel established | selection anchors + marker anchors, side by side | #118 |
+| Motion funnel extended, motion only | `invalidate_search_highlights` | #108 / #449 |
+| Destruction answered deliberately for one structure, recorded only in a doc-comment | search highlights: heal | #108 |
+| Funnel gains tracked points; destruction unasked | tracked points | #691 |
+| Destruction found unanswered where retire was needed | OSC 133 marks: phantoms + re-borrowed text | #750 |
+| `ED 3` implemented and found to be motion, not destruction | rides `lines_left_the_front(n)` with the scrollback cap | #936 |
+| Funnel gains the paint change record | `watches_evict_oldest` | #967 |
 
-The tell is in row three. The decision was made, correctly, with its grounds — inside
-`invalidate_search_highlights`, where only somebody already working on search will read it. Two
-files over, the marker surface never asked the question, and the field comment that enumerates the
-motion funnel reads as the complete rule.
+The tell is row three: the decision was made correctly, with grounds, inside the one helper only a
+search author reads; two files over the marker surface never asked.
 
 ## Where it will recur
 
-The next structure that names a buffer position it does not own — a bookmark, a fold, a
-diagnostic range, an OSC 8 hyperlink promoted out of the row map, a shell-integration span richer
-than a mark. Two questions at the moment it is designed, not after:
-
-1. Which of the three answers does it take, and *why that one* — the reason is always about the
-   structure's consumer, not about core.
-2. Is the answer written where the next author will hit it? A doc-comment on the invalidation
-   helper is where the answer goes; a link from the territory note is what makes it findable.
-
-It also recurs on any **new destroyer**. `DECALN` is unimplemented and blanks content in place.
-`ED 3` was listed here beside it until #936 implemented it, and it turned out **not** to be a
-destroyer in this note's sense: it drops lines off the *front*, which is motion, so it rides the
-eviction funnel (`lines_left_the_front(n)`, shared with the scrollback cap) and inherits all four
-answers from it —
-search highlights included, the holder this sentence used to record the obligation list omitting.
-`Engine::clear` is both at once: history and the rows above the cursor's logical line leave through
-the same funnel, and the rows below the cursor are blanked in place, where it answers per structure —
-marks on those rows **retire** (`dispose_markers_on_row`, as `ED 2`), tracked points stay
-**positional**, and the selection and highlights are cleared outright.
+- **The next structure naming a buffer position it does not own** — a bookmark, a fold, a diagnostic
+  range, an OSC 8 link promoted out of the row map, a richer shell-integration span. At design time:
+  which of the three answers, and why (the reason is always about its consumer); and is the answer
+  written where the next author hits it (the invalidation helper's doc, linked from the territory).
+- **Any new destroyer.** `DECALN` is unimplemented and blanks content in place. `Engine::clear`
+  (`term.rs — Term::clear`) is both: history and rows above the cursor's logical line leave through the
+  eviction funnel, and rows below the cursor are blanked in place, where it answers per structure —
+  marks retire (`dispose_markers_on_row`, as `ED 2`), tracked points stay positional, selection and
+  highlights are cleared outright.
+- **Any new mover** must call every fixup `lines_left_the_front` calls; read that function first.

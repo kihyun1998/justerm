@@ -2,420 +2,333 @@
 
 ## What it is
 
-Who owns the work that keeps happening after the call that started it returns — a rAF loop,
-media-query and window listeners, a11y timers, resize observation — and who is responsible for
-stopping it.
+How a `justerm-web` widget comes into being, and who stops the work it leaves running after the call
+that started it returns: the `Terminal` that pumps a `FrameSource` into a `Renderer`, the
+`JustermRenderer` that is the first-party `Renderer`, the rAF blink loop, the media-query and window
+listeners, the context-loss channel, and the collaborators a host constructs beside them (scrollbar,
+resize observer, a11y controllers, search, marker index).
 
-**One seam is composed; the rest are not.** Since #606 the widget ends what it was *handed* — the
-frame source's subscriptions, its own DOM listeners, and the renderer — and that rule is written where
-a consumer reads it (`justerm-web/README.md` § Tearing down, plus the `Renderer` port's doc). Every
-other piece was added by the slice that needed it, has a perfectly good teardown handle, and still has
-nobody calling it.
-
-The distinction is the useful part: the composed seam is the one where a *type* could carry the
-obligation. The rest depend on a consumer remembering, and the measurement below says none does.
+**One rule is composed; the rest are convention.** The widget ends what it was *handed* — the frame
+source's subscriptions, its own DOM listeners, and the renderer — and that rule is written where a
+consumer reads it (`justerm-web/README.md` § Tearing down, and the `Renderer` port's `dispose` doc).
+Every collaborator a host builds beside the widget has a teardown handle and nothing in this package
+calls it; the host is the composition root (see `## Design model`, *Who ends the rest*).
 
 ## Governing decisions
 
 **None.**
 
-- The measured inventory this note routes to is in spine **#605** — *"justerm-web's background work
-  has no lifecycle owner"*. A GitHub issue, so not a graph node
+- [ADR-0027 — liveness is answered by the source that owns it](../../adr/0027-liveness-is-answered-by-the-source-that-owns-it.md)
+  rules what `isContextLost()` *means*, and says in its own text that who stops the notification
+  arriving "is the consumer's lifecycle question" and not that record's
+- [ADR-0021 — one WebGL2 context draws N terminal grids](../../adr/0021-single-context-multi-viewport.md)
+  decides the surface/grid split this lifecycle rides on (a terminal is a grid lease on a surface), not
+  who ends what; that rule arrived by promotion instead, as
+  [a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md)
+- [ADR-0028 — composition surfaces have one writer each](../../adr/0028-composition-surfaces-have-one-writer-each.md)
+  governs the textarea anchor and preedit run `Terminal` drives, not their teardown
+- The measured inventory this note grew from was spine #605 (*"justerm-web's background work has no
+  lifecycle owner"*), closed 2026-08-21 on the measurement recorded under `## Known holes / open`
 
 ## Design model
 
-**One rule is settled (#606); the rest of the inventory is still unowned.**
+Status: the rules below come from the source and its doc-comments plus the issues cited; no record
+decides them.
 
-- **Ambient work must survive its own body throwing, and that is a scheduling-order property, not an
-  error-handling one** (#696). A self-perpetuating rAF loop that re-arms *after* its body leaves a
-  stale handle behind when the body throws — and a re-entry guard reading that handle then refuses
-  every restart, so the loop is off for the life of the widget with nothing logged. Clearing the
-  handle *first* (the reference's shape, `RenderDebouncer._innerRefresh`) makes the loop restartable
-  without catching anything, so the error still reaches the browser. For this widget "restartable"
-  means "restarted by the next frame": `updateCursor` calls `start()` on every decoded frame.
-  Catching instead would force a choice between swallowing the error and re-raising it sixty times a
-  second. The corollary: a loop body must not call `start()` on its own loop — during the body no
-  frame is scheduled, so the guard would let a second loop begin and double the blink rate.
-- **The context-loss notification goes through a relay, not the consumer's function** (#579), because
-  of two asymmetries in the renderer's published surface this layer may not reach across.
-  `setOnContextLoss(callback: Function)` has **no unset**, so detaching or replacing a handler has
-  nothing to pass — registering `notify` once and swapping behind it is what makes `set(undefined)`
-  expressible. And `dispose()` **cannot reach the renderer's callback slot**: the renderer clears it
-  in `Drop`, which runs at the binding's `free()`, which `Terminal.dispose()` deliberately never
-  calls (#606) — so without the relay's `end()` a deadline armed before disposal still delivers to an
-  ended widget. That is parity, not invention: xterm.js's disposable clears its restore timeout
-  (`addons/addon-webgl/src/WebglRenderer.ts:161-163`). **The post-`end` gate sits in `set`, not in
-  `notify`**, and a mutation test is what chose it: with a gate in both plus `end`'s clear, neither
-  gate can be made to fail because each masks the other; the two placements deliver identically but
-  differ on what `end` promises — gate the delivery and a post-`end` `set(handler)` still parks the
-  consumer's closure on an object the renderer holds until `free()`, for the life of the page. Gate
-  the installation and the promise holds by construction, and every mechanism stays falsifiable.
+**What the widget is handed, the widget ends** (#606). `Terminal` receives exactly three things
+(`source`, `renderer`, `options`). `Terminal.dispose()` unsubscribes both `FrameSource` channels,
+ends the `ClipboardController` (an in-flight OSC 52 read outlives the event subscription), runs every
+DOM detacher, disposes the `LinkTracker`, restores the element's inline `cursor`, removes the hidden
+textarea, and calls the renderer's optional `dispose?()` **last**, after the widget has stopped feeding
+it. Derived rather than invented: xterm.js disposes each consumer-constructed addon from
+`Terminal.dispose()`, and this package's other injected port already worked this way through the
+`Unsubscribe` it returns ([reference](#reference-behaviour)). The port requires `dispose` to be
+idempotent, and the one consumer exercises that: PenTerm pushes `renderer.dispose()` and then
+`term.dispose()` onto one cleanup list it runs in reverse, so the renderer is disposed by the widget and
+then again by the host (penterm 7dadc3c95 `src/blocks/terminal/lib/nativeTerminalCache.ts` — `build`,
+`disposeNativeTerminal`).
 
-- **What the widget is handed, the widget ends.** `Terminal` receives exactly three things
-  (`source`, `renderer`, `options`), and `dispose()` now releases all of them: both `FrameSource`
-  subscriptions, its own DOM listeners, and — since #606 — the renderer, through an optional
-  `dispose?()` on the `Renderer` port. Derived, not invented: xterm.js disposes each
-  consumer-constructed addon from `Terminal.dispose()`, and this repo's other injected port already
-  worked this way through the `Unsubscribe` it returns. See
-  [reference behaviour](#reference-behaviour).
-- **State that only ever arrives as a *change* has to be established by whoever owns the
-  transitions, and `mount()` is where that happens** (#912). Focus reaches the renderer as
-  focus/blur intents, so a terminal nobody clicks is never described at all — and until #912 both
-  holders of the flag assumed focus, which blinked the caret and painted the *active* selection tint
-  in every pane the user had not touched. Reported from PenTerm with several panes on screen.
+**`Terminal.dispose()` is end of life, not unmount** (#606). `mount()` after it throws. Declared
+rather than left open because remounting was already broken: `textareaCell` and `cursorAnchor` survive
+disposal (a remounted widget would park the IME candidate window at the previous mount's anchor until
+the next focus or composition start re-syncs it, #631), and a remounted renderer would have lost its
+`prefers-reduced-motion` listener, whose only registration is in a private constructor. A host that
+wants a pane to outlive its mount keeps the widget and moves its element — PenTerm builds one widget
+per session, hides its grid on unmount and disposes only when the session ends
+(penterm 7dadc3c95 `src/blocks/terminal/lib/nativeTerminalCache.ts` — `mountNativeTerminal`).
 
-  **Measured before generalising, because the obvious rule over-reaches.** The `Renderer` port has
-  exactly two members carrying pushed boolean state, and only one has this hole: a composition
-  cannot be in progress at mount (`setComposing` is driven by a browser event that has not fired),
-  while focus can already be anywhere. Every other initial value already had a path — the options
-  ones are applied by `create`. So this is one fact with one instance, not a cross-cutting
-  invariant, and it is written here rather than promoted.
+**Ambient work must survive its own body throwing, and that is a scheduling-order property** (#696).
+`FrameLoop` clears its handle *before* running the body, so a throw leaves nothing for the re-entry
+guard to read and the loop is restartable without a `try`/`catch` — the error still reaches the
+browser. That is the reference's shape (`RenderDebouncer._innerRefresh`, see
+[reference](#reference-behaviour)). Before #696 the re-arm sat at the bottom of the body and one throw
+latched the loop off for the widget's life with nothing logged. Catching instead would force a choice
+between swallowing the error and re-raising it sixty times a second. *Restartable* here means
+restarted by the next frame that starts the loop: `updateCursor` starts it on a frame that carries a
+visible cursor, and `applyFrame` starts it on every frame while text blink is enabled — not, as an
+earlier version of this note said, on every decoded frame. The corollary is in `FrameLoop`'s own doc:
+a body must not call `start()` on its own loop, since during the body no frame is scheduled and the
+guard would let a second loop begin (double blink rate).
 
-  **Both halves, because they close different holes**, and the references say why the pair matters
-  more than the value: the corpus splits 2-1 on the default and what all three share is a
-  *correction path*, so a default alone is not a contract
-  ([reference facts](../../agents/reference-facts.md#the-initial-focus-state--who-establishes-it-912-verified-2026-09-16)).
-  The unfocused default is the only half that reaches a `Terminal` built without `element`, which
-  never attaches; the `attach()` call is the only half that reaches a consumer-supplied `Renderer`,
-  whose own default nobody here controls. It reports to the renderer directly rather than through
-  the input sink — a mount is not a user action, and a consumer that encodes focus reports would
-  otherwise write bytes to the PTY at mount. The value is unconditionally `false`, not
-  `document.activeElement === ta`: the textarea was created and appended a moment earlier, so it
-  cannot be the active element.
-- **`Terminal.dispose()` is end of life, not unmount.** `mount()` after it throws. Declared rather
-  than left open because the alternative was already broken: `textareaCell` and `cursorAnchor`
-  survive disposal (a remounted widget parks the IME candidate window at the previous mount's anchor;
-  since #631 only until the next focus or composition start re-syncs it, which shortens that window
-  rather than closing it), and a
-  re-mounted renderer would have lost its `prefers-reduced-motion` listener permanently — its only
-  registration is in a private constructor.
-  `dispose()` ends the renderer **last**, after the widget has stopped feeding it, so nothing arrives
-  at an already-ended renderer — as xterm.js disposes its addons in reverse registration order
-  ([reference facts](../../agents/reference-facts.md#widget-teardown--who-ends-a-handed-over-component-606-verified-2026-07-29)). The consumer built the renderer and handed
-  it over; the widget drove it, so the widget ends it.
-- **It stops work and releases its grid** (since #770 added `removeGrid`). The renderer's wasm
-  instance, GL context and the canvas context-loss listeners its Rust side owns survive `dispose()`;
-  they belong to the binding's `free()`, which is unsafe while the consumer still holds the object.
+**The context-loss notification goes through a relay** (#579), because of two asymmetries in the
+renderer's published surface. `setOnContextLoss` takes a `Function` and has **no unset**, so
+registering `ContextLossRelay.notify` once and swapping the handler behind it is what makes
+`set(undefined)` expressible. And `dispose` **cannot reach the renderer's slot**: the renderer clears
+it in `Drop`, at the binding's `free()`, which nothing here calls — so without `ContextLossRelay.end`
+a deadline armed before disposal still delivers to an ended widget. That is parity: xterm.js's
+disposable clears its restore timeout (cited in ADR-0027 at `addons/addon-webgl/src/WebglRenderer.ts:161-163`).
+**The post-`end` gate sits in `set`, not in `notify`, and a mutation test chose it** (#579): with a
+gate in both plus `end`'s clear, neither gate can be made to fail because each masks the other; gating
+the delivery would still let a post-`end` `set(handler)` park the consumer's closure on an object the
+renderer holds until `free()`. Gating the installation keeps `end`'s promise by construction
+(`justerm-web/test/context-loss.test.ts`, *cannot be revived by a handler registered after the end*).
+Since #775 the relay is the **surface's**, not the terminal's: `setOnContextLoss` takes no grid, one
+context means one loss, and a per-terminal channel would both deliver N times and let the first
+terminal to end close it for its siblings.
 
-Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
+**State that only ever arrives as a change is established by whoever owns the transitions — at
+`mount()`** (#912). Focus reaches the renderer as focus/blur intents, so a pane nobody clicks was never
+described; until #912 both holders of the flag assumed focus, blinking the caret and painting the
+*active* selection tint in every untouched pane (reported from PenTerm with several panes on screen).
+Both halves exist because they close different holes: `JustermRenderer` and `CursorBlink` start
+unfocused (the only half that reaches a `Terminal` built without `element`, which never attaches), and
+`Terminal.attach` calls `setFocused(false)` once (the only half that reaches a consumer-supplied
+renderer, whose default nobody here controls). It reports to the renderer directly rather than through
+the input sink — a mount is not a user action, and a consumer encoding focus reports would otherwise
+write bytes to the PTY at mount. The value is `false`, not `document.activeElement === ta`: the
+textarea was appended a moment earlier and cannot be active. It also fails safe — a focused terminal
+read as blurred recovers on the first keystroke; a blurred one read as focused never did. **Measured
+before generalising** (#912): the port has two members carrying pushed boolean state and only focus has
+this hole — a composition cannot be in progress at mount (`setComposing` is driven by an event that has
+not fired), and every other initial value is applied by `create`. One fact, one instance; not promoted.
 
-| Ambient work | teardown handle | who calls it |
+**How a `JustermRenderer` is built** (`create`, `attach`, `build`, `assemble`). A thin translator,
+because the renderer composites in wasm (#273, the full-stack pivot); overlay, cursor and decoration
+state is pushed every frame, retained by the renderer, and set before the frame's damage so the frame
+packs once (`applyFrame`).
+- *Both entry points take one construction path*, so a sole tenant and a shared one differ by a
+  parameter (`composedSurface`) rather than by a second body. `create` composes the surface and keeps it
+  in a private field with no accessor, so it is the surface's only possible tenant; `attach` receives a
+  surface a host opened. The flag decides three things: sizing the drawing buffer to its own grid
+  (#331's exactness), presenting synchronously, and ending the surface on dispose — the last being
+  [a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md). The
+  surface once mirrored this as an `ownsExtent` option with a guard refusing a second tenant; #802
+  deleted both, because the guard defended a state that cannot be constructed, and
+  `justerm-web/test/published-seam.types.ts` §3 pins that unreachability.
+- *The wasm modules load with dynamic `import()`.* Two top-level wasm-bindgen "bundler" imports race
+  their init and the second fails (`__wbindgen_externrefs` undefined) — the beamterm adapter's reason
+  too (attributed to that adapter's history; not re-run here). `create` starts the decoder's import in
+  parallel with `TerminalSurface.open`, since splitting the old `Promise.all` across two objects made them
+  serial.
+- *The grid is named at birth* (#773, #928, #961): font family, size, both spacings, both weights and
+  subpixel go into `TerminalSurface.addGrid` — one bake, where pushing them by setter afterwards baked up
+  to eight. That retired an old ordering constraint (font before spacing), which the renderer had already
+  removed by funnelling every cell-moving change through one function (`bake_config` since #772).
+- *`build` and `assemble` are an error boundary.* A grid is GPU memory (a VAO, an instance buffer, a
+  refcount on its configuration's atlas — 4.2 MiB at an 8x16 cell, 12.8 MiB at 15x30 on a dpr-2 display,
+  measured for #773's follow-up), and nothing holds it if assembly throws, so `build` calls
+  `lease.release()` on a throw; `create` likewise disposes a surface it composed, since a throw after it
+  exists strands a bound context, a density watcher and a canvas listener.
+- *A density change and a context restore reach a terminal through one registration*
+  (`GridLease.onReapply` → `reapplySurface`): the surface owns *when*, only the terminal knows *what*.
+  The constructor also registers `onEnd` → `JustermRenderer.dispose`, so `TerminalSurface.dispose` ends
+  each **renderer** on it rather than retiring grids under a live blink loop. It does **not** end the
+  `Terminal` widgets: the README measured `surface.dispose()` alone leaving every widget mounted and
+  subscribed, so the next pushed frame throws `no grid with id N` — hence its order, *terminals first,
+  then the surface*. (This note said "ends the widgets" before; it ends the renderers.)
+- *The rect's origin is stored and its extent re-derived*: the extent follows from grid and cell; the
+  origin is the host's measurement, re-supplied when the box moves because one context binds one canvas
+  and nothing in the GL layer can see the overlay drift.
+
+**The blink loop and the present** (`JustermRenderer.render`, `blinkTick`, `trackBlinkCells`,
+`setFocused`, `dispose`).
+- *`render()` presents the whole canvas*, since it takes no grid: a sole tenant presents synchronously
+  (one terminal is one present per frame either way, and the e2e suite drives a frame and reads pixels
+  in the same turn); a shared tenant calls `TerminalSurface.requestRender`, coalesced with its siblings'.
+  The two agree at N=1, so this is a derivation, not a mode.
+- *The SGR 5 phase re-pack is gated on the grid possibly holding a `BLINK` cell* — xterm.js's
+  `needsBlinkInViewport` adapted to frame mode (#576). A frame-mode consumer holds damage, not the grid,
+  so the gate is **conservative**: a Full frame replaces the answer, a Partial one can only add to it
+  (`trackBlinkCells`). A false positive costs one redundant re-pack; a false negative would freeze blinking
+  text. The Full case rests on core emitting full damage as every row at full width, which
+  `FrameKind::Full` states as its contract — if a Full frame became a subset, this gate would produce the
+  one error it must not. Measured for #576 (demo, 600 ms interval, 3.0 s): 16 presenting rAF turns with
+  three blinking cells against 11 with none — exactly the 5 phase flips.
+- *A hidden terminal's tick does nothing* (#801). Both halves of a tick end in `backend.render()`, which
+  presents the whole canvas, so on a shared surface a hidden pane's blink redrew its siblings twice a
+  second. `CursorBlink.isVisible` is solid when unfocused, but `TextBlink.isVisible` has no focus gate, and
+  `hide()` with no DOM change (what the README recommends for `visibility: hidden`) keeps focus. Measured
+  for #801: 4 whole-canvas presents in 2100 ms before the gate, 0 after, a shown sibling at 3 either way.
+- *`setFocused` presents even with no caret on screen* when the tint moved. It is the one setter that
+  changes something other than the cursor, and `issueOverlay` only retains and re-packs — guarding the
+  present on a cursor dropped the tint flip whenever the application had hidden the caret. xterm.js
+  re-shows the caret from its own focus handler for the same reason (#912).
+- *`dispose` releases the grid* (since #770 added `removeGrid`, now via `GridLease.release`), stops
+  the loop and detaches the reduced-motion listener — which *draws* since #576, so leaving it attached
+  let a disposed widget repaint. Every per-grid method throws afterwards. The wasm instance, the GL
+  context and the Rust-side canvas listeners survive until the binding's `free()`, which is unsafe while
+  the consumer still holds the object; `isContextLost()` / `isRestoreOverdue()` keep answering from the
+  state machine those listeners feed.
+
+**Who ends the rest** — the inventory, re-read at HEAD (2026-10-22). Rows the widget or the surface own
+are closed by code; the others are ended only by a host that kept the handle.
+
+| Ambient work | Teardown handle | Ended by |
 |---|---|---|
-| the renderer's rAF blink loop + reduced-motion listener | `dispose()` | **`Terminal`** (#606) |
-| the context-loss notification the renderer holds for the widget's life (#579) | `dispose()`, via the relay's `end()` | **`TerminalSurface`** since #775 — it moved off the terminal because `setOnContextLoss` takes no grid: one context means one loss, and a per-terminal channel would both deliver it N times and let the first terminal to end close it for its siblings. It still *must* be closed by hand, for #579's original reason — the renderer's own teardown of that slot is in `Drop`, i.e. at `free()`, which nothing here calls |
-| the density watcher and the `webglcontextrestored` listener (#325) | `dispose()` | **`TerminalSurface`** since #775, and for the same reason: both are surface-scoped (`setDevicePixelRatio` takes no grid, and there is one canvas), and both *draw*. On the terminal they were a live defect the moment a second terminal existed — the first `dispose()` took density tracking and context recovery away from every sibling |
-| input attachment | returns a disposer | `Terminal`, via `detach` |
-| the frame source's two subscriptions | returns `Unsubscribe` | `Terminal` |
-| the scrollbar's window listeners | `dispose()` | nobody |
-| a live pointer gesture's window listeners and the selection tick interval (#902) | `dispose()` | `Terminal`, via `detach` |
-| resize observation | returns a disposer | nobody — the demo writes `void disposeFit;` |
-| the a11y controller's announce timer | `dispose()` | nobody |
-| the accessible view's keydown | **none** | — |
-| the search debounce | **none** | — |
-| the marker index's in-flight pull (`MarkerIndexCache`) | `reset()` — which orphans the flight rather than cancelling it, since a `Promise` has no cancel | nobody. `terminal.ts` has **zero** references to the cache: it is consumer-constructed and never handed to `Terminal` at all. Added 2026-08-06 (#746), where the row became load-bearing: an *orphaned* pull's rejection used to clear the flag the replacing pull owned |
+| frame + event subscriptions, DOM listeners, live-gesture window listeners, selection tick (#902) | `Unsubscribe` / detachers | `Terminal.dispose` |
+| OSC 52 clipboard read in flight | `ClipboardController.dispose` | `Terminal.dispose` |
+| link hover state | `LinkTracker.dispose` | `Terminal.dispose` |
+| rAF blink loop + reduced-motion listener | `JustermRenderer.dispose` | `Terminal.dispose` (#606), or `TerminalSurface.dispose` via `onEnd` |
+| context-loss relay, density watcher, `webglcontextrestored` listener, present loop | `TerminalSurface.dispose` | the surface — `create`'s renderer for a sole tenant, the host otherwise (#775) |
+| `Scrollbar` window listeners | `Scrollbar.dispose` | host — PenTerm does (`nativeTerminalCache.ts` — `build`) |
+| `observeResize` | returned disposer, plus `FitController.dispose` | host — PenTerm does not use it (its own `ResizeObserver`, disconnected in `build`'s cleanups); the demo writes `void disposeFit;` |
+| a11y announce timer, `selectionchange` listener | `Accessibility.dispose` | host — PenTerm wires no `Accessibility` |
+| accessible view's `Escape` keydown | **none** (on its own element) | — |
+| search debounce | **none** (`SearchController` has no `dispose`) | — |
+| marker index pull in flight | `MarkerIndexCache.reset` — orphans the flight rather than cancelling it, since a `Promise` has no cancel (#746) | host; `terminal.ts` never sees the cache |
 
-- **The remaining rows share one cause and it is not the renderer's.** Every collaborator above is
-  consumer-constructed and exported individually; the only thing with a `dispose()` a consumer is
-  plausibly told to call is `Terminal`, and it owns only what it builds. Measured (2026-07-29): every
-  `.dispose()` call in production code is a *decoration handle* (`lineDecoration`, `full`, `gutter`) —
-  no collaborator lifecycle is ended anywhere, and `Terminal.dispose()` itself is called nowhere
-  outside tests.
-  **This bullet said "there is no composition root" until #775, and that half is now answered** — see
-  `## Known holes` for what the answer covers and what it does not. The measurement above is unchanged
-  and is still the reason the rows below have no caller: a surface owns the canvas and the context, not
-  the scrollbar, the fit observer or the a11y timers.
-- **Why #606 was separable from that.** The renderer's was the only row a consumer could not close by
-  discipline: `dispose` was not on the port, a **type-level** obstacle rather than a missing call.
-  The rest are callable and uncalled, which is a different question — tracked on the spine #605.
-- **How a `JustermRenderer` is built** (`create`, `attach`, `build`, `assemble`). It is a thin
-  translator because the renderer owns the compositing — the full-stack pivot's payoff: the beamterm
-  adapter composited in TypeScript (`CellMirror` + `makeRenderPolicy` + `composeOverlayDraws`) because
-  beamterm had no such concepts. Overlay, cursor and decoration state is consumer-pushed every frame
-  and retained by the renderer, exactly like the cursor (#273), and set before the frame's damage so
-  the frame packs once.
-  - *Both entry points take one construction path*, so a sole tenant and a shared one differ by a
-    parameter (`composedSurface`) rather than by a second body that can drift. `create` composes the
-    surface and keeps it in a private field, so it is the surface's only possible tenant; `attach`
-    receives a surface a host opened, which may have siblings. Composing it sizes the buffer to the
-    one grid (#331's exactness), presents synchronously, and ends the surface on dispose — the last
-    being [a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md).
-    This used to be mirrored on the surface as an `ownsExtent` option with a guard refusing a second
-    tenant; #802 deleted both, since the guard defended a state that cannot be constructed, and
-    `test/published-seam.types.ts` §3 pins that unreachability. "Sole tenant" is anchored on the flag
-    for the same reason.
-  - *The wasm modules load with dynamic `import()`.* Two top-level wasm-bindgen "bundler" imports race
-    their init and the second fails (`__wbindgen_externrefs` undefined), so deferring to runtime lets
-    vite instantiate each cleanly — the beamterm adapter's reason too. The renderer's module is the
-    surface's (constructing it binds the context to a canvas); `create` starts the decoder's import
-    in parallel with opening the surface, because splitting the old `Promise.all` across two objects
-    made them serial — pure startup latency. The adapter is not exercised by vitest (it needs a GL
-    context and the wasm); its pure wire logic is unit-tested and the whole path is proven by the
-    demo's headless e2e and the renderer's own GL proofs.
-  - *The first frame packs once*: `setOverlay`'s re-pack is a no-op until the first `apply_damage`,
-    and the frame's overlay, decorations and cursor are set before its damage.
-  - *The grid is named at birth* (#773, #928, #961): the seven selectors go into `addGrid`, one bake,
-    where pushing them by setter afterwards baked up to eight, each of the first seven freed by the
-    next. The values are the ones the setters used, defaults included, so the initial fit is still
-    computed at the consumer's final cell. That also retired an ordering question — font had once to precede spacing, a dependency the
-    renderer had already removed, since every path that changes the glyph box, the DPR or either
-    spacing funnels through one function (`recompute_cell` up to 0.14.x, `bake_config` after, #772).
-  - *`build` and `assemble` are an error boundary.* A grid is GPU memory — a VAO, an instance buffer and
-    a refcount on its configuration's atlas (4.2 MiB at an 8x16 cell, 12.8 MiB at 15x30 on a dpr-2
-    display, measured for #773's follow-up) — and nothing holds it if assembly throws, so `build`
-    releases it on a throw, and `assemble` is split out so that `try` stays readable. `create` does the
-    same for the surface: a throw after it exists would strand a bound WebGL2 context, a running
-    density watcher and a canvas listener, and a retry on the same canvas would get the same context
-    back with the orphan's listeners firing beside the new surface's.
-  - *A density change and a context restore reach a terminal through one registration* (`onReapply`),
-    because from the terminal they are one obligation: re-derive its geometry at whatever the cell
-    became. The surface owns *when*; only the terminal knows *what*. The terminal registers `onEnd`
-    too, so a host that disposes the surface ends the widgets on it — otherwise each keeps its blink
-    loop and reduced-motion listener while holding an id the renderer has retired, and every per-grid
-    call throws `UnknownGrid` on a timer.
-  - *A terminal starts unfocused*, and `Terminal` also reports focus once at mount. A renderer is told
-    about focus *changes*, so a never-focused pane is never told anything, and the old `true` stood for
-    the life of every pane the user had not clicked. The corpus splits 2-1 on the initial value and
-    what the three share is a correction path
-    ([the INITIAL focus state](../../agents/reference-facts.md#the-initial-focus-state--who-establishes-it-912-verified-2026-09-16)). It also fails safe: a focused
-    terminal that reads as blurred recovers on the first keystroke, a blurred one reading as focused
-    never did.
-  - *The rect's origin is stored and its extent re-derived*: the extent follows from the grid and the
-    cell, while the origin is the host's measurement. The host re-supplies the origin whenever the box
-    moves because WebGL binds one context to one canvas — a terminal is a transparent overlay over its
-    viewport, and nothing inside the GL layer can observe the overlay drifting from it.
-- **The blink loop and the present** (`JustermRenderer.render`, `blinkTick`, `trackBlinkCells`,
-  `setFocused`, `dispose`).
-  - *`render()` presents the whole canvas*, since it takes no grid, so how it presents follows from
-    whether the terminal is alone. A sole tenant presents synchronously, exactly as before #775: one
-    terminal is one present per frame either way, coalescing would only add a frame of latency, and
-    the whole e2e suite drives a frame and reads pixels in the same turn, so deferring would silently
-    change what many unrelated assertions mean. A terminal sharing a surface requests a present on the
-    surface's loop, coalesced with its siblings' — N synchronous presents would redraw the canvas N
-    times a frame. The two agree at N=1, which makes this a derivation rather than a mode switch;
-    `Terminal` calls `render` on every decoded frame and cannot choose, so without it a shared widget
-    could not reach the loop the surface exists to run.
-  - *The SGR 5 phase re-pack is gated on the grid possibly holding a `BLINK` cell* — xterm.js's
-    `needsBlinkInViewport` (`TextBlinkStateManager.ts:67`) adapted to frame mode. xterm.js answers
-    exactly by scanning the viewport it owns; a frame-mode consumer holds damage, not the grid, so the
-    gate is **conservative**: a false positive costs one redundant re-pack, a false negative would
-    freeze blinking text. A Full frame replaces the answer, a Partial one can only add to it, and the
-    answer decays only at the next Full frame. The Full case's exactness rests on core emitting full
-    damage as every row at full width (`justerm-core/src/term.rs`, `TermDamage::Full`), which
-    `FrameKind::Full` states as its contract (*"Every row is present"*, `serialize.rs`) — if a Full frame
-    became a subset, this gate would produce the one error it must not. Without the gate an opted-in
-    consumer pays a full re-pack per half-period on every terminal; measured (demo, 600 ms interval,
-    3.0 s, presenting rAF turns, identical conditions): 16 with three blinking cells on screen, 11 with
-    none — a delta of 5, exactly the 5 phase flips in the window, each proportional to `cols x rows`.
-  - *A hidden terminal's tick does nothing* (#801). Both halves of a tick end in `backend.render()`,
-    which presents the whole canvas, so on a shared surface a hidden pane's blink redrew its siblings
-    twice a second for pixels not on screen. The re-pack was already gated in the renderer's draw
-    loop, which is why this was invisible — what was wasted was the present, and no counter at this
-    layer reports presents. The cursor half looked self-gated (`CursorBlink.isVisible` is solid when
-    blurred, and `display: none` blurs the textarea), but `TextBlink.isVisible` has no focus gate, and
-    `hide()` with no DOM change — which the README recommends for `visibility: hidden` — leaves the
-    terminal focused. rAF stops for a hidden *document*, but a terminal scrolled out of view inside a
-    visible page keeps ticking — not xterm.js's guarantee, whose `setViewportVisible` is fed by an
-    `IntersectionObserver` on the screen element; the gap covers the cursor half equally, so it is a
-    widget-level decision, left as it was. A throw in the body stops the loop with no handle left and
-    the next `startBlinkLoop` restarts it (`FrameLoop`, #696); before that the re-arm sat at the
-    bottom of the body and a throw latched the loop off permanently.
-  - *`setFocused` presents even with no caret on screen*, when the tint moved. It is the one setter
-    that changes something other than the cursor, and `issueOverlay` only retains and re-packs —
-    `redrawCursor` is what presents, which is why `setTheme` pairs the two. Guarding the present on a
-    cursor, as `setCursorBlink` and `setComposing` legitimately do, dropped the tint flip whenever the
-    application had hidden the caret, and on an idle hidden-caret terminal there may be no next
-    present at all. The mount-time call takes neither branch, since `focused` starts `false`. xterm.js
-    re-shows the caret from its own focus handler for the same reason
-    (`browser/CoreBrowserTerminal.ts:310`, `_showCursor()`).
-  - *`dispose` releases the grid* (called by `Terminal.dispose()` since #606; the doc once said
-    "nothing calls this yet", which was the defect), so every per-grid method throws after it — the
-    honest answer rather than a regression. It used to say "stops work, does not release memory", on
-    the ground that `free()` is the only release — untrue since #770 added `removeGrid`; what keeping
-    it cost, at the time, was the atlas above per closed terminal until the tab went away: a fixed
-    `tex_storage_3d(RGBA8, paddedW, paddedH * 32, 192)` allocation whose size does not depend on how
-    many glyphs were used (4.2 / 12.8 MiB), plus the rasteriser and glyph cache on the wasm heap. The
-    wasm instance, the GL context and the Rust-side canvas listeners survive until the binding's
-    `free()`. The context-loss notification is ended by the surface's own `dispose`, which only a
-    terminal that composed its surface reaches — a shared surface's channel belongs to the surface.
-    The renderer's `ContextLossHandler` would clear it only in `Drop`, at `free()`, too late; the
-    contract matched is xterm.js's, whose disposable clears its pending restore timeout
-    (`addons/addon-webgl/src/WebglRenderer.ts:161-163`). `isContextLost()` / `isRestoreOverdue()` keep
-    answering, since they read the state machine the surviving canvas listeners still feed.
+The rows that need a host share one cause, and it is not the renderer's: every such collaborator is
+consumer-constructed and exported individually, and the widget owns only what it builds. #606 was
+separable from them because the renderer's row was the only one a consumer could not close by
+discipline — `dispose` was not on the port, a type-level obstacle rather than a missing call.
+
+**The composition writers `Terminal` drives** (ADR-0028; moved here from input encoding, because they
+push to the renderer rather than produce an intent):
+- **A composition freezes the textarea anchor for every writer, forced or not** (#637 for the frame
+  stream, #649 for the point-of-use re-sync). The predicate is "a candidate window is open" —
+  `CompositionController`'s `isComposing`, not the broader `active` (`isComposing ||
+  isSendingComposition`), which outlives it by one deferred read and would swallow the
+  `compositionstart` re-sync in continuous CJK.
+- **A composition's origin comes from the composition before it while a commit is in flight** (#911,
+  ADR-0028 D4): the committed text has not been sent, so the frame stream cannot know it. The value is
+  the previous run's end — `JustermRenderer.setPreedit`'s returned caret column, since the widget has
+  no `wcwidth` — chosen by `preeditLatch` (`composition.ts`) on `active`, the mirror of the freeze
+  above. The only gate on the DOM wiring is the #911 e2e ("a continuous burst starts each syllable
+  where the last one ended").
+- **`preeditIntent`** answers *nothing* or *these codepoints at this origin*: it skips unchanged data,
+  pushes nothing without an origin (no frame has reported a cursor yet, so `rows` is still `0`), and
+  splits by **code point** so an astral scalar is one cell. `preeditIntent` and `preeditLatch` are pure
+  because the unit suite runs in `environment: "node"`, the blind spot #649 measured.
+- **The drawn run is cleared at `compositionend`**, before the commit reaches the grid; waiting for a
+  frame would leave the last syllable drawn twice (timing measured, #249). The run is pushed from
+  `compositionupdate.data`, never the textarea value, so for Korean the drawn run and the eventual
+  commit can disagree — the IME's behaviour, not a defect (#249).
+- **Against a renderer older than #249**, `setPreedit` returns `col` when the backend lacks the
+  binding, so #911's handoff degrades silently to the frame stream's answer — benign, and the two
+  packages release on separate tracks (#918, closed `not_planned`).
 
 ## Code
 
-- `justerm-web/src/terminal.ts` — `Terminal`, `dispose`, and the listeners it owns. `setSuggestion`
-  (#972) refuses after `dispose`: a consumer's ranker answers asynchronously and can land after the
-  pane is gone, and the renderer throws on a disposed grid. `track` also drops the suggestion on
-  entering the alternate screen
-- `justerm-web/src/renderer.ts` — the port, and the `dispose?()` that made the renderer reachable
-- `justerm-web/src/justerm-renderer.ts` — the blink tick and the reduced-motion listener, and
-  the `dispose` `Terminal` now calls
-- `justerm-web/src/terminal-surface.ts` — `TerminalSurface`, the composition root this territory spent
-  two issues without (#775). It owns the canvas, the context, the grid registry, the density watcher,
-  the context-loss relay and the one presenting loop, and its `dispose` ends every grid still attached
-  before its own ambient work. **It is also the first thing here with an instantiation seam**:
-  `SurfaceDeps` injects the backend, `raf`/`caf` and the resolution query, so the *composition* is
-  host-tested rather than browser-only — the trade #696 and #579 each declined, taken the third time
-  because a composition root has nothing left over to extract
-- `justerm-web/src/frame-loop.ts` — `FrameLoop`, which owns the rAF handle for that tick. Host-tested
-  with an injected `raf`/`caf` pair, because the widget around it has no instantiation seam (#696)
-- `justerm-web/src/context-loss.ts` — `ContextLossRelay`, the channel `dispose` closes. Extracted for
-  the same reason `FrameLoop` was; the two published-surface asymmetries that make the indirection
-  necessary are in the design model above (#579)
-- `justerm-web/src/scrollbar.ts` · `fit.ts` — collaborators with their own disposers
-- `justerm-web/src/accessibility-dom.ts` — the a11y timers and their teardown
+- `justerm-web/src/terminal.ts` — `Terminal`, `Terminal.mount`, `Terminal.dispose`, `TerminalOptions`,
+  `rendererNotifyingSink`, `INPUT_ATTRIBUTE`; `Terminal.setSuggestion` refuses after dispose (#972)
+- `justerm-web/src/renderer.ts` — `Renderer`, with the optional `dispose` and `setFocused` contracts
+- `justerm-web/src/frame-source.ts` — `StubFrameSource`; the `FrameSource` and `Unsubscribe` types live
+  in `types.ts`
+- `justerm-web/src/frame-loop.ts` — `FrameLoop`, host-tested with injected `raf`/`caf`
+- `justerm-web/src/context-loss.ts` — `ContextLossRelay`
+- `justerm-web/src/justerm-renderer.ts` — `JustermRenderer.create`, `JustermRenderer.attach`,
+  `build`, `assemble`, `blinkTick`, `trackBlinkCells`, `setFocused`, `dispose`
+- `justerm-web/src/terminal-surface.ts` — `TerminalSurface.dispose`, `GridLease` (`onReapply`, `onEnd`,
+  `release`), `SurfaceDeps` — the instantiation seam that makes the composition host-testable
+- `justerm-web/src/dpr-watcher.ts` — `DprWatcher`, surface-scoped since #775
+- `justerm-web/src/composition.ts` — `CompositionController`, `preeditIntent`, `preeditLatch`
+- Tests: `justerm-web/test/terminal.test.ts` (fake renderer), `frame-loop.test.ts`,
+  `context-loss.test.ts`, `terminal-surface.test.ts`; browser proofs in `justerm-web/e2e/demo.spec.ts`
+  and `shared-surface.spec.ts` (`#606`, `#579`, `#801`, `#912` titles)
 
 ## Reference behaviour
 
-In `docs/agents/reference-facts.md` — **linked, never restated**.
-
-- [Who ends a component the consumer handed over](../../agents/reference-facts.md#widget-teardown--who-ends-a-handed-over-component-606-verified-2026-07-29)
-  — xterm.js disposes each consumer-constructed addon from `Terminal.dispose()`, idempotently, and
-  its lifecycle is one-shot by construction. That last part is a **condition** on the rule, not
-  decoration: the reference is safe to copy only because its dispose is end-of-life, which is why
-  #606 had to declare the same thing rather than assume it.
+- [Widget teardown — who ends a handed-over component](../../agents/reference-facts.md#widget-teardown--who-ends-a-handed-over-component-606-verified-2026-07-29)
+  — xterm.js disposes each consumer-constructed addon from `Terminal.dispose()`, idempotently, and its
+  lifecycle is one-shot. The one-shot part is a **condition** on copying it, which is why #606 had to
+  declare end-of-life rather than assume it
+- [Surviving a throw from inside a rAF loop](../../agents/reference-facts.md#surviving-a-throw-from-inside-a-raf-loop--the-reference-clears-its-handle-first-696-verified-2026-08-03)
+  — the reference clears its handle first; `FrameLoop` follows
+- [The initial focus state — who establishes it](../../agents/reference-facts.md#the-initial-focus-state--who-establishes-it-912-verified-2026-09-16)
+  — the corpus splits 2-1 on the default; what all three share is a correction path, so a default alone
+  is not a contract
+- [Text blink — SGR 5](../../agents/reference-facts.md#text-blink--sgr-5-576-verified-2026-07-29)
+  — the viewport gate the conservative `mayHaveBlinkCells` adapts
 
 ## Cross-cutting invariants
 
-- [an awaited in-page promise needs an anchor](../invariant/an-awaited-in-page-promise-needs-an-anchor.md)
-  — this territory's contracts (context loss, dispose, restore) are provable only in a browser, and
-  two of them are read through parked hooks. A read path that can fail for a reason it does not
-  report is a hole in the evidence for everything below, not in the behaviour itself
-- [the cell size is derived state](../invariant/cell-size-is-derived-state.md)
-  — `textareaCell` is a cached *decision* that outlives the geometry it was computed from, so a cell
-  change with a stationary cursor left the IME anchor stale (#578, fixed by #631). It is a lifecycle
-  fact rather than a geometry one: the cache still has no invalidation path, and #631's answer was
-  not to give it one — the widget cannot observe a cell change, because `getGeometry` is a
-  consumer-supplied *pull* callback. Instead the anchor is re-read at the moments something reads it
-  (composition start, focus). So the cached decision still outlives its geometry between those
-  moments **by design**; what changed is that nothing reads it while it is stale.
-
-- [an IME composition is browser-owned state the engine never sees](../invariant/composition-is-browser-owned-state.md)
-  — the anchor's point-of-use re-read (#631) sits in a `compositionstart` handler because that is the
-  moment the OS reads it, and the widget can only learn of it from a browser event. The same fact is why
-  the frame-driven path has no composition gate to key on (#637).
-
 - [a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md)
-  — **promoted out of this territory by #775, and the promotion corrected it.** This section used to
-  read *"no invariant originates here"* and carried the rule the territory gained at #606 — *"what a
-  layer is handed across a port, that layer ends"* — with a standing instruction to promote it the day
-  a second injected-collaborator port existed, naming #287's `TerminalSurface` as the likely candidate.
-  That is exactly what arrived, and it **falsified the phrasing**: `JustermRenderer.attach` is handed a
-  surface and deliberately does *not* end it, because the surface is shared. The criterion is
-  **exclusivity**, not provenance — a layer ends what it is the only holder of, whether it built it or
-  was handed it. Both of this territory's sites still derive from the corrected rule; what changed is
-  that the composition case (`create` builds the surface, so it ends it) stopped needing a clause of
-  its own.
-
-  Kept here rather than replaced by the link, because it is the part the note cannot say about
-  *itself*: the reach check that found one site (#606) was right to leave it, and the one-site
-  phrasing was wrong. A rule promoted on the strength of one site would have shipped the provenance
-  wording into the first host that attaches two terminals.
+  — promoted out of this territory by #775, and the promotion corrected it: the rule #606 gave this note
+  read *"what a layer is handed across a port, that layer ends"*, and `JustermRenderer.attach` falsified
+  it the day it existed — handed a shared surface, it must not end it. The criterion is exclusivity, not
+  provenance; both of this territory's sites (`Terminal.dispose` ending the renderer, `create`'s
+  renderer ending its surface) derive from the corrected form. The ambient-work table's host rows are
+  that note's § A teardown the host must remember: no host calls them yet
+- [an awaited in-page promise needs an anchor](../invariant/an-awaited-in-page-promise-needs-an-anchor.md)
+  — this territory's contracts (context loss, dispose, restore) are provable only in a browser, and some
+  are read through parked hooks; a read path that can fail without saying why is a hole in the evidence
+- [the cell size is derived state](../invariant/cell-size-is-derived-state.md)
+  — `textareaCell` is a cached decision with no invalidation path, because `getGeometry` is a
+  consumer-supplied *pull*; #631 re-reads the anchor at the moments something reads it (composition
+  start, focus) instead, so the cache is stale between them **by design** and nothing reads it then
+- [an IME composition is browser-owned state the engine never sees](../invariant/composition-is-browser-owned-state.md)
+  — the anchor re-read sits in the `compositionstart` handler because that is when the OS reads it, and
+  the widget can only learn of it from a browser event; the same fact is why the frame path has no
+  composition gate to key on (#637)
+- [a screen change no frame carries owes its own present](../invariant/an-unframed-screen-change-owes-a-present.md)
+  — `render()`'s two shapes (a sole tenant presents, a shared tenant coalesces) are what every unframed change reaches; the hidden-tick gate is the converse (#801)
 
 ## Blast radius
 
-Everything the widget attaches, because the missing owner is a property of the composition rather
-than of any one collaborator.
-
-- [caret drawing](caret-drawing.md) · [caret report](caret-report.md) — the blink phase is driven by
-  the rAF loop this territory owns. `Terminal` can now **end** it (#606); what it still cannot do is
-  **pause** it, so neither blink loop stops while the terminal is off-screen (#607, closed
-  `NOT_PLANNED` on a measurement — see `## Blast radius`). Ending and pausing turned out to be
-  separable questions, which is why one shipped without the other
-- [GL context lifecycle](gl-context-lifecycle.md) — the consumer sets the restore timeout and reacts
-  to the callback. Since #579 that owner **is** stated: the widget registers the channel and closes
-  it on `dispose`, which is the second rule this territory has (after #606's) and the first one that
-  had to be *added* rather than merely written down — the renderer's teardown for it fires at a
-  moment the widget never reaches
-- [events & replies](events-and-replies.md) — both queues are drained on a cadence the consumer
-  chooses, and a widget that is disposed but still queueing has no defined behaviour
-- [accessibility](accessibility.md) — its timers are ambient work, and `reactivate()` already carries
-  a reset obligation that a lifecycle owner would otherwise hold
-- [release](release.md) — `justerm-web` consumes the *published* wasm decoder, so its startup path
-  depends on a version it does not control
+- [multi-viewport](multi-viewport.md) — the surface ends grids, not widgets; a change to what `onEnd`
+  reaches or to the lease's release decides whether a disposed surface leaves live widgets throwing
+  `no grid with id N` on the next frame
+- [GL context lifecycle](gl-context-lifecycle.md) — the renderer clears its notification slot only at
+  `free()`, a moment this package never reaches; the relay's `end` is the only stop, so a change to who
+  holds the relay changes whether a notification lands on an ended widget
+- [caret drawing](caret-drawing.md) — the blink phase is clocked by the loop this territory owns and
+  gated on the focus state it establishes at mount; a change to either moves when the caret is drawn
+- [events & replies](events-and-replies.md) — an OSC 52 read is answered asynchronously after the event
+  subscription; `Terminal.dispose` must keep ending the controller or a disposed widget answers the PTY
+- [accessibility](accessibility.md) — its timers and `selectionchange` listener are host-ended ambient
+  work, and `reactivate()` carries a reset obligation a lifecycle owner would otherwise hold
+- [hyperlinks](hyperlinks.md) — the hover state restores the element's inline `cursor` on dispose; a
+  link-state change that adds DOM state must add its undo here
+- [release](release.md) — `justerm-web` consumes the *published* wasm decoder through a dynamic
+  `import()`, so its startup path depends on a version it does not control
 
 ## Known holes / open
 
-- **One rule now exists; the territory is still mostly convention.** #606 settled what happens to
-  what the widget is *handed*. Six collaborators the consumer keeps have teardown nobody calls, and
-  two have none at all — that is a **composition-root** question, and it now lives here rather than
-  on an issue.
-  **Measured 2026-08-21, which is why #605 closed.** The half that was a hypothesis is answered: the
-  anchor predicted that each new slice would re-decide ownership locally, and the three ambient
-  modules added *after* it was filed did the opposite — `frame-loop.ts` (2026-08-03),
-  `context-loss.ts` (08-04) and `dpr-watcher.ts` (08-10) each carry a teardown, and the last two cite
-  #606 in their own source. Five source files now quote that rule. The half that remains is real and
-  unchanged — the only `Terminal.dispose()` calls outside tests sit inside the demo's *proof* probes,
-  and the `Scrollbar` and the resize observer are never disposed on any ordinary path — but nothing
-  can move it: a composition root is a question a **host application** asks, and `justerm-web` had no
-  consumer when this was written. **penterm adopted the widget on 2026-09-15** for its Native (beta)
-  panes (`../penterm/src/blocks/terminal/components/NativeTerminalSurface.tsx` mounts a `Terminal`
-  and pushes its `dispose` into the effect's cleanups), so this is now live; this bullet is where
-  that reader is standing.
-  **#775 moved it, and the way it moved is worth recording because #605's closing note predicted it
-  could not be.** That note was right about the reason and wrong about the reach: a composition root
-  *is* a question a host asks, and what changed is that this package now has to answer it for itself.
-  One WebGL2 context serving N terminals means something must own the canvas, the registry, the
-  density and the recovery for longer than any one widget lives — so `TerminalSurface` is that root,
-  and its ownership rule fell out of building it rather than being decided in the abstract:
-  [a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md).
-  **What it does NOT cover, unchanged:** the surface owns what it composes, and the six
-  consumer-constructed collaborators in the table above are not among them. `Scrollbar`, the resize
-  observer, the a11y timers, the accessible view's keydown, the search debounce and the marker index
-  are still callable and uncalled, and still wait on a host that adopts the widget. The root answers
-  *who ends the canvas*, not *who ends everything*.
-- ~~`Terminal.dispose()` cannot reach the renderer's blink loop.~~ Closed by #606: `dispose?()` is on
-  the `Renderer` port and `Terminal.dispose()` calls it, proven in a real browser by counting the
-  loop's presenting rAF turns before (>0) and after (0) disposal.
-- **Neither blink loop pauses when the terminal is off-screen** — but read the two corrections
-  before acting on it. A backgrounded *tab* does **not** keep animating: `rAF` stops for a hidden
-  document, which is why #607 was about element visibility inside a *visible* page, and it closed
-  `NOT_PLANNED` on a measurement — 5 presents in 1500 ms, all 5 from the demo's own frame timer and
-  **0** from the blink loop, because the shipped defaults are a steady cursor and text blink off.
-  So this is not tracked work; it is a validity condition, and #607 stated it: a consumer setting
-  `cursorBlink: true` or `textBlinkInterval > 0` gets a real flip about twice a second.
-
-  **#801 answered half of it, and the halves are not interchangeable.** That slice gave the widget
-  the visibility input #607 said it did not have — the `hidden` flag — and `blinkTick` now returns on
-  it, so a terminal the host has **set aside** drives nothing: measured on the two-terminal page, 4
-  whole-canvas presents in 2100 ms before the gate and 0 after, with a shown sibling holding at 3
-  either way. What is *still* open is #607's actual question, **scrolled out of view inside a visible
-  page**, which no flag here can see because nobody tells the widget about it. The two references do
-  not agree on the boundary either, and neither contains the other: xterm.js's `IntersectionObserver`
-  catches a scrolled-away pane and `display: none` but **not** `visibility: hidden` (the box survives
-  and still intersects); our flag catches whatever the host reports, which via `observeViewportRect`
-  is `display: none` and via `hide()` is anything at all. So #607 is not reopened by this — it would
-  need its own observer, and that is the decision it was closed on.
-
-  The half that *was* closed had a narrower trigger than it looks, and the two blink clocks differ:
-  `CursorBlink.isVisible` parks solid when `!focused` and `display: none` blurs, so the ordinary hide
-  path self-gated; `TextBlink.isVisible` has no focus gate at all. The path that made it reachable is
-  the one `justerm-web`'s README points at — `hide()` called directly for `visibility: hidden`, where
-  no observer fires and focus is kept.
-- **Focus is defined by the element alone, and nothing says that is the whole definition.** The
-  widget drives `setFocused` from the hidden textarea's focus/blur events, so a terminal whose
-  textarea is still `document.activeElement` while the *window* is not the user's active window
-  keeps blinking and keeps the **active** selection tint — the same harm #912 removed, one state
-  later, and one `rAF` does not park because the page is still visible. xterm.js ANDs its read with
-  `ownerDocument.hasFocus()` and re-derives it once per microtask
-  ([reference facts](../../agents/reference-facts.md#the-initial-focus-state--who-establishes-it-912-verified-2026-09-16)).
-  **Unmeasured, and the instrument is the reason**: two independent attempts during #912 failed the
-  same way — headless Chromium reports neither a `blur` on the focused textarea nor a change in
-  `document.hasFocus()` when another tab is selected, while a positive control (moving focus to
-  another element) does log `blur`. So the recorder is on the call path and headless simply does not
-  model window deactivation. Settling it needs a headed browser with two real OS windows, reading
-  the blur log and `document.hasFocus()` in one turn. Recorded rather than filed, because a gap
-  whose measurement failed is a gap in the evidence and not yet a defect.
-- **No reference comparison** for teardown composition, which is the one thing a widget library is
-  usually judged on by its consumers. (Its *scheduling* half now has one — see below.)
-- **The widget still cannot be constructed in a test.** `vitest.config.ts` runs the `node`
-  environment and the constructor reads `window.matchMedia`, so there is no `RendererBackend`-fake
-  path into `JustermRenderer` and none of its behaviour is unit-covered. #696 worked *around* this
-  by extracting the one piece that had to be tested rather than by building the seam, and said so.
-  **#579 took the same trade a second time** (`context-loss.ts`, the relay), which is the part worth
-  recording: the workaround is the established shape now rather than one slice's expedient, and each
-  use leaves the *composition* — what `create` registers, what `dispose` closes — provable only in a
-  browser. For #579 both are asserted in `e2e/demo.spec.ts` against a real `WEBGL_lose_context` and
-  both are mutation-verified, so this is coverage by a slower gate rather than absence. The slice
-  that reaches for the extraction a third time should price building the seam against it.
+- **A composition root exists for the canvas, not for everything** (#605 closed 2026-08-21 on this).
+  #775's `TerminalSurface` answers *who ends the canvas, the context, the density and the recovery*;
+  it does not own the host-constructed collaborators in the table. Measured on #605's close: the three
+  ambient modules added after the spine (`frame-loop.ts`, `context-loss.ts`, `dpr-watcher.ts`) each
+  carry a teardown, and `context-loss.ts` and `dpr-watcher.ts` cite #606 in their own source. PenTerm,
+  the one host, adopted the widget on 2026-09-15 and ends the scrollbar, its resize observer, the
+  widget, the renderer and its placement (penterm 7dadc3c95 `nativeTerminalCache.ts` —
+  `disposeNativeTerminal`); it wires no a11y, search debounce teardown or marker index, so those rows
+  have no ending caller anywhere.
+- **Two collaborators have no teardown at all**: the accessible view's keydown (harmless while its
+  element is dropped with it) and the search debounce (`SearchController` has no `dispose`; a timer
+  armed before the host drops it still fires).
+- **No pause for a terminal scrolled out of view inside a visible page.** A hidden *document* stops
+  rAF; #607 closed `NOT_PLANNED` on a measurement (5 presents in 1500 ms, all from the demo's frame
+  timer, 0 from the blink loop, because the shipped defaults are a steady cursor and no text blink), so
+  this is a validity condition: a consumer setting `cursorBlink: true` or `textBlinkInterval > 0` gets a
+  real flip about twice a second. #801 gave the widget the `hidden` input for a pane the host sets aside;
+  a pane scrolled away is still not reported to anyone. The references do not agree on the boundary:
+  xterm.js's `IntersectionObserver` catches a scrolled-away pane and `display: none` but not
+  `visibility: hidden`; this package catches whatever the host reports.
+- **Focus is the textarea's alone, and window deactivation is not modelled.** A textarea that stays
+  `document.activeElement` while the window is inactive keeps blinking and keeps the active tint —
+  #912's harm, one state later. xterm.js ANDs with `ownerDocument.hasFocus()`. **Unmeasured**: two
+  attempts during #912 failed because headless Chromium reports neither a `blur` nor a `hasFocus()`
+  change when another tab is selected, while a positive control (focus moved to another element) does
+  log `blur`. Settling it needs a headed browser with two OS windows.
+- **`JustermRenderer` cannot be constructed in a unit test.** `vitest.config.ts` runs `node` and the
+  private constructor reads `window.matchMedia`, so none of its behaviour is unit-covered; #696 and #579
+  each extracted the one piece that had to be tested (`FrameLoop`, `ContextLossRelay`) and left the
+  composition — what `create` registers, what `dispose` closes — to browser proofs, which assert #579's
+  half against a real `WEBGL_lose_context`. `TerminalSurface` took the other road (`SurfaceDeps`), because
+  a composition root has nothing left to extract.
+- **No reference comparison for teardown *composition*** — which collaborators a widget library ends for
+  its host, the thing consumers usually judge it on.
+- **The IME anchor's *other* readers are only partly known.** Measured (#649): the browser's focus
+  steps are a second reader — focusing the textarea scrolls the nearest scrollable ancestor by the
+  anchor. Whether an AT tool or magnifier is a third is unmeasured; it is the open question on spine
+  #640 that decides whether the focus-time re-sync can give way to `focus({ preventScroll: true })`.

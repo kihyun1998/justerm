@@ -2,370 +2,375 @@
 
 ## What it is
 
-Two outbound channels that are **not** the frame. Events are point-in-time notifications the engine
-accumulates while parsing (bell, title change, clipboard request); replies are bytes the application
-asked for and expects back on the PTY (DA, DSR, DECRQM, colour queries). Both are **drained**, never
-pushed.
-
-The second territory this map missed entirely on its first pass — nothing about it is cell state, so
-nothing about it appears in the frame.
+The engine's two outbound channels that are **not** the frame, kept in one note because one loop joins
+them. **Events** (`TermEvent`) are point-in-time notifications queued while parsing: bell, title,
+cwd, notifications, colour and palette changes, a column-mode request, marker births and deaths,
+and the `OSC 52` clipboard pair. **Replies** are bytes an application asked for and is blocked
+waiting on (DA, DSR, DECRQM, the kitty flags query, colour and clipboard answers). Both are
+**drained**, never pushed. The loop: a query the engine cannot answer alone leaves as a `Query…`
+event, and the consumer answers it by calling a `report_*` method, which queues reply bytes. The
+territory also holds `OSC 52` end to end — core's decode (`base64.rs`) and relay, and the web
+widget's consumer half (`clipboard.ts`) and event mirror (`events.ts`).
 
 ## Governing decisions
 
-**One, and it covers a property of the payload rather than the channel itself.**
-
 - [**ADR-0029 — a coordinate carries its instant, or is re-asked**](../../adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md)
-  — its **D4** is this channel's clause: an event can only *carry*, because its payload is detached
-  from its instant by the queue before any consumer sees it, and what it carries is checked against
-  its pull-side sibling rather than against a list of axes. That settles what a coordinate-bearing
-  variant owes. It does **not** settle what earns a place on this channel at all — see the hole below
+  — its **D4** is this channel's clause: an event can only *carry*, because the queue detaches its
+  payload from its instant before any consumer sees it, and what it carries is checked against its
+  pull-side sibling rather than a list of axes. It settles what a coordinate-bearing variant owes,
+  not what earns a place on the channel (see Known holes).
 - [ADR-0020 — what qualifies for the frame snapshot](../../adr/0020-what-qualifies-for-the-frame-snapshot.md)
-  is the record that explains why these are *not* in the frame: its first rule is state versus event,
-  and an event fails it by construction. It decides the frame's membership, not this channel's shape
-- `docs/architecture.md` §"Hidden VT state" carries both contracts — *"consumer events are
-  pull-drained, and OSC 8 is not one of them"* and *"query replies are an outbound channel, drained
-  pull-style and kept apart from events"*
+  — explains why these are *not* in the frame: its R1 is state versus occurrence, and an event fails
+  it by construction. It decides the frame's membership, not this channel's shape.
+- [ADR-0017 — mechanism in core, policy in the consumer](../../adr/0017-core-consumer-boundary-mechanism-vs-policy.md)
+  — names the clipboard in the consumer's list, and puts every answer the engine cannot know (a
+  colour, a clipboard) behind a `report_*` call.
+- `docs/architecture.md` §Hidden VT state carries both contracts — *"Consumer events are
+  pull-drained, and OSC 8 is not one of them"* and *"Query replies are an outbound channel, drained
+  pull-style and kept apart from events"*.
 
 ## Design model
 
-- **A marker's birth and death are both events, and the pair is load-bearing since #490.**
-  `MarkerDisposed` was enough while every live marker rode every frame — absence was observable.
-  Once the index is *pulled*, a population that only ever shrinks is silently wrong, so
-  `MarkerCreated { id, line, col, kind, evicted_total, epoch }` is the mirror. ADR-0020 R1 is why neither
-  is a frame field: an appearance and a disappearance are occurrences, not state.
+From the source and the records above; dated calls are attributed.
 
-- **An event that carries a coordinate carries the instant it is true at, or it carries nothing
-  (#737).** This entry read *"`line` is absolute on the same basis the frame header reports"* until it
-  was measured false. A single `feed` can create a marker and then evict, so the frame closing that
-  batch reports an origin the event's line predates; two batches with the same mark and the same three
-  evictions in opposite orders were identical on **every** channel a consumer can see — the event
-  line, both frame bases, the epoch, `marker_count` — and three lines apart in truth. The repair is
-  the pairing `MarkerIndex` already uses: the line travels with its `evicted_total`. The general
-  shape is what makes this a design-model entry rather than a bug note — a frame is a *snapshot* and
-  carries its own basis by construction, while an event is a *point in time* whose payload outlives
-  the instant that gave it meaning.
-  **And "the instant" is not one scalar (#741).** The repair above was written as *carry the basis*,
-  which is the axis the reproducing batch happened to move; markers also move **non-uniformly**, and
-  a birth queued when `marker_epoch` bumps describes a buffer that no longer exists. The rule that
-  needs no forcing case is stated against the sibling rather than the axis: **an occurrence carries
-  every scalar the pull answering the same question carries**, here `MarkerIndex`'s full
-  `(line, evicted_total, epoch)`. This channel has now had the same fact re-derived at two
-  granularities in one day, which is why the invariant note below exists rather than a third bullet.
+**The two channels**
+- **Pull, not push — and the alternative is named.** The engine queues during `feed`; the consumer
+  takes with `drain_events` / `drain_replies`, mirroring `damage` / `frame` / `reset_damage`. No
+  callback crosses the boundary, so the engine stays decoupled from the consumer's event loop.
+  alacritty's `EventListener` is the push model this deliberately does not copy (`event.rs` module
+  doc; unpinned).
+- **Two channels, kept apart on purpose.** Events say *something happened*; replies are bytes the
+  application is waiting for and must reach the byte source, in order. Merging them would make a
+  transport obligation look like a notification a consumer may ignore. Replies are raw bytes, not
+  typed: the engine encodes, the consumer writes them back uninterpreted.
+- **Draining is destructive and the consumer owns the cadence.** Nothing bounds either queue if a
+  consumer never drains; the engine has no timer and no back-pressure. A
+  [Session](session.md) drains both on every pump; its drivers decide when that is.
+- **OSC 8 hyperlinks are deliberately absent.** A hyperlink is per-cell state, not an occurrence —
+  the clearest worked example of ADR-0020's rule, stated in `event.rs`'s module doc
+  (`osc8_hyperlink_emits_no_event`).
+- **`TermEvent` is `#[non_exhaustive]`, by the maintainer on 2026-09-02**, while a slice was adding two
+  variants. What decided it was CLAUDE.md's identity statement — `justerm-core` is a reusable,
+  independent crate — so there are consumers this repo cannot edit. Measured then: crates.io reverse
+  dependencies zero (248 downloads over 11 versions); cost in this workspace zero (`events.ts` mirrors
+  the union by hand and never had a compiler relationship to break); and the window closes at 1.0.0,
+  while the VT tail adds variants (three, then two, in the two slices before). The argument that lost
+  is a real cost: an exhaustive match tells a consumer a new event exists — penterm's then
+  `route_event` carried a comment on each dropped arm — and that signal now has to come from release
+  notes. PenTerm today maps through `native_event` with a `_ => None` arm (penterm 7dadc3c95
+  `src-tauri/src/engine/native.rs`).
 
-- **One event, two producers — `Title` names a state, not an act (#823).** XTWINOPS `CSI 22 t` /
-  `CSI 23 t` gave this channel its first event with more than one origin: a title *pop* emits the
-  same `TermEvent::Title` an `OSC 0`/`OSC 2` does. That is deliberate and it is what both references
-  carrying a title stack do (xterm.js's `setTitle` fires `_onTitleChange`; alacritty's `pop_title`
-  routes through `set_title`) — a second event would ask every consumer to learn a distinction it
-  has no use for. The cost is a **tense change in the contract**: the event means *"the title is now
-  this"*, and a consumer reading it as *"the application just chose this"* is wrong on the restore.
-  Two consequences that are not obvious from the sequence alone, both measured on real ptys: every
-  application pushes at **startup, before setting a title**, so a pop routinely restores the *empty*
-  string — which means "go back to your default", not "show a blank title"; and a session that never
-  sets a title still produces one `Title("")` per pop, which is why the `cursor_color_nvim.raw`
-  capture recorded for #832 gained two events it did not have.
-- **A request the engine cannot perform is still an event, and `OSC 52` is the clearest case
-  (#828).** The clipboard is the consumer's by definition — ADR-0017 names it in the else-list — so
-  what rides this channel is not a clipboard operation but the *fact that an application asked for
-  one*. The engine's half is the sequence: recognise it, decode the base64, relay
-  `ClipboardStore { target, text }`, and answer a `QueryClipboard` only when the consumer calls
-  `report_clipboard`. **Dropping the event is how a consumer refuses**, which is why there is no
-  allow/deny knob here. The security property falls out of the same split rather than being added
-  to it: the engine holds no clipboard, so a query it is never asked to answer discloses nothing,
-  and a *read* is refusable independently of a *write*.
-  **The reason attached to that used to be wrong, and the correction is worth keeping (#841,
-  measured 2026-09-10).** This entry read *"alacritty's four-state `osc52` config has no
-  counterpart — alacritty is the consumer"*. Re-opened at the pin, alacritty gates the sequence
-  **inside its engine crate** (`alacritty_terminal/src/term/mod.rs:1706`, `:1727`) with the policy
-  *injected across the crate boundary* — `Osc52` is a field on `alacritty_terminal`'s `Config`
-  (`:353`), written by the app at `alacritty/src/config/ui_config.rs:125`. That is ADR-0017's own
-  shape, not a luxury bought by being the whole terminal, so it was never a reason we *could not*
-  do the same. The conclusion is unchanged and rests on the ADR alone: policy is the consumer's,
-  and an engine that touches no clipboard buys nothing by holding a gate in front of a relay.
-  **An empty payload clears** — the spec's `Pd` *"becomes the new selection"* (`ctlseqs.txt:2166`)
-  and xterm clears before appending (`misc.c:3410`); ghostty pins the same input as *"clear
-  clipboard"* (`src/terminal/osc/parsers/clipboard_operation.zig:93`). It is **not** the spec's
-  *"neither a base64 string nor `?`"* clause (`:2174`), which the engine diverges from: an empty
-  payload is a well-formed encoding of no bytes and never reaches that sentence.
-- **A notification is relayed, not read (#964).** `OSC 9` and `OSC 777` become one
-  `TermEvent::Notification { sequence, payload, maybe_truncated }` with the payload as sent after
-  the code — `params[1..]` rejoined, under the same no-field guard as the title and cwd arms. The
-  engine does not tell iTerm2's free text from ConEmu's numbered subcommands, nor split
-  rxvt-unicode's `notify;title;body`: that is reading, and reading is the consumer's (ADR-0017).
-  **The name overstates the content, and the docs say so.** Both codes are families: ConEmu's
-  `9;9;path` is a working-directory report a shell may send every prompt, and does *not* arrive as
-  `Cwd`; `777` is urxvt's extension dispatch, where only `notify` is a notification. A consumer that
-  shows every payload not starting `4;` toasts a path per prompt, which is why the doc-comments name
-  the families rather than two forms.
-  The references split on exactly that line — ghostty reads both in its engine, xterm.js leaves
-  them to an addon, alacritty drops them — in
-  [notification sequences](../../agents/reference-facts.md#notification-sequences--osc-9-and-osc-777-964-verified-2026-09-23).
-  **`maybe_truncated` is the maintainer's call (2026-09-23), and theirs to reverse.** Shown three
-  options — flag, lift the 16-field bound for these two codes (a shadow capture beside `vte`, or a
-  `vte` change), or relay unmarked as `Title` does — they chose the flag. What it was decided on: the
-  bound cannot be *detected*, only *reached* (see [VT interpretation](vt-interpretation.md), #840),
-  so the flag is set at 16 fields and is a false positive on the payload with exactly 14 `;`. It
-  does **not** reopen #840's call, which declined a guard that *drops* the value; this drops
-  nothing. What it did **not** cover: whether `Title`/`Cwd`/`OSC 8` should carry the same flag —
-  those stay unmarked, and #840's reasoning still governs them.
-- **`OSC 52`'s base64 is decoded in core, by a local implementation** (`base64.rs`, #828). Decoding is
-  mechanism — it depends only on the byte stream — and pushing it outward would make every consumer
-  carry base64 to use an engine feature; alacritty decodes in its core too, ghostty one layer out.
-  It is not a dependency because `base64` is not in the workspace lockfile at all, so it would be a
-  genuinely new supply-chain entry for `justerm-core` and everything downstream, against a short
-  dependency list whose entries each do something hard; RFC 4648 is a 64-entry alphabet, proven here
-  against the RFC's §10 vectors. The decoder refuses what makes the decoded bytes ambiguous — a byte
-  outside the standard alphabet (`-`/`_` are refused, not mapped), an impossible length, interior
-  padding, non-zero bits in a final partial group, partial padding (`Zg=`) — and **accepts missing
-  padding**, which diverges from **both** references (alacritty requires canonical padding, ghostty
-  rejects unpadded as `InvalidPadding`). The reach of unpadded emitters is unmeasured; the asymmetry
-  decides it, since rejecting costs a silently dropped clipboard and accepting costs nothing. The
-  encoder always pads — the laxity is for what is accepted, never for what is sent.
-- **The widget's half of `OSC 52` declines the policy too, one layer out** (`clipboard.ts`, #841).
-  It holds no clipboard and no permission model: it routes to a `ClipboardProvider` the embedder
-  supplies, and with none it does nothing. The injected-provider shape is xterm.js's
-  `addon-clipboard` (`ClipboardAddon.ts:13-16` @ `699f553`, no policy enum anywhere, handler
-  registered unconditionally at `:20`) — the shape only. Two differences: *layer* (the addon is a
-  separate package; xterm.js's `Terminal` implements no `OSC 52`, where this widget gates it on
-  `TerminalOptions.clipboard`), and *default posture* (the addon defaults to
-  `BrowserClipboardProvider`, permissive both ways, `:15`, `:71-79`; this widget's no-provider
-  default refuses both, as xterm(C) does — `DEF_ALLOW_WINDOW` `False`, `main.h:119`,
-  `DISALLOWED_PASTE64` `",SetSelection,GetSelection"`, `:159`, `:170-172` @ `xterm-410`).
-  **Read and write are refused independently.** Defaulting writes open and reads shut is **2 of 4**,
-  not unanimous (an earlier count said 3-for-3): alacritty's default is `Osc52::OnlyCopy`
-  (`term/mod.rs:377-380` @ `852e971`) and ghostty ships `clipboard-write: allow` beside
-  `clipboard-read: ask` (`src/config/Config.zig:2379-2380` @ `e6e26e1`) — both native applications
-  with a config file; the two embeddable references are symmetric (xterm.js allows both, xterm(C)
-  denies both). **Focus is not a gate — the maintainer's call, 2026-09-10, and theirs to reverse.**
-  alacritty checks focus both ways (`alacritty/src/event.rs:1903`, `:1908` @ `852e971`); ghostty
-  and xterm.js do not — 1 of 3. Knowing focus and deciding refusals from it are different acts, and
-  only the first is the widget's; an embedder can refuse on focus inside its provider. **A refusal is
-  silence at all four references** — alacritty `debug!` and return (`term/mod.rs:1727-1730`),
-  ghostty `log.info` and return (`src/Surface.zig:5837-5844`), xterm(C)'s reply block sits inside
-  `AllowWindowOps` (`misc.c:3378`), xterm.js leaves `OSC 52` unhandled without the addon; none sends
-  a "denied" reply. **A provider's rejection is a refusal, swallowed**; xterm.js's addon returns the
-  promise to the parser, whose `WriteBuffer.ts:283-286` deliberately lets it throw as an uncaught
-  error while the parse resumes. **A browser read hangs rather than rejecting** — measured
-  2026-09-10, Chromium over `localhost`: `readText()` with `userActivation.isActive` `true` stayed
-  pending past 2000 ms, and with it `false` (the 5 s window waited out, `hasBeenActive` `true`)
-  past 3000 ms, while `writeText()` resolved; `permissions.query` read `clipboard-read: "prompt"`,
-  `clipboard-write: "granted"` throughout. The second row is the one that matters, since an `OSC 52`
-  query arrives from the stream and never with a gesture. So a controller promise may never settle
-  (hence `ClipboardController.dispose`), and the widget imposes no deadline — a bounded read is the
-  provider's policy. Not measured: a never-activated page, a denied prompt, other browsers. And
-  `""` and `null` are different answers: an empty clipboard still replies, because the application
-  is blocked waiting — ghostty says so outright (`src/Surface.zig:5945-5946` @ `e6e26e1`).
-- **One subscription serves both surfaces** (`Terminal.mount`). Core produces a single event stream
-  and a backend has a single channel to push it down, so the clipboard pair arrives with the
-  notifications; `dispatchTermEvent` ignores the pair and the clipboard controller ignores the
-  notifications, so wiring either alone still works. The controller is held on the widget, not in
-  a local, because an in-flight clipboard read is already past the subscription — dropping the
-  subscription cannot stop it landing — so `dispose()` ends the controller
-  ([a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md)).
-  `handle` is floated rather than awaited: it never rejects, and the event channel is
-  fire-and-forget, so a clipboard round trip must not stall the stream.
-- **`ClipboardTarget` models three of `OSC 52`'s selectors and keeps `p` apart from `s`** (#828). The
-  field admits `c`, `p`, `q`, `s` and eight cut buffers; the three a consumer can act on are modelled
-  and the rest ignored, as alacritty ignores them, rather than folded onto a neighbour, which would be
-  the engine inventing an equivalence. ghostty folds every unrecognised kind onto the clipboard
-  (`src/termio/stream_handler.zig:1013`) — read its `switch`, not the comment above it, which claims
-  it always uses the standard clipboard. A first draft collapsed `p` and `s` as alacritty does, and
-  that is wrong *here* though not there: alacritty replies with the byte the application sent, while
-  this engine hands the consumer a value and takes it back at `report_clipboard`, so a collapse would
-  answer `ESC ] 52 ; s ; ?` naming `p`. The type is `#[non_exhaustive]` because `q` and the cut
-  buffers remain unmodelled. ghostty converges on the same three open members
-  (`src/terminal/clipboard.zig:2`, `Location { standard, selection, primary, _ }`) — which #843 had
-  recorded as impossible, on the premise that Zig has no non-exhaustive enum; a trailing `_` is one.
-  An OSC ended by a bare `ESC` answers `ST`, as xterm hardcodes (`charproc.c:8964`) and ghostty's
-  `Terminator.init` returns for a missing byte (`src/terminal/osc.zig:263`).
-- **`OSC 52` diverges from the spec twice, and both are argued here (#828).** An **empty target is
-  the clipboard**, not the spec's `s0`. Neither half of `s0` is representable: the cut buffer is
-  unmodelled outright, and `s` is *merely* unmodelled — xterm resolves it through a user resource,
-  which is policy ADR-0017 puts in the consumer, and DECSET 1041 sets that resource from the stream,
-  so an engine tracking 1041 could resolve it; justerm declines to. xterm-as-shipped reads the empty
-  field as PRIMARY, so this diverges from xterm's default and not merely from its manual. What
-  decides it is independent lineages — fewer than a naive count, because alacritty never sees an
-  empty field (`vte` substitutes `c` first), so those two are one — ghostty and xterm.js's clipboard
-  addon being the other two: three lineages, one answer. And the emitter agrees: `tmux`'s
-  `set-clipboard` is documented as setting the terminal clipboard, and `tmux` 3.2a is measured
-  sending the empty form. **Malformed in, nothing out**: the spec clears on a payload that is neither
-  base64 nor `?`; clearing is destructive, and inferring one from bytes the engine could not parse
-  lets line noise wipe what the user copied by hand. xterm has no validator to disagree with — it
-  *filters* — so the disagreement is about what to accept, and this engine is the stricter on
-  purpose: a filter hands the consumer text assembled from bytes the application did not send.
-  Non-UTF-8 is refused on the same principle, since every text surface this crate publishes is UTF-8.
-  The payload is `params[2..]` rejoined, #650's rule: reading `params[2]` alone would take a payload
-  containing a `;` and *successfully* decode its well-formed first piece — a truncated clipboard, the
-  one failure this handler must not have. Rejoined, the stray `;` reaches the decoder and is refused.
-  A multi-target list like `pc`, which the spec permits (`ctlseqs.txt:2156`), is dropped rather
-  than approximated: honouring one target of two is the same defect as truncating a payload, one
-  axis over, and `vte`/alacritty's first-byte-wins would do exactly that.
-  Rows in [`reference-facts.md`](../../agents/reference-facts.md#osc-52--where-the-references-converge-and-the-two-places-the-spec-is-not-followed-828-2026-09-02).
-- **`OSC 52`'s size bound is checked on the fields, before the join** (#828) — `join` is itself an
-  unconditional full copy, so checking after it would let a hostile payload buy a second allocation
-  the size of the first. The bound is `MAX_CLIPBOARD_BASE64`; the parser's own allocation is
-  unbounded ([VT interpretation](vt-interpretation.md)).
-- **DECRQM answers from the model it has, not from a flag kept for the query** (#27). DECCOLM (`?3`)
-  is derived from the actual width, never a tracked flag — a flag would lie if the consumer ignored
-  the resize request (#82). Mouse tracking is one enum because the levels are mutually exclusive,
-  so `?1000` queried while `?1002` is active reports *reset* — faithful to that model.
+**Who answers a query: the split is who holds the answer**
+- **The engine answers what it holds, at once.** DA1 and DA2 inline in `csi_dispatch`, VT52 `DECID` in
+  the VT52 escape arm, and DSR (`5n`, `6n`), the kitty flags query and DECRQM through
+  `device_status_report` / `kitty_dispatch` / `decrqm` — seven paths that queue a reply with no
+  consumer involved. Three are state-dependent (DSR `6n`, DECRQM, kitty flags).
+- **What the consumer holds leaves as a `Query…` event**: the colour scheme (`ColorSchemeQuery`), the
+  palette, foreground, background and cursor colours, and the clipboard — six families answered by the
+  six `report_*` methods. The clipboard is the sharpest case: the engine holds none *by design*.
+- **DECRQM answers from the model it has, not a flag kept for the query** (#27). DECCOLM (`?3`) is
+  derived from the actual width — a flag would lie if the consumer ignored the resize request (#82).
+  Mouse tracking is one enum because the levels are mutually exclusive, so `?1000` queried while
+  `?1002` is active reports *reset*. DECCOLM itself reaches the consumer as a request,
+  `TermEvent::ColumnMode`, which it may honour by resizing.
 - **A `report_*` takes back what it needs rather than the engine remembering it.**
   `report_clipboard(target, text, terminator)` follows `report_palette_color(index, spec,
-  terminator)`: the consumer names the target it is answering about. alacritty is the alternative and
-  shows the cost — its query captures target and terminator in a closure
-  (`alacritty_terminal/src/term/mod.rs:1740`), which is hidden state plus a question about
-  interleaved replies, bought for something the consumer already holds.
-- **The terminator travels the same way, and #836 settled that it must (2026-09-02).** It was the one
-  fact of the exchange no `report_*` caller could supply, because the engine discarded
-  `bell_terminated` at the parser boundary. Now a `Query…` event carries it and the matching
-  `report_*` hands it back, on all five OSC reply paths. **The deciding property is this channel's,
-  not the sequence's**: `drain_events` returns a *batch*, so two queries can be outstanding at once
-  and answered in either order, and one remembered scalar cannot say which exchange it belongs to.
-  That is the same shape [`a coordinate carries the instant it is true at`](../invariant/a-coordinate-carries-the-instant-it-is-true-at.md)
-  states for coordinates — an occurrence's payload is detached from its instant by the queue, so it
-  can only carry — reached independently by a fact that is not a coordinate. xterm is the
-  counterexample worth knowing: it *does* store the terminator, but only for `OSC 52` and only
-  because its selection retrieval is asynchronous, in a single scalar with the collision this
-  channel's batch would provoke. **The spec settles the direction, not only the tally**:
-  `ctlseqs.txt:2020` — *"when returning information, uses the same terminator used in a query"* —
-  which ADR-0004 ranks above every implementation. `OscTerminator` is exhaustive at two members, and
-  ghostty converges on both the partition and the closure (`src/terminal/osc.zig:252`, a two-member
-  enum with no trailing `_`, Zig's open-enum marker). The closure rests on the input space: the 8-bit
-  C1 `ST` (`0x9C`) is absent because `feed` does not treat a lone `0x80..=0x9F` byte as a control, not
-  because the spec stops at two. Pins: [the VT-gap sweep](../../agents/reference-facts.md#the-vt-gap-sweep-of-2026-08-26--five-decisions-the-references-settled-823832-verified-2026-08-26).
-- **`TermEvent` is `#[non_exhaustive]`, by the maintainer on 2026-09-02**, while a slice was adding
-  two variants. What decided it was `CLAUDE.md`'s identity statement — `justerm-core` is a reusable,
-  independent crate — which says there are consumers this repo cannot edit; a crate that were
-  internal to penterm would want the opposite. Three measurements behind it: crates.io reverse
-  dependencies **zero** (248 downloads over 11 versions), so there was nothing external to observe;
-  cost in this workspace **zero** (`cargo test --workspace`, 87 suites, and `clippy -D warnings`
-  green; `justerm-web`'s `events.ts` mirrors the union by hand and never had a compiler relationship
-  to break); and the window **closes at 1.0.0**, after which adding it is itself breaking, while the
-  VT tail adds variants at a measured rate (three, then two, in the two slices before). **The argument
-  that lost is a real cost**: an exhaustive match tells a consumer a new event exists — penterm's
-  `route_event` carries a comment on each dropped arm, written by someone the compiler had just
-  informed — and that signal now has to come from release notes. It lost because this is a
-  notification channel where ignoring an unknown event is documented as safe.
-- **Pull, not push — and the alternative is named.** The engine queues during `feed` and the consumer
-  takes with `drain_events`, mirroring `damage` / `frame` / `reset_damage`. No callback crosses the
-  boundary, so the engine stays decoupled from the consumer's event loop. alacritty's `EventListener`
-  is the push model this deliberately does not copy, because it would couple them.
-- **Two channels, kept apart on purpose.** Events describe *something happened*; replies are **bytes
-  the application is waiting for** and must reach the PTY, in order. Merging them would make a
-  transport obligation look like a notification a consumer may ignore.
-- **OSC 8 hyperlinks are deliberately absent.** A hyperlink is per-cell state — *which cells are
-  links* — not a point-in-time event, so it is modelled like graphemes in its own slice. This is the
-  clearest worked example of ADR-0020's state-versus-event rule, and it lives in a module comment.
-- **Draining is destructive and the consumer owns the cadence.** Nothing bounds the queue if a
-  consumer never drains; the engine has no timer and no back-pressure of its own.
-- **Replies are raw bytes, not typed.** The engine encodes; the consumer writes them to the PTY
-  without interpretation — the same "mechanism here, transport yours" split the wire format uses.
+  terminator)`: the consumer names what it is answering about. alacritty is the alternative and shows
+  the cost — its query captures target and terminator in a closure (`alacritty_terminal/src/term/mod.rs:1740`),
+  hidden state plus a question about interleaved replies.
+- **The terminator travels the same way, and #836 settled that it must (2026-09-02).** The engine used
+  to discard `bell_terminated` at the parser boundary, so no `report_*` caller could supply it. Now
+  every `Query…` event carries a `Terminator` and the matching `report_*` hands it back, on all five
+  OSC reply paths (4, 10, 11, 12, 52). **The deciding property is this channel's**: `drain_events`
+  returns a batch, so two queries can be outstanding and answered in either order, and one remembered
+  scalar cannot say which exchange it belongs to (`two_outstanding_queries_each_get_their_own_terminator_back`).
+  That is the shape [a coordinate carries the instant it is true at](../invariant/a-coordinate-carries-the-instant-it-is-true-at.md)
+  states for coordinates, reached independently by a fact that is not one. xterm *does* store the
+  terminator, but only for `OSC 52` and in a single scalar with the collision this batch would
+  provoke. **The spec settles the direction**: `ctlseqs.txt:2020` — *"when returning information, uses
+  the same terminator used in a query"* — which ADR-0004 ranks above every implementation.
+  `Terminator` is exhaustive at two members (#843's rule), and ghostty converges on both the partition
+  and the closure (`src/terminal/osc.zig:252`). The closure rests on the input space: the 8-bit C1
+  `ST` (`0x9C`) is absent because `feed` does not treat a lone `0x80..=0x9F` byte as a control. An OSC
+  ended by a bare `ESC` answers `ST`, as xterm hardcodes (`charproc.c:8964`) and ghostty's
+  `Terminator.init` returns for a missing byte (`src/terminal/osc.zig:263`); one cancelled by
+  `CAN`/`SUB` is not relayed at all (#970, `a_query_cancelled_by_can_or_sub_is_not_answered`).
 
-- **`events.ts`'s `ClipboardTarget` and `Terminator` are not on published-surface's hand-copied
-  roster — the maintainer's call, 2026-09-10, and theirs to reverse.** That roster lists value spaces
-  this package transcribes from core that reach it through the decoder's wire lane, where
-  `justerm-wasm-decode` is their proper home; `TermEvent` crosses no decoder lane — it arrives on a
-  side channel the embedder implements, whose only type declaration is this package's — so a string
-  union here is the right home.
-- **`MAX_CLIPBOARD_BASE64` (16 MiB) drops an over-long `OSC 52` whole, where `MAX_COMMAND_TEXT`
-  truncates** (#828) — a prefix of a command is a usable answer, while a prefix of a clipboard is
-  text the user pastes believing it is what they copied; an ignored copy is visible the moment they
-  paste, a truncated one is not. It refuses the *second* allocation (the rejoin) and everything
-  downstream; the decoded `Vec` is a third, and the `String` is not a fourth, since
-  `String::from_utf8` reuses the buffer it is given. **It does not bound the queue** — a consumer
-  that does not drain accumulates stores at up to this size each, enlarging the unbounded-queue hole
-  below by roughly three orders of magnitude over the next-largest payload. It is sized so no real
-  copy reaches it: 16 MiB of base64 is ~12 MiB of text, past a whole scrollback of
-  `tmux set-buffer`. Neither reference has a cap to import — alacritty has none, and ghostty's
+**Event payloads**
+- **A marker's birth and death are both events, and the pair is load-bearing since #490.**
+  `MarkerDisposed` was enough while every live marker rode every frame. Once the index is *pulled*, a
+  population that only ever shrinks is silently wrong, so `MarkerCreated { id, line, col, kind,
+  evicted_total, epoch }` is the mirror. ADR-0020 R1 is why neither is a frame field.
+- **An event that carries a coordinate carries the instant it is true at, or nothing (#737, #741).**
+  A single `feed` can create a marker and then evict, so the frame closing that batch reports an
+  origin the event's line predates; two batches with the same mark and the same three evictions in
+  opposite orders were identical on every channel a consumer could see and three lines apart in truth
+  (#737). And the instant is not one scalar (#741): markers also move non-uniformly, which only the
+  epoch dates. The rule stated against the sibling rather than the axis: **an occurrence carries
+  every scalar the pull answering the same question carries**, here `MarkerIndex`'s
+  `(line, evicted_total, epoch)` (`MarkerCreated`'s doc).
+- **One event, two producers — `Title` names a state, not an act (#823).** XTWINOPS `CSI 23 t` pops a
+  title and emits the same `TermEvent::Title` an `OSC 0`/`OSC 2` does (`set_window_title` is the one
+  door). That is what both references with a title stack do (xterm.js's `setTitle` fires
+  `_onTitleChange`; alacritty's `pop_title` routes through `set_title`) — a second event would ask
+  every consumer to learn a distinction it has no use for. The cost is a tense change: the event means
+  *"the title is now this"*. Measured on real ptys: applications push at startup before setting a
+  title, so a pop routinely restores the empty string — "go back to your default"
+  (`xtwinops_a_push_before_any_title_restores_the_empty_one`); and a session that never sets a title
+  still produces one `Title("")` per pop, which is why the `cursor_color_nvim.raw` capture recorded for
+  #832 gained two events. The stack is `TITLE_STACK_DEPTH` (10) deep and drops the oldest.
+- **A notification is relayed, not read (#964).** `OSC 9` and `OSC 777` become one
+  `TermEvent::Notification { sequence, payload, maybe_truncated }`, the payload `params[1..]`
+  rejoined, under the same no-field guard as the title and cwd arms. The engine does not tell iTerm2's
+  free text from ConEmu's numbered subcommands, nor split rxvt-unicode's `notify;title;body`: reading
+  is the consumer's (ADR-0017). **The name overstates the content, and the docs say so**: ConEmu's
+  `9;9;path` is a working-directory report a shell may send every prompt and does *not* arrive as
+  `Cwd`; `777` is urxvt's extension dispatch, where only `notify` is a notification.
+  **`maybe_truncated` is the maintainer's call (2026-09-23), and theirs to reverse.** Shown three
+  options — flag, lift the 16-field bound for these codes (a shadow capture beside `vte`, or a `vte`
+  change), or relay unmarked as `Title` does — they chose the flag. The bound cannot be *detected*,
+  only *reached* ([VT interpretation](vt-interpretation.md), #840), so the flag is set at
+  `VTE_OSC_FIELD_CAP` fields and is a false positive on a payload with exactly 14 `;`. It does not
+  reopen #840, which declined a guard that *drops* the value; this drops nothing. Whether
+  `Title`/`Cwd`/`OSC 8` should carry the same flag was not covered; they stay unmarked.
+- **A request the engine cannot perform is still an event, and `OSC 52` is the clearest case (#828).**
+  What rides the channel is not a clipboard operation but the fact that an application asked for one.
+  The engine's half: recognise the sequence, decode the base64, relay `ClipboardStore { target, text }`
+  or `QueryClipboard { target, terminator }`, and answer a query only when the consumer calls
+  `report_clipboard`. **Dropping the event is how a consumer refuses**, so there is no allow/deny knob.
+  The security property falls out of the split: the engine holds no clipboard, so a query it is never
+  asked to answer discloses nothing, and a read is refusable independently of a write. PenTerm's
+  Native path drops every `QueryClipboard` (and every colour query) in `native_event` — "a clipboard
+  read because the app never answers one" (penterm 7dadc3c95 `src-tauri/src/engine/native.rs`).
+  **The reason once attached to that was wrong (#841, measured 2026-09-10).** It read *"alacritty's
+  four-state `osc52` config has no counterpart — alacritty is the consumer"*. At the pin, alacritty
+  gates the sequence inside its engine crate (`alacritty_terminal/src/term/mod.rs:1706`, `:1727`) with
+  the policy injected across the crate boundary (`Osc52` on `alacritty_terminal`'s `Config`, `:353`,
+  written at `alacritty/src/config/ui_config.rs:125`) — ADR-0017's own shape. The conclusion rests on
+  the ADR alone: an engine that touches no clipboard buys nothing by holding a gate in front of a relay.
+
+**`OSC 52` in core**
+- **`ClipboardTarget` models three selectors and keeps `p` apart from `s`** (#828). The field admits
+  `c`, `p`, `q`, `s` and eight cut buffers; the three a consumer can act on are modelled and the rest
+  ignored, as alacritty ignores them, rather than folded onto a neighbour. ghostty folds every
+  unrecognised kind onto the clipboard (`src/termio/stream_handler.zig:1013` — read its `switch`, not
+  the comment above it). A first draft collapsed `p` and `s` as alacritty does; that is wrong here
+  though not there, because alacritty replies with the byte the application sent while this engine
+  hands the consumer a value and takes it back at `report_clipboard`, so a collapse would answer
+  `ESC ] 52 ; s ; ?` naming `p` (`the_reply_names_the_selector_the_application_wrote`). The type is
+  `#[non_exhaustive]` (#843) because `q` and the cut buffers remain unmodelled. ghostty converges on the
+  same three open members (`src/terminal/clipboard.zig:2`, `Location { standard, selection, primary, _ }`)
+  — which #843 had recorded as impossible, on the premise that Zig has no non-exhaustive enum; a
+  trailing `_` is one.
+- **It diverges from the spec twice, both argued (#828).** An **empty target is the clipboard**, not
+  the spec's `s0`. Neither half of `s0` is representable: the cut buffer is unmodelled, and `s` is
+  resolved by xterm through a user resource (policy ADR-0017 puts in the consumer; DECSET 1041 sets it
+  from the stream, which justerm declines to track). xterm-as-shipped reads the empty field as
+  PRIMARY. What decides it is independent lineages — alacritty never sees an empty field (`vte`
+  substitutes `c` first), so it and `vte` are one — ghostty and xterm.js's clipboard addon the other
+  two: three lineages, one answer; and `tmux` 3.2a was measured sending the empty form.
+  **Malformed in, nothing out**: the spec clears on a payload that is neither base64 nor `?`; clearing
+  is destructive, and inferring one from bytes the engine could not parse lets line noise wipe what the
+  user copied (`a_malformed_payload_relays_nothing`). xterm *filters* instead; this engine is stricter
+  on purpose, since a filter hands the consumer text assembled from bytes the application did not send.
+  Non-UTF-8 is refused on the same principle (`a_payload_that_is_not_utf8_relays_nothing`).
+- **An empty payload clears** — the spec's `Pd` *"becomes the new selection"* (`ctlseqs.txt:2166`),
+  xterm clears before appending (`misc.c:3410`), ghostty pins the same input as *"clear clipboard"*
+  (`src/terminal/osc/parsers/clipboard_operation.zig:93`). It is not the spec's *"neither a base64
+  string nor `?`"* clause (`:2174`): an empty payload is a well-formed encoding of no bytes
+  (`an_empty_payload_is_a_store_of_the_empty_string`). Two fields (`OSC 52 ; c`) is no payload at all
+  and relays nothing (`a_missing_payload_field_is_not_an_empty_payload`).
+- **The payload is `params[2..]` rejoined, #650's rule**: reading `params[2]` alone would decode a
+  well-formed first piece of a payload containing a `;` — a truncated clipboard. Rejoined, the stray
+  `;` reaches the decoder and is refused (`a_payload_split_by_a_semicolon_is_not_silently_truncated`).
+  A multi-target list like `pc`, which the spec permits (`ctlseqs.txt:2156`), is dropped rather than
+  approximated (`an_unmodelled_or_multi_character_target_relays_nothing`): honouring one target of two
+  is the same defect one axis over, and `vte`/alacritty's first-byte-wins would do exactly that.
+- **The size bound is checked on the fields, before the join** (#828) — `join` is an unconditional full
+  copy, so checking after it would let a hostile payload buy a second allocation the size of the first.
+  `MAX_CLIPBOARD_BASE64` (16 MiB) **drops an over-long payload whole, where `MAX_COMMAND_TEXT`
+  truncates**: a prefix of a command is a usable answer, a prefix of a clipboard is text the user
+  pastes believing it whole (`an_oversized_payload_is_dropped_whole`). It refuses the second allocation
+  (the rejoin) and everything downstream; the decoded `Vec` is a third, and the `String` is not a
+  fourth (`String::from_utf8` reuses its buffer). It does not bound the parser's own allocation
+  ([VT interpretation](vt-interpretation.md)) nor the queue. Sized so no real copy reaches it (16 MiB
+  of base64 is ~12 MiB of text). Neither reference has a cap to import — alacritty has none, ghostty's
   `MAX_BUF = 2048` is an inline-buffer threshold with an allocator path past it
   (`src/terminal/osc.zig:298`) — so the number is justerm's own.
+- **The base64 is decoded in core, by a local implementation** (`base64.rs`, #828). Decoding is
+  mechanism, and pushing it out would make every consumer carry base64; alacritty decodes in its core
+  too, ghostty one layer out. Not a dependency because `base64` is not in the workspace lockfile at
+  all, so it would be a new supply-chain entry for `justerm-core` and everything downstream, for a
+  64-entry alphabet proven against RFC 4648 §10's vectors (`encodes_the_rfc4648_vectors`,
+  `decodes_the_rfc4648_vectors`). The decoder refuses what makes the bytes ambiguous — a byte outside
+  the standard alphabet (`-`/`_` refused, not mapped), an impossible length, interior padding, non-zero
+  bits in a final partial group, partial padding (`Zg=`) — and **accepts missing padding**, diverging
+  from both references (alacritty requires canonical padding, ghostty rejects unpadded as
+  `InvalidPadding`). The reach of unpadded emitters is unmeasured; the asymmetry decides it, since
+  rejecting costs a silently dropped clipboard and accepting costs nothing. The encoder always pads.
+
+**`OSC 52` in the web widget**
+- **The widget declines the policy too, one layer out** (`clipboard.ts`, #841). It holds no clipboard
+  and no permission model: `ClipboardController` routes to a `ClipboardProvider` the embedder supplies,
+  and with none it does nothing (`TerminalOptions.clipboard`). The injected-provider shape is xterm.js's
+  `addon-clipboard` (`ClipboardAddon.ts:13-16` @ `699f553`, no policy enum, handler registered
+  unconditionally at `:20`) — the shape only. Two differences: *layer* (the addon is a separate
+  package; xterm.js's `Terminal` implements no `OSC 52`) and *default posture* (the addon defaults to
+  `BrowserClipboardProvider`, permissive both ways, `:15`, `:71-79`; this widget's no-provider default
+  refuses both, as xterm(C) does — `DEF_ALLOW_WINDOW` `False`, `main.h:119`, `DISALLOWED_PASTE64`
+  `",SetSelection,GetSelection"`, `:159`, `:170-172` @ `xterm-410`).
+- **Read and write are refused independently.** Defaulting writes open and reads shut is **2 of 4**:
+  alacritty's default is `Osc52::OnlyCopy` (`term/mod.rs:377-380` @ `852e971`) and ghostty ships
+  `clipboard-write: allow` beside `clipboard-read: ask` (`src/config/Config.zig:2379-2380` @
+  `e6e26e1`), both native applications with a config file; the two embeddable references are symmetric
+  (xterm.js allows both, xterm(C) denies both). The query path checks for a `ClipboardPort` before it
+  touches `readText`, so no permission prompt is raised for an answer nobody can receive.
+- **Focus is not a gate — the maintainer's call, 2026-09-10, theirs to reverse.** alacritty checks
+  focus both ways (`alacritty/src/event.rs:1903`, `:1908` @ `852e971`); ghostty and xterm.js do not.
+  Knowing focus and deciding refusals from it are different acts; an embedder can refuse on focus
+  inside its provider.
+- **A refusal is silence at all four references** — alacritty `debug!` and return
+  (`term/mod.rs:1727-1730`), ghostty `log.info` and return (`src/Surface.zig:5837-5844`), xterm(C)'s
+  reply block sits inside `AllowWindowOps` (`misc.c:3378`), xterm.js leaves `OSC 52` unhandled without
+  the addon. **A provider's rejection is a refusal, swallowed**; xterm.js's addon instead returns the
+  promise to the parser, whose `WriteBuffer.ts:283-286` lets it throw uncaught while the parse resumes.
+- **A browser read hangs rather than rejecting** — measured 2026-09-10, Chromium over `localhost`:
+  `readText()` with `userActivation.isActive` `true` stayed pending past 2000 ms, and with it `false`
+  (the 5 s window waited out, `hasBeenActive` `true`) past 3000 ms, while `writeText()` resolved;
+  `permissions.query` read `clipboard-read: "prompt"`, `clipboard-write: "granted"` throughout. The
+  second row is the one that matters: an `OSC 52` query arrives from the stream, never with a gesture.
+  So a controller promise may never settle (hence `ClipboardController.dispose`), and the widget
+  imposes no deadline — a bounded read is the provider's policy. Not measured: a never-activated page,
+  a denied prompt, other browsers. **`""` and `null` are different answers**: an empty clipboard still
+  replies, because the application is blocked waiting — ghostty says so (`src/Surface.zig:5945-5946`
+  @ `e6e26e1`).
+- **A query cannot overtake the store before it.** A store and a query arrive back to back in one
+  drained batch and both are floated, so the controller keeps the outstanding write per target and a
+  query awaits it first; keyed by target so a hung read on one cannot stall another.
+- **One subscription serves both surfaces** (`Terminal.mount`). A backend has one channel to push the
+  event stream down, so the clipboard pair arrives with the notifications; `dispatchTermEvent` ignores
+  the pair and the controller ignores the notifications, so wiring either alone still works. The
+  controller is held on the widget because an in-flight read is already past the subscription, so
+  `dispose()` ends the controller ([a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md)).
+  `handle` is floated rather than awaited: it never rejects, and the channel is fire-and-forget.
+- **`events.ts` has two surfaces, and the split is the point.** The `TermEvent` union is the channel
+  and carries the `OSC 52` pair, because a backend has one stream. `EventHandlers` is the
+  *notification* surface — title, bell, cwd, and since #964 the `OSC 9`/`OSC 777` notification — so a
+  new event does not automatically owe a callback; it owes a decision about which surface it belongs
+  on. `NotificationEvent` took a callback because the consumer is only told. Core's four colour
+  `Query…` events, the set/reset colour events, `ColorSchemeQuery` and `ColumnMode` are not on the
+  union: the clipboard pair deliberately did not generalise a channel for them (#841, with the
+  maintainer), because the colour queries carry a palette-ownership question that slice did not
+  measure.
+- **`events.ts`'s `ClipboardTarget` and `Terminator` are not on published-surface's hand-copied
+  roster — the maintainer's call, 2026-09-10, theirs to reverse.** That roster lists value spaces that
+  reach the package through the decoder's wire lane, where `justerm-wasm-decode` is their home;
+  `TermEvent` crosses no decoder lane — it arrives on a side channel the embedder implements, whose
+  only type declaration is this package's.
+
+**Inputs and their bounds**
+- One `feed` can queue any number of events and replies; nothing bounds either queue but the drain.
+- Per item: a title is cut to `MAX_TITLE` chars; a clipboard payload over `MAX_CLIPBOARD_BASE64` is
+  dropped; every OSC payload is cut at 16 fields by `vte`. `OSC 7` cwd values, notification payloads
+  and colour specs have no length bound of their own (see Known holes).
 
 ## Code
 
-- `justerm-core/src/event.rs` — `TermEvent`, the event surface
-- `justerm-core/src/term/replies.rs` — `Term::drain_events`, `Term::drain_replies`, and the
-  `Term::report_*` methods that queue replies (`report_background`, `report_foreground`,
-  `report_cursor_color`, `report_palette_color`, `report_color_scheme`, `report_clipboard`);
-  `Term::clipboard` is the `OSC 52` half that queues onto both channels. **`report_*` is not the
-  whole producer set**: a query the engine can answer alone queues its reply without calling back
-  out — DA1 and DA2 inline in `csi_dispatch` ([VT interpretation](vt-interpretation.md)), DSR, the kitty
-  flags query and DECRQM through `device_status_report` / `kitty_dispatch` / `decrqm` beside the
-  `report_*` methods. The split is *who holds the
-  answer*: a colour is the consumer's, so it must call back in; a device identity is the engine's —
-  and `OSC 52` is the sharpest case of the first, since the engine holds no clipboard *by design*
-- `justerm-core/src/lib.rs` — `Engine::drain_events`, `Engine::drain_replies`
-- `justerm-core/src/base64.rs` — the RFC 4648 transform `OSC 52` needs in both directions, kept in
-  the engine because it is mechanism and kept out of the dependency list because it is small
-- `justerm-web/src/events.ts` — the widget's mirror of this channel. **The narrowing moved in
-  #841, and where it moved to is the point**: the `TermEvent` *union* now carries the `OSC 52`
-  pair too, because a backend has one stream to push down. What stays narrower is
-  `EventHandlers`, the *notification* surface — title, bell, cwd and, since #964, the
-  `OSC 9`/`OSC 777` notification — so a new event here still does not automatically owe a
-  callback; it owes a decision about which of the two surfaces it belongs on. `NotificationEvent`
-  took the callback because the consumer is only told: no reply is owed
-- `justerm-web/src/clipboard.ts` — the `OSC 52` consumer half (#841). `ClipboardController` takes
-  the pair off that same subscription, routes it to an embedder-injected `ClipboardProvider`, and
-  answers a query on a `ClipboardPort`. The widget holds no clipboard and no policy: with no
-  provider it does nothing in either direction. **The first request→answer seam in that package**
-  — its six existing ports are one-way commands, and core's other four `Query…` events are still
-  unwired. It also **ends what it holds**: an in-flight read is already past the subscription, so
-  `Terminal.dispose()` calls `ClipboardController.dispose()` to latch the landing
+- `justerm-core/src/event.rs` — `TermEvent`, `Terminator` (`Terminator::bytes`), `ClipboardTarget`,
+  `NotificationSequence`
+- `justerm-core/src/term/replies.rs` — `Term::drain_events`, `Term::drain_replies`,
+  `Term::report_color_scheme`, `Term::report_palette_color`, `Term::report_foreground`,
+  `Term::report_background`, `Term::report_cursor_color`, `Term::report_clipboard`; the producers
+  `Term::special_color`, `Term::clipboard` (queues `OSC 52` events only; its reply comes from
+  `report_clipboard`), `Term::device_status_report`, `Term::kitty_dispatch`, `Term::decrqm`,
+  `Term::set_window_title`, `Term::window_ops`, `push_title`
+- `justerm-core/src/term/dispatch.rs` — `osc_dispatch` (title, cwd, notification, palette, clipboard
+  arms; the terminator), `csi_dispatch` (DA1, DA2, private DSR `?996`), `VTE_OSC_FIELD_CAP`
+- `justerm-core/src/term.rs` — `MAX_CLIPBOARD_BASE64`, `MAX_TITLE`, `TITLE_STACK_DEPTH`,
+  `Term::full_reset` (appends the marker disposals)
+- `justerm-core/src/lib.rs` — `Engine::drain_events`, `Engine::drain_replies`, the `report_*` forwards
+- `justerm-core/src/base64.rs` — `decode`, `encode`, `sextet`, `ALPHABET`
+- `justerm-core/tests/events.rs` · `clipboard.rs` · `osc_reply_terminator.rs` · `reply.rs`
+- `justerm-web/src/events.ts` — `TermEvent`, `EventHandlers`, `NotificationEvent`,
+  `ClipboardStoreEvent`, `ClipboardQueryEvent`, `ClipboardTarget`, `Terminator`, `dispatchTermEvent`
+- `justerm-web/src/clipboard.ts` — `ClipboardProvider`, `ClipboardPort`, `ClipboardOptions`,
+  `ClipboardController` (`handle`, `dispose`)
+- `justerm-web/src/terminal.ts` — `Terminal.mount` (the one subscription), `Terminal.dispose`
 
 ## Reference behaviour
 
-In `docs/agents/reference-facts.md` — **linked, never restated**.
+In `docs/agents/reference-facts.md` — linked, never restated.
 
+- [OSC 52 — where the references converge, and the two places the spec is not followed](../../agents/reference-facts.md#osc-52--where-the-references-converge-and-the-two-places-the-spec-is-not-followed-828-2026-09-02)
+  — the target, empty-field, malformed-payload and padding rows behind the `OSC 52` bullets (#828)
+- [The VT-gap sweep of 2026-08-26](../../agents/reference-facts.md#the-vt-gap-sweep-of-2026-08-26--five-decisions-the-references-settled-823832-verified-2026-08-26)
+  — the terminator closure and the title stack (#823–#832)
 - [Secondary device attributes — report yourself, do not impersonate](../../agents/reference-facts.md#secondary-device-attributes--report-yourself-do-not-impersonate)
-  — what each reference puts in a DA2 reply's three fields, which of them gate on the first
-  parameter, and the one field where justerm follows none of the majority's *reasons* even though it
-  matches their value (#824)
+  — what each reference puts in a DA2 reply's three fields (#824)
 - [Notification sequences — `OSC 9` and `OSC 777`](../../agents/reference-facts.md#notification-sequences--osc-9-and-osc-777-964-verified-2026-09-23)
   — which trees read the two codes in the engine and which leave them to the consumer (#964)
 
-alacritty's `EventListener` is still named as the rejected alternative in a module comment and is
-still **unpinned** — a rejected design is exactly the claim worth pinning, since it is the argument
-for the current one.
+The web clipboard comparisons (#841) are pinned inline above, not in the store. alacritty's
+`EventListener`, the rejected push model, is still unpinned.
 
 ## Cross-cutting invariants
 
 - [RIS keeps configuration and drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
   — both queues survive `ESC c`, and this is the only territory where the reset *adds* to one: every
-  marker's disposal is announced into `events` before the rebuild, so the consumer drops decorations
-  that now name nothing. That disposal is the **only** thing the reset appends, which #835 tested
-  rather than assumed: the palette is the other consumer-held thing a reset invalidates, and it is
-  deliberately announced by neither strength
+  marker's disposal is announced before the rebuild (`Term::full_reset`). That is the only append,
+  tested since #835: the palette is the other consumer-held thing a reset invalidates, and it is
+  deliberately announced by neither strength.
 - [a coordinate carries the instant it is true at](../invariant/a-coordinate-carries-the-instant-it-is-true-at.md)
-  — this is the channel where it bites hardest, because an occurrence's payload outlives the instant
-  that gave it meaning and the frame's basis does not reach here. `MarkerCreated` is the worked case
-  (#737), and the note lays the three channels side by side, which is the only view that shows two of
-  them silent
+  — the channel where an occurrence's payload outlives its instant structurally; `MarkerCreated` is the
+  worked case (#737, #741).
+- [a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md)
+  — `Terminal` composes the `ClipboardController` and is its only holder, so `dispose()` ends it: an
+  in-flight read outlives the event subscription.
+- [whoever drains a reply owns writing it back](../invariant/a-drained-reply-is-the-drainers-to-write.md)
+  — the reply and event queues are emptied by their drain, so the drainer is the only party left to answer; `ClipboardController.query` answers on `ClipboardPort.report`
 
 ## Blast radius
 
-- [frame](frame.md) — the boundary partner. Anything that fails ADR-0020's state test lands here
-  instead, so the two are decided together
-- [hyperlinks](hyperlinks.md) — the worked example of that split: per-cell state, not an event
-- [input encoding](input-encoding.md) — replies travel the same direction as encoded input and share
-  the consumer's PTY write path, but are generated by parsing rather than by a user action
-- [widget lifecycle](widget-lifecycle.md) — the consumer must drain both on a cadence it chooses, and
-  a reply that is dropped is an application hang rather than a missing notification
+- [frame](frame.md) — anything that fails ADR-0020's state test lands here instead, so a new
+  occurrence-shaped fact is decided against both at once.
+- [hyperlinks](hyperlinks.md) — the worked example of the split: per-cell state that must not become
+  an event.
+- [marker](marker.md) — `MarkerCreated`/`MarkerDisposed` carry the marker index's coordinate triple;
+  a change to what dates a marker line changes what the event must carry.
+- [session](session.md) and [PTY loop](pty.md) — both hand the queues out unfiltered and write every
+  reply back unexamined; a reply a child must not receive, or an unbounded event, meets no filter there.
+- [input encoding](input-encoding.md) — replies and encoded input are interleaved into one byte
+  stream to the child with no framing, so their hand-over order is the only thing separating them.
+- [capture corpus](capture-corpus.md) — the closed-loop recorder names every variant and answers the
+  colour queries with a fixed policy; a new query variant goes unanswered there except for its loud
+  report.
+- [widget lifecycle](widget-lifecycle.md) — the consumer drains on a cadence it chooses, and a dropped
+  reply is an application hang rather than a missing notification.
+- [published surface](published-surface.md) — `TermEvent` is non-exhaustive in core and mirrored by
+  hand in `events.ts`; a new variant reaches the web package only when someone copies it.
+- [VT interpretation](vt-interpretation.md) — owns the 16-field `vte` bound the rejoin rule and
+  `maybe_truncated` sit on, and the unbounded OSC buffer.
 
 ## Known holes / open
 
-- **Still no record for either channel's *membership*.** ADR-0029 (above) reached this territory in
-  2026-08-06, but only for what a coordinate-bearing payload owes — the channels themselves are
-  unrecorded, and one of them carries a *response obligation*: a dropped reply hangs the application
-  waiting for it.
+- **No record for either channel's membership.** ADR-0029 reached this territory only for what a
+  coordinate-bearing payload owes. What earns a place as an event — as opposed to frame state or a
+  reply — is answered by ADR-0020 for the frame and by nothing here, and one channel carries a response
+  obligation: a dropped reply hangs the application.
 - **No bound on either queue.** A consumer that never drains grows memory with no signal, and no
-  document states whose problem that is.
-- **…and draining does not bound what one `feed` queues.** `CSI 22 t CSI 23 t` is 10 bytes and
-  queues one `Title` of up to `MAX_TITLE` chars, so 120 KB fed at once queued 10 001 titles, 156 MiB
-  (measured by the #1038 lens; before #1038's title cap, each could be the full title). The bytes
-  live until the drain that follows the `feed`, not past it.
+  document states whose problem that is. `MAX_CLIPBOARD_BASE64` enlarges it: stores accumulate at up to
+  16 MiB each, roughly three orders of magnitude over the next-largest payload.
+- **Draining does not bound what one `feed` queues.** `CSI 22 t CSI 23 t` is 10 bytes and queues one
+  `Title` of up to `MAX_TITLE` chars, so 120 KB fed at once queued 10 001 titles, 156 MiB (measured by
+  the #1038 lens; before #1038's title cap each could be the full title). The bytes live until the
+  drain that follows the `feed`.
+- **`OSC 7` cwd values, notification payloads and colour specs are bounded by nothing of their own** —
+  only by `vte`'s unbounded OSC buffer and its 16-field cut ([VT interpretation](vt-interpretation.md)).
 - **The web `ClipboardTarget` union is closed while core's is `#[non_exhaustive]`**, and
   `ClipboardController` passes the target to the provider unexamined — there is no decline arm for a
-  target it does not know. No reachable consequence until core names `q` or a cut buffer, and
-  nothing here gates that day.
+  target it does not know. No reachable consequence until core names `q` or a cut buffer, and nothing
+  gates that day. PenTerm's `clipboard_target` does decline an unknown member (penterm 7dadc3c95).
+- **The web widget answers no colour query.** The four colour `Query…` events and `ColorSchemeQuery`
+  have no web surface, so a web-hosted application asking `OSC 11 ; ?` waits on the consumer's own
+  wiring (#841 left it out on purpose).
 - **The rejected push model is unpinned**, and it is the whole argument for the pull design.
-- **`TermEvent`'s membership has no record.** What earns a place as an event — as opposed to frame
-  state or a reply — is answered by ADR-0020 for the frame and by nothing for this channel.

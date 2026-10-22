@@ -2,249 +2,157 @@
 
 ## The fact
 
-A pixel position becomes a grid coordinate by dividing by the cell. The division is **total** — it
-answers for every pixel on the page, including the ones outside the grid — so the converter, and not
-whatever consumes its answer, owes the bound on both axes and at both ends.
+A pixel position becomes a grid coordinate by dividing by the cell. The division is total — it answers
+for every pixel on the page, including those outside the grid — so the **converter**, not whatever
+consumes its answer, owes the bound on both axes and at both ends. Two asymmetric failures:
 
-Two failures, not one, and they are asymmetric:
+- **Overshoot** (past the last column / row) yields a cell merely too large; a range-clipping reader
+  tends to absorb it.
+- **Undershoot** (pointer above or left of the canvas origin) yields a negative cell —
+  `Math.floor(-3 / 10)` is `-1` — and the value crosses a boundary (a wire field, an IPC parameter, a
+  `usize`) where negative has no representation and becomes enormous.
 
-- **Overshoot** (`px` past the last column, `py` past the last row) yields a cell that is merely too
-  large. Downstream code that clips a range tends to absorb it.
-- **Undershoot** (`px`/`py` negative, because the pointer is above or left of the canvas origin)
-  yields a **negative** cell. `Math.floor(-3 / 10)` is `-1`, not `0`. Nothing in the type system says
-  a cell index is unsigned, and the value crosses a boundary — a wire field, an IPC parameter, a
-  `usize` — where "negative" has no representation and becomes something enormous instead.
+Out-of-grid input is ordinary: a drag leaves the grid whenever the pointer does (`mousemove` / `mouseup`
+are window-scoped in every wiring this repo ships), and `fit.ts — proposeDimensions` floors the grid
+from the container, so a box that is not a multiple of the cell keeps a remainder strip resolving one
+past the end.
 
-Out-of-grid input is **ordinary**, which is why this cannot be left to a caller's good behaviour:
-a drag leaves the grid whenever the pointer does (`mousemove`/`mouseup` are window-scoped in every
-wiring this repo ships), and `fit.ts` floors the grid from the container, so a box that is not an
-exact multiple of the cell keeps a remainder strip that resolves one past the end.
+The engine is not the backstop, structurally: some pointer coordinates never reach it —
+`SelectionController`'s alt-click cursor move leaves through the consumer's `onMoveCursor` callback. A
+second reason once given, that `Term::viewport_to_abs` bounded only the row, was retracted by #671 (it
+bounds both at HEAD 7bb31f7); the rule did not rest on it. A reason that expires when another layer
+improves was never load-bearing.
+
+[ADR-0026](../../adr/0026-outside-coordinates-are-bounded-once.md) governs the engine side — where a
+coordinate arriving from outside is bounded — and explicitly leaves this consumer-side rule alone on the
+reason above. Read the record before changing where `justerm-core` bounds something, this note before
+changing what `justerm-web` hands it.
+
+Reference: 3/3 references bound both axes at both ends in the consumer-side converter, before anything
+reaches their engine, and xterm.js serves mouse reporting, selection and linkification from one
+converter; the two details that deliberately did not transfer (xterm's `colCount + 1`, alacritty's
+`end_of_grid` arm) are in
+[reference-facts](../../agents/reference-facts.md#who-bounds-a-pointer-coordinate--the-producer-not-the-engine-667-verified-2026-07-31).
 
 ## Why it is cross-cutting
 
-The obligation belongs to a *shape* — "pixels in, cell out" — not to a feature. Every territory that
-accepts a pointer grows its own converter, each written by whoever needed it, and nothing relates
-them: they do not share a call graph, a type, or a test. A grep for the fix at one site
-(`clampTo`, `min`, `clamp`) cannot find the site that never heard of it, which is the same reason
-[the alt-screen absolute-index floor](alt-screen-buffer-floor.md) needed a note rather than a helper.
-
-The engine is **not** the backstop that makes this unnecessary, and the reason is structural rather
-than a matter of how much the engine currently bounds:
-
-1. **Some pointer coordinates never reach the engine at all.** `SelectionController`'s alt-click
-   cursor move leaves through the consumer's `onMoveCursor` callback, so no core guard — present or
-   future — is on that path. This is the transitive reason, and it is the one that carries the rule.
-2. ~~`Term::viewport_to_abs` bounds the row and not the column.~~ **Retracted (#671): it now bounds
-   both.** Recorded rather than deleted, because the *shape* of the retraction is the useful part —
-   this was cited as a second, independent measurement, and it was really a statement about how
-   complete the engine's clamp happened to be on the day it was written. A reason that expires when
-   the other layer improves was never load-bearing; reason 1 does not expire, because it is about a
-   path the engine is not on. **The rule is unchanged.** Had it rested on this reason, closing #671
-   would have retired an invariant that is still true.
-
-[ADR-0026](../../adr/0026-outside-coordinates-are-bounded-once.md) now governs the *engine* side of the
-same question — where a coordinate arriving from outside gets bounded, derived from whether the engine
-owns a producer for it. It **explicitly leaves this rule alone**, on reason 1 above, and this note is
-where it sends the reader for the consumer half. So the two are complements and neither subsumes the
-other: read that record before changing where `justerm-core` bounds something, and this note before
-changing what `justerm-web` hands it.
+The obligation belongs to a shape — pixels in, cell out — not a feature. Every territory accepting a
+pointer grows its own converter, written by whoever needed it, sharing no call graph, type or test
+(the two in `input.ts` / `selection.ts` share `clampTo` since #667; the a11y bridge, the link converter
+and the engine do not). A grep for the fix at one site (`clampTo`, `min`, `clamp`) cannot find the site
+that never heard of it — the reason [the alt-screen floor](alt-screen-buffer-floor.md) needed a note
+rather than a helper.
 
 ## Territories it holds in
 
-- [selection](../territory/selection.md) — `cellAndSide` turns a press/drag into an anchor and a
-  `Side`. The clamp must come **before** the side is computed: deriving the within-cell offset from
-  the *clamped* column is what makes overshooting right land on the last column's `Right` and
-  overshooting left on column 0's `Left`.
-- [input encoding](../territory/input-encoding.md) — the mouse-reporting converter, whose bound
-  exists because an unbounded value would wrap in core's `encode_mouse` (#266). It clamps `px`/`py`
-  as well as `col`/`row`, because `?1016` SGR-pixel reporting sends the pixels too.
-  **A bound is not an integer, and the pixels needed both (#907).** `col`/`row` were integers as a
-  side effect of the division being floored; `px`/`py` had no division, so they left the clamp as
-  fractional CSS px — ordinary in a real browser, where `getBoundingClientRect()` and `clientX` are
-  fractional — and a consumer mirroring core's `usize` refused every report. Now floored, which is
-  xterm.js's rule (`getMouseReportCoords`), and bounded to the last pixel *inside* the grid,
-  `ceil(extent) − 1`: the old inclusive `extent` let a pointer past the edge report one pixel beyond
-  it. The unit stays CSS px, the space `CellGeometry` is measured in. Unit fixtures with integer
-  geometry could not see this; headless Chromium delivers whole-pixel `clientX`, so the e2e proof
-  gets its fraction from a sub-pixel canvas origin and asserts that the fraction is there.
-- [accessibility](../territory/accessibility.md) — the AT-selection bridge converts DOM text offsets
-  rather than pixels, so the arithmetic differs, but the obligation is the same one and it is
-  discharged (out-of-tree endpoints resolve to the tree's edges).
-- [hyperlinks](../territory/hyperlinks.md) — `pointer.ts` `cellAt`, the widget's link converter
-  (#934). It **refuses** rather than clamps: outside `0..cols` × `0..rows` it answers `undefined`, so
-  the remainder strip and a pointer past the edge hover no link. Clamping — right for a mouse report
-  or a selection anchor, which must name *some* cell — would hover the edge link from the strip.
-  A zero-height box resolves to `Infinity` and is refused by the same test.
-- [fit](../territory/fit.md) — the *source* of the remainder strip rather than a converter itself:
-  flooring the grid from the container is what guarantees the out-of-range coordinate exists.
+Symbols re-verified at HEAD 7bb31f7.
 
-Not a member: `scrollbar.ts` computes a **ratio** of `rows`/`scrollbackLen`, never a cell from a
-pixel. It clamps anyway, which is a coincidence of range arithmetic and not this invariant.
+- [selection](../territory/selection.md) — `justerm-web/src/selection.ts — cellAndSide` turns a
+  press/drag into an anchor and a `Side`; the clamp comes before the side, so overshooting right lands
+  on the last column's `Right` and left on column 0's `Left`. `SelectionController.tick` is the one row
+  producer not going through it.
+- [input encoding](../territory/input-encoding.md) — `justerm-web/src/input.ts — cellEvent` with
+  `clampTo`, the mouse-reporting converter, bounded because an unbounded value would wrap in core's
+  `encode_mouse` (#266). It clamps `px` / `py` too, for `?1016` SGR-pixel reporting, and since #907
+  floors them (fractional CSS px are ordinary from `getBoundingClientRect()` / `clientX`, and a consumer
+  mirroring core's `usize` refused every report) to the last pixel inside the grid, `ceil(extent) − 1`
+  (xterm.js's `getMouseReportCoords` rule). Unit fixtures with integer geometry could not see it; the e2e
+  proof gets its fraction from a sub-pixel canvas origin. `CellGeometry`'s field docs carry its
+  preconditions; `geometryViolations` / `checkGeometry` signal violations (#672).
+- [accessibility](../territory/accessibility.md) — `justerm-web/src/a11y-selection.ts — clamp`
+  converts DOM text offsets, not pixels; same obligation, discharged (out-of-tree endpoints resolve to
+  the tree's edges).
+- [hyperlinks](../territory/hyperlinks.md) — `justerm-web/src/pointer.ts — cellAt`, the link converter
+  (#934). It **refuses** rather than clamps: outside `0..cols` × `0..rows` it answers `undefined`, so
+  the remainder strip hovers no link; clamping, right for a report or an anchor that must name some
+  cell, would hover the edge link. A zero-height box resolves to `Infinity` and is refused by the same
+  test.
+- [fit](../territory/fit.md) — the source of the remainder strip, not a converter.
+- [viewport](../territory/viewport.md) — `justerm-core/src/term/viewport.rs — Term::viewport_to_abs`,
+  the engine-side clamp on both axes, explicitly not a substitute. Added here; this territory already
+  linked back.
+
+Not a member: `scrollbar.ts` computes a ratio of `rows` / `scrollbackLen`, never a cell from a pixel;
+it clamps by coincidence of range arithmetic.
 
 ## What a violation looks like
 
-Nothing throws, and the widget looks fine. A drag past the left edge selects from a negative column;
-a press in the remainder strip anchors one row past the last. What the consumer sees depends entirely
-on what it does with the number:
+Nothing throws and the widget looks fine. A drag past the left edge selects from a negative column; a
+press in the remainder strip anchors one row past the last. Then it depends on the consumer: a
+range-clipping reader returns an empty selection (a gesture that silently does nothing); an
+absolute-index walk reads the wrong region; a transport reinterpreting the sign turns `-1` into its
+unsigned maximum, and `usize::MAX + 1` overflows in the `Side::Right` arms of
+`justerm-core/src/term/selection.rs`'s resolve (on wasm32 `usize` is 32 bits, so `-1` maps exactly onto
+`usize::MAX`).
 
-- a range-clipping reader absorbs it and returns an **empty selection** — a gesture that silently
-  does nothing;
-- an absolute-index walk reads the wrong region;
-- a transport that reinterprets the sign turns `-1` into the maximum of its unsigned type, and
-  `usize::MAX + 1` overflows (`justerm-core/src/term/selection.rs`, the `Side::Right` arms of
-  `resolve`). On wasm32 `usize` is 32 bits, so `-1` maps exactly onto `usize::MAX`.
-
-The tell while reading code is a bare `Math.floor(px / cellWidth)` with no bound on the same
-expression — and, one level up, a converter whose *siblings in the same file or package* clamp while
-it does not.
+Review tell: a bare `Math.floor(px / cellWidth)` with no bound on the same expression, or a converter
+whose siblings in the same package clamp while it does not.
 
 ## Discovery history
 
-Found twice, at sibling sites, months apart, by two different routes — which is the qualification for
-being written down here rather than fixed a third time:
+Found twice at sibling sites months apart by two routes:
 
-- **#266** (renderer S6 pixel→cell, then `justerm-web`'s `input.ts`) — reached through core's
-  `encode_mouse`, where an out-of-range coordinate wraps to a huge `usize`. The fix landed with a
-  comment naming that mechanism, so it read as a *mouse-reporting* fact.
-- **#667** (`justerm-web`'s `selection.ts`) — the sibling converter beside it, which had never been
-  given the same bound. Surfaced as a "deliberately not fixed" note while working #660, whose engine
-  clamp for the **row** made the consumer-side gap look closed when only half of it was.
-  #660's own doc comment names the unfixed sibling by file and line, which is the only reason the
-  gap had a durable record at all.
+- **#266** — renderer S6 pixel → cell, then `input.ts`, reached through core's `encode_mouse` wrapping;
+  the fix's comment named that mechanism, so it read as a mouse-reporting fact.
+- **#667** — the sibling converter in `selection.ts`, never given the bound; surfaced as a
+  "deliberately not fixed" note while working #660, whose engine row clamp made the gap look closed
+  when only half was. #660's doc comment named the sibling by file and line, the gap's only durable
+  record.
+- **#671** — the engine clamp gained the column; the second reason above was retracted.
+- **#672** — `NaN`, which no bound catches: `clampTo` propagates it through `Math.max` and `Math.min`.
+  Settled as a precondition: `CellGeometry` states what its six fields may be (finite; positive finite
+  cell; non-negative integer counts) and the converters signal rather than refuse — xterm's
+  `hasValidCharSize` → `undefined` guard is half a repair loop whose re-measure half this widget cannot
+  have (geometry is the consumer's, ADR-0017). #819 retired one clause: a refused gesture does resume
+  on the right cell when the box returns, because `getGeometry` is pulled per event; #819 refuses on a
+  different axis, an absent box ([an absent box measures as zero](an-absent-box-measures-as-zero.md)).
+- **#934** — the demo's unbounded fourth converter (`demo/main.ts — cellFromEvent`, feeding
+  `LinkController`) went away when link hover moved into the widget as `cellAt`. Its inertness had been
+  conditional and unstated (#819): it held only while the page derived its cell from the measured box
+  (a zero `cellHeight` sends the quotient to `Infinity`); with a renderer-derived cell, as the README
+  recommends, it answered an in-range cell against a hidden pane on bare motion. (The old note's "now
+  answers `[number, number] | undefined`" described a function that no longer exists.)
 
-The pattern in both: the second site was never edited by the change that fixed the first, and neither
-fix mentions a shared rule.
+The sibling rule one layer out, from the same work — **a producer owes its consumer a value the
+consumer's type can mean** — is not this invariant (those producers compute ratios and line counts,
+not cells), but it was found here and its sites are:
+
+- **#675** — `WheelScroller` latched a non-finite delta in `wheelPartialScroll` (`Infinity % 1` is
+  `NaN`, cleared only by `reset()`); `dragScrollSpeed` emitted `NaN` at `py === 0`. Fixed by making each
+  producer total. `wheelScrollTarget` (exported, so it owes its own totality) answers `null` and checks
+  its **inputs**, because the clamp rescues an infinite request into a finite wrong one
+  (`Math.max(0, Math.min(100, 10 - Infinity))` is `0`). `routeWheel` refuses a non-finite line count
+  first, because `direction` from `lines < 0` is false for `NaN` and the application branch fabricated
+  a `down`; it does not assert `wheelScrollTarget`'s result non-null.
+- **#814** — `dragToDisplayOffset` measured across four poisoned inputs: three surfaced `NaN`,
+  `rows: Infinity` surfaced `0` (a plausible jump to the live edge); moving the guard to the result
+  reddens exactly that assertion. `scrollbarMetrics` divided after a relational `visible` check and
+  emitted `"NaN%"` into the thumb styles; #463 had fixed the same in `decorations.ts` with the comment
+  "`Number.isFinite` is the check", on the marks half only. Found by grepping the closed backlog by
+  artifact.
+- **#680** — a drag outliving the canvas box auto-scrolled at maximum speed because
+  `SelectionController` builds its viewport height as `getRows() * geom.cellHeight`, and a product loses
+  which factor was zero. Guarding the product would have re-decided #667 (a 0-row viewport is
+  load-bearing for `tick()`'s edge-row floor; its test caught that attempt). The guard sits at the
+  caller still holding the factors apart, because `cellHeight` has a precondition and `getRows()` does
+  not. Generalised: when a derived value is ambiguous, the fix is upstream of the multiplication.
+- **#908** — the integer axis: line and page wheel modes returned `deltaY × scrollSensitivity` as-is, so
+  a fractional sensitivity gave `onScroll` a fractional offset while the scrollbar rounded. Every mode
+  now uses one accumulator in lines (alacritty and ghostty share one across modes; lines, not pixels,
+  because LINE mode must work with an unmeasured cell, #675), emitting whole lines toward zero, and a
+  `deltaMode` change drops the remainder. Carrying created a sub-line case; of three options shown
+  2026-09-15 the maintainer chose to consume only a LINE / PAGE notch carried below a whole line, leaving
+  the PIXEL half of `Terminal.onWheel`'s #133 native-scroll policy untouched by decision. The retained
+  fraction's staleness across a cell change is spine #630's third instance
+  ([cell size](cell-size-is-derived-state.md)); since #908 only its pixel-mode part can go stale.
 
 ## Where it will recur
 
-- **Any new pointer affordance** — hover, link click, a context-menu target. ~~per-decoration
-  hit-testing (#502)~~ — **retired 2026-08-18, not deleted, because the reasoning is the reusable
-  part.** Hit-testing a decoration presumes a decoration *object* to hit; ADR-0024 R1 is now
-  unconditional that there is none (#502 closed as won't-do, its alternative (F)). So this was never
-  a queued affordance — it was an affordance that depended on a model question, and the question
-  resolved the other way. The rest of the bullet is unaffected: hover and link click are live and
-  need no object. Link hover and click landed in the widget with #934 (`pointer.ts` `cellAt`, listed
-  above), and the demo's own converter below went with them — **the rest of this bullet is its
-  history, kept because the conditional-inertness reasoning is the reusable part.** The demo
-  carried an unbounded fourth converter
-  (`demo/main.ts` `cellFromEvent`, feeding `LinkController`); it was inert because an out-of-range
-  coordinate simply misses the link map, and it is listed here so the next reader does not have to
-  re-derive that. **That inertness was conditional and the condition was never stated — #819.** It
-  holds only while the page derives its cell from the measured BOX, which takes `cellHeight` to `0`
-  and the quotient to `Infinity`. Derive the cell from the renderer, as this package's README
-  recommends, and the same converter answers an **in-range** cell against a hidden pane, so the
-  hover resolves a real link instead of missing. It is also the widest trigger of the four, needing
-  no press at all — the listener runs on bare motion. `cellFromEvent` now answers
-  `[number, number] | undefined`; the bound was never the missing part.
-- **#287 multi-viewport** — one context serving N grids means N sets of bounds, and a pointer that
-  is inside the canvas but outside *this* viewport becomes an ordinary case rather than an edge one.
-- **`NaN`, which no *bound* catches — settled as a precondition instead (#672).** A bound cannot
-  reach it: `clampTo` propagates `NaN` through both `Math.max` and `Math.min`, so the converter is
-  answering a question its input never posed. `CellGeometry` now states what its six fields may be
-  (finite; a positive finite cell; non-negative integer counts) and the converters *signal* a
-  violation rather than refusing — xterm's `hasValidCharSize` → `undefined` guard is half of a repair
-  loop whose other half (re-measure) this widget cannot have, since the geometry is the consumer's by
-  ADR-0017. **One clause of that reading is retired (#819)**, and it is worth naming because it was
-  the load-bearing objection to ever refusing here: the implied *"so a dropped gesture would not come
-  back on its own"* is measured false — `getGeometry` is pulled per event, so a refused gesture
-  resumes on the correct cell the moment the box returns. The rest stands, and its scope is the
-  **cell**. `#819` refuses on a different axis — an *absent box*, where every field is in range and
-  no precondition can fire — at the only site that can see it, the consumer that took the
-  measurement. Both converters check, because both share `clampTo` and therefore shared the gap.
-  **The rest of the geometry's readers were never in this note's scope, and #675 closed the scroll
-  half of them.** Two of them consumed the same callback and handed the *consumer* a non-finite
-  number: `WheelScroller` accumulated a non-finite delta into `wheelPartialScroll` and **latched**
-  it (`Infinity % 1` is `NaN`, and only `reset()` cleared it), while `dragScrollSpeed` emitted `NaN`
-  at exactly `py === 0`. Neither was a bound, so neither could be signalled away — they are fixed by
-  making each producer total. The rule that generalises out of it is the sibling of this note's own,
-  one layer out: **a producer owes its consumer a value the consumer's type can mean.** Where this
-  note is about a coordinate that must be in range, that one is about a number that must be a
-  number — and `Math.max`/`Math.min` no more produce it than they produce a bound.
-  **The wheel's two routing functions were made total in the same change** (`scroll-control.ts`).
-  `wheelScrollTarget` had the propagation `clampTo` had at the pointer seam (#672) —
-  `Math.max(0, Math.min(len, NaN))` is `NaN` — and it answers `null` ("no request") rather than a
-  nonsense offset. It is exported, so it owes its own totality rather than trusting its one in-repo
-  caller, and any of its three arguments can arrive poisoned. It checks the **inputs**, because the
-  clamp *rescues* an infinite request into a finite, wrong one: `Math.max(0, Math.min(100, 10 -
-  Infinity))` is `0`, a silent jump to the live edge, and only `NaN` survives to the output — so a
-  guard on the result fixes half the cases and reads as if it had fixed all of them. `routeWheel`
-  refuses a non-finite line count before any branch, because `NaN === 0` is false and the application
-  branch is the one that fails *quietly*: `direction` comes from `lines < 0`, false for `NaN`, so a
-  poisoned scroller reported a fabricated `down` to the application instead of nothing. And it does
-  not assert `wheelScrollTarget`'s result non-null: a poisoned `displayOffset` coming back from a
-  frame really makes it `null`, and asserting that away is how a non-finite offset reached the
-  consumer's `onScroll` in the first place.
-  **#814 found another producer of the same callback and made it total too**, and it is the one that
-  *measured* why the rule has to be applied at the *inputs* — #675 had reasoned it (above). `dragToDisplayOffset` is exported, so it owes
-  its own totality; measured across its four poisoned positions, three surfaced as `NaN` and
-  `rows: Infinity` surfaced as **`0`** — `Math.round(60 - ∞)` is `-Infinity` and the clamp rescues it
-  into a finite, plausible jump to the live edge. A finiteness test on the *result* therefore fixes
-  three of four and reads as if it fixed all four — the rule `wheelScrollTarget`'s guard already
-  followed (above) — and a mutation now pins it: moving the guard to the result reddens exactly
-  the `rows: Infinity` assertion and nothing else. Note that this producer is **not** a member of the
-  note's own rule — it computes a ratio, not a cell, exactly as the exclusion below says.
-  **Another producer in the same file came with it, and finding it is the transferable part.**
-  `scrollbarMetrics` divided after a *relational* `visible` check, so a non-finite position answered
-  `visible: false` correctly and still emitted `NaN` ratios into `style.height` / `style.top` as
-  `"NaN%"`. #463 had already fixed exactly this in `decorations.ts` and left the rule in its comment
-  — *"`total <= 0` is a size comparison and NaN slips through every comparison; `Number.isFinite` is
-  the check"* — but only on the **marks** half of `scrollbar.ts`'s style writes, not the **thumb**
-  half. It was found by grepping the closed backlog **by artifact** after the change was written,
-  not by reading the file, and it had first been graded *"no reachable consequence"* — which was true
-  of the symptom and the wrong bar, since the sibling was filed on *"recorded rather than
-  rediscovered"*.
-  **#680 then closed the drag half, and how it closed is the part worth carrying.** A drag that
-  outlives the canvas's box auto-scrolled at the maximum speed, because `SelectionController` builds
-  its viewport height as `getRows() * geom.cellHeight` and a **product loses which factor was zero**.
-  Guarding the product would have re-decided #667, whose reading of a 0-row viewport is load-bearing
-  for `tick()`'s edge-row floor — its test caught exactly that attempt. The resolution was to notice
-  that the factors carry *different contracts*: `cellHeight` has a documented precondition (#672),
-  `getRows()` does not. So the guard sits at the caller that still holds them apart, and the
-  published `dragScrollSpeed` keeps its signature and xterm's semantics. Generalised: **when a
-  derived value is ambiguous, the fix is usually upstream of the multiplication, not a rule about
-  the result.**
-  **#908 is the same rule on the integer axis, one step after #907 found it at the pointer.**
-  `WheelScroller` emitted whole lines only in pixel mode; line and page modes returned
-  `deltaY × scrollSensitivity` as-is, so a fractional sensitivity handed `onScroll` a fractional
-  display offset — while the scrollbar, the other producer behind the same callback, rounded. Every
-  mode now goes through the one accumulator (alacritty and ghostty share one across modes too),
-  emitting whole lines toward zero. It accumulates in **lines**, not pixels as those references do,
-  because LINE mode must keep working with an unmeasured cell (#675's control), so a line or page
-  remainder does not depend on the cell. A change of `deltaMode` drops the remainder, so a trackpad's
-  leftover cannot shorten or cancel a mouse wheel's notch — the DOM's nearest signal to alacritty
-  clearing its accumulator when a touch gesture starts.
-  **Carrying made a new sub-line case, and which of them the page gets is a maintainer's call, not a
-  derivation.** `Terminal.onWheel` leaves a `none` wheel to native scroll, a policy from #133's wiring
-  with no recorded reason; before #908 only a trackpad's PIXEL delta could land there. Shown three
-  options on 2026-09-15 — (a) consume every notch that fed the accumulator, which also stops a sub-line
-  trackpad swipe chaining to the page; (b) consume only a LINE/PAGE notch carried below a whole line;
-  (c) leave it, so a sensitivity below 1 scrolls the page on alternate mouse notches — the maintainer
-  chose **(b)**. The PIXEL half of the #133 policy is therefore untouched by decision, not by omission,
-  and theirs to revisit. xterm.js's app and alt-screen paths consume a zero-line notch.
-  One thing stays deliberately open, recorded where it belongs rather than here: the *staleness* of
-  the wheel scroller's retained fraction across a cell change — #630's third instance, a different
-  axis of the same field. (Since #908 the field can hold a line-mode remainder too, which is not
-  cell-derived; only the pixel-mode part can go stale.)
-- **A side-from-raw-pixel refactor.** The clamp currently doubles as the overshoot rule for `Side`;
-  computing the side from the unclamped pixel (alacritty's shape) would need alacritty's explicit
-  `end_of_grid → Right` arm restored alongside it.
-
-## Code
-
-- `justerm-web/src/selection.ts` — `cellAndSide`, and `SelectionController.tick`, the one row
-  producer that does not go through it
-- `justerm-web/src/input.ts` — `clampTo` (shared by both converters since #667), `cellEvent`,
-  `CellGeometry` (whose field docs carry the preconditions), `geometryViolations` / `checkGeometry`
-  (the #672 signal, shared the same way the clamp is)
-- `justerm-web/src/a11y-selection.ts` — `clamp`, the DOM-offset form of the same obligation
-- `justerm-web/src/fit.ts` — `proposeDimensions`, which floors the grid and so creates the strip
-- `justerm-core/src/term/viewport.rs` — `viewport_to_abs`, the engine-side backstop (both axes since #671)
-  that is explicitly not a substitute
-
-## Reference behaviour
-
-In [reference-facts.md](../../agents/reference-facts.md#who-bounds-a-pointer-coordinate--the-producer-not-the-engine-667-verified-2026-07-31)
-— **linked, never restated**. 3/3: all three references bound both axes at both ends in the
-consumer-side converter, before anything reaches their engine, and xterm.js serves mouse reporting,
-selection and linkification from a single converter. The two details that deliberately did *not*
-transfer (xterm's `colCount + 1`, alacritty's separate `end_of_grid` arm) are recorded there.
+- **Any new pointer affordance** — hover, link click, a context-menu target. Per-decoration
+  hit-testing (#502) was retired 2026-08-18: ADR-0024 R1 makes decorations object-less, so there is
+  nothing to hit; it depended on a model question that resolved the other way.
+- **#287 multi-viewport** — N grids under one context means N sets of bounds, and a pointer inside the
+  canvas but outside this viewport becomes ordinary.
+- **A side-from-raw-pixel refactor.** The clamp doubles as the overshoot rule for `Side`; computing the
+  side from the unclamped pixel (alacritty's shape) would need alacritty's `end_of_grid → Right` arm
+  restored with it.

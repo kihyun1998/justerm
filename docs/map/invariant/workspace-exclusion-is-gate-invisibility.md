@@ -1,143 +1,123 @@
-# Cross-cutting invariant — a crate outside the workspace is invisible to every `--workspace` gate
+# Invariant — a crate outside the workspace is invisible to every `--workspace` gate
 
 ## The fact
 
-**Three crates sit outside the root workspace, and no `--workspace` / `--all` command reaches any of
-them.** Root `Cargo.toml`:
+Three crates sit outside the root workspace, and no `--workspace` / `--all` command reaches any of them.
+Root `Cargo.toml` at HEAD 7bb31f7:
 
 ```toml
-members = ["justerm-core", "justerm-wasm-decode"]
+members = ["justerm-core", "justerm-wasm-decode", "justerm-pty"]
 exclude = ["fuzz", "justerm-facade", "justerm-renderer"]
 ```
 
-Every gate expressed as `cargo <cmd> --workspace` or `cargo fmt --all` therefore inspects **two**
-crates. Reaching the other three requires naming them: `--manifest-path <crate>/Cargo.toml`.
+So every gate written as `cargo <cmd> --workspace` or `cargo fmt --all` inspects the three member crates
+(the old note quoted two; `justerm-pty` joined, ADR-0034). Reaching the others requires naming them:
+`--manifest-path <crate>/Cargo.toml`. The failure is silent in the worst way: the excluded crate is not
+skipped with a warning, it is not a thing the command knows about, so the gate reports success having
+inspected nothing of it. (`justerm-web` is a pnpm package, not a cargo crate, and is outside this fact.)
 
-The failure is silent in the worst way — the excluded crate is not skipped with a warning, it is
-**not a thing the command knows about**, so the gate reports success having inspected nothing.
+A sibling shape with the same symptom: `justerm-wasm-decode/tests/web.rs` is
+`#![cfg(target_arch = "wasm32")]`, so on the host it compiles to nothing — `cargo test -p
+justerm-wasm-decode --test web` reports `running 0 tests` and exits 0 (measured). Its compensating
+`wasm32` build compiles the assertions but never runs them; they execute in one place, CI's `wasm` job
+(`wasm-pack test --node justerm-wasm-decode`).
 
 ## Why it is cross-cutting
 
-**Three crates, three unrelated reasons, one shared consequence.** Nothing about these decisions was
-coordinated; they collide only at the tool's assumption that "the workspace" means "the code".
+Three crates, three unrelated reasons, one consequence; the decisions were not coordinated and collide
+only at the tool's assumption that "the workspace" means "the code":
 
 | Crate | Why it is excluded |
 |---|---|
 | `fuzz` | nightly + libFuzzer toolchain |
-| `justerm-facade` | frozen at `0.5.1` forever — must **not** be dragged by the version-lockstep that ties `justerm-core` and `justerm-wasm-decode` together |
-| `justerm-renderer` | `web-sys` / `glow` are wasm32-only, so membership would break the host `cargo test --workspace` outright |
+| `justerm-facade` | frozen at `0.5.1` — must not be dragged by the version lockstep of the member crates |
+| `justerm-renderer` | `web-sys` / `glow` are wasm32-only, so membership would break the host `cargo test --workspace` |
 
-A future exclusion will have a fourth reason and the same consequence. That is what makes this an
-invariant rather than a note in any one crate's territory.
+Each excluded crate's gates are separate `run:` lines that do not share anything with the workspace
+gates or with each other; a fourth exclusion will have a fourth reason and the same consequence.
+
+Two declarations now hold the line, and they are jointly load-bearing in the safe direction (#608):
+`exclude` is a list of paths relative to the root manifest, and cargo resolves a crate's workspace by
+walking upward — so from a git worktree it climbed past the worktree into the main checkout's manifest
+and refused to build the renderer. `fuzz/Cargo.toml` and `justerm-renderer/Cargo.toml` therefore each
+declare `[workspace]`, a fact stated in the directory that survives being reached from anywhere;
+`justerm-facade` relies on the list alone, deliberately (a tombstone nobody edits). A root listing a
+member that itself declares `[workspace]` fails loudly (`cargo metadata`: "multiple workspace roots
+found"), so deleting `justerm-renderer` from `exclude` breaks every root gate at once rather than
+silently dragging a wasm32-only crate into the host run.
 
 ## Territories it holds in
 
-- [release](../territory/release.md) — the facade's
-  exclusion is what keeps it frozen, and its exclusion is why nothing gates it either
-- the renderer crate — the one this has actually bitten. Its territories, all inside a crate no
-  `--workspace` command reaches: [cell compositing](../territory/cell-compositing.md) ·
-  [cell geometry](../territory/cell-geometry.md) ·
-  [glyph atlas](../territory/glyph-atlas.md) ·
-  [built-in block glyphs](../territory/builtin-block-glyphs.md)
-- [CI & supply chain](../territory/ci-and-supply-chain.md) — where the compensating per-manifest gates live
-
-Derivable half — **two greps, and the second is the one that holds from anywhere** (#608):
+Derivable half — two greps; the second holds from anywhere (#608):
 
 ```sh
 rg -A3 '^exclude' Cargo.toml                       # what THIS root disclaims
 rg -l '^\[workspace\]' */Cargo.toml                # which crates declare their own root
 ```
 
-The first was called "the authority" here until #608 measured otherwise. `exclude` is a list of
-paths *relative to the file it sits in*, and cargo resolves a crate's workspace by walking
-**upward** — so from a git worktree it climbs past the worktree's root into the main checkout's
-manifest, compares the crate against paths that are not this one, and refuses to build it. Every
-renderer gate died there, in the workflow `theflow.md` § Step 7 prescribes. `fuzz` and
-`justerm-renderer` now each declare `[workspace]`, which is a fact about the directory stated *in*
-that directory and therefore survives being reached from anywhere; `justerm-facade` still relies on
-the list alone, deliberately (a tombstone nobody edits — see below).
+Non-derivable half — which gates compensate (read from `.github/workflows/test.yml` and `fuzz.yml` at
+HEAD 7bb31f7):
 
-**The two declarations are jointly load-bearing, and that is the safe direction.** A root that lists
-a member which itself declares `[workspace]` does not silently win: `cargo metadata` reproduces
-*"error: multiple workspace roots found in the same workspace"*. So deleting `justerm-renderer` from
-`exclude` can no longer quietly re-include it — it breaks every root `--workspace` gate at once,
-loudly, instead of dragging a wasm32-only crate into the host test run.
-
-Non-derivable half — **which gates compensate, and which do not.** `test.yml` names
-`justerm-renderer` explicitly in its own job (fmt, test, clippy, build, rustdoc — each by
-`--manifest-path`), and a sixth in `renderer-proofs` that reaches it **without naming a manifest
-at all**: `check-published-package.mjs` (#951) reads the package `wasm-pack` produced, so what it
-gates is an artifact rather than a crate. `fuzz` is reached only by
-`cargo check --manifest-path fuzz/Cargo.toml`.
-`justerm-facade` was reached by **nothing** for most of its life, deliberately: it is frozen, so
-there is no version of it for a gate to protect. That is no longer the whole truth, and the way it
-stopped being true is the point — **two gates grew onto it without anyone deciding to gate the
-tombstone**, because both derive their work set from the tree instead of naming crates.
-`check-published-pointers.mjs` (#949) walks for manifests carrying a `description`, so it took the
-facade's `description` and README on the day it was written; `check-published-rustdoc.mjs` (#953)
-walks for manifests without `publish = false`, so it took the facade's `//!` — and needed a
-`cargo doc --manifest-path justerm-facade/Cargo.toml` step added beside it, since `--workspace` still
-cannot see the crate. **A derived work set is what reaches an excluded crate; a named one never
-will.** No tool can tell you which of those three states a given exclusion is in.
+- [CI & supply chain](../territory/ci-and-supply-chain.md) — the compensating per-manifest gates. The
+  `renderer` job names `justerm-renderer` by `--manifest-path` for fmt, test, clippy, build and rustdoc.
+- the renderer crate — where it bit. Its territories all sit in a crate no `--workspace` command
+  reaches: [cell compositing](../territory/cell-compositing.md) ·
+  [cell geometry](../territory/cell-geometry.md) · [glyph atlas](../territory/glyph-atlas.md) ·
+  [built-in block glyphs](../territory/builtin-block-glyphs.md).
+- [browser proof harness](../territory/browser-proof-harness.md) — `renderer-proofs` reaches the
+  renderer without naming a manifest: `check-published-package.mjs justerm-renderer/pkg` (#951) reads
+  the package `wasm-pack` produced, gating an artifact rather than a crate. Added here; this territory
+  already linked back.
+- [release](../territory/release.md) — the facade's exclusion keeps it frozen and is why nothing named
+  gates it.
+- [published surface](../territory/published-surface.md) — two gates grew onto the facade without
+  anyone deciding to gate the tombstone, because both derive their work set from the tree:
+  `check-published-pointers.mjs` (#949) walks manifests carrying a `description`, and
+  `check-published-rustdoc.mjs` (#953) walks manifests without `publish = false` — the latter needing a
+  `cargo doc --manifest-path justerm-facade/Cargo.toml` step beside it. A derived work set reaches an
+  excluded crate; a named one never will. Added here; this territory already linked back.
+- [robustness testing](../territory/robustness-testing.md) — `fuzz` is reached by no per-PR gate at
+  all: only the weekly, non-blocking `fuzz.yml` (`cargo +nightly fuzz run`). (The old note said
+  "`cargo check --manifest-path fuzz/Cargo.toml`"; no workflow runs that at HEAD.) Added here (new
+  territory).
+- [wasm decoder](../territory/wasm-decoder.md) — the target-gate sibling, `tests/web.rs`, whose runtime
+  assertions run only in the `wasm` job. Added here (new territory).
 
 ## What a violation looks like
 
-**A green gate that inspected nothing.** Not a failure, not a warning — a passing command with an
-empty work set. The reviewer sees a tick and the author sees exit 0.
+A green gate that inspected nothing: a passing command with an empty work set. Tell: run the gate and
+check the count — `cargo fmt --all` visiting zero files in a crate you just edited exits 0 like a clean
+run.
 
-The tell, when you suspect it: run the gate and check the *count*. `cargo fmt --all` visiting zero
-files in a crate you just edited exits 0 exactly like a clean run does.
+The sharper form is a gate that runs, passes, and answers a different question: the `wasm32` build of
+`tests/web.rs` compiles an `assert_eq!(wire_version(), 13)` against a shipped `14` without complaint,
+because assertions are runtime constructs.
 
 ## Discovery history
 
 | Occurrence | Site | Issue |
 |---|---|---|
-| 1st | `justerm-renderer` had **no gate at all** across slices #259–#340 — `cargo fmt --all` visited zero of its files and exited 0, and 13 slices of unformatted code accumulated behind that green tick | #333 |
-| 2nd | `justerm-wasm-decode/tests/web.rs` held a **second copy** of the wire-version pin, hardcoded to `13`. A `WIRE_VERSION` bump to 14 left every local gate green — including the wasm-target build, which compiled the stale assertion without running it — and CI's `wasm` job was the only red, after the PR was already open | #621 |
+| 1st | `justerm-renderer` had no gate across slices #259–#340: `cargo fmt --all` visited zero of its files and exited 0, and 13 slices of unformatted code accumulated | #333 |
+| 2nd | `justerm-wasm-decode/tests/web.rs` held a second copy of the wire-version pin, hard-coded `13`; a bump to 14 left every local gate green including the wasm32 build, and CI's `wasm` job was the only red, after the PR was open | #621 |
+| worktree | `exclude` resolved against the main checkout from a worktree; the renderer and fuzz gained their own `[workspace]` | #608 |
 
-Two occurrences, and they differ in the way that matters: the first was *no* gate, the second was a
-gate that **ran and passed while answering a different question**. The first is discoverable by
-reading the command; the second is not, because the command genuinely reaches the file. When
-auditing this invariant, do not stop at "is there a gate" — ask **which of compile / run / assert it
-actually performs**.
+The two occurrences differ where it matters: the first was no gate (discoverable by reading the command);
+the second was a gate that reached the file and checked something else. Audit compile / run / assert,
+not "is there a gate".
 
-**A sibling shape, different mechanism, same symptom:** `justerm-wasm-decode/tests/web.rs` is
-`#![cfg(target_arch = "wasm32")]`, so on the host it compiles to *nothing* and `cargo test
---workspace` passes over it. Not a workspace exclusion — a target gate — but it produces the same
-"green, inspected nothing" outcome. Measured: `cargo test -p justerm-wasm-decode --test web` on the
-host reports **`running 0 tests`**, and exits 0.
-
-**And its compensating gate is only half a gate — this is the sharper trap of the two.**
-`cargo build -p justerm-wasm-decode --tests --target wasm32-unknown-unknown` reaches the file, so it
-is easy to read as coverage. It **compiles** the tests; it never **runs** them. An
-`assert_eq!(wire_version(), 13)` against a shipped `14` compiles perfectly — assertions are runtime
-constructs and the compiler only checks that comparing two `u8`s type-checks. The runtime assertions
-in this file execute in **one place on earth**: CI's `wasm` job, through
-`wasm-bindgen-test-runner` under node.
-
-That is worse than the workspace case rather than merely different. An excluded crate has *no* gate
-and the absence is discoverable by reading the command; this one has a gate that runs, passes, and
-answers a question you did not ask. #621 hit it exactly that way — every local gate green, the wasm
-job the only red, on a literal that had rotted.
-
-**The repair generalises past this file: do not put a value in here that lives somewhere else.** The
-fix was not to bump `13` to `14` (which rots again at the next bump) but to delete the literal —
-`assert_eq!(wire_version(), justerm_core::WIRE_VERSION)` states the binding's actual contract
-(*forward the constant*) and cannot go stale. The literal belongs in `justerm-core`'s own test, which
-runs on host on every PR. **A duplicated expectation is only as fresh as the slowest place that
-checks it** — so the copy that lives where nothing local can run it should assert a *relationship*,
-never a *number*.
+The #621 repair generalises: do not put a value in a place that cannot run it. The literal was replaced
+by a relationship — `wire_version_matches_the_engine` asserts `wire_version() ==
+justerm_core::WIRE_VERSION` — and the number itself is pinned in `justerm-core`'s own host test. A
+duplicated expectation is only as fresh as the slowest place that checks it.
 
 ## Where it will recur
 
-Two directions, and the second is the one that will actually happen:
+1. **A new excluded crate** starts with zero gates; each must be named for it by hand.
+2. **A new gate.** Every gate written as "run over the workspace" inherits this at birth, including
+   non-cargo gates: `.github/scripts/check-map-links.mjs` takes a hand-written list of roots, so a new
+   documentation directory is invisible to it until someone adds the path.
+3. **A new member crate** joins every `--workspace` gate silently — the inverse case, and the reason
+   any count of gated crates written in prose goes stale (as this note's did when `justerm-pty` joined).
 
-1. **A new excluded crate.** Anything added to `exclude` starts with zero gates and must have each
-   one named for it by hand.
-2. **A new gate.** Every gate written as "run over the workspace" inherits this blind spot at birth,
-   including gates that are not `cargo` at all — the doc-link checker
-   (`.github/scripts/check-map-links.mjs`) takes a hand-written list of roots for exactly the same
-   reason, and a new documentation directory is invisible to it until someone adds the path.
-
-Test: if a command's scope is expressed as "everything", ask what its idea of *everything* is, and
-compare it against `ls` rather than against the intent.
+Test: if a command's scope is "everything", ask what its idea of everything is, and compare it against
+`ls`, not the intent.

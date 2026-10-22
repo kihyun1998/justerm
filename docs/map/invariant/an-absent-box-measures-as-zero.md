@@ -1,212 +1,144 @@
-# Cross-cutting invariant — an absent element box measures as zero, and zero is in range
+# Invariant — an absent element box measures as zero, and zero is in range
 
 ## The fact
 
-**A DOM element with no box reports every field as `0` — and `0` is a legal value for everything
-derived from it.** `getBoundingClientRect()` on a `display: none` element, on a detached node, or on
-one not yet laid out returns all zeros rather than anything a reader can recognise as *absent*. So
-"there is no box" and "the box is at the origin / is empty" arrive at every downstream site as the
-same number, and no guard phrased on finiteness can separate them: zero is finite.
+A DOM element with no box reports every field as `0`, and `0` is a legal value for everything derived
+from it. `getBoundingClientRect()` on a `display: none`, detached or not-yet-laid-out element returns
+all zeros, so "there is no box" and "the box is at the origin / is empty" reach every downstream site
+as the same number. No finiteness guard separates them: zero is finite.
 
-The sibling failure — a `NaN` box — is **not** this one and is usually already handled, which is what
-makes this one hard to see. `NaN` propagates, announces itself and is refused; zero propagates,
-computes cleanly, and produces a plausible answer that is wrong.
+The sibling failure, a `NaN` box, is not this one and is usually handled already: `NaN` propagates and
+is refused; zero computes cleanly into a plausible wrong answer.
 
-**The repair is always upstream of the derivation, and it belongs to whoever measured the box.**
+**The repair is upstream of the derivation, and it belongs to whoever measured the box.** Every site
+answers `T | undefined` from the function that took the measurement (#819 completed the set). What
+differed per site was only the preparation: #801 carried the extent into the input before it had a
+union to return, #810 widened a predicate on a union it had, #814 extracted a pure function to have a
+return, #819 reset controller state the others did not own.
 
-That sentence used to read *"and it is a different repair at every site"*, and #819 retired it by
-completing the set: all four sites answer `T | undefined` from the function that took the
-measurement, and what differed at each was only the **preparation** — #801 had to carry the extent
-into the input before it had a union to return, #810 only widened a predicate on a union it already
-had, #814 had to extract a pure function to *have* a return, and #819 had to reset controller state
-the other three did not own. Four preparations for one repair is not four repairs.
-
-**So why is this still a note rather than a helper?** Because the sentence that replaced it is the
-load-bearing one. The repair belongs to whoever *measured*, and that is a different party at
-different sites — three times it was justerm, and once (`CellGeometry`) it was the **consumer**,
-across a published callback. A helper can hold arithmetic; it cannot hold *"ask the party that
-looked"*. That is also what predicts the difficulty rather than merely recording it, and it is why
-every one of this cluster's exclusions is an exclusion: #680, #672 and #675 are each about a value
-justerm did not measure.
-
-*(The three sites named in this note's table besides `CellGeometry` were the discovery chain
-#775→#801→{#810, #814}; the roster of who is left is spine
-[#815](https://github.com/kihyun1998/justerm/issues/815), not this file.)*
-
-*(In-repo sites are named by **symbol**, not by line. A note that governs a file is read at the moment
-someone edits that file, so its own line numbers are the ones most likely to be stale — #814 moved a
-citation this note had written **in the same change**. Reference-tree citations keep `file:line`
-because their SHA is pinned.)*
-
-| Site | Territory | Absent distinguishable from a legitimate `0`? |
-|---|---|---|
-| `justerm-web/src/terminal-surface.ts` — `viewportOrigin` | [multi-viewport](../territory/multi-viewport.md) | **Yes, since #801.** The overlay's *extent* is carried alongside its origin and the return is `{x,y} \| undefined`. Before that the clamp answered `{0,0}`, which re-placed a full-size grid on the canvas corner over a sibling |
-| `justerm-web/src/fit.ts` — `proposeDimensions` and `gridForBox` (#992 moved it here from `justerm-renderer.ts`). **Two callers, one of which cannot reach a zero**: `resize` passes a consumer-measured box and is the live one; `applyGrid`'s grant read-back passes the drawing buffer, which `resize_surface` refuses to set at `<= 0` and which an empty read-back preserves rather than zeroes — so the guard is defensive there. Worth the row anyway: a completeness pass claimed that caller was a live third site, twice and with two different mechanisms, and both fell to reading `apply_surface_size` | [fit](../territory/fit.md) | **Yes, since #810.** Both refuse a box with no area, the way they already refused a non-finite one. Before that a `0x0` box floored to `MINIMUM_COLS`x`MINIMUM_ROWS` — measured against the real module, a `display: none` box proposed `2x1` while a `NaN` box was correctly refused — and that function's own comment already stated the intent it was missing: *"a non-finite box means 'not measured', exactly when we should NOT shrink the terminal"* |
-| `justerm-web/src/input.ts` — `CellGeometry.originX` / `originY`, read by `cellAndSide`, `cellEvent` and `SelectionController.mouseMove`'s drag-scroll term | [selection](../territory/selection.md) | **Yes, since #819 — and it is the one site the answer could not be a guard.** These are the only two of the six fields with no stated precondition, because a position legitimately may be `0` or negative, so `geometryViolations` structurally cannot flag them. What decided *exposure* was how the **cell** was built: a **rect-derived** cell also goes to `0`, and that field *is* declared strictly positive, so #672's signal fires and #680's `cellHeight > 0` guard suppresses the auto-scroll; a **renderer-derived** cell — `renderer.cellSize() / dpr`, what `demo/shared-surface.ts` does and what this package's README recommends — stays positive, so **only the origin moves, nothing fires, and #680's guard passes**. Measured in a real browser before the repair: three ticks of a hidden pane scrolled `45` lines, `45/3 = 15 = DRAG_SCROLL_MAX_SPEED`, with zero warnings. So **#680 named this condition — *"a drag auto-scrolls at maximum speed when the canvas has no box"* — and repaired one of its two mechanisms**; its derivation (guard the factor that carries a contract) was right for its cause and unavailable for this one. The repair is `getGeometry(): CellGeometry \| undefined`: the consumer measured the box, so the consumer is the only party that can tell absence from a legitimate `0`, and every reader refuses. **It carries a second half the other three sites did not have** — `dragScrollAmount` is controller *state*, so a refusal that only returned early would latch the last speed (#675's shape), and `tick()` needs its own copy of the guard because the tick timer (the consumer's then, `Terminal`'s since #902) fires whether or not the pointer moves. #672's *"signal, do not correct"* is untouched: it was decided on the `NaN` axis, and its own closing comment scopes itself as *"the axis this issue's subject could not reach"* |
-| `justerm-web/src/scrollbar.ts` — `dragTo`, via `dragTrackRatio` | [viewport](../territory/viewport.md) | **Yes, since #814.** The ratio step takes the track box as data and answers `number \| undefined`, refusing `height <= 0`; `dragTo` then makes no request at all. Before that, `(clientY - r.top) / r.height` on a zero-height track was `±Infinity`, which the surrounding `clamp` turned into a plausible end of the track — or `NaN` when the pointer was exactly at `r.top`. **This is the site where a finiteness test *nearly* worked, and the near-miss is the row's value.** On the **un-clamped quotient** it is equivalent up to a negative height (a mutation reddens exactly one assertion). On the value the function **returns** it accepts every zero-height box, because the clamp turns `Infinity` into a perfectly finite `1` — the measured slam to the live bottom. `wheelScrollTarget`'s guard had already followed that general form ([pointer coordinates are bounded by their producer](pointer-coordinates-are-bounded-by-their-producer.md)): the clamp rescues an infinite request into a finite, wrong one, so a guard on the result fixes half the cases and reads as if it had fixed all of them |
+It stays a note rather than a helper because "the party that measured" differs: three times justerm,
+once (`CellGeometry`) the consumer across a published callback. A helper holds arithmetic; it cannot
+hold "ask the party that looked". That is also why #680, #672 and #675 are each excluded: each is about
+a value justerm did not measure.
 
 ## Why it is cross-cutting
 
-**The roster of who is left lives in spine [#815](https://github.com/kihyun1998/justerm/issues/815), not here.** This
-note holds the rule — which is immutable and belongs in a file; the anchor holds current state, which
-is mutable and needs an editable home. Both, deliberately, the way
-[the cell size is derived state](cell-size-is-derived-state.md) and its spine #630 are.
+Four sites, four territories, no shared call path, type or test. Each reads a box for its own purpose —
+a viewport origin, a column count, a pointer basis, a scroll ratio — through different arithmetic, and
+from inside each the question reads as a local numeric edge case whose local answer is usually right
+for that site alone (the fit floor gives a small container a usable terminal; geometry is permissive
+because a position may be zero or negative). The first two sites were found by one change (#801); the
+second pair only by asking which other readers of an element box exist.
 
-**Four sites, four territories, and no shared call path, type or test.** Each one reads a box for its
-own purpose — a viewport origin, a column count, a pointer basis, a scroll ratio — and each derives a
-different quantity through different arithmetic. From inside any one of them the question reads as a
-local numeric edge case, and the local answer is usually right for that site alone: the fit path's
-floor exists so a small container still gets a usable terminal, the geometry's permissiveness exists
-because a position may genuinely be zero or negative.
-
-That is exactly the shape [`docs/map/README.md`](../README.md) exists for. The fact is *invisible from
-each territory* while holding in all of them, and the count is doing work: the first two sites were
-found by one change (#801) and the second pair only by asking, deliberately, which *other* readers of
-an element box exist.
-
-**It is a sibling of, and not an instance of, the product-ambiguity rule.**
-[pointer coordinates are bounded by their producer](pointer-coordinates-are-bounded-by-their-producer.md)
-already records *"when a derived value is ambiguous, the fix is usually upstream of the
-multiplication"*, and `SelectionController.mouseMove` (#680) is that rule's site: its zero comes from
-`getRows() * cellHeight`, a consumer callback times a **renderer-derived** cell, neither of which is a
-DOM box — `cellHeight` stays positive when the overlay vanishes. Same generalisation (resolve
-upstream), different cause (absence versus a lossy product), different noun (a box versus a
-coordinate). Reading #680 as an instance of this invariant was the first hypothesis when #801 revealed
-the fact, and it was wrong; the genuine second site is `fit.ts`.
-
-## What a violation looks like
-
-**A plausible wrong answer, no error, and the damage usually lands on a bystander.** Nothing throws,
-because every value involved is finite and in range. The four measured shapes:
-
-- **#801, measured in a real browser before the fix.** Hiding the second pane of
-  `justerm-web/demo/shared-surface.html` with `display: none` moved its viewport from `[500, 40]` to
-  `[0, 0]`; a full-size grid was drawn over its neighbour, and the neighbour went on reporting itself
-  healthy. The renderer's own zero-area guard is not on that path and cannot be — a viewport's extent
-  is derived from `cols * cell` and never from the measured box, so the zeroed box shrinks nothing.
-- **The fit path**, measured against the real module. A hidden pane still being fitted proposes `2x1`,
-  the engine reflows through two columns, and showing the pane again does not undo it.
-- **A drag that outlives its box — measured in a real browser, #814.** Both `scrollbar.ts` and
-  `SelectionController` bind their move and up listeners to `window` (`Scrollbar`'s thumb
-  `mousedown` handler; `demo/main.ts`'s top-level `mousemove`/`mouseup`), and `Scrollbar.update()`
-  hides the track without clearing `dragging`, so a
-  drag in flight when the element is hidden keeps computing against zeros rather than ending.
-  Driven through the real listener path with the guard off, host scrolled 40 lines up: two mouse
-  moves against an all-zero rect produced **two spurious scroll requests** and left the host's
-  display offset at **`NaN`**. With the guard, the same moves produce **nothing** and the offset is
-  the one the last measured move set.
-  **Which element is hidden decides which half of the harm you see**, and a probe that gets it
-  wrong reports a milder defect than the one that exists. There are **two real routes**, and they
-  are not interchangeable:
-  - a host hides an **ancestor** (`display: none`, documented since #801). `scrollbackLen` is
-    unchanged, so the ratio is `1` and the offset is driven to `0` — the *slam to the live bottom*,
-    on top of the `NaN`;
-  - the widget hides its **own** track, because `visible` means `scrollbackLen > 0` and core's
-    `full_reset` (RIS, `ESC c` — `tput reset`, a program's `rs1`, a crashed TUI) replaces the whole
-    `Term` and takes `scrollback_len()` to `0` (`justerm-core/src/term.rs`). **No host action at
-    all.** Here `scrollbackLen` is `0` by construction, so the offset harm is absent — every legal
-    offset is `0` — and only the `NaN` survives.
-
-  What does **not** reproduce either is hiding the track while `scrollbackLen` stays positive: the
-  first bad request re-renders the host, `update()` sets `display: "block"` again, and the `0/0`
-  input never runs (measured: 2 requests, a plausible finite offset, no `NaN`). That is a **probe
-  artifact**, not a route — this note said it was the rule for the length of one commit, on the
-  strength of that one measurement, until the RIS path was found by asking what *else* empties a
-  scrollback. `ED 3` had been checked and was then unimplemented; `full_reset` had not. Since #936
-  there are two more routes of the same kind — `ED 3` and `Engine::clear` both take
-  `scrollback_len()` to `0` without anyone hiding an element (`ED 3` with no host action at all;
-  `clear` is a consumer call, but not one that touches the track).
-  `SelectionController`'s half of this bullet was **read, not run** until #819 ran it — see the
-  next bullet, which is the same sentence with a number attached.
-- **The same drag, at the pointer converter — measured in a real browser, #819, and it is the
-  worst of the four.** Same wiring as above (`demo/main.ts` binds `mousemove`/`mouseup` to
-  `window`), but the harm depends on a choice made *outside* the widget. With a **renderer-derived**
-  cell — this package's README recipe — the cell stays positive when the box goes, so #672's
-  precondition holds, #680's `cellHeight > 0` guard **passes**, and only the origin moves. Three
-  ticks of a hidden pane: `onScroll` called **3** times for **45** lines, which is
-  `3 x DRAG_SCROLL_MAX_SPEED` — the maximum — plus a `port.extend(edgeRow, ...)` per tick, and
-  **zero warnings**. The same probe with a **rect-derived** cell scrolls nothing and warns twice,
-  which is #680's guard working correctly on the cause it was written for. So the two arms differ in
-  what is **said**, not in whether the answer is wrong, and **the silent one is the recommended
-  one** — which is why this site outlived three passes that were each looking straight at it.
+It is a sibling, not an instance, of
+[pointer coordinates are bounded by their producer](pointer-coordinates-are-bounded-by-their-producer.md),
+whose "the fix is usually upstream of the multiplication" is `SelectionController.mouseMove`'s rule
+(#680): its zero comes from `getRows() * cellHeight`, a consumer callback times a renderer-derived
+cell, neither a DOM box. Same generalisation, different cause (absence vs a lossy product). Reading
+#680 as an instance was #801's first hypothesis, and it was wrong; the genuine second site is
+`fit.ts`.
 
 ## Territories it holds in
 
-- [multi-viewport](../territory/multi-viewport.md) — where it was found, **repaired in #801**. The
-  repair is the *shape* the other three then took: carry the extent so the reader can tell, and
-  return a union so the compiler makes every caller decide
-- [fit](../territory/fit.md) — the second site, **repaired in #810**, and the one whose own
-  doc-comment had already asked for this check: *"When adding a third box→grid path, check **both**
-  axes: the floor and the refusal."* A third path was added and the axis checked was neither. It is
-  also the one place this invariant runs against the prior art: all three references floor a zero box
-  and none refuses it, and the divergence is recorded in `docs/agents/theflow.md`
-- [selection](../territory/selection.md) — `CellGeometry`'s two unconstrained fields, **repaired in
-  #819**, and the only site whose repair crosses a *published* seam: the consumer took the
-  measurement, so `getGeometry` is where absence had to become representable. It is also the only
-  one with state to unwind — see the row above. Two of `Terminal`'s readers carry their own reason:
-  `onWheel` reads it **once** per notch, because two calls could answer differently and an
-  unmeasured box leaves the notch no cell size — feeding the scroller a `0` cell latches its
-  accumulator (#675); `writeTextareaAnchor` keeps the last anchor, which is the right answer rather
-  than merely the safe one — the textarea is positioned relative to the element, so while the
-  element has no box the anchor is not on screen either, and the next frame that moves the cursor
-  re-aims it
-- [viewport](../territory/viewport.md) — the scrollbar's track ratio, **repaired in #814**, and the
-  one site where a finiteness test *nearly* worked — on the quotient, not on the clamped result
+Symbols re-verified at HEAD 7bb31f7. The roster of who is left lives in spine
+[#815](https://github.com/kihyun1998/justerm/issues/815), not here.
+
+- [multi-viewport](../territory/multi-viewport.md) — `justerm-web/src/terminal-surface.ts — viewportOrigin`.
+  Repaired in #801: the overlay's extent is carried with its origin (`OverlayBoxes`) and the return is
+  `{x,y} | undefined`. Before, the clamp answered `{0,0}` and re-placed a full-size grid on the canvas
+  corner over a sibling. Its repair is the shape the others took.
+- [fit](../territory/fit.md) — `justerm-web/src/fit.ts — proposeDimensions` and `gridForBox` (moved
+  from `justerm-renderer.ts` in #992). Repaired in #810: both refuse a box with no area as they already
+  refused a non-finite one; before, `0x0` floored to `MINIMUM_COLS` x `MINIMUM_ROWS` (a `display: none`
+  box proposed `2x1`, a `NaN` box was refused). Two callers: `JustermRenderer.resize` passes a
+  consumer-measured box and is live; `applyGrid`'s grant read-back passes the drawing buffer, which
+  `justerm-renderer/src/webgl/surface.rs — resize_surface` refuses to set at `<= 0` and an empty
+  read-back preserves (`apply_surface_size`), so the guard is defensive there — a completeness pass
+  twice claimed it was a live third site, by two different mechanisms, and both fell to reading
+  `apply_surface_size`. The one place this invariant diverges from prior art: alacritty refuses a zero
+  box, ghostty and xterm.js floor it (`docs/agents/theflow.md` § the box-refusal row, #810).
+- [selection](../territory/selection.md) — `justerm-web/src/input.ts — CellGeometry.originX` /
+  `originY`, read by `selection.ts — cellAndSide`, `input.ts — cellEvent` and
+  `SelectionController.mouseMove`'s drag-scroll term. Repaired in #819 as `getGeometry(): CellGeometry |
+  undefined` (`input.ts`, `pointer.ts`) — the only repair crossing a published seam, because the
+  consumer took the measurement. These two fields are the only ones of six with no stated precondition
+  (a position may be `0` or negative), so `geometryViolations` cannot flag them. A rect-derived cell
+  also goes to `0`, fires #672's signal, and #680's `cellHeight > 0` guard suppresses the auto-scroll; a
+  renderer-derived cell (`renderer.cellSize() / dpr`, what `demo/shared-surface.ts` and the package
+  README do) stays positive, so only the origin moves and nothing fires. Second half: `dragScrollAmount`
+  is controller state, so an early return would latch the last speed (#675's shape), and
+  `SelectionController.tick` carries its own guard because the tick timer (`Terminal`'s since #902)
+  fires whether or not the pointer moves. #672's "signal, do not correct" is untouched (scoped to the
+  `NaN` axis). Two `Terminal` readers carry their own reason: `Terminal.onWheel` reads the geometry once
+  per notch, since a `0` cell would latch the scroller's accumulator (#675); `writeTextareaAnchor` keeps
+  the last anchor, correct because the textarea is positioned relative to the element, which is off
+  screen too.
+- [viewport](../territory/viewport.md) — `justerm-web/src/scrollbar.ts — dragTrackRatio`, called by
+  the private `Scrollbar.dragTo`. Repaired in #814: the ratio takes the track box as data and answers
+  `number | undefined`, refusing `height <= 0`; `dragTo` then makes no request and deliberately does not
+  end the drag. Before, `(clientY - r.top) / r.height` on a zero track was `±Infinity`, which the
+  surrounding clamp turned into a plausible track end (or `NaN` at exactly `r.top`). A finiteness test
+  nearly worked: on the un-clamped quotient it is equivalent up to a negative height (a mutation reddens
+  exactly one assertion); on the returned value it accepts every zero box, because the clamp makes
+  `Infinity` a finite `1`.
+
+## What a violation looks like
+
+A plausible wrong answer, no error, damage usually on a bystander. Measured shapes:
+
+- **#801, real browser, before the fix.** Hiding the second pane of
+  `justerm-web/demo/shared-surface.html` with `display: none` moved its viewport from `[500, 40]` to
+  `[0, 0]`; a full-size grid was drawn over its neighbour, which went on reporting healthy. The
+  renderer's zero-area guard is not on that path: a viewport's extent is derived from `cols * cell`,
+  never the measured box.
+- **Fit**, against the real module. A hidden pane still being fitted proposes `2x1`, the engine reflows
+  through two columns, and showing it again does not undo it. Severity (#810): on the alt screen a
+  resize is a re-fit that drops rows with nothing to restore them ([reflow](../territory/reflow.md),
+  #567), and `Term::resize` drops the selection on any geometry change while on alt (at HEAD; on the
+  primary it re-anchors — corrected from the old note's "any geometry change").
+- **A drag that outlives its box (#814, real browser).** `Scrollbar` and `SelectionController` bind
+  move/up to `window`, and `Scrollbar.update()` hides the track without clearing `dragging`. With the
+  guard off and the host 40 lines up, two moves against an all-zero rect produced two spurious scroll
+  requests and left the host's display offset at `NaN`; with it, nothing. Which element is hidden
+  decides the harm: a host hiding an ancestor keeps `scrollbackLen`, so the ratio is `1` and the offset
+  is slammed to `0` on top of the `NaN`; the widget hiding its own track (`visible` means
+  `scrollbackLen > 0`) happens with no host action when RIS (`term.rs — Term::full_reset`), `ED 3` or
+  `Engine::clear` (#936) empties scrollback, and only the `NaN` survives. Hiding the track while
+  `scrollbackLen` stays positive does not reproduce (the first bad request re-renders, `update()` shows
+  it again) — a probe artifact this note briefly mistook for the rule until the RIS route was found.
+- **The same drag at the pointer converter (#819, real browser) — the worst.** With a renderer-derived
+  cell, three ticks of a hidden pane called `onScroll` 3 times for 45 lines (`3 × DRAG_SCROLL_MAX_SPEED`,
+  the maximum) plus a `port.extend(edgeRow, …)` per tick, with zero warnings. A rect-derived cell
+  scrolls nothing and warns twice. The silent arm is the recommended one, which is why it outlived three
+  passes.
 
 ## Discovery history
 
-- **#672** (closed 2026-07) — reached this fact from the other direction without naming it. Its
-  subject was `CellGeometry` having no *preconditions*, so a `NaN` poisons every pointer event, and
-  its sweep recorded in passing that *"a hidden canvas gives `cellWidth === 0` there (the geometry is
-  rect-derived) … finite and wrong rather than ignored"*. That sentence is this invariant, one field
-  over, a month early — and it stayed a parenthesis because the question it was answering was about
-  `NaN`, where the value announces itself. Found by searching the tracker by artifact rather than by
-  feature name, which is the only reason this row exists
-- **#639** (before either) — reached this fact in the renderer without naming it, and is the
-  reference-free ground the repair actually rests on: *"A buffer of no size is not a grant, it is the
-  absence of an answer"* (`justerm-renderer/src/webgl/surface.rs`), with the same `<= 0`, both-axes, `||`
-  predicate. Found only by a completeness pass looking for prior art **inside** the family after the
-  argument had been built out of the references
-- **#810** (2026-08-25) — repaired the second site the same day it was filed, and found a **third
-  reader** of an absent box while doing it (the grant read-back above). Its value to this note
-  is the **severity**, which the note did not have when it was written: the floor is not a cosmetic
-  wrong answer. On the primary screen a reflow preserves logical lines, so re-widening restores the
-  content; on the **alt screen** a resize is a re-fit — *"rows dropped or added to reach the new size,
-  nothing re-wrapped"* ([reflow](../territory/reflow.md), #567) — so a pane hidden while running a
-  full-screen TUI loses rows with nothing to restore them from — and the same resize clears the
-  selection on **any** geometry change (`Term::resize` in `justerm-core/src/term.rs`), whose comment had already
-  reasoned about *"a consumer that re-asserts its size every frame (a `fit()` loop)"* and required the
-  exact no-op; a `2x1` floor is not one. Absence producing a *plausible* answer is the invariant's
-  subject; this is the case where the plausible answer is also irreversible
-- **#814** (2026-08-25) — repaired the third site, and is the first of the four to be **run** rather
-  than read. Two things it added that reading could not: the defect is **self-concealing** through the
-  library's own `update()` when the wrong element is hidden (above), and the repair's real ground is
-  not this note at all but a **sibling guard one module over** — `routeWheel`'s
-  `!Number.isFinite(lines)` refusal (`justerm-web/src/scroll-control.ts`, #675) already decided that a
-  non-finite scroll request must not reach the consumer's `onScroll`, while
-  `TerminalOptions.onScroll`'s own doc says three producers, the scrollbar drag among them, *"funnel to the SAME callback"*. The
-  scrollbar was the one producer of that callback not on the guard's path — a statement that needs no
-  reference in it, which is why it is the one the change rests on.
-  **#913 added a third producer and the count in that sentence is no longer exhaustive**: user input
-  also reaches `onScroll` without passing `wheelScrollTarget`. The reasoning survives rather than
-  breaking, and for a reason worth stating — that producer's requested offset is the **constant `0`**,
-  not a value computed from a measurement, so there is no argument for a non-finite one to arrive
-  through. What it means for the next reader is that "the one producer off the guard's path" is now
-  "the one producer off it that computes what it asks for"
-- **#801** (2026-08-25) — found while making a hidden terminal reachable. The first site was repaired
-  by widening `OverlayBoxes` and returning a union; the other three were enumerated by a completeness
-  pass asking which other readers of an element box exist, and are **not** repaired. The first
-  hypothesis — that `SelectionController.mouseMove` (#680) was the second site — was checked and
-  falsified, which is why the boundary against the product-ambiguity rule is written above rather
-  than left to be re-derived
+- **#639** — the renderer reached this first without naming it: "A buffer of no size is not a grant,
+  it is the absence of an answer" (`webgl/surface.rs — apply_surface_size`), same `<= 0`, both-axes,
+  `||` predicate. The reference-free ground the repairs rest on; found by a completeness pass looking
+  for prior art inside the family.
+- **#672** (closed 2026-07) — recorded in passing that "a hidden canvas gives `cellWidth === 0` …
+  finite and wrong rather than ignored" while answering a `NaN` question. Found by searching the tracker
+  by artifact, not feature name.
+- **#801** (2026-08-25) — found while making a hidden terminal reachable; repaired the first site and
+  enumerated the rest; falsified the #680 hypothesis.
+- **#810** (2026-08-25) — repaired fit the day it was filed, found the grant read-back reader, and
+  supplied the severity.
+- **#814** (2026-08-25) — first site run rather than read; found self-concealment through `update()`.
+  Its real ground is a sibling guard: `scroll-control.ts — routeWheel`'s `!Number.isFinite(lines)`
+  refusal (#675) already decided a non-finite request must not reach `onScroll`, and
+  `TerminalOptions.onScroll`'s doc says its producers funnel to one callback; the scrollbar was the one
+  producer off that guard's path. #913 added a producer (user input scrolls to the constant `0`), so the
+  claim now reads "the one producer off the guard that computes what it asks for".
+- **#819** — the last site, the only one crossing a published seam, with state to unwind.
 
 ## Where it will recur
 
-- **Any new reader of an element box.** The tell is one question, and it is answerable at the
-  signature: *can this input distinguish "no box" from a legitimate measurement?* If the answer is no,
-  the repair belongs at the input, not at the computation
-- **Any host that hides a pane.** `display: none` is the ordinary way, `justerm-web`'s README now
-  documents it, and it fires a `ResizeObserver` — so every observer watching that element receives the
-  zeros at once, and they do not all handle them the same way
-- **A third `box → grid` path**, which `fit.ts` predicted by name. The two existing ones agree with
-  each other and both floor, so a copy inherits the defect and a test comparing them stays green
+- **Any new reader of an element box.** Test at the signature: can this input distinguish "no box"
+  from a legitimate measurement? If not, the repair belongs at the input.
+- **Any host that hides a pane.** `display: none` is the ordinary way, `justerm-web`'s README
+  documents it, and it fires a `ResizeObserver` — every observer of that element receives the zeros at
+  once.
+- **A third `box → grid` path**, which `fit.ts` predicts by name. The two existing ones agree and both
+  refuse; a copy written from an older version would floor, and a test comparing them stays green.

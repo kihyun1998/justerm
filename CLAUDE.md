@@ -38,7 +38,7 @@ to cover for another layer, stop and tell the user.
 
 | When | Read |
 |---|---|
-| Before starting any change — what else moves, which decision the code came from | `docs/map/README.md` (editing the map: its § Conventions) |
+| Before starting any change — what else moves, which decision the code came from | `docs/map/README.md` — read the touched territories at `thegraph`'s `read-it`, bring them back in line at its `sweep`; a fix that reveals a fact holding beyond one territory lands with an `invariant/` note (editing the map: its § Conventions) |
 | Touching the cell · damage · viewport/scroll · cadence · selection · serialization · engine API contract | `docs/architecture.md` (authoritative) |
 | You need the reason behind a decision | `docs/adr/` |
 | A term is unclear | `GLOSSARY.md` |

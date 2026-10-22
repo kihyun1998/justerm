@@ -5,312 +5,278 @@
 A **persistent line anchor** the engine keeps alive through buffer mutation, so a consumer can attach
 something to a line and still find it after scrolling, insertion, deletion and reflow. The engine
 owns the anchoring; what gets *drawn* at the anchor is [decoration](decoration.md), and the engine
-never knows.
-
-Two populations share the primitive: plain anchors a consumer registers, and OSC 133 command marks
-the shell emits.
+never knows. Two populations share the primitive: plain anchors a consumer registers
+(`add_marker`), and OSC 133 command marks the shell emits. This territory also owns the three read
+surfaces built on them — the pulled **marker index** (`marker_index`), the **command marks**
+(`command_marks`) and the **command lines** (`command_lines`: text and exit frozen per command).
 
 ## Governing decisions
 
 - [**ADR-0015 — marker primitive and the overlay marker group**](../../adr/0015-marker-primitive-and-overlay-marker-group.md)
-  — the primitive itself and how it reaches the frame (wire v6→7)
+  — the primitive itself and how it reaches the frame (wire v6→7).
 - [ADR-0020 — what qualifies for the frame snapshot](../../adr/0020-what-qualifies-for-the-frame-snapshot.md)
-  — why the absolute-line group was allowed alongside `markers` (viewport-only), and, since its
-  2026-08-05 amendment, why it left in v16 while `markers` stayed
+  — why the absolute-line group left in v16 while the viewport `markers` group stayed, and (its
+  #737/#741 amendments) what a birth event must carry.
 - [ADR-0017 — mechanism vs policy](../../adr/0017-core-consumer-boundary-mechanism-vs-policy.md) —
-  anchoring needs the whole buffer, so it is core; appearance does not, so it is not
+  anchoring needs the whole buffer, so it is core; appearance, navigation and earcons are not.
 - [**ADR-0029 — a coordinate carries its instant, or is re-asked**](../../adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md)
-  — promoted out of this primitive (#490 → #737 → #741 → #742), because all three outbound channels
-  meet here and they answer the dating question differently. It is why `marker_index` carries a basis
-  and an epoch while `command_marks` carries neither and is still correct
+  — promoted out of this primitive (#490 → #737 → #741 → #742 → #743), because all three outbound
+  channels meet here and answer the dating question differently. It is why `marker_index` carries a
+  basis and an epoch while `command_marks` and `command_lines` carry neither and are still correct.
+- [ADR-0025 D1 — a fact lives with its owner](../../adr/0025-row-and-wide-pair-cell-state-ownership.md)
+  — cited for `CommandRecord` living on the marker rather than in a side table (adjacent: the ADR is
+  about row and wide-pair state, not markers).
 
 ## Design model
 
-- **`MarkerKind` carries a *role*, not a style.** `Plain` (a bare anchor) plus the four OSC 133
-  boundaries: `PromptStart`, `CommandStart`, `OutputStart`, `CommandFinished(Option<i32>)`. The exit
-  code parses to `i32` or becomes `None` — absent, empty and non-numeric all collapse to the same
-  "not reported".
-- **A marker index is *pulled*, and three things keep it valid (#490).** `Term::marker_index`
-  answers once with every live marker's absolute line; after that the consumer (a) rebases by the
-  `evicted_total` delta, (b) appends on `MarkerCreated` and drops on `MarkerDisposed`, and (c)
-  re-pulls when `marker_epoch` moves. The split is by *how the buffer moved*: eviction shifts every
-  marker identically so it is one number; birth and death are `O(1)` occurrences so they are events;
-  everything else (reflow, a region rotate that moved a survivor, an alt switch, RIS) is
-  non-uniform, so nothing but a re-pull repairs it.
-  **The birth carries its own instant, and (a) does not supply it (#737, #741).**
-  `MarkerCreated.line` is absolute at the *instant of creation*, and the same `feed` can evict
-  afterwards — so the frame that closes the batch reports a third origin, and rebasing the event
-  against it misplaces the mark by whatever the batch evicted after the birth (#737). That instant is
-  not one number: (c)'s epoch dates the moves (a)'s delta cannot express, and a birth queued when the
-  epoch bumps is an answer about a buffer that no longer exists — measured, a mark at absolute 3
-  reflowed to 5 while the basis stayed 0 (#741). So the event carries the pull's whole
-  `(line, evicted_total, epoch)` triple, and the consumer adopts a birth only into the generation it
-  names, comparing for equality because `bump_marker_epoch` wraps. Order-independence is the point:
-  placement does not depend on whether the host drains events before or after reading the frame, on
-  either axis. Only *cost* does — drain-first keeps a birth `O(1)`, while frame-first leaves
-  `marker_count` one ahead of an index that has not been told yet, and a consumer comparing the two
-  spends a re-pull reconciling it.
-  **The known cost, measured**: a marker sitting *below* a bottom margin shifts on every output line
-  (`markers_shift_below_margin`), so it bumps the epoch per line — 1 000 bumps over 1 000 region
-  scrolls. **It is a correctness trigger as well as a cost, and reading it as only a cost cost a
-  premise (#741).** The same bump is what moves markers non-uniformly *inside a single `feed`*, with
-  no resize anywhere — measured, a mark in a DECSTBM footer is born at line 4 and answered at 6 two
-  accruals later, with `evicted_total` never moving. #737's completeness pass had recorded the
-  opposite (*"no non-uniform move escapes the epoch inside a `feed`"*), which is why every fixture
-  written against this area reached the epoch through `resize` and none of them covered the path an
-  ordinary `tmux` status line takes. That degrades to the pre-#490 cost (`O(M)` per frame) **only if the consumer re-pulls at
-  most once per frame**, which is therefore a stated obligation of the contract rather than an
-  assumption about how a consumer happens to be written.
-  **Two corrections measurement forced (#738), and a third that falsified the second (#746).**
-  *The cap bounds requests, not availability* — a consumer holding to that obligation has every
-  pull land stale under per-line churn, so it holds no answer at all for the duration: the
-  degradation is a blank overview ruler and absent above-the-top anchors, not a bill.
-  **And "the outage is bounded by the churn" was false too**: the consumer started a pull only when
-  the epoch *changed*, so a pull landing one generation behind the newest frame left the index
-  unusable after the churn had stopped — permanently, with the population unchanged so the count
-  check stayed silent. Reached by an ordinary drag-resize once the query round trip approaches the
-  resize cadence (8 of 40 drags at RTT ≈ 100 ms). Fixed consumer-side by asking a *state* — *what I
-  hold does not describe the newest frame, and nothing is in flight* — rather than an edge. Core is
-  unchanged; this is a consumer-half correction to a claim the core-side design had been credited
-  with. And *the reach is narrow*: this is the only per-line bump, and
-  `markers_shift_below_margin` is primary-only, so it needs DECSTBM leaving a static footer **and**
-  a marker inside it. Ordinary scrolling bumps 0 times over 1 000 lines; a marker *inside* the
-  region bumps 0 times as well, because with `scroll_top == 0` the scroll accrues into scrollback
-  and the marker's absolute line correctly does not move.
+Status: ADR-0015/0020/0029 decide the primitive, the frame groups and the dating; everything else
+below comes from the source and its doc-comments (read at 7bb31f7) and from the issues cited.
+
+**The primitive**
+
+- **`MarkerKind` carries a *role*, not a style.** `Plain` plus the four OSC 133 boundaries:
+  `PromptStart`, `CommandStart`, `OutputStart`, `CommandFinished(Option<i32>)`. The exit code parses
+  to `i32` or becomes `None` — absent, empty and non-numeric collapse to "not reported".
+- **Two populations, `normal_markers` and `alt_markers`, routed by the active buffer**
+  (`markers_mut`, #186/#187). An alt-screen region scroll rotates *alt* marks and leaves the primary
+  list untouched with no guard at the call site; primary marks survive a `vim` session (#118/#158),
+  and alt marks are disposed on alt-leave.
+- **Command marks are primary-only by definition** (#192): `add_command_mark` returns early on the
+  alt screen (#188), and `command_marks`/`command_lines` read the primary population whatever screen
+  is up. That is why the command walks carry **no** alt-screen floor (see Cross-cutting invariants).
 - **Death is an event, not an absence.** An off-screen marker is *omitted* from the viewport group
-  while still alive, so the consumer learns of disposal through `MarkerDisposed` rather than by
-  noticing a gap. Without that, "scrolled away" and "gone" would be the same observation.
-- **The population is bounded, because the *stream* allocates it.** `add_command_mark` appends per
-  OSC 133 sequence with no per-line dedup, and eviction only drops a marker whose line reached
-  absolute 0 — so marks piled on one line are unreachable by eviction and grow with the stream
-  (measured: 70 000 live in a 24-row buffer, #721). `MAX_MARKERS` caps a buffer's population at
-  `u16::MAX`, retiring the **oldest** through the ordinary disposal event — not refusing the newest,
-  which is cheaper but kills shell integration for the rest of the session once a pile nothing can
-  evict fills the cap; the oldest is the one already destined to die, and `MarkerDisposed` is where
-  eviction already announces that, so the consumer contract is unchanged. Two things follow that a
-  reader will otherwise re-derive: the marker list is a `VecDeque` *because of this* (`Vec::remove(0)`
-  would memmove the whole population per push once the cap is reached), and the cap is why both
-  `u16` wire counts are safe without being widened.
-- **Two projections, two frames of reference.** `MarkerPosition` is viewport rows and carries the
-  kind; the absolute buffer line for *every* live marker rode its own group until v16, and carried no kind or
-  exit code — because the ruler mark's colour is the consumer's, so nothing themeable rides there.
-- **Anchors are maintained through buffer motion by three verbs** — `markers_shift_below_margin`,
-  `markers_evict_oldest`, `markers_rotate_region` — called from the write path beside their
-  selection-side counterparts.
-- **And by a fourth that is not a mover at all: `dispose_markers_on_row` (#750).** The three
-  above repair a *coordinate*, and they read as the whole job because for a long time every way a
-  mark could stop describing its content moved the buffer. An in-place erase does not — the row
-  stays where it is while everything the mark was about stops existing — so nothing fired, nothing
-  was announced, and `command_lines` reported commands that were not there, at document lines that
-  reveal onto blank rows. Worse than absent: after a `clear` the shell redraws its prompt onto the
-  dead marks' columns, so every later command was reported twice (measured, `n=4` for two real
-  commands).
-  **`ED` retires, `EL` and `ECH` do not**, and that split is not the reference's helper-identity
-  accident being copied — it has its own reason. A line editor redraws the input line with
-  `
- ESC[K` on every keystroke, and `B` was emitted before the user began typing, so an `EL` that
-  retired marks would delete the `CommandStart` of the command being typed and no command would
-  ever be reported. The references converge on the same split anyway (see below). **The known
-  residue** is the cursor's own row: both references route it through their partial-erase helper,
-  so an erase can blank a row to its full width and leave every mark on it. Followed rather than
-  widened, because the only argument for widening is symmetry — the tell ADR-0019's retracted first
-  amendment was caught by. Its measured size is under "Known holes" below; the first version of
-  this sentence quoted only the smaller half.
-- **`Engine::clear` keeps the marks on what it keeps (#936)**, where xterm.js's `clear()`
-  disposes every marker. The reason is `EL`'s, one bullet up: what it keeps is the prompt the user
-  is typing on, and disposing its `CommandStart` would drop that command from `command_lines` once
-  it runs. That is also why it keeps the cursor's whole **logical** line rather than xterm.js's one
-  row: a command that wrapped puts `B` on a row above the cursor, and keeping only the cursor's row
-  disposed it (measured by the #936 refuter, `a_wrapped_command_line_is_kept_whole`). Every other mark goes — history and the rows above through `markers_evict_oldest(n)`,
-  the blanked rows below through `dispose_markers_on_row` — and `ED 3` retires the marks in history
-  the same way, which is what finally erases the pre-`clear` commands a real `clear` leaves in
-  scrollback (`command_lines_capture.rs`). Pinned by `clear.rs::the_command_being_typed_is_still_reported`.
-- **What is *not* in the buffer is frozen on the mark when the stream reveals it (#750).** The
-  command text is captured at `C` and the exit code written down at `D`. Re-reading text through
-  the recorded `[b_col, c_col)` clip names whatever now occupies those cells — measured for a plain
-  overwrite, `ICH`, `DCH` **and** an erase, so no lifetime rule closes it; only the erase is a verb
-  disposal could ever reach. And resolving the exit at *query* time meant pairing over survivors
-  (`out.last_mut()`), which slid a code onto the previous command the moment a disposal broke the
-  run — measured, `a0` wearing `a1`'s `Some(2)`. Only `line` stays derived, because it is the half
-  the movers above already maintain. The capture is bounded at `MAX_COMMAND_TEXT`, for the reason
-  `MAX_MARKERS` exists: the *stream* chooses the distance between `B` and `C`.
-- **…and across records at `MAX_COMMAND_TEXT_TOTAL` (16 MiB), because two bounds on one product
-  bound nothing (#1038).** `MAX_MARKERS` × `MAX_COMMAND_TEXT` × 4 bytes is half a gigabyte, and a
-  line-less stream reaches it: `CSI H`, `133;B`, `CSI 59;1H`, `133;C`, repeated, retained 202 MiB from
-  0.74 MiB of input on 727865d (19.6 MiB after). A capture that would cross the budget is cut, at a
-  `char` boundary, to what is left — possibly nothing — and the record is still made, so
-  `command_lines` keeps listing the command with shorter text. The maintainer chose a total budget
-  with truncation over a lower per-command cap on 2026-10-08; the number is derived, from the
-  ordinary ceiling `MAX_MARKERS`' doc already records (about 40 000 live commands in a
-  default-scrollback session) at over 400 bytes each. **The refund rides `Drop`, not the disposal
-  sites.** A record's bytes are a `TextCharge` holding the pool, so every path that drops a marker —
-  the cap's `pop_front`, `markers_evict_oldest`, `dispose_markers_on_row`, `ED 3`, `Engine::clear`,
-  `RIS` — returns them without naming the budget. A counter decremented at each site would have been
-  a sixth call list beside the funnel #936 exists to have one of.
-- **Primary markers survive an alt-screen excursion.** That is the contract (#118/#158): a mark must
-  outlive a `vim` session. `normal_markers` and `alt_markers` are separate populations, and an
-  alt-screen scroll must **not** rotate primary markers or it silently disposes them — the alt grid
-  occupies the same absolute-line range.
-- **Command marks are primary-only by definition** (#192), which is why the command walks
-  deliberately carry **no** alt-screen floor — see the cross-cutting note below.
+  while alive; the consumer learns of disposal through `TermEvent::MarkerDisposed`. Otherwise
+  "scrolled away" and "gone" would be the same observation.
 - **A marker's `col` domain is `[0, cols]`, a bound rather than a cell (#562).** A command that
-  exactly fills its row ends one past the last column, which is what `extract_lines` wants: it clips
-  `[b_col, c_col)`, so the exclusive end absorbs it through `.min(cells.len())`. Storing
-  `cursor.col` alone (held at `cols - 1` with `pending_wrap`) cost such a command its last character
-  with no resize involved. The inclusive side cannot absorb it, so `extract_lines` steps a `from` of
-  `cells.len()` to the next line rather than selecting an empty run and flushing a `\n`.
-- **`CommandRecord` is one boxed pointer on the marker, not a side table (#750).** Three marks in
-  four never carry it and the population is bounded at `MAX_MARKERS`; living on the marker, it dies
-  with it — a side table keyed by `MarkerId` would need its own purge at every disposal site, the
-  missing-destruction-funnel defect #750 is about (ADR-0025 D1: a fact lives with its owner).
-- **`resize` bumps the marker epoch once, on a dimension change with a marker present (#490).** A
-  reflow rewrites marker lines at three sites in two frames of reference; bumping at the one
-  function that runs them all beats a per-site obligation. The dimension gate matters because
-  `resize` has no early return and `ResizePort` promises no idempotency — `justerm-web`'s fit
-  re-sends an unchanged grid when only the cell moved — and an ungated bump measured 100 bumps for
-  100 no-op resizes.
-- **Both resize branches carry a marker's column, `(line, col)`, not `(line, 0)`** (#166): the column
-  bounds OSC-133 command-text extraction, and the alt branch once dropped it, truncating the
-  recorded command for any resize taken while a full-screen app was up. On the alt half the column
-  is **unpinned** — `add_marker` passes 0 and no OSC-133 mark has been observed in `alt_markers` —
-  but `push_marker` takes a column and `markers_mut` routes by active buffer, so it is carried to
-  keep the two halves stating one invariant.
-- **The alt half of a resize has no history, so its reflow limit is `0`** — `extras` count from the
-  top of the alt pane's own history, and passing the primary's limit kept the rows a shrink pushed
-  off, reporting a marker four lines past the end on a rows-only resize. A marker whose row went is
-  **disposed** with `MarkerDisposed`, as alt scrolling already does, rather than relocated to row 0
-  onto content it never marked.
-- **The column is published on both incremental channels, `MarkerCreated.col` and
-  `MarkerEntry::col` (#973)**, and not on the frame's `MarkerPosition`, on `command_marks`, or
-  in `justerm-web`'s `MarkerIndexEntry` mirror (a structural subset, so nothing there is typed
-  wrong; no consumer read it when #973 landed).
-  The forcing case is a consumer reading the command *being typed*, between `B` and `C`: before
-  `C` nothing else bounds it, and the cursor after `feed` has already passed `B` whenever the
-  same batch carries the echo (fast typing, a paste, a line editor's full redraw). It needs no
-  dating of its own: `col` is written only by the two reflow branches of `resize`, and `resize`
-  bumps the epoch on a dimension change when *either* population holds a mark, so the triple that
-  dates `line` dates `col`. Pinned per branch — `a_reflow_moves_the_column_under_a_new_generation`
-  (primary active) and `a_reflow_under_the_alt_screen_moves_the_primary_column_too`; before the
-  second existed, disabling the on-alt branch's write of the **primary** markers' column left the
-  **whole** core suite green, which is the #166 regression with nothing watching it. That branch's
-  write for the alt markers stays unpinned, as the `(line, col)` bullet above says.
-- **A tracked point whose line was evicted is released, where a marker saturates** (#691). A marker
-  on the wrong line still paints something the consumer can see and correct; a tracked point is
-  *asked* for a position, and answering with content the caller never anchored to is the failure
-  tracking exists to remove. The alt half's `row < rows` guard is **unproven, deliberately kept**: a
-  mutation dropping it stays green, and a sweep of 324 alt resizes (rows 1..6 × cols {4,10,30}, both
-  directions, a point on every row at columns 0 / 1 / cols-1 / cols and one past the pane) never
-  reached it, because the alt fit runs with `reflow: false`. That is a measured validity condition,
-  not a proof; the marker loop carries the same bound and parity keeps it.
-- **`CommandLine::line` is a document line, core's analog of VS Code's `bufferToEditorLineMapping`** —
-  the frame-mode web side has no wrap information to map an absolute line itself.
+  exactly fills its row ends one past the last column, which `extract_lines` absorbs through its
+  exclusive end; storing `cursor.col` alone (held at `cols - 1` with `pending_wrap`) cost such a
+  command its last character. The inclusive side steps a `from` of `cells.len()` to the next line.
+
+**Bounds — the stream allocates this population**
+
+- **`MAX_MARKERS` caps each buffer at `u16::MAX`, retiring the oldest** (#721). `add_command_mark`
+  appends per OSC 133 sequence with no per-line dedup, and eviction only drops a marker whose line
+  reached absolute 0 — so marks piled on one line are unreachable by eviction (measured: 70 000 live in
+  a 24-row buffer). Overflow `pop_front`s the oldest and announces it through the ordinary
+  `MarkerDisposed`, rather than refusing the newest (which would kill shell integration for the rest
+  of the session once an unevictable pile fills the cap). Two consequences: the list is a `VecDeque`
+  *because of this* (`push_marker`'s comment: `Vec::remove(0)` would memmove per push), and the cap is
+  what makes the `u16` marker wire count safe without widening.
+- **Command text: `MAX_COMMAND_TEXT` per record (4096 `char`s) and `MAX_COMMAND_TEXT_TOTAL` (16 MiB)
+  across records**, because two bounds on one product bound nothing (#1038): `MAX_MARKERS` ×
+  `MAX_COMMAND_TEXT` × 4 bytes is half a gigabyte, and a line-less stream (`CSI H`, `133;B`,
+  `CSI 59;1H`, `133;C`, repeated) retained 202 MiB from 0.74 MiB of input on 727865d (19.6 MiB
+  after). A capture that would cross the budget is cut at a `char` boundary to what is left —
+  possibly nothing — and the record is still made. The maintainer chose a total budget with
+  truncation over a lower per-command cap (2026-10-08). **The refund rides `Drop`**: a record's bytes
+  are a `TextCharge` holding the pool, so every path that drops a marker returns them without naming
+  the budget — a per-site decrement would have been another call list beside the funnel #936 exists to
+  have one of.
+- **`CommandRecord` is one boxed pointer on the marker, not a side table (#750).** Three marks in four
+  never carry it; living on the marker, it dies with it — a side table keyed by `MarkerId` would need
+  its own purge at every disposal site, the missing-destruction-funnel defect #750 is about.
+
+**The pulled index and its validity**
+
+- **A marker index is *pulled*, and three things keep it valid (#490).** `marker_index` answers once
+  with every live marker of the **active** buffer (`MarkerEntry`: id, line, col, kind) plus the basis;
+  the consumer then (a) rebases by the `evicted_total` delta, (b) appends on `MarkerCreated` and drops
+  on `MarkerDisposed`, (c) re-pulls when `marker_epoch` moves. The split is by *how the buffer moved*:
+  eviction shifts every marker identically (one number); birth and death are `O(1)` occurrences
+  (events); everything else — reflow, a region rotate that moved a survivor, an alt switch, RIS — is
+  non-uniform, so only a re-pull repairs it. `marker_count` in the frame header is the drift check.
+- **The birth carries its own instant (#737, #741).** `MarkerCreated.line` is absolute at creation,
+  and the same `feed` can evict afterwards, so rebasing against the batch-closing frame misplaces the
+  mark (#737). A birth queued when the epoch bumps is an answer about a buffer that no longer exists —
+  measured, a mark at absolute 3 reflowed to 5 while the basis stayed 0 (#741). So the event carries
+  the pull's whole `(line, evicted_total, epoch)` triple, and the consumer adopts a birth only into the
+  generation it names, comparing for **equality** because `bump_marker_epoch` wraps. Placement is
+  therefore independent of whether the host drains events before or after reading the frame; only
+  *cost* is not (frame-first leaves `marker_count` one ahead and spends a re-pull).
 - **`evicted_total` counts only the uniform front-drops** — the scrollback cap, `ED 3` and
   `Term::clear`, all through `lines_left_the_front`. Reflow also drops lines off the front
-  (`PaneReflow::evicted`, installed by replacing the deque) and does not come through there: it
-  moves survivors non-uniformly, so no delta repairs them and `marker_epoch` signals it instead. A
-  holder rebasing off `evicted_total` without also watching the epoch is wrong across every resize.
+  (`PaneReflow`'s `evicted`, installed by replacing the deque) and does not come through there: it
+  moves survivors non-uniformly, so `marker_epoch` signals it. A holder rebasing off `evicted_total`
+  without also watching the epoch is wrong across every resize.
+- **`resize` bumps the epoch once, on a dimension change with a marker in either population (#490).**
+  A reflow rewrites marker lines at several sites; bumping at the one function that runs them all
+  beats a per-site obligation. The dimension gate matters because `resize` has no early return and
+  `justerm-web`'s fit re-sends an unchanged grid when only the cell moved — ungated, 100 no-op
+  resizes measured 100 bumps.
+- **The per-line bump is a correctness trigger as well as a cost (#741).** A marker *below* a bottom
+  margin shifts on every output line (`markers_shift_below_margin`, primary-only), bumping the epoch
+  per line — 1 000 bumps over 1 000 region scrolls. The same bump is what moves markers non-uniformly
+  *inside a single `feed`*: a mark in a DECSTBM footer born at line 4 is answered at 6 two accruals
+  later with `evicted_total` unmoved. #737's completeness pass had recorded the opposite, which is why
+  every earlier fixture reached the epoch through `resize`. This degrades to the pre-#490 cost
+  (`O(M)` per frame) **only if the consumer re-pulls at most once per frame** — a stated obligation of
+  the contract. The reach is narrow: it needs DECSTBM leaving a static footer **and** a marker inside
+  it; ordinary scrolling bumps 0 times over 1 000 lines, and a marker *inside* the region bumps 0
+  times too (with `scroll_top == 0` the scroll accrues into scrollback and the absolute line does not
+  move). `markers_rotate_region` bumps only when a *surviving* marker moved.
+- **Two corrections measurement forced on the consumer half (#738, #746).** The once-per-frame cap
+  bounds requests, not availability: under per-line churn every pull lands stale, so the consumer holds
+  no answer for the duration — a blank overview ruler and absent above-the-top anchors, not a bill.
+  And the outage was not bounded by the churn: a consumer starting a pull only on an epoch *change*
+  left the index unusable after churn stopped, with the count check silent (8 of 40 drag-resizes at
+  RTT ≈ 100 ms). Fixed consumer-side by asking a *state* — "what I hold does not describe the newest
+  frame, and nothing is in flight" — rather than an edge. Core unchanged.
+- **The column is published on both incremental channels, `MarkerCreated.col` and
+  `MarkerEntry::col` (#973)** — not on the frame's `MarkerPosition`, on `command_marks`, or in
+  `justerm-web`'s `MarkerIndexEntry` mirror (a structural subset). The forcing case is a consumer
+  reading the command *being typed*, between `B` and `C`, after the same batch echoed past `B`: PenTerm
+  autocomplete takes the latest non-plain mark by `(line, col)` from `marker_index` (penterm
+  7dadc3c95 `src-tauri/src/engine/prompt.rs` — `read_input`). It needs no dating of its own: only the
+  two reflow branches of `resize` write `col`, and they bump the epoch. Pinned per branch
+  (`a_reflow_moves_the_column_under_a_new_generation`,
+  `a_reflow_under_the_alt_screen_moves_the_primary_column_too`); before the second existed, disabling
+  the on-alt branch's write of the **primary** column left the whole core suite green.
+- **Both resize branches carry `(line, col)`, not `(line, 0)`** (#166) — the alt branch once dropped
+  the column, truncating the recorded command for any resize taken under a full-screen app. On the alt
+  half the column is unpinned (`add_marker` passes 0 and no OSC-133 mark reaches `alt_markers`), but it
+  is carried so the two halves state one invariant. **The alt half has no history, so its reflow limit
+  is `0`**: passing the primary's limit kept rows a shrink pushed off and reported a marker four lines
+  past the end; a marker whose row went is **disposed**, not relocated to row 0.
+
+**Repair through motion, and through destruction in place**
+
+- **Three movers maintain anchors through buffer motion** — `markers_shift_below_margin`,
+  `markers_evict_oldest`, `markers_rotate_region` — called from the write path beside their selection
+  and tracked-point counterparts (`selection_*`, `tracked_*`).
+- **A fourth is not a mover: `dispose_markers_on_row` (#750).** An in-place erase leaves the row
+  where it is while everything the mark was about stops existing; before #750 nothing fired, and
+  `command_lines` reported commands at document lines that revealed onto blank rows — and after a
+  `clear` the shell's redrawn prompt doubled every later command (measured `n=4` for two real ones).
+  **`ED` retires, `EL` and `ECH` do not**, for a reason of its own: a line editor redraws the input
+  line with `\r ESC[K` on every keystroke after `B`, so an `EL` that retired marks would delete the
+  `CommandStart` being typed. The references converge on the same split. **The known residue** is the
+  cursor's own row: both references route it through their partial-erase helper, so an erase can blank
+  a row to full width and leave every mark on it — followed rather than widened, because the only
+  argument for widening is symmetry (sizes under Known holes).
+- **`Engine::clear` keeps the marks on what it keeps (#936)**, where xterm.js's `clear()` disposes
+  every marker: what it keeps is the prompt being typed on. It keeps the cursor's whole **logical**
+  line, because a wrapped command puts `B` above the cursor row (`a_wrapped_command_line_is_kept_whole`).
+  Every other mark goes — history and the rows above through `erase_history` → `markers_evict_oldest`,
+  the blanked rows below through `dispose_markers_on_row` — and `ED 3` retires history's marks the same
+  way, which erases the pre-`clear` commands a real `clear` leaves in scrollback
+  (`command_lines_capture.rs`). Pinned by `clear.rs` — `the_command_being_typed_is_still_reported`.
+- **What is not in the buffer is frozen on the mark when the stream reveals it (#750).** The command
+  text is captured at `C` (`capture_command_text`) and the exit written at `D` (`attach_exit`).
+  Re-reading text through the `[b_col, c_col)` clip names whatever now occupies those cells — measured
+  for overwrite, `ICH`, `DCH` and erase, so no lifetime rule closes it. Resolving the exit at *query*
+  time paired over survivors and slid a code onto the previous command once a disposal broke the run
+  (measured, `a0` wearing `a1`'s `Some(2)`). Only `line` stays derived — the half the movers maintain.
+
+**The command lines**
+
+- **`CommandLine::line` is a document line**, the logical-line index of its `CommandStart` within
+  `Term::accessible_text` — core's analog of VS Code's `bufferToEditorLineMapping`, because the
+  frame-mode web side has no wrap information to map an absolute line itself. It is meaningful only
+  with the document of the same instant on the primary screen; on the alt screen `accessible_text`
+  returns the other document. Re-ask, never rebase (ADR-0029; `Engine::command_lines` doc; pinned in
+  `tests/command_lines_document.rs`).
+- **Outside input.** OSC 133 sequences allocate marks and capture text; both are bounded above
+  (`MAX_MARKERS` per buffer, `MAX_COMMAND_TEXT`, `MAX_COMMAND_TEXT_TOTAL`). `add_marker` is consumer
+  input, bounded by the same cap.
 
 ## Code
 
-- `justerm-core/src/term/markers.rs` — `Term::add_marker`, `remove_marker`, `command_marks`,
-  `command_lines`, `add_command_mark`, `markers_shift_below_margin`, `markers_evict_oldest`,
-  `markers_rotate_region`, `marker_positions`, `marker_index`,
-  `bump_marker_epoch`, and the private
-  `primary_grid` / `command_start` / `doc_line_of`. Extracted from `term.rs` in #588
-  Since #750 the same file owns `dispose_markers_on_row`, `capture_command_text`,
-  `open_command_start` and `attach_exit`
+- `justerm-core/src/term/markers.rs` — `Term::add_marker`, `remove_marker`, `push_marker`, `add_command_mark`, `capture_command_text`, `open_command_start`, `attach_exit`, `dispose_markers_on_row`, `command_marks`, `command_lines`, `command_start`, `doc_line_of`, `primary_grid`, `markers_mut`, `marker_index`, `bump_marker_epoch`, `markers_shift_below_margin`, `markers_evict_oldest`, `markers_rotate_region`, `marker_positions`
+- `justerm-core/src/term.rs` — `Marker`, `CommandRecord`, `TextCharge`, `MarkerEntry`, `MarkerIndex`, `CommandLine`, `MAX_MARKERS`, `MAX_COMMAND_TEXT`, `MAX_COMMAND_TEXT_TOTAL`, `Term::lines_left_the_front`, `Term::clear`
 - `justerm-core/src/serialize.rs` — `MarkerId`, `MarkerKind`, `MarkerPosition`
-- `justerm-core/src/term.rs` — `CommandLine`, `CommandRecord`, `MAX_COMMAND_TEXT`
+- `justerm-core/src/event.rs` — `TermEvent::MarkerDisposed` and its MarkerCreated mirror (a struct variant)
+- `justerm-core/src/lib.rs` — `Engine::marker_index`, `Engine::command_marks`, `Engine::command_lines` (the docs.rs statement of each dating contract)
+- `justerm-core/tests/marker_index.rs` · `marker_cap.rs` · `osc133.rs` · `command_lines*.rs` · `command_marks_instant.rs` · `clear.rs` · `alt_markers.rs` · `alt_resize_markers.rs`
+- `justerm-web/src/marker-index.ts` — `MarkerIndexEntry`, the consumer-side index
 
 ## Reference behaviour
 
-In `docs/agents/reference-facts.md` — **linked, never restated** (each row carries a `file:line` at a
-recorded SHA; a paraphrase drops the pin).
-
-- [The marker's clear discipline](../../agents/reference-facts.md#the-markers-clear-discipline-534-verified-2026-07-27)
-  — note this is the *wide-spacer* marker, a different artifact that shares the word
 - [What retires a line-anchored mark when the line's content is destroyed in place](../../agents/reference-facts.md#what-retires-a-line-anchored-mark-when-the-lines-content-is-destroyed-in-place-750-verified-2026-08-07)
+  — `ED` retires, `EL`/`ECH` do not, and the cursor row's partial-erase residue.
+- [What the only system that recovers command text does](../../agents/reference-facts.md#what-the-only-system-that-recovers-command-text-does-750)
+  — the freeze-at-`C` model.
+- [Dating an anchor across a non-uniform move](../../agents/reference-facts.md#dating-an-anchor-across-a-non-uniform-move--the-one-reference-with-a-generation-and-why-it-may-compare-with--741-verified-2026-08-06)
+  — the epoch.
+- [Relating a coordinate to the document it names](../../agents/reference-facts.md#relating-a-coordinate-to-the-document-it-names--how-the-references-make-which-buffer-unaskable-743-verified-2026-08-07)
+  — the `command_lines` document line.
+- [The overview ruler](../../agents/reference-facts.md#the-overview-ruler--who-has-one-how-a-mark-is-merged-and-how-big-it-is-500-verified-2026-08-10)
+  — what consumes the index.
+- [The marker's clear discipline](../../agents/reference-facts.md#the-markers-clear-discipline-534-verified-2026-07-27)
+  — a **different** artifact (the wide-spacer marker) that shares the word; linked so a search for
+  "marker" lands on the distinction.
 
 ## Cross-cutting invariants
 
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — markers are the
-  **third category** in that note: `doc_line_of` and `command_start` walk absolutely and must **not**
-  get a floor, because `command_lines` threads `primary_grid()` through them so all three run in one
-  coherent `[scrollback ++ primary]` buffer. The failure mode here is the mirror of the usual one —
-  someone *adding* a floor and silently breaking command navigation on the alt screen
+  **third category** there: `doc_line_of` and `command_start` walk absolutely and must **not** get a
+  floor, because `command_lines` threads `primary_grid()` through them so all run in one coherent
+  `[scrollback ++ primary]` buffer. The failure mode is the mirror of the usual one — someone *adding*
+  a floor and breaking command navigation on the alt screen.
 - [a coordinate carries the instant it is true at](../invariant/a-coordinate-carries-the-instant-it-is-true-at.md)
-  — all three of core's outbound channels meet on this one primitive, and they answer the instant
-  question differently: `marker_positions` rides the frame and gets coherence free, `MarkerCreated`
-  had to be given a basis (#737) and then the generation that basis cannot express (#741), and
-  `command_marks` has nowhere to put either **and does not need one** (#742) — it is declared
-  instantaneous, which the note's own derivation says is available to it and not to `marker_index`,
-  because its scope is primary whatever screen is up while the pull's follows the active buffer. Two
-  queries over one primitive, opposite shapes, and the difference is derived rather than chosen.
-  **`command_lines` is the third, and it reached the same shape from the opposite end (#743)**: it is
-  a *document* line, so there was never a scalar it *could* have carried — dating that space would take
-  a line-end counter and a generation of its own, where `command_marks` merely declines the pair that
-  already exists. It is also the only outbound coordinate that has to name a
-  **document** as well as an instant, and on the alt screen the document it names is not the one
-  `accessible_text` returns. Both halves are stated on `Engine::command_lines` and pinned in
-  `justerm-core/tests/command_lines_document.rs`
+  — all three outbound channels meet on this primitive and answer differently: `marker_positions`
+  rides the frame and gets coherence free; `MarkerCreated` had to be given a basis (#737) and then the
+  generation (#741); `command_marks` is declared instantaneous (#742), available to it because its
+  scope is primary whatever screen is up, while `marker_index` follows the active buffer.
+  `command_lines` reached the same shape from the other end (#743): a document line had no scalar it
+  *could* carry, and it also names a **document**, which on the alt screen is not the one
+  `accessible_text` returns.
 - [the write path funnels motion and does not funnel destruction](../invariant/no-funnel-for-destruction-in-place.md)
-  — this territory is where the gap was found and the one that answers **retire**: the three
-  movers repair a coordinate and read as the whole job, so nothing repaired a mark whose row was
-  blanked where it stood (#750). The note's value is the other two answers, which are *not* the
-  same and are not reachable from here
+  — this territory found the gap and answers **retire**: the movers read as the whole job, so nothing
+  repaired a mark whose row was blanked where it stood (#750).
 - [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
-  — the two marker group counts are still `u16` after #621 widened its siblings, and **nothing about
-  the viewport bounded either of them**: the absolute-line group reported every live marker, and `markers`,
-  though `marker_positions` filters it to visible rows, is unbounded because several marks
-  legitimately share one line. Past 65 535 the declared count wrapped while every record was still
-  written, and `decode` read the following group's count out of the middle of a marker record — `Ok`,
-  with every later group garbage-derived. **Closed by #721 at the producer**: `MAX_MARKERS` bounds a
-  buffer's live population at `u16::MAX`, so the input that wraps a count can no longer exist. The
-  counts were deliberately *not* widened — that would entrench ADR-0020's stated R3 violation, which
-  is what #490 exists to remove, and #490 still owns that half (the payload is still `O(M)`; M is
-  merely bounded now)
+  — the viewport marker group's count is still `u16` after #621 widened its siblings, and the viewport
+  does not bound it (several marks share a line). Past 65 535 the count wrapped while every record was
+  still written, and `decode` returned `Ok` with every later group garbage-derived. Closed by #721 at
+  the producer (`MAX_MARKERS`), deliberately not by widening, which would entrench the ADR-0020 R3
+  violation (the payload is still `O(M)`; M is bounded).
+- [RIS keeps configuration and drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
+  — `Term::full_reset` announces a `MarkerDisposed` for every marker and drops both sets (coordinates),
+  but carries `next_marker_id` (a handle's counter the consumer still holds — a reissued id would let
+  a stale disposal drop a live post-RIS marker) and carries `marker_epoch` across and then bumps it, so
+  a held index re-pulls (#490). Carried or not, `next_marker_id` is a `u32` advanced with `+= 1` in
+  `push_marker`, so it still wraps at `u32::MAX` (that note's § A counter carried across RIS).
 
 ## Blast radius
 
 - [decoration](decoration.md) — the consumer joins its registry by `MarkerId`; a change to lifetime
-  or disposal changes what the consumer must reconcile
-- [frame](frame.md) — two of the five overlay groups, at two different frames of reference
-- [selection](selection.md) — the anchor-maintenance trio sits line-for-line beside selection's at
-  every call site in the write path. They were deliberately **not** merged into one `anchors.rs`
-  (#584); if the anchor contract ever breaks in both at once, revisit that
-- [search](search.md) — since #691 the write path calls a **third** set of fixups on those same
-  lines, for tracked points (`justerm-core/src/term/tracked.rs`), whose forcing case is a search
-  anchor. Same machinery, two deliberate differences: a tracked point is anchored at a column its
-  holder chose (a marker's column is recorded, not chosen — published since #973), and nothing
-  about it reaches a frame — so "the anchor pair" is now a triple, and a new mover owes three calls,
-  not two
-- [viewport](viewport.md) — a marker line is absolute and the ruler divides by
-  `scrollback_len + rows`, so the header scalars are part of this contract
+  or disposal changes what it must reconcile, and every death must arrive as `MarkerDisposed`.
+- [frame](frame.md) — the viewport group and the header basis; a change to when `evicted_total` or
+  `marker_epoch` moves silently stales every held index.
+- [events & replies](events-and-replies.md) — `MarkerCreated` must carry every scalar `MarkerIndex`
+  carries; adding a field to one and not the other breaks the incremental mirror.
+- [selection](selection.md) · [tracked points](tracked-points.md) — their movers sit beside these
+  at every write-path call site (deliberately not merged into one `anchors.rs`, #584); a new mover owes
+  three calls, and an anchor-contract change that breaks one likely breaks all.
+- [search](search.md) — the contrast case: highlights are *dropped* on motion where marks are moved,
+  because only search has a re-search behind it (#750).
+- [accessibility](accessibility.md) — `command_lines` indexes the `accessible_text` document; a
+  change to how either collapses wrapped rows desynchronises command navigation.
+- [logical lines](logical-lines.md) — `doc_line_of` counts logical lines the same way logical-line
+  assembly does; a change to either's wrap rule moves `CommandLine::line`.
+- [viewport](viewport.md) — a marker line is absolute and the ruler divides by `scrollback_len +
+  rows`, so the header scalars are part of this contract.
 
 ## Known holes / open
 
-- **The cursor row keeps its marks even when an erase blanks it whole** — the reference edge above,
-  pinned rather than fixed. Measured, and **wider than it was first written down**:
-  `ESC[H ESC[0J` (equally `ESC[H ESC[J`, the `tput ed` form) leaves **one** phantom over an *empty*
-  document, while `ESC[1;16H ESC[1J` at 16 columns leaves **all four with zero disposals** — with
-  the cursor on row 0 there is no whole row above it, so the loop never runs while the row is
-  blanked to its full width. Tests `ed_0_disposes_the_rows_below_and_keeps_the_cursor_row_marks` and
-  `ed_1_at_the_last_column_blanks_the_row_and_retires_nothing`.
-  The empty-document half matters to the consumer: `AccessibleView` builds line elements from
-  `text.split("
-")`, so `""` still yields one element and `reveal(0)` succeeds — focus lands on a
-  blank row and the command is announced anyway.
-  **Reachability measured three times, zero each time**, which is why this is a hole and not an
-  issue: ED 1 appears in none of the 16 recorded captures and ED 0 in one (htop, not from home); an
-  inline `curses.filter()` program and `whiptail` under a live OSC-133 prompt both went to the
-  **alt screen**, where command marks do not exist; and `fzf --height`, which does stay on the
-  primary and does emit `ESC[J` (as `ESC[9A ESC[J` — cursor up then erase-to-bottom, so a
-  `home + ED0` grep reports zero and is the wrong pattern), erases only the inline region it drew
-  *below* the prompt. Replaying that recording leaves `marks` at 33 in every engine state, before
-  the fix and after. The shape that would reach this has to stay on the primary screen **and** erase
-  upward over the prompt; nothing measured does both.
-- **The alt-guard is a rule applied per verb.** `if !self.on_alt` around `markers_rotate_region` in
-  `linefeed` / `reverse_index` is exactly the "remember the rule at each site" shape ADR-0025 D2
-  rejects for row state — but markers have no equivalent record saying so.
-- **`MarkerDisposed` as the death channel is documented in a field comment**, and it is the thing a
-  consumer must not get wrong; nothing states it as a contract.
+- **The cursor row keeps its marks even when an erase blanks it whole** — the reference edge,
+  pinned rather than fixed. `ESC[H ESC[0J` (or `ESC[H ESC[J`, `tput ed`) leaves **one** phantom over an
+  *empty* document, while `ESC[1;16H ESC[1J` at 16 columns leaves **all four with zero disposals**
+  (`command_lines_content.rs` — `ed_0_disposes_the_rows_below_and_keeps_the_cursor_row_marks`,
+  `ed_1_at_the_last_column_blanks_the_row_and_retires_nothing`). The empty-document half matters to
+  the consumer: `AccessibleView` splits `""` into one element, so `reveal(0)` lands focus on a blank
+  row and the command is announced anyway. **Reachability measured three times, zero each time**
+  (#750): ED 1 appears in none of the 16 recorded captures and ED 0 in one (htop); an inline
+  `curses.filter()` program and `whiptail` both went to the alt screen; `fzf --height` stays on the
+  primary and emits `ESC[9A ESC[J` but erases only its own region below the prompt (33 marks before and
+  after). The reaching shape must stay on the primary **and** erase upward over the prompt.
+- **`MarkerDisposed`'s own doc names only two causes** ("evicted past the scrollback cap, or scrolled
+  out of an in-screen region") while it also announces `ED` disposal, `MAX_MARKERS` overflow, alt-leave,
+  the alt resize drop, `Engine::clear` and RIS. It is the thing a consumer must not get wrong, and the
+  published statement of it is incomplete.
+- **`MarkerIndexEntry` in `justerm-web` omits `col`** — a structural subset, harmless until a web
+  consumer needs the typed-command column the Rust channel already carries.
+- **`next_marker_id` is a `u32` incremented with `+= 1`** in `Term::push_marker` and carried across
+  RIS, so past `u32::MAX` registrations it panics in a debug build and wraps in release. Live markers
+  are capped at `MAX_MARKERS`, so a wrap reissues a dead id rather than duplicating a live one; see
+  [RIS keeps configuration](../invariant/ris-keeps-configuration-drops-coordinates.md).
+
