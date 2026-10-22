@@ -52,10 +52,11 @@ export interface NavView {
    * against the document it indexes, and the view is the only thing that knows
    * which document that is — so this asks the owner of the state rather than
    * tracking an edge beside it (the shape #746/#747 reached for the sibling
-   * coordinate cache). It answers `false` for all three ways the pairing breaks,
-   * and the caller needs none of them separately: no document is open, the line is
-   * past the end of a document sampled at another instant, or the view is showing
-   * the alt screen while the line indexes the primary one. */
+   * coordinate cache). It answers `false` when no document is open or the line is
+   * past the end of the document held. It does **not** catch a view showing the alt
+   * screen while the line indexes the primary one: a full-screen alt document is
+   * usually tall enough that the line resolves, onto unrelated content. Pairing the
+   * line with the primary document is the caller's (core `Engine::command_lines`). */
   reveal(line: number): boolean;
 }
 

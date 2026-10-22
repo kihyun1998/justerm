@@ -40,8 +40,9 @@ pub struct DamageFrame<'a> {
     pub extra: &'a [u32],
     /// This frame's combining-mark clusters, referenced by a cell's `extra - 1`. Each entry is
     /// only the trailing width-0 **marks** (e.g. `"\u{0301}"`) — justerm-core stores the base
-    /// glyph in `codepoints`, and never unifies ZWJ / skin-tone / flag sequences (each of those
-    /// is its own cell), so the base must be prepended to render the whole grapheme.
+    /// glyph in `codepoints`. By default (mode 2027 off) ZWJ / skin-tone / flag sequences are not
+    /// unified — each of those is its own cell; under mode 2027 they are one cluster here. Either
+    /// way the base must be prepended to render the whole grapheme.
     pub side_table: &'a [String],
 }
 

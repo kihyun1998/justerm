@@ -674,7 +674,7 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
             out.extend_from_slice(&encode_color(color).to_le_bytes());
         }
     }
-    // Overlay section (#108): each group is a u16 count then that many
+    // Overlay section (#108): each span group is a u32 count (v14) then that many
     // `(row, left, right)` u16 viewport triples. Selection first, then search
     // matches. Append-only, version-gated — a future group (markers, #118) adds
     // a third count here at the next version bump.
@@ -1098,7 +1098,8 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         };
         markers.push(MarkerPosition { id, row, kind });
     }
-    // Fifth group (#428, v12): the active search match's spans (inverse of the
+    // Fourth group (#428, v12; fourth since v16 removed the absolute-line marker
+    // group): the active search match's spans (inverse of the
     // tail `encode_overlay_spans` call).
     let active_match = decode_overlay_spans(&mut r)?;
     let overlay = Overlay {
@@ -1131,7 +1132,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     })
 }
 
-/// Decode one overlay group: a u16 span count, then that many `(row, left,
+/// Decode one overlay group: a u32 span count (v14), then that many `(row, left,
 /// right)` u16 triples back into viewport [`SelectionSpan`]s (inverse of
 /// [`encode_overlay_spans`]).
 fn decode_overlay_spans(r: &mut Reader) -> Result<Vec<SelectionSpan>, DecodeError> {

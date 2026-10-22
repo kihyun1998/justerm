@@ -229,8 +229,9 @@ starting to publish. **It has since been published** (verified against the regis
 `web-v0.7.0` and `web-v0.7.1` are tagged and `justerm-web` 0.7.0 / 0.7.1 are on npm, so the earlier
 "nothing has been published / not on npm" wording here was stale and contradicted the `justerm-web
 dependency bump` paragraph above. It did **not** wait for penterm's migration. **penterm is now a
-consumer** (verified 2026-09-15, #903): `../penterm/package.json` pins `justerm-web` `0.12.0` and
-`justerm-wasm-decode` `0.17.0` **exactly**, and mounts the widget for its Native (beta) panes while
+consumer** (verified 2026-09-15, #903; pins re-read 2026-10-22 at penterm 7dadc3c95):
+`../penterm/package.json` pins `justerm-web` `0.21.2` and `justerm-wasm-decode` `0.30.0` **exactly**
+(plus a `pnpm.overrides` entry forcing the widget's own decoder to `0.30.0`), and mounts the widget for its Native (beta) panes while
 its default webview stays xterm.js. Treat that as the live semver context — an exact pin means a
 release reaches penterm only when penterm bumps it, so a breaking web change is penterm's migration
 to schedule, not a silent break. (This paragraph said *"no known consumer"* until then, which was

@@ -3,7 +3,8 @@
 //! A faithful port of xterm's `rgba.ensureContrastRatio` via justerm-web `contrast.ts`: given a
 //! background, a foreground, and a target WCAG contrast ratio, nudge the foreground's luminance
 //! (away from the background, in 10% steps) until it meets the ratio, so low-contrast text stays
-//! legible. justerm has no alpha, so this works on packed `0xRRGGBB`.
+//! legible. It works on opaque packed `0xRRGGBB`: the background opacity (`u_bg_alpha`, #298) is
+//! applied by the shader afterwards and never enters the ratio.
 //!
 //! Kept **in `f64`** and separate from [`color`](crate::color)'s `f32` `contrast` (the cursor
 //! visibility guard, #368, which mirrors alacritty's `vte` metric) — the two mirror *different*

@@ -146,12 +146,13 @@ export class DomAccessibleView implements AccessibleView, NavView {
    * can read on from that command.
    *
    * **Returns whether the line exists in the document currently held**.
-   * `lineEls` is rebuilt on every `show` and emptied on `hide`, so this one check
-   * answers all three ways a document line can fail to name anything: the view is
-   * closed, the line came from a list sampled against a different instant of the
-   * document, or the document is the alt screen's while the line indexes the
-   * primary one. A silent no-op here is what let the caller announce a command it
-   * had not actually navigated to. */
+   * `lineEls` is rebuilt on every `show` and emptied on `hide`, so this check
+   * answers `false` when the view is closed or the line is past the end of the
+   * document held. It is a bounds check only: when the document is the alt screen's
+   * and the line indexes the primary one, the line usually still resolves, onto
+   * unrelated content — pairing the two is the caller's (core
+   * `Engine::command_lines`). A silent no-op here is what let the caller announce a
+   * command it had not actually navigated to. */
   reveal(line: number): boolean {
     const el = this.lineEls[line];
     if (!el) return false;
