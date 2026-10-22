@@ -105,10 +105,11 @@ export interface Renderer {
    * behind an `isDisposed` guard; this port asks for it instead of imposing a wrapper.)
    *
    * **What this does NOT promise.** It stops *work*, not *memory*: the concrete
-   * {@link import("./justerm-renderer").JustermRenderer} keeps its wasm instance, GL context, glyph
-   * atlas and the canvas context-loss listeners its Rust side owns — those are released by the wasm
-   * binding's `free()`, which cannot be called while the consumer still holds the object. A renderer
-   * that needs to release GPU resources should say so in its own docs.
+   * {@link import("./justerm-renderer").JustermRenderer} keeps its wasm instance, GL context and the
+   * canvas context-loss listeners its Rust side owns — those are released by the wasm binding's
+   * `free()`, which cannot be called while the consumer still holds the object. What it does release
+   * is its grid: the grid's GPU buffers go, and its font configuration's glyph atlas goes with the
+   * last grid using it. A renderer that needs to release GPU resources should say so in its own docs.
    *
    * Optional: a renderer with nothing of its own to end (the test fake) may omit it.
    */

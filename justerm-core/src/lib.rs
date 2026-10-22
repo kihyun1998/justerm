@@ -222,15 +222,17 @@ impl Engine {
         self.term.encode_focus(focused)
     }
 
-    /// Take the consumer events accumulated since the last drain (title / bell /
-    /// cwd — see [`TermEvent`]), emptying the queue. The pull counterpart to a
+    /// Take the consumer events accumulated since the last drain (title, bell,
+    /// cwd, clipboard and colour queries, … — [`TermEvent`] lists them all), emptying
+    /// the queue. The pull counterpart to a
     /// callback: poll this alongside [`Engine::frame`].
     pub fn drain_events(&mut self) -> Vec<TermEvent> {
         self.term.drain_events()
     }
 
-    /// Take the reply bytes the engine produced for app queries (DA / DSR /
-    /// DECRQM) since the last drain — the consumer writes them straight back to
+    /// Take the reply bytes the engine produced for app queries (DA, DSR, DECRQM,
+    /// the kitty flags query, and the answers [`Engine::report_clipboard`] and the
+    /// other `report_*` methods queue) since the last drain — the consumer writes them straight back to
     /// the PTY. The inbound-query counterpart to [`Engine::drain_events`].
     pub fn drain_replies(&mut self) -> Vec<u8> {
         self.term.drain_replies()

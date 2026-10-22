@@ -5,9 +5,9 @@ use crate::color::Color;
 
 /// The current SGR state — the appearance copied into each printed cell.
 ///
-/// Modelling it as a "template cell" mirrors Alacritty: a later slice can make
-/// erase (ED/EL) fill cleared cells with `bg` instead of `Default` and that
-/// *is* Background Color Erase (BCE), no structural change. See `term.rs`.
+/// Modelling it as a "template cell" mirrors Alacritty: erase, insert, delete and
+/// region scrolls fill the cells they clear with the pen's `bg`, which is
+/// Background Color Erase (BCE). See `term.rs`.
 ///
 /// **No `#[non_exhaustive]` ([#844](https://github.com/kihyun1998/justerm/issues/844)): nothing outside this crate has a reason to build one.** No
 /// public function accepts it — the engine hands it out — and there are zero out-of-crate literal

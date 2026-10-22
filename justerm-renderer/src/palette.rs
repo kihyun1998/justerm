@@ -3,7 +3,7 @@
 //! Kept in lockstep with Rust `justerm_core::encode_color` (and justerm-wasm-decode
 //! `js/colors.js`): a colour reference is a tagged u32 — high byte is the tag (`0` Default,
 //! `1` Indexed, `2` Rgb), low 24 bits the payload. The consumer owns the scheme and injects
-//! it (ADR-0002); the renderer only resolves.
+//! it (ADR-0002's rule, which ADR-0018 keeps); the renderer only resolves.
 //!
 //! This module is the *pure lookup* half: reference → RGB for `Indexed`/`Rgb`. The `Default`
 //! tag is NOT resolved here — it needs the inverse flag, so it belongs to render policy

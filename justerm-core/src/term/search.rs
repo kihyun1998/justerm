@@ -5,7 +5,7 @@
 //! [`crate::search`] — do not restate it here, and read it there.
 //!
 //! What is worth saying at *this* site is why one private method lives in a query
-//! module but is called eight times from the write path. `invalidate_search_highlights`
+//! module but is called from every write-path mutation that shifts line coordinates. `invalidate_search_highlights`
 //! drops the held set rather than re-anchoring it, because a held match is
 //! **query-derived**: the engine keeps matches, not the query, and the set itself may
 //! have changed under the mutation. The selection is the contrast, and it is not a

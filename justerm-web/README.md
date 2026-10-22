@@ -292,8 +292,9 @@ Three things disposal does **not** cover, so they are yours:
   terminal.
 - **Anything you constructed and kept** — a `Scrollbar`, the resize observer returned by
   `observeResize`, the accessibility controllers. The widget never saw them, so it cannot end them.
-- **GPU memory.** Disposing stops the renderer's work; the wasm instance, its GL context and glyph
-  atlas live until you drop your own reference and let the page collect it.
+- **GPU memory.** Disposing stops the renderer's work and releases its grid — the grid's buffers,
+  and its glyph atlas once no other terminal shares that font configuration. The wasm instance and
+  its GL context live until you drop your own reference and let the page collect it.
 
 ## Surviving a lost GL context
 

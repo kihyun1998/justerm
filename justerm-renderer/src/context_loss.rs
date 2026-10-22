@@ -141,7 +141,7 @@ impl ContextState {
     /// `webglcontextrestored` has arrived but the rebuild has not run, so the context answers
     /// *live* while the program, VAO and atlas it owned are still the destroyed ones. Building into
     /// those is as wasted as building into a dead context: `restore` replaces them on the very next
-    /// frame. `webgl.rs`'s `gpu_work_must_wait` documented this third window as covered when it was
+    /// frame. `gpu_work_must_wait` (now in `webgl/context.rs`) documented this third window as covered when it was
     /// not — the code asked `is_lost` alone, which `on_restored` has already cleared.
     pub fn must_defer(&self, context: ContextLiveness) -> bool {
         matches!(context, ContextLiveness::Dead) || self.is_lost || self.pending_rebuild

@@ -904,9 +904,9 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   Per ADR-0003 the frame carries `{top, bottom, count}` *ahead of* the damage spans; the decoder shifts
   its mirror grid first, then applies spans — reversing the order lands spans on pre-scroll rows. #6
   serializes **screen** damage only; the screen→viewport *remap* (suppress/translate scroll while
-  `display_offset > 0`) is the consumer/cadence concern in #13. The scroll *position* itself
-  (`display_offset` + `scrollback_len`) **was** out of scope until a consumer needed it — the scrollbar
-  (#112) did, so v5 now carries it in the header (ADR-0013); the remap logic stays #13's. [#6]
+  `display_offset > 0`) was settled in #13 without one — see §Cadence, "Viewport-vs-screen damage".
+  The scroll *position* itself (`display_offset` + `scrollback_len`) **was** out of scope until a
+  consumer needed it — the scrollbar (#112) did, so v5 now carries it in the header (ADR-0013). [#6]
 - **Colour needs an explicit tag in bytes; `Default ≠ Indexed(0) ≠ Rgb(0,0,0)`.** A "zero means
   default" packing collides with ANSI black (`Indexed(0)`) and true black (`Rgb(0,0,0)`). Each of
   `fg`/`bg` ships a tag + payload so the consumer's frozen-scheme resolver picks default vs palette vs

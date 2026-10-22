@@ -16,8 +16,8 @@
 //! time the recycle path; the smaller inputs characterise the parse hot paths.
 //!
 //! `size_of::<Cell>()` is printed once at the start: it is the per-cell byte cost
-//! this bench is bandwidth-bound on, and #43 (the deferred `Cell` pack) aims to
-//! shrink it (24 -> ~12).
+//! this bench is bandwidth-bound on; #43 packed it from 24 to 12 bytes (asserted
+//! in `cell.rs`).
 //!
 //! Inputs, one per distinct hot code path:
 //!
@@ -70,7 +70,7 @@ fn bench(c: &mut Criterion, name: &str, input: Vec<u8>) {
 
 fn throughput(c: &mut Criterion) {
     // Printed once so a `cargo bench` run records the per-cell byte cost the
-    // measurement is bandwidth-bound on (#42; #43 shrinks it).
+    // measurement is bandwidth-bound on (#42; #43 packed it to 12 bytes).
     eprintln!("size_of::<Cell>() = {} bytes", std::mem::size_of::<Cell>());
     bench(c, "ascii", ascii_input());
     bench(c, "ansi", ansi_input());

@@ -56,9 +56,10 @@ export interface ClipboardProvider {
 /**
  * The answer channel back to the engine — core `Engine::report_clipboard`.
  *
- * The first *request → answer* seam in this package: the six existing ports
- * (selection, search, marker, resize, accessible, command-nav) are one-way
- * commands, and `FrameSource.subscribeEvents` is one-way notification. Scoped to
+ * The one port whose request starts in the engine: an application's `OSC 52`
+ * query arrives through `FrameSource.subscribeEvents`, and this carries the
+ * widget's answer back. The other ports run the other way — the widget asks and
+ * the backend answers (`SelectionPort.text`, `SearchPort.search`). Scoped to
  * the clipboard on purpose (#841, decided with the maintainer): core has five
  * `Query…` events and this wires one, because the other four are colour queries
  * whose "who owns the palette" question this slice has not measured.

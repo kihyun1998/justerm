@@ -22,11 +22,13 @@
 //! A single codepoint uses the table (BMP) or the table gated on `wide` (SMP, whose range is broad).
 //!
 //! ## What is deliberately NOT handled here (a core gap, not a renderer workaround)
-//! justerm-core computes width **per character** (`UnicodeWidthChar`, no VS16 promotion), so a
-//! text-base + VS16 (`▶️`, `❤️`) or a keycap (`1️⃣`) arrives `wide=false` where beamterm's
-//! string-level width sees 2. A renderer-side VS16 (`U+FE0F`) check *could* reclassify them, but
+//! By default justerm-core computes width **per character** (`UnicodeWidthChar`, no VS16
+//! promotion), so a text-base + VS16 (`▶️`, `❤️`) or a keycap (`1️⃣`) arrives `wide=false` where
+//! beamterm's string-level width sees 2. Under mode 2027 (#295) core clusters the sequence and
+//! promotes it to width 2. A renderer-side VS16 (`U+FE0F`) check *could* reclassify them, but
 //! that would be a **consumer workaround masking a core defect** (CLAUDE.md "우회 금지") — it hides
-//! the bug and puts width knowledge in the wrong layer. The core width policy is tracked in **#301**.
+//! the bug and puts width knowledge in the wrong layer. The core width policy is mode 2027 (#295,
+//! which absorbed #301): an application that wants the promotion asks for it.
 //! Meanwhile colour VS16 emoji are still recovered by the bitmap half of the hybrid; only an
 //! *achromatic* VS16 emoji is a visible, tracked gap — intentionally not papered over.
 //!
@@ -43,7 +45,8 @@
 /// (`WIDE_CHAR`), used only to gate the broad single-codepoint SMP range. A single BMP scalar is
 /// decided by the exact [`is_emoji_presentation`] table; a multi-codepoint cluster by a structural
 /// signal (ZWJ joiner / emoji-presentation lead). A text-base + VS16 / keycap is deliberately NOT
-/// reclassified here — that is a core width gap (#301), not a renderer concern (see module docs).
+/// reclassified here — width is core's policy (mode 2027, #295), not a renderer concern (see module
+/// docs).
 #[must_use]
 pub fn is_emoji_text(s: &str, wide: bool) -> bool {
     let mut chars = s.chars();
@@ -71,10 +74,11 @@ pub fn is_emoji_text(s: &str, wide: bool) -> bool {
     // are NOT compensating for core here. A wide *text* base + combining mark (CJK + a diacritic) is
     // correctly excluded (no joiner, non-emoji lead) — beamterm's bare `width >= 2` would misfire.
     //
-    // A text-base + VS16 (`▶️`) / keycap (`1️⃣`) is DELIBERATELY not special-cased: core computes
-    // width per-char and never promotes a VS16 sequence to width 2, so a renderer VS16 check would
-    // be a workaround masking that core gap (#301). Colour VS16 emoji are still recovered by the
-    // bitmap half of the hybrid; only an *achromatic* VS16 emoji is a visible gap, owned by #301 —
+    // A text-base + VS16 (`▶️`) / keycap (`1️⃣`) is DELIBERATELY not special-cased: with mode 2027
+    // off, core computes width per-char and does not promote a VS16 sequence to width 2, so a
+    // renderer VS16 check would be a workaround masking core's width policy (mode 2027, #295).
+    // Colour VS16 emoji are still recovered by the bitmap half of the hybrid; only an *achromatic*
+    // VS16 emoji with mode 2027 off is a visible gap —
     // not papered over here (CLAUDE.md "우회 금지").
     s.contains('\u{200D}') || is_emoji_presentation(first)
 }
@@ -233,10 +237,10 @@ mod tests {
     #[test]
     fn text_base_plus_vs16_is_not_reclassified_here_core_width_gap_301() {
         // A text-presentation base + VS16 (`▶️ ❤️`) is NOT reclassified as emoji by this function.
-        // justerm-core computes width per-char with no VS16 promotion, so the real pipeline delivers
-        // `wide=false` for these. Adding a renderer-side FE0F check to force emoji would be a
-        // consumer workaround masking that core gap (CLAUDE.md "우회 금지") — the fix belongs in core
-        // (#301). So is_emoji_text returns FALSE; colour VS16 emoji are still recovered by the bitmap
+        // With mode 2027 off, justerm-core computes width per-char with no VS16 promotion, so the
+        // real pipeline delivers `wide=false` for these. Adding a renderer-side FE0F check to force
+        // emoji would be a consumer workaround masking core's width policy (CLAUDE.md "우회 금지") —
+        // the promotion is core's, under mode 2027 (#295, which absorbed #301). So is_emoji_text returns FALSE; colour VS16 emoji are still recovered by the bitmap
         // half of the hybrid, and only an achromatic VS16 emoji is a visible, tracked gap.
         assert!(
             !is_emoji_text("\u{25B6}\u{FE0F}", false),

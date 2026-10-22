@@ -45,7 +45,7 @@
 //! engine frames (6 recorded PTY captures × 3 geometries, plus 11 synthetic streams × 3
 //! geometries × 4 states) violated none of these bounds, so nothing `encode` produces today
 //! becomes undecodable. The capture half of that sweep is kept below as a standing test
-//! (255 frames); the random half now lives in `robustness.rs`'s resize lane, which is where
+//! (its frame count is pinned in the test below); the random half now lives in `robustness.rs`'s resize lane, which is where
 //! the odd geometry actually comes from.
 
 use justerm_core::{

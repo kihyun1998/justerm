@@ -6,7 +6,8 @@
 //! line entering scrollback grows `scrollback.len()` by exactly the screen
 //! shift, so existing content keeps its absolute index); the only places it
 //! moves are cap eviction, in-screen region/RI scrolls, and reflow — each
-//! handled explicitly by `Term`. The cell-aware logic (text extraction, range
+//! handled explicitly by `Term`, which drops the selection where it cannot carry
+//! it (a geometry change on the alt screen, #660). The cell-aware logic (text extraction, range
 //! clipping) lives in `term/selection.rs` — the `Term` half of this model.
 
 /// What a selection covers.

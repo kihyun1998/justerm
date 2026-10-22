@@ -65,8 +65,8 @@ fn a_combining_cluster_longer_than_the_old_prefix_survives_the_wire() {
 
 #[test]
 fn a_hyperlink_uri_longer_than_the_old_prefix_survives_the_wire() {
-    // The OSC 8 half of the same shape. A URI this long is unusual, not invalid: nothing
-    // in the OSC 8 path bounds it, so the engine stores what the stream gave it.
+    // The OSC 8 half of the same shape. A URI this long is unusual, not invalid: the OSC 8
+    // path bounds it only at `MAX_LINK_URI`, far above `u16`, so the engine stores it whole.
     let mut e = Engine::new(10, 2);
     let uri = "h".repeat(PAST_U16);
     e.feed(format!("\x1b]8;;{uri}\x07A").as_bytes());
