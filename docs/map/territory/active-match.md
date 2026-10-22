@@ -4,125 +4,125 @@
 
 The **one** match the user is currently on, painted differently from the rest so "where am I in the
 results" is visible. It is a *designation over* a [search](search.md) result set, not a search
-concept: which member is active is navigation policy, and navigation is the consumer's.
+concept: which member is active is navigation policy, and navigation is the consumer's. The engine
+stores and projects it; the renderer ranks it above the selection; the web search controller decides
+which match it is and keeps that decision on the same occurrence across a re-search.
 
 ## Governing decisions
 
-**None.**
-
+- [ADR-0019 — cell composition model](../../adr/0019-cell-composition-model.md) governs the overlap:
+  rule 1 orders the highlight layer `ActiveMatch > Selection > Match`, rule 3 makes a match paint
+  solid (replace), and rule 2 — layers declare `bg` and `ink` separately — derives #430 (an
+  `ActiveMatch` declares no ink, so the selection's ink treatment passes through).
 - [ADR-0014 — carry interaction overlays in the frame](../../adr/0014-carry-interaction-overlays-in-the-frame.md)
-  governs the delivery mechanism (an overlay group), not the model
-- [ADR-0019 — cell composition model](../../adr/0019-cell-composition-model.md) governs how a cell
-  resolves when several highlights land on it — the ranking that makes an active match visible
-  *above* a selection is applied under that model, but the record leaves this specific ordering out
-  of its own scope
+  governs delivery (an overlay group), not the model.
+
+Nothing records the designation model itself — the two setters, the lifetime, or the occurrence
+anchor.
 
 ## Design model
 
-- **The consumer designates; the engine projects.** `set_active_search_highlight(index)` takes an
-  index into the set the consumer last handed over; `set_active_search_match(m)` takes the match
-  itself. The engine stores a resolved `Match`, not the index.
-- **It rides its own overlay group *and* stays in `matches`.** The active match is present in both,
-  and the overlap is resolved by **ranking** in the renderer rather than by excluding it from the
-  wider set — an ordering decision deliberately pushed to where the pixels are.
-- **Painted above selection.** The two can cover the same cell, and the active match wins; the
-  foreground channel where they intersect is pinned separately (#430) because "wins" has to mean
-  something specific per channel, not per layer.
-- **Every path that voids the set voids this.** `set_search_highlights` resets it on hand-over, and
-  `invalidate_search_highlights` is the single invalidation site. An active index into a set that no
-  longer exists is exactly the failure that discipline prevents.
-- **An index is how it is requested and not how it is remembered.** The reset above means the
-  consumer re-designates after every hand-over, and the set it re-designates into was re-derived —
-  so the same ordinal can name different text. What survives a re-search is therefore the
-  *occurrence*: the consumer asks its backend where that occurrence now sits
-  (`SearchPort.anchoredIndex`, #437/#441) rather than reusing the number it last sent. The engine
-  side of the same fact is `set_active_search_match`, which takes the match instead of an index.
-- **The anchor outlives the paint, and only one verb takes both.** Dropping the highlights is not
-  the same event as ending the search, so the consumer seam carries two verbs:
-  `SearchPort.clearHighlights` drops the match set and the designation while the session — and its
-  anchor — continues, and `SearchPort.clear` ends it (#687). The split is the consumer-side
-  restatement of the rule [search](search.md) records for the engine: the highlight set is
-  *query-derived* and is invalidated, the anchor is *user-authored* and is carried. Conflating them
-  put #441's viewport yank back on ordinary typing, because a regex is invalid for as long as it
-  takes to type a group's closing paren.
+From the source, ADR-0019, and the `SearchPort` doc-comments.
 
-- **Designating a match paints it; it does not make its text available, and that split is a
-  decision (#438).** `selection_text` is bound to the selection state and there is no `Match` → text
-  call, so *copy the current match* is **consumer policy** over a mechanism core already exposes
-  twice: [logical lines](logical-lines.md)' per-char viewport `(row, col)` map beside its wrap-joined
-  text, and `match_spans` projecting a `Match` into that same space — the consumer intersects them.
-  The bound: the answer is **viewport-scoped**, true right after the consumer scrolls the match in
-  and false once the user scrolls away. Adding a core getter instead was measured wrong on three
-  counts — `extract_lines`' trim ends the text at the *range's* end, where a match's `' '` is written
-  content by construction (`search`'s haystack pops the padding before matching, so the
-  [padding invariant](../invariant/only-u0020-can-be-padding.md)'s structural excuse does not apply
-  here); `match_spans`' clamp of a consumer-authored column turns wrong *paint* into wrong
-  **content**; and a copy is **pulled on a user action**, so the in-place-mutation staleness the
-  paint survives by re-search reaches the clipboard unrepaired — #750's discriminator, answered there
-  against late re-reading.
+- **The consumer designates; the engine projects.** `Term::set_active_search_highlight(index)` takes an
+  index into the set last handed over; `Term::set_active_search_match(m)` takes a `Match` — the
+  past-cap path, for a backend that caps its hand-over and still wants the current match emphasised,
+  as xterm creates its active decoration from the found result outside the capped list (#436). Both
+  converge on one stored representation, the resolved span (`active_search_highlight: Option<Match>`).
+  Past the cap the span paints the active colour alone, with no plain highlight beneath.
+- **It rides its own overlay group *and* stays in `matches`** (`Overlay::active_match`, the fifth
+  group, wire v12, #428). The overlap is resolved by ranking in the renderer (`Overlay::highlight_at`,
+  `HighlightKind::ActiveMatch`), not by excluding it from the wider set.
+- **Every path that voids the set voids this.** Because the stored span is not structurally tied to the
+  set, `set_search_highlights` resets it on every hand-over (#428 — a stale index could be in range and
+  light wrong content) and `invalidate_search_highlights` clears it in the same funnel (#436).
+- **An index is how it is requested and not how it is remembered.** After every hand-over the consumer
+  re-designates into a re-derived set, where the same ordinal can name different text — measured: at
+  the scrollback cap the emphasis walked forward one occurrence per evicted line with no user input.
+  What survives a re-search is the **occurrence**: the controller asks its backend
+  (`SearchPort.anchoredIndex`, #437/#441), which answers the same occurrence in the new set, else the
+  first at or after it (wrapping to 0), else `undefined`. The anchor is written when the emphasis is
+  *placed* (`showMatch` / `designateMatch`), not sampled per hand-over — sampling was measured wrong in
+  two orderings (a superseded debounced re-search; a `next()` during a round trip).
+- **The backend keeps that anchor as a [tracked point](tracked-points.md)** (#691), because the engine
+  renumbers absolute lines in the holder's absence. PenTerm's backend does exactly this:
+  `SearchState::designate` → `anchor_at` (`Engine::track_point` at the match start, untracking the
+  previous one), `anchored_index` resolves through `Engine::tracked_point`, and `clear` untracks
+  (`penterm 7dadc3c95 src-tauri/src/engine/search.rs — SearchState`).
+- **The anchor outlives the paint, and only one verb takes both** (#687). `SearchPort.clearHighlights`
+  drops the match set and the designation while the session and its anchor continue; `SearchPort.clear`
+  ends it. The highlight set is query-derived and invalidated, the anchor user-authored and carried.
+  Conflating them put #441's viewport yank back on ordinary typing, because a regex is invalid for as
+  long as it takes to type a group's closing paren. One deliberate divergence: alacritty's designation
+  survives an invalid pattern, justerm's does not.
+- **Designating a match paints it; it does not make its text available — a decision (#438).**
+  `selection_text` is bound to the selection and there is no `Match` → text call, so *copy the current
+  match* is consumer policy over two mechanisms core already exposes: `viewport_logical_lines`'
+  per-char viewport map beside its wrap-joined text, and `match_spans` projecting a `Match` into the
+  same space. The answer is viewport-scoped. A core getter was rejected on three counts: the
+  `extract_lines` trim would end the text at the *range's* end, where a match's `' '` is written
+  content by construction (the haystack pops the padding before matching, so
+  [only U+0020 can be padding](../invariant/only-u0020-can-be-padding.md)'s structural excuse does not
+  apply here); `match_spans`' clamp of a consumer-authored column would turn wrong paint into wrong
+  **content**; and a copy is pulled on a user action, so in-place staleness the paint survives by
+  re-search would reach the clipboard (#750's discriminator).
 
-- **It is the fifth overlay group** (wire v12), added after the other four — which is why its
-  interaction rules are the least recorded of them.
+**Bounds on outside input.** One `Option<Match>`; its columns are consumer-authored and bounded at
+projection by `match_spans` (#678, ADR-0026 D2); its line is not bounded at intake.
 
 ## Code
 
 - `justerm-core/src/term/search.rs` — `Term::set_active_search_highlight`,
-  `Term::set_active_search_match`
+  `Term::set_active_search_match`, `Term::set_search_highlights` (the reset),
+  `Term::invalidate_search_highlights` (the clear)
+- `justerm-core/src/lib.rs` — `Engine::set_active_search_highlight`, `Engine::set_active_search_match`
 - `justerm-core/src/serialize.rs` — `Overlay::active_match`
-- `justerm-renderer/src/overlay.rs` — the `ActiveMatch` overlay kind and its rank
-- `justerm-web/src/search.ts` — `SearchController`, and `SearchPort.anchoredIndex` / `showMatch` /
-  `designateMatch`: the consumer half that decides *which* match is active and carries that decision
-  across a re-search
+- `justerm-renderer/src/overlay.rs` — `HighlightKind::ActiveMatch`, `Overlay::highlight_at`,
+  `HighlightColors`, `should_blend_kind`
+- `justerm-renderer/src/webgl.rs` — `set_active_match`
+- `justerm-web/src/justerm-renderer.ts` — `setActiveMatch`, `activeMatchBg`
+- `justerm-web/src/search.ts` — `SearchController`, `SearchPort` (`showMatch`, `designateMatch`,
+  `anchoredIndex`, `clearHighlights`, `clear`)
 
 ## Reference behaviour
 
 - [What carries the current match across a re-search](../../agents/reference-facts.md#search-what-carries-the-current-match-across-a-re-search-437441-verified-2026-08-03)
-  — the *lifetime* question, 3–0 with three different mechanisms: xterm's anchor is the selection it
-  puts on each result, alacritty's is a stored `Point`, ghostty's is a tracked pin beside the index
-  it then shifts by hand. None of them keeps a bare ordinal. While *typing* they split 2–1 — and the
-  outlier designates **nothing**, so "re-land on the first match" is nobody's answer
-
+  — 3–0 on keeping the occurrence, by three mechanisms (xterm: the selection it puts on each result;
+  alacritty: a stored `Point`; ghostty: a tracked pin beside the index). None keeps a bare ordinal.
+  While typing they split 2–1, and the outlier designates nothing.
 - [Dropping the paint vs ending the session](../../agents/reference-facts.md#search-dropping-the-paint-vs-ending-the-session-687-verified-2026-08-03)
-  — the *verb count* question (#687), and the entry that shows why reading only the concept layer
-  misleads. On "what to do about an invalid regex" the references are silent, because only justerm
-  has a rejected-but-non-empty pattern. On "may a query change drop the paint without ending the
-  session" they are **3–0**, and alacritty answers justerm's exact situation: a pattern that fails to
-  compile leaves the origin untouched. One divergence held deliberately — alacritty's designation
-  survives an invalid pattern, justerm's does not, because #316 D2 and the hand-over reset agree
-
-**Still open — the overlap.** The model is described as following xterm's, but the specific question
-— what wins where an active match and a selection overlap, per channel — has never been compared
-against a pinned tree, and it is the one that decides pixels. The entry above does not touch it.
+  — 3–0 that a query change may drop the paint without ending the session; alacritty answers
+  justerm's exact invalid-pattern case.
+- **The overlap is uncompared**: the per-channel answer where an active match meets a selection is
+  derived from ADR-0019's model, never checked against a pinned tree.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+**None.**
+
+The active match is projected through `match_spans`, so the wide-pair rule reaches it through
+[search](search.md)'s link to [a span covers a wide pair whole](../invariant/a-span-covers-a-wide-pair-whole.md),
+not through a site of its own.
 
 ## Blast radius
 
-- [search](search.md) — the set this designates over; its lifetime rules are inherited wholesale
-- [selection](selection.md) — the overlap partner. A change to either's rank changes the other's
-  appearance where they intersect
-- [frame](frame.md) — a fifth overlay group, added at wire v12
-- [cell compositing](cell-compositing.md) — where the ranking is actually resolved, additively rather than by
-  replacement
+- [search](search.md) — the set this designates over; every invalidation of that set voids this, so a
+  new invalidation path that forgets the active span leaves it painting arbitrary text.
+- [selection](selection.md) — the overlap partner; a change to either's rank or declared channels
+  changes the other's appearance where they intersect.
+- [cell compositing](cell-compositing.md) — where ADR-0019's ranking is actually resolved, per channel.
+- [frame](frame.md) · [wire format](wire-format.md) — the fifth overlay group, added at wire v12.
+- [tracked points](tracked-points.md) — the backend's anchor; its "`None` once the line left" answer is
+  what `anchoredIndex` falls back from.
+- [logical lines](logical-lines.md) — the mechanism a consumer composes to copy the current match.
 
 ## Known holes / open
 
-- **Zero governing records** for a feature whose entire content is an interaction rule.
-- **Nothing says how far the designation may drift.** #437/#441 settled that the *emphasis* follows
-  its occurrence, but the rule lives in a port doc-comment on the consumer side; the engine still
-  accepts any `Match`, including one authored before a resize
-  ([search](search.md) § Known holes, [ADR-0026](../../adr/0026-outside-coordinates-are-bounded-once.md)).
-  **Half-answered by #691, and the half that is left is the reachable one.** The anchor a consumer
-  remembers between two searches was measured drifting *forward one occurrence per evicted line*,
-  because the engine renumbers that space in the consumer's absence — the selection and markers each
-  carry a fixup per mover and the anchor carried none. `Engine::track_point` now gives that holder the
-  same maintenance (see [marker](marker.md) § Blast radius). What is **not** answered: no backend in
-  this repo uses it, since the only in-repo search backend is a browser-side fake that does not run
-  the engine at all, so the consumer half is a documented obligation rather than a wired path.
-- **The per-channel intersection with selection is pinned in an issue (#430), not in a record.**
-  Where two highlights meet, "which wins" has to be answered per channel — background, foreground,
-  ink — and only one of those answers is written down.
-- **No reference comparison** for the overlap model, which is the part most likely to look wrong to a
-  user coming from another terminal.
+- **No record for the designation model** — two setters, one stored span, the reset on hand-over, the
+  occurrence anchor. The last lives in a port doc-comment on the consumer side.
+- **The engine accepts any `Match`, including one authored before a resize**
+  ([search](search.md) § Known holes). The anchor's drift is answered by `Engine::track_point`, wired in
+  PenTerm's backend; the in-repo search backend is a browser-side fake (`justerm-web/demo/fake-search.ts`)
+  that does not run the engine, so nothing in this repo exercises the wired path end to end.
+- **No reference comparison** for the overlap model, the part most likely to look wrong to a user
+  coming from another terminal.

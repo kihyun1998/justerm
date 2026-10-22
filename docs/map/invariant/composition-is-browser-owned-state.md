@@ -1,292 +1,174 @@
-# Cross-cutting invariant — an IME composition is browser-owned state the engine never sees
+# Invariant — an IME composition is browser-owned state the engine never sees
 
 ## The fact
 
-**`justerm-core` learns about a composition only when it ends.** The committed text arrives as a raw
-`text` intent (#116); the in-progress preedit — its content, its length, its own caret — never reaches
-the engine at all. That is not a gap: there is no VT sequence for a preedit and no frame field carrying
-one, and the boundary in [CLAUDE.md](../../../CLAUDE.md) puts the browser on the consumer's side of the
-line by construction.
+`justerm-core` learns about a composition only when it ends: the committed text arrives as a raw `text`
+intent (#116), and the in-progress preedit — content, length, its own caret — never reaches the engine.
+That is not a gap: there is no VT sequence for a preedit and no frame field carrying one, and the
+boundary in [CLAUDE.md](../../../CLAUDE.md) puts the browser on the consumer's side.
 
-Two consequences follow, and the second is the one that gets missed:
+Two consequences, the second the one that gets missed:
 
-1. **Every behaviour that reacts to a composition is driven by browser events alone** —
-   `compositionstart` / `compositionupdate` / `compositionend` on the hidden textarea. There is no
-   frame to key on, no engine state to read back, and no `DecodedFrame` field to consult.
-2. **The frame stream keeps arriving while a composition is open, and it describes a cursor that knows
-   nothing about the composition.** So a surface that reacts to frames is, during a composition,
-   reacting to a *superseded* description of where the user is typing.
+1. Every behaviour that reacts to a composition is driven by browser events alone —
+   `compositionstart` / `compositionupdate` / `compositionend` on the hidden textarea. There is no frame
+   field, engine state or `DecodedFrame` field to consult.
+2. The frame stream keeps arriving during a composition and describes a cursor that knows nothing of
+   it, so a frame-driven surface is reacting to a superseded description of where the user types.
+
+The rules built on this fact are [ADR-0028](../../adr/0028-composition-surfaces-have-one-writer-each.md)
+D1–D5 (spine #640 promoted to it and closed, 2026-08-04); new questions here are conformance items
+against that record. This note holds the fact.
+
+**Not part of the fact:** that the browser owns the state does not settle what the terminal shows.
+#592 considered ghostty's rule — a preedit outranks DECTCEM, so a hidden cursor shows as a solid block
+while composing — and rejected it, because revealing a DECTCEM-hidden caret would invert
+`cursorCommand`'s contract for a rare case. A maintainer product decision, not a derivation.
 
 ## Why it is cross-cutting
 
-**Four behaviours, no shared call path, and every one of them derived this fact locally.** The caret's
-blink policy, the anchor's placement, the shape of the committed text and the granularity of the a11y
-echo have nothing to do with each other — they arrived issue by issue, out of different features — and
-they share only that a composition is a browser fact with no representation on this side of the
-boundary.
-
-The criterion the map uses is *a fact that holds in N territories is invisible from the other N-1 if it
-is not written here*. This one is at four, and the count is doing work: **[caret
-drawing](../territory/caret-drawing.md) said "(none identified yet)" until 2026-07-30 — while #592 had
-already shipped exactly such a behaviour into it** — and [accessibility](../territory/accessibility.md)
-was silent in the same way until this note reached four. Each was found by writing this note, not by
-reading that one. The same shape as an absolute-index walk being rediscovered three times before
-[its floor](alt-screen-buffer-floor.md) got a home.
+Several behaviours with no shared call path each derived this fact locally: the caret's blink policy
+(`cursor.ts`), the anchor's placement (`terminal.ts`), the committed text's shape (`composition.ts`),
+the a11y echo's granularity (`accessibility.ts`), the suggestion's visibility (`suggestion.ts`). They
+arrived issue by issue and share only that a composition has no representation on this side of the
+boundary. Caret drawing said "(none identified yet)" until 2026-07-30 while #592 had already shipped
+such a behaviour into it, and accessibility was silent the same way; each was found by writing this
+note.
 
 ## Territories it holds in
 
-- [input encoding](../territory/input-encoding.md) — **owns the mechanism**: `composition.ts`, the
-  hidden textarea as the real input target (a canvas cannot receive composition events), and the
-  decision that a confirmation is a raw `text` intent rather than a paste. The consumer's key veto
-  (`TerminalOptions.beforeKey`, #901) is asked only after that gate, so a claim cannot take a key the
-  composition owns
+Symbols re-verified at HEAD 7bb31f7.
+
+- [input encoding](../territory/input-encoding.md) — owns the mechanism: `justerm-web/src/composition.ts`
+  (`CompositionController`), the hidden textarea as the input target (a canvas cannot receive
+  composition events), and a confirmation as a raw `text` intent rather than a paste. The consumer key
+  veto (`TerminalOptions.beforeKey`, #901) is asked only after the composition gate, so a claim cannot
+  take a key the composition owns.
 - [caret drawing](../territory/caret-drawing.md) — the caret stops blinking while composing (#592),
-  driven by a `setComposing` notification off a browser event, because there is no frame field to key
-  on. The rejected half is recorded below under *what is not part of this fact*
-- [widget lifecycle](../territory/widget-lifecycle.md) — the anchor is re-read at the moments something
-  reads it (composition start #631, at the latched origin since #917; focus, at the retained cursor
-  cell), and frozen for **every** writer while a composition is open
-  (#637 the frame stream, #649 the forced re-sync) — while the *retained cell* those writers place
-  from is kept on every frame regardless, in `Terminal.track` with the rest of the frame state
-  (#921). `Terminal.focus`, `syncTextareaAnchor`, `positionTextarea`, `track` in
-  `justerm-web/src/terminal.ts`; `textareaMove`, `viewportCell` in `justerm-web/src/composition.ts`
-- [accessibility](../territory/accessibility.md) — `AccessibilityController.onKey` must push a
-  committed IME text intent **per code point**, because one commit arrives as a single multi-unit
-  intent while `dedupTyped` drains one code point per echoed output char (#153 G9). And the textarea is
-  a *labelled accessible input* rather than `aria-hidden` (#248), which is what puts the anchor's
-  position inside the accessibility tree — the reason *"does an AT tool read the anchor?"* is a live
-  question rather than an idle one (#640 Q4)
-- [cell compositing](../territory/cell-compositing.md) — the consumer's suggestion (#972) is hidden for
-  the whole composition, from `compositionstart` to `compositionend`. The renderer alone could only
-  hide it while a preedit run is *drawn*, which misses the start of a composition before its first
-  update and an update to `""`, so the widget gates it on `composing` (`suggestionCell`) and the
-  renderer's own check is the second line
+  driven by a `setComposing` notification off a browser event.
+- [widget lifecycle](../territory/widget-lifecycle.md) — the anchor is re-read where something reads
+  it (composition start #631, at the latched origin since #917; focus, at the retained cursor cell) and
+  frozen for every writer while composing (#637 frame stream, #649 forced re-sync), while the retained
+  cell is kept on every frame in `Terminal.track` (#921). `terminal.ts — Terminal.focus`,
+  `syncTextareaAnchor`, `positionTextarea`, `track`, `showPreedit`, `paintPreedit`, `repaintPreedit`;
+  `composition.ts — textareaMove`, `viewportCell`.
+- [accessibility](../territory/accessibility.md) — `AccessibilityController.onKey` pushes a committed
+  IME intent per code point, because one commit arrives as one multi-unit intent while `dedupTyped`
+  drains one code point per echoed char (#153 G9). The textarea is a labelled accessible input, not
+  `aria-hidden` (#248), which puts the anchor in the accessibility tree (#640 Q4).
+- [cell compositing](../territory/cell-compositing.md) — the consumer's suggestion (#972) is hidden from
+  `compositionstart` to `compositionend`; the renderer alone could hide it only while a preedit run is
+  drawn (missing the start before the first update, and an update to `""`), so the widget gates it on
+  `composing` (`suggestion.ts — suggestionCell`) and the renderer's check is the second line.
+- [viewport](../territory/viewport.md) — a preedit is the one thing drawn from a coordinate the engine
+  gave for something else (the cursor's **grid** row), so the grid → viewport mapping
+  (`viewportCell`, using the frame's `displayOffset`) is where a composition meets scrolling (#921,
+  #917). Added here; this territory already linked back.
 
 ## What a violation looks like
 
-**Always silent, and never in the layer that would notice.** The engine cannot be wrong about a
-composition it never saw, so nothing throws and no test on the core side can fail.
+Always silent, never in the layer that would notice: the engine cannot be wrong about a composition it
+never saw.
 
-- **A frame-driven surface acting on a superseded cursor.** `Terminal.positionTextarea` ran from the
-  frame subscription with no composition gate, so an output frame moved the IME anchor out from under the
-  candidate window while the user was mid-composition (#637). The engine was behaving correctly; the
-  consumer was answering a question the frame cannot answer. **Measured, not inferred** — with the
-  Windows Korean IME the Hanja candidate window followed the anchor down the screen as unsolicited
-  output moved the cursor.
-- **Gating the *frame* and calling the surface closed.** #637's guard covered only the unforced path,
-  and the retained cursor cell went on advancing behind it — so any caller that overrode the cache
-  (`element` mousedown → `Terminal.focus()`, and `focus()` is public, so also a consumer restoring
-  focus after a dialog) delivered exactly the superseded cell the guard existed to withhold (#649).
-  The lesson generalises past this anchor: **a guard placed on one writer is not a rule about the
-  state.** Both entrances are now closed at the single seam they share, `textareaMove`, where
-  `composing` suppresses every path, forced or not. `force` had been exempt so that #631's
-  `compositionstart` re-sync could not be gated by its own guard — which it never needed, since
-  `onStart` re-anchors *before* telling the controller and so reads `composing === false` either
-  way. What the exemption bought was the second entrance. So `force` now means only *override the
-  coordinate cache*, and says nothing about the composition rule. A suppressed move answers
-  `undefined`, which the caller treats as a decided no-op that **leaves the cache alone**: the move is
-  not recorded as applied, so the anchor catches up on the first frame after the composition ends
-  rather than waiting for the cursor to move again.
-- **A surface acting on the widget's OWN unsent state, not merely on a late frame.** The three above
-  are all "the frame is behind"; this one is sharper. At `compositionstart` in continuous CJK the
-  committed text has not left the widget at all — it goes out one deferred read later (#116) — so
-  `cursorAnchor` is not *possibly* stale, it is **known** to be describing the cell that text is
-  about to take. Latching the preedit's origin from it drew every Korean syllable over the one just
-  committed (#911). The fix takes the previous composition's own run end while a commit is in flight;
-  the general shape is that **a consumer holding unsent input cannot read its own echo for a
-  coordinate**, and the only surfaces that can answer are the ones that know what it is holding.
-- **The latch turns any staleness in its source into a composition-long wrong, so a defect that is
-  not about compositions at all surfaces as one (#921).** The anchor stopped being updated while the
-  view was scrolled up, because the widget gated its *retained* cursor cell on `cursorVisible` — a
-  bit core sets for **drawing** (`cursor.visible && display_offset == 0`, #48). Nothing in that has
-  anything to do with an IME. But D4 latches the origin once and never re-reads it, so a source that
-  was stale for one instant became a preedit drawn at the wrong cell for the composition's entire
-  life. **The general form: every writer of the anchor is a composition surface, whatever it thinks
-  it is about** — which is the fourth distinct way the anchor has been wrong at the latch (#631
-  geometry, #637 the frame stream, #911 unsent input, #921 a frozen source), and the first with no
-  composition in its causal chain. Measured in a browser rather than traced: with the cursor moved
-  four cells during the excursion, the composition's caret landed at the cell the view left rather
-  than the cell the cursor holds, while the same sequence without the excursion landed correctly.
-  The retained cell is not cleared when the cursor hides — an application can hide the caret and the
-  user can still open an IME, and re-anchoring at the last known cell beats leaving the anchor
-  wherever the geometry used to put it. That is also why it is written in `Terminal.track`, with the
-  rest of the retained frame state, and never inside a writer that can decline (`positionTextarea`):
-  if hiding must not take the anchor away, it must not take its freshness away either, and a
-  *drawing* guard in front of the *data* assignment does exactly that one step further in.
-  Retention is unconditional and the DOM write is not. `positionTextarea` builds its cell from the
-  frame rather than reading the retained one back, so it acquires no ordering condition against
-  `track`; the retained cell keeps exactly one writer either way.
-- **Re-deriving the caret column per frame snaps it back under the run** (`JustermRenderer.setPreedit`,
-  `preeditCaret`). ADR-0028 D5 is a rule about every frame: frames keep arriving while a composition
-  is open, each describing the engine's cursor, which knows nothing of the preedit — so without the
-  retained column the caret snaps back under the composed text on the next output frame, #637's harm
-  in the cursor's clothes. It re-pushes at the *current* blink phase, not the last one pushed:
-  `setComposing(true)` has already told the blink to hold the caret on (#592), and re-pushing the
-  loop's last value landed a cleared cursor for the whole composition whenever it began on an off
-  phase — caught by #592's own probe once it sampled where the caret had moved.
-- **Writing a grid coordinate where a viewport one is required (#921).** `setPreedit`'s `row` is a
-  viewport row, not the grid row core reports the cursor at; the widget once passed the origin's
-  grid row straight through, and with the view scrolled up 2 the run was drawn on row 33 while row
-  35 was showing its cell. The engine names the cursor
-  by its row in the **grid**; the renderer draws the **viewport**, and the two differ by
-  `display_offset` — at offset `d` a grid row `r` is on screen only while `r < rows - d`, and it is
-  shown at row `r + d`. A composition is where this surfaces, because a preedit is the one thing
-  drawn from a coordinate the engine gave for something else. Measured: a run whose cell was being
-  shown on row 35 was drawn on row 33. The mapping now lives in the widget, with the frame's offset
-  rather than the widget's requested one — #913 advances the latter to 0 the moment an
-  IME-swallowed key asks for the bottom, while the screen still shows the scrolled frame. That one
-  mapping is `viewportCell`, and every writer that puts a grid cell on screen goes through it — the
-  run, the suggestion, and the IME anchor (see the next bullet). The run is drawn at the viewport row its origin is shown at, or not at all (`paintPreedit`). Off
-  the bottom it clears what is drawn — a view scrolled away mid-composition must not leave the run
-  on scrollback — and waits, because `repaintPreedit` re-asserts it on the next frame that can
-  place it: D5's every-frame rule, applied to the run as well as the caret, and cheap because it
-  compares the row it would paint with the one it did. Neither reference suppresses permanently:
-  xterm.js skips the positioning while `!isCursorInViewport` and re-runs `updateCompositionElements`
-  every render and once through `setTimeout(0)`, and alacritty draws the preedit only while its
-  mapped line is on screen ([reference facts](../../agents/reference-facts.md#drawing-the-preedit-two-draw-into-the-grid-one-draws-a-dom-box-249-verified-2026-08-03)). The run's end stays a GRID row and
-  scrolling leaves it alone — the viewport is a property of the moment the run is drawn, not of
-  where the text was typed. The end is recorded only when the run is drawn, so a composition that
-  spends its whole life off screen hands on no end and the next one falls back to the frame stream:
-  ADR-0028 D4's "a composition that draws nothing leaves no run end", reached by a second route,
-  which needs a view that never returns to the bottom — a consumer that did not wire `onScroll`.
-- **Two surfaces answering "where is this composition" from two sources (#917).** Until #917 the
-  `compositionstart` re-sync wrote the anchor from `cursorAnchor` and only then latched the origin,
-  so between `compositionstart` and the first update the anchor named a different cell from the run:
-  the previous syllable's start in continuous CJK (the frame's cursor is stale while a commit is in
-  flight, #911), and while scrolled up a raw grid row with no bearing on the screen. Measured with
-  `__preeditViewportProbe`, cursor at grid row 33 of 37, view up 2: the anchor read back **33** after
-  `compositionstart` and **35** after the first update. Now the origin is latched first and the
-  re-sync writes *it*, through `viewportCell`, withheld off the bottom. `focus()` maps the retained
-  cursor the same way. The re-sync still runs before `compositionStart()`, so the freeze above does
-  not swallow it, and it still re-reads the geometry (#631).
-  **What it was decided on**: whether an IME that opens its candidate window at `compositionstart`
-  (Japanese, pinyin) reads the anchor before the first update is **still unmeasured**. It could not
-  decide the fix, though. If the IME reads it there, the old value was wrong. If it does not, the
-  corrected value costs nothing. A measurement would grade reach, not direction. Korean 2-beolsik
-  opens no candidate window until a Hanja conversion, so for it the window was invisible either way.
-  **The cache key is the viewport cell written, not the grid cell.** With a grid key, a `focus()`
-  while scrolled leaves key `r` on a textarea drawn at `r + d`. Back at the bottom with the cursor
-  unmoved, `positionTextarea` then sees an equal key and skips, which leaves the anchor `d` rows low.
-  `__preeditViewportProbe`'s `focusReturned` pins this, and a grid-keyed mutation reddens it.
-- **Reading a two-question predicate as one question.** The guard is keyed on
-  `CompositionController.composing` (`isComposing`), *not* `active` (`isComposing ||
-  isSendingComposition`). `active` outlives the candidate window by one deferred commit read, and a
-  continuous-CJK `compositionstart` lands inside precisely that window — so the broader predicate
-  would swallow the re-sync that exists to place the candidate window, in ordinary Korean/Japanese
-  typing. Measured cost of the confusion: swapping the two leaves **all 398 unit tests green**,
-  because the wiring needs a DOM; only the e2e control discriminates them. (`composition.test.ts`
-  pins the two getters diverging in that window; what it cannot see is which one the call site
-  passes.)
-- **A rule inferred from engine state where no engine state exists.** A composition has no
-  representation to consult, so *"what should happen during one"* can only be decided, never derived
-  from a frame. Writing such a rule as if it followed from the frame is how it ends up decided once per
-  site.
-- **A reference read as authoritative before its contradiction is resolved.** xterm.js is the only
-  reference with the same architecture here, and on the question *may the anchor move mid-composition*
-  it looked self-contradictory: `_syncTextArea` bails while composing, yet
-  `CompositionHelper.updateCompositionElements` rewrites the textarea's position on every render *while
-  composing*. **#637's measurement resolved it, and the resolution is the reusable part**: because the OS
-  re-reads the anchor, whoever writes the position owns the candidate window — so xterm suppresses the
-  *involuntary* writer and keeps the *voluntary* one. Two writers with different intents, not two rules.
-  The general lesson stands: in this area a reference disagreeing with itself means a measurement is
-  owed, not that one site should be picked.
-- **One reference generalised into a rule.** The shared rule across all three references is *the anchor
-  tracks where the user's composition is, never where the output cursor went* — and **two of the three
-  satisfy it by re-aiming mid-composition with no gate at all** (ghostty folds preedit width into the
-  rect it pushes per key; alacritty picks the point from the preedit when one exists). justerm-web
-  froze instead, and only because **this invariant is why it had to**: the preedit did not reach this
-  side, so *"where the composition is"* had no representation beyond *"where it started"*. Reading
-  xterm's suppression as the rule rather than as one codebase's expression of it is the mistake this
-  bullet exists to name — it was made and corrected inside #637 itself.
-  **Updated 2026-08-03 (#249, ADR-0028): justerm-web re-aims too now, and the freeze did not have to
-  give.** This bullet predicted it would, since #249 supplies the missing representation. What
-  actually resolved it is that *writer* and *rule* are different things: the preedit writer knows
-  where the composition is, so it re-aims and never consults the guard, while the guard stays a rule
-  about the **involuntary** writers — the frame stream and the focus path — which is all #637 and
-  #649 ever measured. xterm has exactly this shape and it was visible the whole time
-  (`updateCompositionElements` never goes through `_syncTextArea`); reading it as "suppression vs
-  re-aiming" hid it.
-  The preedit writer also leaves `textareaCell` alone: that cache describes where the frame stream
-  last put the anchor, and a composition's own re-aim is not an answer to that question. And it
-  earns its bypass only by knowing *both* halves of where the composition is — the extent, live from
-  the run, and the origin, fixed at `compositionstart` — which is why `showPreedit` never re-reads
-  the origin from the frame stream: with unsolicited output running, the anchor held at row 5 while
-  the composition was open, and a per-update re-read jumped it to row 9 on the next keystroke
-  (ADR-0028).
-- **A measurement destroyed by the act of observing it.** Screen-capturing a live composition moves
-  focus, which commits it and clears the textarea — so the artifact under observation disappears exactly
-  when it is recorded. #637 drew a wrong conclusion from such a capture once (*"Hanja conversion happens
-  after the composition ends"*) before the maintainer corrected it from live observation. Anything in
-  this territory that needs a real IME has to be watched, not screenshotted.
-
-## What is **not** part of this fact
-
-Kept because the boundary is where the mistake is available. That the browser owns the *state* does not
-settle what the terminal should *show*: #592 considered ghostty's rule — a preedit outranks DECTCEM, so
-an explicitly hidden cursor is shown as a solid block while composing — and **rejected** it, because
-revealing a DECTCEM-hidden caret would invert `cursorCommand`'s contract for a rare case. That is a
-product decision by the maintainer, not a derivation, and it is not this invariant's to overturn.
-
-## The roster lives in the spine, not here
-
-**Which issues are instances was tracked on spine #640** until 2026-08-04, when it promoted to
-[ADR-0028](../../adr/0028-composition-surfaces-have-one-writer-each.md) and closed. New questions in
-this area are conformance items against that record's D1–D5, not siblings under an anchor that is
-still collecting. This note holds the *fact*; the record holds the *rules*, and the split is the same
-one #552 measured — a rule wants an immutable home, a roster wants a mutable one, and neither is the
-other.
-
-That split is #552's measured result, recorded in [theflow.md](../../agents/theflow.md): a hand-copied
-roster inside ADR-0025 went stale in five places within three days while the rule itself needed no
-edit. A roster wants a mutable home and a rule wants an immutable one, so they separate **even after
-the rule exists** — the same pairing as
-[the cell size is derived state](cell-size-is-derived-state.md) with spine #630.
-
-What the spine carries and this note deliberately does not: the current instance list, and the open
-question — *who owns what a composition puts on screen, and does that ownership extend to visibility?*
+- **A frame-driven surface acting on a superseded cursor (#637).** `positionTextarea` ran from the frame
+  subscription with no gate, so output moved the IME anchor out from under the candidate window.
+  Measured with the Windows Korean IME: the Hanja window followed the anchor down the screen.
+- **Gating one writer and calling the state closed (#649).** #637's guard covered only the unforced
+  path; any caller overriding the cache (`element` mousedown → `Terminal.focus()`, public, so also a
+  consumer restoring focus after a dialog) delivered the superseded cell. Both entrances are closed at
+  their shared seam, `textareaMove`, where `composing` suppresses every path. `force` now means only
+  "override the coordinate cache"; its old exemption for #631's re-sync was never needed (`onStart`
+  re-anchors before telling the controller). A suppressed move answers `undefined`, a decided no-op that
+  leaves the cache alone, so the anchor catches up on the first frame after the composition. A guard on
+  one writer is not a rule about the state.
+- **Acting on the widget's own unsent state (#911).** At `compositionstart` in continuous CJK the
+  previous commit has not left the widget (it goes out one deferred read later, #116), so `cursorAnchor`
+  is known to describe the cell that text will take; latching the origin from it drew every Korean
+  syllable over the previous one. The fix takes the previous composition's run end while a commit is in
+  flight. A consumer holding unsent input cannot read its own echo for a coordinate.
+- **A latch turning any source staleness into a composition-long wrong (#921).** The retained cursor
+  cell was gated on `cursorVisible`, a drawing bit core sets as `cursor.visible && display_offset == 0`
+  (#48), so it froze while scrolled up; D4 latches once, so a one-instant staleness became a preedit at
+  the wrong cell for the whole composition. Every writer of the anchor is a composition surface,
+  whatever it is about — the fourth latch failure (#631 geometry, #637 frame stream, #911 unsent input,
+  #921 frozen source), the first with no composition in its causal chain. Measured in a browser: cursor
+  moved four cells during a scroll excursion, caret landed where the view left. Retention is now
+  unconditional in `Terminal.track`, the DOM write is not, and `positionTextarea` builds its cell from
+  the frame, so it has no ordering condition against `track`.
+- **Re-deriving the caret column per frame** (`JustermRenderer.setPreedit`, `preeditCaret`). ADR-0028 D5
+  is a rule about every frame: without the retained column the caret snaps back under the run on the
+  next output frame. It re-pushes at the current blink phase: re-pushing the loop's last value landed a
+  cleared cursor for the whole composition when it began on an off phase (caught by #592's probe).
+- **A grid coordinate where a viewport one is required (#921).** `setPreedit`'s `row` is a viewport row;
+  passing the grid row drew the run on row 33 while row 35 showed its cell, with the view up 2. At
+  offset `d` grid row `r` is on screen only while `r < rows - d`, at row `r + d`. The mapping uses the
+  frame's offset, not the requested one (#913 advances that to 0 when an IME-swallowed key asks for the
+  bottom while the screen still shows the scrolled frame). Off the bottom the run is cleared and
+  re-asserted by `repaintPreedit` on the next frame that can place it. Neither reference suppresses
+  permanently: xterm.js skips positioning while `!isCursorInViewport` and re-runs
+  `updateCompositionElements` every render; alacritty draws the preedit only while its line is on
+  screen ([reference facts](../../agents/reference-facts.md#drawing-the-preedit-two-draw-into-the-grid-one-draws-a-dom-box-249-verified-2026-08-03)).
+  The run's end stays a grid row and is recorded only when drawn, so a composition that never comes on
+  screen hands on no end (ADR-0028 D4, by a second route needing a consumer that did not wire
+  `onScroll`).
+- **Two surfaces answering "where is this composition" from two sources (#917).** The `compositionstart`
+  re-sync wrote the anchor from `cursorAnchor` before latching the origin, so until the first update the
+  anchor named a different cell from the run. Measured with `__preeditViewportProbe` (cursor grid row 33
+  of 37, view up 2): anchor 33 after `compositionstart`, 35 after the first update. Now the origin is
+  latched first and written through `viewportCell`, withheld off the bottom; `focus()` maps the retained
+  cursor the same way. Whether a Japanese / pinyin IME reads the anchor before the first update is
+  unmeasured, and could not change the fix's direction. The cache key is the viewport cell written:
+  with a grid key a scrolled `focus()` left the anchor `d` rows low on return (pinned by
+  `focusReturned`; a grid-keyed mutation reddens it).
+- **Reading a two-question predicate as one.** The guard keys on `CompositionController.composing`
+  (`isComposing`), not `active` (`isComposing || isSendingComposition`); `active` outlives the candidate
+  window by one deferred commit read, exactly where a continuous-CJK `compositionstart` lands. Swapping
+  them left all 398 unit tests green at #649, because the wiring needs a DOM; only the e2e control
+  discriminates.
+- **A reference read as authoritative before its contradiction is resolved.** xterm.js's
+  `_syncTextArea` bails while composing, yet `CompositionHelper.updateCompositionElements` rewrites the
+  position while composing. #637 resolved it: the OS re-reads the anchor, so whoever writes it owns the
+  candidate window — xterm suppresses the involuntary writer and keeps the voluntary one.
+- **One reference generalised into a rule.** The shared rule of all three references is "the anchor
+  tracks the composition, never where output moved the cursor"; ghostty and alacritty re-aim with no
+  gate. justerm-web froze because the preedit had no representation. Since #249 (ADR-0028, 2026-08-03)
+  it re-aims too: the preedit writer (`showPreedit`) knows where the composition is and never consults
+  the guard, which stays a rule about the involuntary writers. It leaves `textareaCell` alone and never
+  re-reads the origin from the frame stream (a per-update re-read jumped the anchor from row 5 to row 9
+  under unsolicited output).
+- **A measurement destroyed by observing it.** Screen-capturing a live composition moves focus, which
+  commits it; #637 once concluded "Hanja conversion happens after the composition ends" from such a
+  capture before the maintainer corrected it. Watch, do not screenshot.
 
 ## Discovery history
 
-Kept because it is about the *rule*, not about who is currently on the list: **every behaviour derived
-this fact locally, and none of them recorded it.**
+Every behaviour derived the fact locally, and none recorded it.
 
-- **#116** established the mechanism — the hidden textarea, the composition gate on keys, and the
-  committed-text-as-raw-intent decision. The fact was true from that moment and was written nowhere.
-- **#592** was the first behaviour to need it: the caret must stop blinking while composing, and the
-  only place that can know is the browser-event handler, because *"composition is a browser fact the
-  engine never sees"* — a comment at the call site, in one branch of one file (decanted into this
-  note, #993).
-- **#631** needed it again from the other side: the anchor must be correct when the OS reads it, and
-  the OS reads it at composition start. It was found by a completeness pass asking a question about the
-  *cell*, not about compositions.
-- **#637** is where the absence started costing: whether a frame may move the anchor mid-composition
-  could not be answered from any of the three sites above, because each recorded only its own case. It
-  was settled by measuring a real IME, and the cost of *not* having this note was paid twice over —
-  the demo could not even produce the precondition (its cursor is a constant, and `positionTextarea`'s
-  cache is keyed on the cursor cell, so appended output moved the anchor zero times), which is the same
-  property that makes the page able to reproduce **#631**. One page, two defects, and the property that
-  enables one blinds the other.
+- **#116** — the mechanism: hidden textarea, composition gate on keys, committed text as raw intent.
+- **#592** — first behaviour to need it (caret stops blinking); the fact lived as a call-site comment
+  until decanted into this note (#993).
+- **#631** — the anchor must be right when the OS reads it at composition start; found by a pass about
+  the cell, not compositions.
+- **#637** — whether a frame may move the anchor mid-composition was unanswerable from the earlier
+  sites; settled by measuring a real IME. The demo could not even produce the precondition (constant
+  cursor, cursor-keyed cache), the same property that lets it reproduce #631.
+- **#649, #911, #917, #921, #972** — the instances above.
+
+The instance roster lived on spine #640 until ADR-0028; it is kept out of this note on #552's measured
+result ([theflow.md](../../agents/theflow.md): a hand-copied roster in ADR-0025 went stale in five
+places in three days), the same pairing as [cell size](cell-size-is-derived-state.md) with spine #630.
 
 ## Where it will recur
 
-**The next surface that has to decide what happens during a composition, and reaches for a frame field
-to decide it.** There is none, and there never will be — so the decision gets made locally again,
-correctly, and recorded nowhere. The test: if a behaviour's rule contains the words *"while composing"*
-and its only possible input is a browser event, it is subject to this invariant.
+Test: if a behaviour's rule contains "while composing" and its only possible input is a browser event,
+it is subject to this invariant.
 
-Three named places it is already queued to recur:
-
-- ~~**#249 (draw the preedit inline).**~~ **Landed 2026-08-03 under ADR-0028.** It supplied the
-  representation this fact says is absent — and the fact itself is unchanged, because the preedit
-  still reaches no frame and no wire: it goes consumer → renderer directly, which is why the renderer
-  now holds one piece of state with no engine counterpart. The predicted inversion did **not**
-  happen; see the bullet above for what happened instead. The half that was right: the anchor gained
-  a second, *voluntary* writer, and it bypasses the involuntary one exactly as xterm's does.
-- **Any new predicate on composition state.** `active` and `composing` answer different questions and
-  read identically at a call site. The wiring is invisible to `pnpm test` — the widget needs a DOM and
-  the unit suite runs in `environment: "node"` — so a wrong predicate ships green, as measured on #649.
-  A new consumer of composition state owes an e2e control, not a unit test.
-- **A second reader of the anchor's position.** The OS IME was assumed to be the only one until #649
-  measured the browser's own focus steps as a second, and an AT tool or magnifier remains an unmeasured
-  candidate for a third. Each additional reader narrows what may be done with the anchor while frozen,
-  and none of them announces itself.
+- **A new predicate on composition state.** `active` and `composing` read identically at a call site,
+  and the wiring is invisible to `pnpm test` (`environment: "node"`); a new consumer of composition
+  state owes an e2e control, not a unit test (see
+  [an awaited in-page promise needs an anchor](an-awaited-in-page-promise-needs-an-anchor.md)).
+- **A second reader of the anchor's position.** The OS IME was assumed the only one until #649 measured
+  the browser's focus steps; an AT tool or magnifier is an unmeasured candidate for a third.
+- **Any new writer of the anchor or of something drawn at the cursor** — it is a composition surface,
+  and it must take its cell from the latched origin through `viewportCell`, not from the frame stream.
+- #249's predicted inversion did not happen: the preedit still reaches no frame or wire (consumer →
+  renderer directly), so the renderer holds one piece of state with no engine counterpart.

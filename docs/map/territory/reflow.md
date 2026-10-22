@@ -2,160 +2,179 @@
 
 ## What it is
 
-Re-splitting soft-wrapped logical lines when the width changes, and carrying every tracked point
-through the move. A resize does not merely crop — on the primary screen it re-lays the whole buffer,
-scrollback included, so a long line keeps its tail instead of losing it at the old margin.
-
-**This territory was invisible to the first pass of this map.** It has no dedicated module, its code
-sits inside `term.rs` and `grid.rs`, and no public method is named for it — you reach it only through
-`resize`.
+`Term::resize` as a whole: re-splitting soft-wrapped logical lines when the width changes, carrying
+every engine-held coordinate through the move, and deciding the fate of each piece of state a
+geometry change touches. On the primary screen a resize re-lays the whole buffer, history included,
+so a long line keeps its tail instead of losing it at the old margin; the alt screen is only re-fit.
+The re-split itself is `grid.rs` — `reflow`; the pane bookkeeping is `term.rs` — `reflow_pane`; no
+public method is named for either — the only entry is `Engine::resize`.
 
 ## Governing decisions
 
 **None.**
 
 - [ADR-0025 — row and wide-pair cell state ownership](../../adr/0025-row-and-wide-pair-cell-state-ownership.md)
-  bounds it from one side: D4 governs the verbs that *edit*, and reflow is a **reallocation**, so a
-  lead left without its spacer here is a legal state rather than a violation
-- `docs/architecture.md` §"Hidden VT state" carries two entries that are this territory's contract —
+  bounds it from one side: D4 governs the verbs that *edit*, and a resize is a **reallocation**, so a
+  wide lead left without its spacer by `Row::resize` is a legal state rather than a violation (#529).
+- `docs/architecture.md` §Hidden VT state carries two entries that are this territory's contract:
   *"the alt screen resizes but does not reflow"* and *"soft-wrap vs a hard line-end must be
-  distinguished for reflow"*
+  distinguished for reflow"*.
 
 ## Design model
 
-- **Primary reflows; the alt screen does not** (#567). The alt pane is re-fit only — rows dropped or
-  added to reach the new size, nothing re-wrapped — because a full-screen application places its own
-  lines and re-wrapping them changes what it drew.
-- **Reflow is not gated on DECAWM**, deliberately, and ghostty gates its equivalent (`.reflow =
-  self.modes.get(.wraparound)` in `terminal/Terminal.zig`'s `resize`) — on the reading that an
-  application turning autowrap off is placing lines itself, so its content is a layout rather than a
-  flow. Nothing observable is known to break either way: with DECAWM off a full 6-column row still
-  re-splits into two at width 3, where ghostty truncates it. Three grounds. **The wrap flag is not a
-  lie** — `Row::is_wrapped` means "continues into the next", true after a re-split; DECAWM governs the
-  write path, not how stored content is laid out again, and dropping the flag would extract
-  `"abcdef"` as `"abc\ndef"`. **The mode is global and momentary; the buffer is neither** — read at
-  resize time it would decide the fate of history written under the opposite setting, so a TUI
-  turning it off while drawing would leave every wrapped line in scrollback un-reflowed. **It costs
-  content** — not reflowing truncates each row. And there is no per-row signal to be finer with: a
-  row written under DECAWM off and one that merely ended early are both unwrapped, and a line that
-  exactly fills its width carries no wrap flag either.
-- **Tracked points travel with the content.** `reflow` takes a `points` slice — the cursor, selection
-  anchors, markers — and returns where each landed. Anything anchored to a line has to be in that
-  slice or it is silently wrong afterwards.
-- **Scrollback and screen reflow as one stream**, which is what makes the concatenated coordinate
-  space coherent across a resize rather than only within the visible grid.
+From the source, `docs/architecture.md` §Hidden VT state, and the `Engine::resize` doc-comment, which
+is the consumer-facing contract. No record governs it.
+
+**The re-split.**
+- **Primary reflows; the alt screen does not** (#567). `ReflowDims::reflow` is `false` for the alt
+  pane: rows are dropped or added to reach the new size and nothing re-wraps, because a full-screen
+  application places its own lines. Measured on #567 on an `htop` recording across a live
+  `SIGWINCH`: re-splitting left debris in cells htop does not overwrite, because it repaints without
+  clearing. All three references take the same position with one flag on the same resize function
+  (`docs/architecture.md` §Hidden VT state).
+- **Scrollback and screen reflow as one stream** (`reflow_pane` joins them into `all`), which is what
+  keeps the concatenated coordinate space coherent across a resize.
+- **Reflow is not gated on DECAWM**, deliberately — ghostty gates its equivalent (`.reflow =
+  self.modes.get(.wraparound)` in `terminal/Terminal.zig`'s `resize`; unpinned). With DECAWM off a full
+  6-column row still re-splits into two at width 3, where ghostty truncates. Three grounds: the wrap
+  flag means "continues into the next", still true after a re-split, and dropping it would extract
+  `"abcdef"` as `"abc\ndef"`; the mode is global and momentary while the buffer is neither, so reading
+  it at resize time decides the fate of history written under the opposite setting; and not
+  reflowing truncates content. No per-row signal exists to be finer with. `Term::resize` passes
+  `reflow: true` as a constant; the first two grounds are restated in the `Engine::resize` rustdoc,
+  the ghostty comparison only here.
+- **A wide pair straddling the new boundary is not split**: the re-split emits a short row and marks
+  the vacated column as the wrap artefact (#533). Trailing blanks on a hard-ended row are trimmed by
+  content, so a BCE-coloured tail does not re-split into a phantom row (#530). Both are documented
+  on `reflow`.
+
+**Coordinates through the move.**
+- `reflow` takes a `points` slice and returns where each landed, index-aligned. `Term::resize`
+  assembles it by an offset idiom: on the primary, the selection's two endpoints, then markers, then
+  tracked points, then the settled-cell-paint change record (`ChangeWatch::points`, #967); the cursor rides in
+  `reflow_pane` as point 0. On the alt screen the primary pane carries markers, tracked points and
+  the watch, the alt pane carries alt markers and alt tracked points, converted to alt-local rows and
+  re-anchored on the new base because the primary history may rewrap underneath them.
+- **A returned point is a position in the logical line, not necessarily a cell** (#562, closed
+  2026-07-27 after five designs that made `reflow` itself materialise a row were measured and
+  rejected — a cursor at column 59 resized to width 4 emptied the buffer; a blank-line exemption
+  turned 22 alt lines into 21). `col` may equal `new_cols`, and each holder reads it its own way: the
+  cursor as the start of the next row; an OSC 133 mark as an exclusive bound; a selection endpoint is
+  clamped to `(cols - 1, Side::Right)` in `Term::selection_reflowed` (#1032 — keeping its old side
+  dropped or gained the row's last character).
+- **The seam, not `reflow`, buys the cursor's row** (#567, PR #569): when the cursor reflows to
+  "just after the content" on a full pane, `reflow_pane` pushes a blank row so the pane scrolls one
+  row into history, gated on `limit > 0` (the alt pane passes `0`). Without it the next byte destroyed
+  a character (a prompt at the bottom of a full screen). Tracked lines are bounded at
+  `split + dims.rows - 1`, where the final geometry is known.
+- **What leaves the buffer differs by holder.** `PaneReflow::evicted` counts rows dropped off the
+  front by the cap (primary) or by the shrink (alt). Tracked points on such a row are released;
+  alt markers are disposed with `MarkerDisposed`; primary markers saturate to line 0
+  ([marker](marker.md) owns why). Reflow does not advance `evicted_total`; it bumps the marker epoch
+  once per dimension change when markers exist (#490).
 - **Query-derived state is invalidated, user-authored state is re-anchored.** Search highlights are
-  dropped and the consumer re-searches; the selection is carried. The engine can recompute neither,
-  but only one is reproducible by the consumer.
-- **A point one past the last cell cannot be expressed** (#562). Five designs were built, measured
-  and rejected — that issue is the content, not a pointer to it.
-- **`resize` also rewrites configuration that is not anchored to a line at all**, and the axis that
-  decides each one is whether the value's *meaning* survives the geometry change. The DECSTBM scroll
-  region is a range over the current screen, so it is **reset** — but only when the geometry actually
-  moved, since a resize to the size the terminal already has changes no meaning. The deferred wrap is
-  cursor state, expressible at any geometry, so it is **carried** (#848). The tab-stop table is a set
-  of marks that still mean what they meant, so it is **extended, never rebuilt or trimmed** (#849).
-  The line it replaced rebuilt the table from defaults on every call, so a window one row taller — or
-  a consumer re-asserting its size — replaced an application's stops with multiples of eight, on an
-  axis the table is not indexed by. New columns take the default ladder at their *absolute* index;
-  nothing is trimmed, so `tabs.len()` is the widest the terminal has been and the walks need
-  `len() >= cols`, not equality. A stop a narrowing pushed outside the grid returns when it widens.
-  The corpus splits 2-2 on that half: xterm keeps it structurally (`MAX_TABS` 1024, independent of
-  the screen, `ptyx.h:3611` @ `6380a3e`) and xterm.js in a sparse map, while alacritty truncates
-  through `Vec::resize_with` (`alacritty_terminal/src/term/mod.rs:2341` @ `852e971`) and ghostty
-  rebuilds on a column change (`src/terminal/Terminal.zig:3759` @ `e6e26e1`). No tie-breaker row
-  covers the axis, so the call is the maintainer's, recorded on #849. RIS still restores the default
-  ladder, since `full_reset` takes the table from the constructor.
-  The three were decided one at a time and separately; see *Known holes*.
-- **A cursor that reflows to "just after the content" on a full pane buys its row from history**
-  (#562). `reflow` may answer `col == cols`; the cursor reads it as the start of the next row, which
-  the caller's fit supplies while the pane is shorter than the screen. When the content already fills
-  the pane, the pane scrolls one row into history — without it the cursor was pulled back onto the
-  last glyph and the next byte destroyed a character (a prompt at the bottom of a full screen). Five
-  earlier designs made `reflow` itself materialise the row and were rejected on measurements (a
-  cursor at column 59 resized to width 4 emptied the buffer; a blank-line exemption turned 22 alt
-  lines into 21): `reflow` cannot see the pane's budget. The gate is `limit > 0`, not "is this the
-  alt screen" — since #567 alt panes pass `limit: 0` — which **amends** ADR-0025: `reflow` does not
-  create rows, the seam may when the pane can pay. A tracked line is bounded at
-  `split + dims.rows - 1` here, where the final geometry is known; bounding against `reflow`'s own
-  row count clamped away rows the fit was about to create.
-- **The alt pane re-fits without re-splitting** (`reflow: false`, #567): its content is a layout,
-  and all three references take the same position with one flag on the same resize function. Measured
-  on an `htop` recording across a live `SIGWINCH`, re-splitting left debris in cells htop does not
-  overwrite, because it repaints without clearing.
+  dropped and the consumer re-searches; the selection is carried — except on the alt screen, where
+  any geometry change drops it (#660), because the alt pane does not reflow.
+
+**State not anchored to a line.** The axis that decides each is whether the value's *meaning*
+survives the geometry change.
+- The DECSTBM scroll region is a range over the current screen, so it is **reset** — only when the
+  geometry actually moved; `resize` has no early return and a same-size call redefines nothing.
+- The deferred wrap is cursor state, so it is **carried** (#848); where the cursor ends short of the
+  last column the one-past position is representable, so the flag clears and the cursor takes it.
+- The tab-stop table is **extended, never rebuilt or trimmed** (#849): new columns take the default
+  ladder at their absolute index (`is_default_tab_stop`), so `tabs.len()` is the widest the terminal
+  has been and the walks need `len() >= cols`. The line it replaced rebuilt the table on every call,
+  so a one-row-taller window replaced an application's stops. A stop a narrowing pushed outside
+  returns on widening. The references split 2–2 on that half (xterm and xterm.js keep, alacritty and
+  ghostty drop; SHAs on #849), so it is the maintainer's call, recorded on #849. RIS restores the
+  default ladder, since `full_reset` rebuilds from the constructor.
+- `repeat_anchor` is cleared (#825: a reflow moves the cell `REP` would read back);
+  `display_offset` is clamped to the new history length; `line_damage` is re-sized, the pending scroll
+  op dropped and the whole screen damaged.
+
+**Bounds on outside input.** `cols` is clamped to `MIN_COLUMNS..=MAX_COLUMNS` (#547, #621) and `rows`
+to `1..=MAX_ROWS` (= `u16::MAX`), silently — the `Engine::resize` rustdoc tells the consumer to read the
+width back. The work is O(history + screen) cells plus O(points); the point count is the marker
+population plus the tracked-point registry, the latter with no cap ([tracked points](tracked-points.md)).
 
 ## Code
 
-- `justerm-core/src/grid.rs` — `reflow`, which takes and returns the tracked `points`
-- `justerm-core/src/term.rs` — `Term::resize`, `ReflowDims`, `PaneReflow`, `reflow_pane`
-- `justerm-core/src/lib.rs` — `Engine::resize`, whose doc comment is the consumer-facing contract
+- `justerm-core/src/grid.rs` — `reflow` (the join and re-split, taking and returning `points`),
+  `Row::resize`, `Grid::take_lines`, `Grid::set_screen`
+- `justerm-core/src/term.rs` — `Term::resize`, `ReflowDims`, `PaneReflow`, `reflow_pane`,
+  `is_default_tab_stop`, `default_tabs`
+- `justerm-core/src/term/selection.rs` — `Term::selection_reflowed`
+- `justerm-core/src/term/paint.rs` — `ChangeWatch::points`, `ChangeWatch::reflowed`
+- `justerm-core/src/lib.rs` — `Engine::resize`
+- Tests: `justerm-core/tests/resize.rs`, `alt_no_reflow.rs`, `reflow_past_end_points.rs`,
+  `reflow_point_mapping.rs`, `reflow_row_budget.rs`, `reflow_trim.rs`, `reflow_wide_pair.rs`,
+  `alt_resize_markers.rs`, `alt_selection_resize.rs`, `resize_cursor_and_marker_state.rs`
 
 ## Reference behaviour
 
-In `docs/agents/reference-facts.md` — **linked, never restated** (each row carries a `file:line` at a
-recorded SHA; a paraphrase drops the pin).
-
 - [Mapping a tracked point through reflow](../../agents/reference-facts.md#mapping-a-tracked-point-through-reflow-549-verified-2026-07-27)
+  — the point mapping that divided by `new_cols` was wrong once rows can be short (#549).
 - [Relocating a cluster that grew to width 2](../../agents/reference-facts.md#relocating-a-cluster-that-grew-to-width-2-529-verified-2026-07-28)
-
-The DECAWM divergence is argued at the call site against ghostty's `Terminal.zig`, with the
-counter-evidence measured — a full row still re-splits with DECAWM off, and ghostty truncates instead.
-That reasoning is in a code comment rather than in a record.
+  — the pair-straddle handling.
+- [The tab-stop table across a resize](../../agents/reference-facts.md#the-tab-stop-table-across-a-resize--four-mechanisms-no-convergence-on-the-column-axis-849-verified-2026-09-03)
+  — the 2–2 split behind "extend, never trim".
+- [The deferred wrap across the rest of the verbs](../../agents/reference-facts.md#the-deferred-wrap-across-the-rest-of-the-verbs-848-verified-2026-09-03)
+  — carrying the flag across a resize.
+- [A selection when the screen changes under it](../../agents/reference-facts.md#a-selection-when-the-screen-changes-under-it-660-verified-2026-07-31)
+  — dropping the selection on an alt-screen resize.
+- The DECAWM divergence is argued against ghostty's `Terminal.zig` with no pinned row.
 
 ## Cross-cutting invariants
 
-- [an absent element box measures as zero](../invariant/an-absent-box-measures-as-zero.md) — this
-  territory is where that fact stops being cosmetic and becomes **irreversible**, which is what
-  settled its repair in #810. A hidden element measures `0x0`, the fit paths used to floor that to a
-  `2x1` grid, and a resize is where a proposed grid becomes a change to the buffer: on the primary
-  screen the re-split preserves logical lines, so re-widening restores the content; on the **alt
-  screen** a resize is a re-fit — rows dropped, nothing re-wrapped (see the second bullet under
-  *Design model*) — so there is nothing to restore from. The invariant is about absence producing a
-  *plausible* answer; here the plausible answer also cannot be taken back
+- [an absent element box measures as zero](../invariant/an-absent-box-measures-as-zero.md) — here
+  that fact stops being cosmetic and becomes irreversible, which settled its repair in #810: a hidden
+  element measures `0x0`, the fit paths floored that to a `2x1` grid, and on the alt screen a resize
+  is a re-fit — rows dropped, nothing re-wrapped — so there is nothing to restore from on re-widening.
 
 ## Blast radius
 
 Everything anchored to a line, because reflow is the one operation that moves content **between**
 rows rather than within one.
 
-- [selection](selection.md) — anchors are tracked points, and reflow is one of the four things that
-  move an absolute coordinate (that note carries the set; a three-item count hides one of them)
-- [marker](marker.md) — same, and alt markers additionally re-anchor on a base that shifts when the
-  primary scrollback rewraps beneath them
-- [search](search.md) — highlights are invalidated rather than moved, which is the asymmetry above
-- [soft wrap](soft-wrap.md) — the wrap links are the input; a re-split writes new ones
-- [wide glyph](wide-glyph.md) — `Row::resize` cuts through pairs and D4 stops at this boundary
-- [cursor position](cursor-position.md) — the cursor is a tracked point
-- [viewport](viewport.md) · [damage](damage.md) — a resize marks the whole screen damaged
-- [vt interpretation](vt-interpretation.md) — **the axis the list above cannot reach.** Everything
-  named so far is anchored to a *line*, so nothing here points at the fields `resize` rewrites that
-  are indexed by columns and rows: the tab-stop table and the scroll margins. That absence is the
-  structural reason the tab table was rebuilt on a rows-only resize through #826 and #848 without
-  anyone standing in this note seeing it. The edge already existed in the other direction — that
-  note's blast radius names reflow — and this is the return leg
+- [selection](selection.md) — its anchors ride the `points` slice, and a `col == cols` answer is not a
+  cell, so the endpoint's side has to be chosen when clamping.
+- [marker](marker.md) — marks ride the same slice and read `col == cols` as an exclusive bound; alt
+  markers re-anchor on a base that shifts when primary history rewraps beneath them.
+- [tracked points](tracked-points.md) — released, not clamped, when their line is evicted; a set left
+  out of the slice is silently misplaced.
+- [search](search.md) · [active match](active-match.md) — highlights are invalidated rather than
+  moved, so the consumer's re-search is the only thing that restores them.
+- [soft wrap](soft-wrap.md) — the wrap bits are reflow's input; a re-split writes new ones.
+- [wide glyph](wide-glyph.md) — `Row::resize` cuts through pairs and D4 stops at this boundary.
+- [cursor position](cursor-position.md) — the cursor is point 0, and `pending_wrap` is carried here.
+- [viewport](viewport.md) · [damage](damage.md) — `display_offset` is clamped and the whole screen is
+  damaged with the scroll op dropped, because the op's rows no longer exist.
+- [settled-cell paint](settled-cell-paint.md) — its change record rides the slice last
+  (`ChangeWatch::reflowed`), and a reflow folds the answered lines back into the changed ones, so the
+  consumer is asked to re-paint lines it already painted.
+- [vt-interpretation](vt-interpretation.md) — the axis the list above cannot reach: the tab-stop
+  table and the scroll margins are indexed by columns and rows, not lines. That absence is why the
+  tab table was rebuilt on a rows-only resize through #826 and #848 without anyone standing in this
+  note seeing it.
+- [alt screen](alt-screen.md) — both grids take the new size on every resize, and only the primary
+  re-splits.
 
 ## Known holes / open
 
 - **Zero governing records** for the operation with the widest blast radius in the engine.
-- **The DECAWM divergence is deliberate and unrecorded.** It diverges from a named reference with
-  three stated reasons, held only by this note — the exact shape ADR promotion exists for.
-- **#562 — a point one past the last cell has no representation.** Five rejected designs; read the
-  issue before touching relocation.
-- **Nothing states which point sets must be passed.** The `points` slice is a convention: forget to
-  include an anchor set and it is silently misplaced, with no compiler or test naming the omission.
-- **Which fields a resize may reset at all has no record**, though the three fields that raised it
-  are now each decided (#848 the deferred wrap, #849 the tab table, and the margins here). The
-  counterpart record exists for the *other* reset —
-  [RIS keeps configuration, drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
-  — and does not transfer: every row there reasons from *"RIS wipes every cell"*, and a resize wipes
-  none.
-
-  **A formulation that does not break is available and is deliberately not promoted yet.** The axis
-  is *not* who wrote the value — that reading derives #848 and #849 and then fails on the margins,
-  which the application wrote and which reset anyway. It is whether the value's **meaning survives
-  the geometry change**: a range over the screen does not, a set of marks does, cursor state does, a
-  coordinate is clamped, derived state is rebuilt. That derives all seven fields this function
-  touches. What it does not do is *buy* anything — the one question it predicted (the margins on a
-  no-op) was already answered 3/3 by the references and is now fixed — so promoting it would be
-  archaeology over closed issues. The trigger to write it is a **fourth** field whose answer the
+- **The DECAWM divergence is deliberate and unrecorded in a decision.** It diverges from a named
+  reference with three stated reasons, held by this note and a rustdoc paragraph.
+- **Nothing states which point sets must be passed.** The `points` slice is an offset convention in
+  `Term::resize`: forget an anchor set and it is silently misplaced, with no compiler or test naming
+  the omission. Four sets ride it on the primary today.
+- **Which fields a resize may reset has no record**, though the three that raised it are each
+  decided (#848 the deferred wrap, #849 the tab table, the margins here). The counterpart for the
+  other reset — [RIS keeps configuration, drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
+  — does not transfer: every row there reasons from *"RIS wipes every cell"*, and a resize wipes none.
+  The axis that derives all of them is *whether the value's meaning survives the geometry change*
+  (not who wrote it — that reading fails on the margins, which the application wrote and which reset
+  anyway). It is deliberately not promoted: the trigger is a **fourth** field whose answer the
   references do not already give.
+- **"The seam may create rows" narrows ADR-0025 and the ADR does not say so.** PR #569 (#567) let
+  `reflow_pane` push a row for the cursor; ADR-0025's text still reads as if a resize creates none.

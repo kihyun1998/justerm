@@ -1,102 +1,120 @@
-# Cross-cutting invariant — a layer ends what it exclusively holds, and never what it shares
+# Invariant — a layer ends what it exclusively holds, and never what it shares
 
 ## The fact
 
-**Teardown follows exclusivity, not provenance.** A layer holding a collaborator that runs work of its
-own — a loop, a listener, a timer, a registered GPU resource — ends that collaborator **iff it is the
-only holder**. Whether the layer *built* it or was *handed* it decides nothing.
+Teardown follows **exclusivity, not provenance**. A layer holding a collaborator that runs work of its
+own — a loop, a listener, a timer, a registered GPU resource — ends that collaborator iff it is the only
+holder. Whether the layer built it or was handed it decides nothing.
 
-The two halves are separately load-bearing, and each one has a real site:
+Both halves have a real site (re-verified at HEAD 7bb31f7):
 
-1. **Handed over and exclusive → the receiving layer ends it.** `Terminal` is handed a `Renderer` it
-   did not construct and disposes it (#606), because that renderer is this widget's alone — the port's
+1. **Handed over and exclusive → the receiver ends it.** `justerm-web/src/terminal.ts — Terminal.dispose`
+   calls `this.renderer.dispose?.()` on a `Renderer` it did not construct (#606), because the port's
    own doc rules out sharing one across two `Terminal`s.
-2. **Handed over and shared → the receiving layer must NOT end it.** `JustermRenderer.attach` is
-   handed a `TerminalSurface` and deliberately leaves it running (#775), because ending it would take
-   down the canvas every sibling terminal is drawing on.
+2. **Handed over and shared → the receiver must not end it.** `justerm-renderer.ts — JustermRenderer.attach`
+   is handed a `TerminalSurface` and leaves it running (#775), because ending it would take down the
+   canvas every sibling terminal draws on.
 
-So a rule phrased on provenance answers (1) and gets (2) exactly backwards. Phrased on exclusivity it
-derives both, plus the composition case: `JustermRenderer.create` **composes** a surface and therefore
-is its only holder, so it ends it — and that is the same clause as (1), not a third rule.
+A provenance rule answers (1) and gets (2) backwards. The composition case is clause (1) again:
+`JustermRenderer.create` composes a surface, is its only holder, and ends it — the `composedSurface`
+flag gates `this.surface.dispose()` in `JustermRenderer.dispose`.
+
+The check is one question, answerable from the type: can a second holder exist? A collaborator
+reachable from more than one live object is shared.
+
+### A teardown the host must remember is uncalled until a host exists
+
+The rule names who ends a collaborator; it cannot make that party exist. Where the exclusive holder is
+the *host* — the collaborator is consumer-constructed and exported individually, and `Terminal` never
+sees it — the teardown runs only if a host remembers to call it. Three such teardowns at HEAD 7bb31f7,
+none reached from `justerm-web/src/terminal.ts` (which imports none of the three classes):
+
+- `justerm-web/src/accessibility-dom.ts — Accessibility.dispose` — the announce timer and the
+  `selectionchange` listener;
+- `justerm-web/src/fit.ts — FitController.dispose` and the disposer `observeResize` returns — the
+  debounce timer and the `ResizeObserver`;
+- `justerm-web/src/marker-index.ts — MarkerIndexCache.reset` — orphans an in-flight pull (#746).
+
+No caller exists for any of them. PenTerm constructs none of the three (no match for `Accessibility`,
+`FitController`, `observeResize` or `MarkerIndexCache` under `src/` at penterm 7dadc3c95; it runs its
+own `ResizeObserver`, ended in `nativeTerminalCache.ts — build`'s cleanups). The package's own demo
+constructs all three and ends none: `justerm-web/demo/main.ts` writes `void disposeFit;`. `FitController.dispose`
+and `MarkerIndexCache.reset` have unit tests (`test/fit.test.ts`, `test/marker-index.test.ts`);
+`Accessibility.dispose` (only its inner `AccessibilityController.dispose` is unit-tested) and
+`observeResize`'s disposer have no caller at all. The first host that adopts one is their first caller, and
+nothing will tell it the call is owed except the doc-comment. The widget-lifecycle territory's ambient
+work table is the inventory.
 
 ## Why it is cross-cutting
 
-**Three territories, no shared call path, and the fact is invisible from each of them.** From inside
-widget lifecycle the question reads *"who calls dispose?"*; from inside multi-viewport it reads *"can
-one terminal ending break its siblings?"*; from inside GL context lifecycle it reads *"whose listener
-is this?"*. They are the same question and nothing in any one of them says so.
+The sites share no call path, and the fact reads as a different question from each: in widget
+lifecycle "who calls dispose?", in multi-viewport "can one terminal ending break its siblings?", in GL
+context lifecycle "whose listener is this?". `Terminal.dispose` and `TerminalSurface.dispose` do not
+call each other; they share only the assumption that a collaborator's holders are known.
 
-The count is doing work here in the way this map asks it to. **The rule was predicted from one site and
-the prediction was wrong**, which is only visible with the second site in hand:
-[widget lifecycle](../territory/widget-lifecycle.md) recorded *"what a layer is handed across a port,
-that layer ends"*, checked it for reach, found exactly one site, and left a standing instruction to
-promote it *"the day a second injected-collaborator port exists — the multi-viewport work (#287) is the
-likely candidate"*. That day arrived with #775, and the second site **contradicted the rule as
-written** rather than confirming it. A note promoted on the strength of one site would have shipped the
-provenance phrasing, and the first host to attach two terminals would have followed it into disposing a
-shared surface.
+The rule was predicted from one site and the prediction was wrong. Widget lifecycle recorded "what a
+layer is handed across a port, that layer ends", found one site, and left an instruction to promote it
+when a second injected-collaborator port appeared (#287 named as the likely one). #775 supplied that
+second site and contradicted the provenance phrasing; a note promoted on one site would have shipped
+it, and the first host attaching two terminals would have disposed a shared surface.
 
 ## Territories it holds in
 
-- [widget lifecycle](../territory/widget-lifecycle.md) — **owns the mechanism**: the `Renderer` port's
-  optional `dispose?()`, `Terminal.dispose()` calling it exactly once, and the inventory of ambient
-  work with teardown nobody calls. Clause (1)'s site
-- [multi-viewport](../territory/multi-viewport.md) — clause (2)'s site. A surface is shared by
-  construction, so `JustermRenderer` carries `composedSurface` and only the composing path ends it. The
-  registry half is the same fact one level down: a terminal releases **its own** grid and the surface
-  releases every grid still registered when it ends
-- [GL context lifecycle](../territory/gl-context-lifecycle.md) — the density watcher, the
-  `webglcontextrestored` listener and the context-loss relay are **surface-scoped**, so they belong to
-  the shared holder. This is where a violation was actually reachable: before #775 all three sat on the
-  per-terminal object and its `dispose()` stopped them
+- [widget lifecycle](../territory/widget-lifecycle.md) — owns the mechanism: the `Renderer` port's
+  optional `dispose?()` (`justerm-web/src/renderer.ts — Renderer.dispose`), `Terminal.dispose` calling it
+  once, and the inventory of ambient work. Clause (1).
+- [multi-viewport](../territory/multi-viewport.md) — clause (2). `JustermRenderer` carries
+  `composedSurface` and only the composing path ends the surface. One level down, the registry: a
+  terminal releases its own grid lease, and `justerm-web/src/terminal-surface.ts — TerminalSurface.dispose`
+  ends and releases every lease still registered.
+- [GL context lifecycle](../territory/gl-context-lifecycle.md) — the density watcher (`dprWatcher`),
+  the `webglcontextrestored` listener and the context-loss relay (`ContextLossRelay`) are surface-scoped
+  and stopped by `TerminalSurface.dispose`. Before #775 all three sat on the per-terminal object, which is
+  where a violation was reachable.
+- [events & replies](../territory/events-and-replies.md) — `Terminal.mount` constructs a
+  `ClipboardController` the widget alone holds, and `Terminal.dispose` ends it, because an in-flight
+  clipboard read is already past the event subscription and dropping the subscription cannot stop it.
+  (This territory linked here already; the old note did not list it.)
+- [accessibility](../territory/accessibility.md) — `Accessibility.dispose` is a host-held teardown no
+  host calls (§ A teardown the host must remember).
+- [fit](../territory/fit.md) — `FitController.dispose` and `observeResize`'s disposer, the same.
+- [decoration](../territory/decoration.md) — `MarkerIndexCache.reset`, the same; the cache is what keeps
+  the decoration registry anchored, and no consumer builds one.
 
 ## What a violation looks like
 
-**Silent, and it damages a bystander rather than the caller.** Nothing throws — the layer that ended
-too much is fine, and the layer that loses its ambient work has no way to notice.
+Silent, and it damages a bystander. Measured while working #775: with the density watcher, restore
+listener and loss relay on the per-terminal object, the first terminal disposed takes context recovery
+away from every sibling sharing its canvas; the survivor keeps drawing and looks healthy until a
+context loss it can no longer recover from.
 
-The concrete shape, measured while working #775: with the density watcher, the restore listener and
-the loss relay on the per-terminal object, the **first** terminal to be disposed takes context recovery
-away from every sibling sharing its canvas. The surviving terminal keeps drawing correctly and looks
-healthy, right up until a context loss it can no longer recover from.
-
-The mirror violation is a leak rather than a break: end nothing on the ground that "someone handed it
-to me", and a widget stops consuming frames while its renderer's blink loop keeps repainting a canvas
-nobody is driving (#606, before the port gained `dispose?()`).
-
-The tell that distinguishes them is one question — *can a second holder exist?* — and it is answerable
-from the type. A collaborator reachable from more than one live object is shared; one reachable from
-exactly one is not.
+The mirror is a leak: ending nothing because "someone handed it to me" leaves a widget that stops
+consuming frames while its renderer's blink loop keeps repainting a canvas nobody drives (#606, before
+the port gained `dispose?()`).
 
 ## Discovery history
 
-- **#606** (2026-07-29) — established clause (1) at its only site: `Terminal.dispose()` reaches the
-  renderer it was handed, through a new optional `dispose?()` on the port. Derived from xterm.js, which
-  disposes each consumer-constructed addon from `Terminal.dispose()`
+- **#606** (2026-07-29) — clause (1) at its only site, through a new optional `dispose?()` on the port.
+  Derived from xterm.js disposing each consumer-constructed addon from `Terminal.dispose()`
   ([reference facts](../../agents/reference-facts.md#widget-teardown--who-ends-a-handed-over-component-606-verified-2026-07-29)).
-  Checked for reach, found one site, and left the promotion instruction rather than a note
-- **#605** (closed 2026-08-21) — measured the surrounding inventory and closed with the
-  composition-root half explicitly parked as *"a question a host application asks"*, with nothing able
-  to move it
-- **#775** (2026-08-24) — built the host-shaped object, which supplied the second site and **falsified
-  the predicted phrasing**. Exclusivity replaced provenance. The prior art converges on the sharper
-  rule and always did: ghostty's root ends every terminal it holds and then its own shared machinery
-  (`src/App.zig:107`), asserting the shared tier is empty by then (`:115`), while each terminal
-  releases only **its own** claim on that tier (`src/Surface.zig:833`) — three statements that are one
-  rule about exclusivity, at SHA `e6e26e1`
+- **#605** (closed 2026-08-21) — measured the surrounding inventory; closed with the composition-root
+  half parked as a question a host application asks.
+- **#775** (2026-08-24) — built the host-shaped object, supplied the second site, and falsified the
+  provenance phrasing. The prior art always held the exclusivity rule: ghostty's root ends every
+  terminal it holds and then its own shared machinery (`src/App.zig:107`), asserting the shared tier is
+  empty by then (`:115`), while each terminal releases only its own claim (`src/Surface.zig:833`), at
+  `e6e26e1`.
 
 ## Where it will recur
 
-- **Any second tenant on a shared thing.** The next one is already designed: a host that keeps hidden
-  terminals registered (penterm's adoption shape) holds surfaces outliving individual terminals, and
-  every teardown path there answers this question
-- **The per-config tier**, one level below the surface. A glyph atlas is shared by every grid on the
-  same font configuration and released by refcount when the last one leaves — the same rule, already
-  implemented in the renderer (#772), and a consumer-side path that released it directly would be this
-  violation in GPU memory
-- **Whenever a collaborator gains ambient work it did not have.** Exclusivity is a property of the
-  *composition*, but what makes it matter is the collaborator having something to stop. A port whose
-  implementations are inert today becomes a site of this invariant the day one of them starts a timer —
-  which is how the `Renderer` port became one
-- **Any new `dispose()`**, as the check rather than as a recurrence: before writing one, ask which of
-  the things it touches a second live object can also reach
+- **Any second tenant on a shared thing.** A host keeping hidden terminals registered (penterm's
+  adoption shape, #770 "registered but not drawn") holds surfaces outliving individual terminals; every
+  teardown path there answers this question.
+- **The per-config tier.** A glyph atlas is shared by every grid on one font configuration and released
+  by refcount when the last leaves (#772; `justerm-renderer/src/config_registry.rs`,
+  `webgl/grids.rs — release_config`). A consumer path that released it directly would be this violation
+  in GPU memory.
+- **A collaborator gaining ambient work it did not have.** A port whose implementations are inert
+  becomes a site the day one starts a timer — how the `Renderer` port became one.
+- **Any new `dispose()`**: before writing it, ask which of the things it touches a second live object
+  can also reach.
