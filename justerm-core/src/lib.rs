@@ -366,6 +366,13 @@ impl Engine {
         self.term.win32_input_mode()
     }
 
+    /// Whether the **alternate screen** (DEC `?47` / `?1047` / `?1049`) is active —
+    /// the same value as [`Frame::alt_screen`], without building a frame. A consumer
+    /// that gates input on a full-screen application reads this per keypress.
+    pub fn alt_screen(&self) -> bool {
+        self.term.alt_screen()
+    }
+
     /// What changed since the last [`Engine::reset_damage`] — line ranges each
     /// with a changed column span (see [ADR-0003](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0003-damage-model-incremental-bounds.md)).
     pub fn damage(&self) -> TermDamage {

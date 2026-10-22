@@ -127,3 +127,36 @@ fn frame_alt_screen_cleared_by_ris() {
     t.feed(b"\x1bc"); // RIS
     assert!(!t.frame().alt_screen, "RIS returns to primary");
 }
+
+#[test]
+fn alt_screen_answers_what_the_frame_header_carries() {
+    // A consumer gating input on the alt screen asks the engine, not a whole frame.
+    let mut t = Engine::new(5, 2);
+    let agree = |t: &Engine| {
+        assert_eq!(
+            t.alt_screen(),
+            t.frame().alt_screen,
+            "getter and frame header disagree"
+        );
+        t.alt_screen()
+    };
+    assert!(!agree(&t), "a new engine is on the primary screen");
+    for (enter, leave) in [
+        (&b"\x1b[?47h"[..], &b"\x1b[?47l"[..]),
+        (b"\x1b[?1047h", b"\x1b[?1047l"),
+        (b"\x1b[?1049h", b"\x1b[?1049l"),
+    ] {
+        t.feed(enter);
+        assert!(
+            agree(&t),
+            "{:?} enters the alt screen",
+            String::from_utf8_lossy(enter)
+        );
+        t.feed(leave);
+        assert!(!agree(&t), "{:?} leaves it", String::from_utf8_lossy(leave));
+    }
+    t.feed(b"\x1b[?1048h"); // cursor save only — no switch
+    assert!(!agree(&t), "?1048 does not switch screens");
+    t.feed(b"\x1b[?1049h\x1bc"); // RIS on the alt screen
+    assert!(!agree(&t), "RIS returns to the primary screen");
+}
