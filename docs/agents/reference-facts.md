@@ -3711,4 +3711,5 @@ narrowed by one. Where the cursor lands decides whether a shell's SIGWINCH redra
 
 2 of 3 move the cursor down a row; xterm.js keeps it by a policy that also truncates real text past
 the new width. justerm keeps a parked cursor on its row for a narrowing only — the maintainer's call
-(2026-10-26), made when ghostty's row was not yet read.
+(2026-10-26), first made with ghostty's row unread and re-confirmed with it and with the measured
+fast-drag hole (27 → 25 still duplicates) in hand.
