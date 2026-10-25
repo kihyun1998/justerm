@@ -335,8 +335,9 @@ fn a_hard_line_break_survives_the_resize() {
     // Constraint 2. Recovering "past the end" by arming `pending_wrap` glues a hard-ended row to the
     // next one and deletes a break the application emitted. `pending_wrap` means *continue this
     // logical line*, and the cursor reaching a line's end does not mean that — in justerm the flag
-    // is carried beside the reflow, so a `col == cols` coming back out of it is a cursor parked past
-    // content by CUP, never a deferred wrap.
+    // is carried beside the reflow, so a `col == cols` coming back out of it for a cursor that was
+    // not parked is a cursor parked past content by CUP, never a deferred wrap. (One that arrived
+    // parked keeps its park on a narrowing: #1076, `resize_parked_prompt.rs`.)
     let mut t = Engine::new(8, 4);
     t.feed(b"abcdef\r\n$ \x1b[1;7H\x1b[K");
 

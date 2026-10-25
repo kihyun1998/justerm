@@ -3695,3 +3695,21 @@ the same user switch as every other control character, ghostty unconditionally i
 and justerm leaves that wider strip to the consumer, the maintainer's call (2026-10-08): PenTerm's
 "permit control characters in paste" is xterm's switch. `␛` over deletion or a space is
 justerm's derivation: the marker stays visible.
+
+## A parked cursor on a trailing blank across a narrowing (#1076, verified 2026-10-26)
+
+A prompt whose trailing space fills the row exactly, the cursor parked on that space, the width
+narrowed by one. Where the cursor lands decides whether a shell's SIGWINCH redraw
+(`\r ESC[K \r <prompt>`, no `CUU`) overwrites its prompt or draws a second one below it.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The cursor's logical line is **not reflowed at all** by default (`reflowCursorLine: false`, *"shells usually handle this themselves"*); the row is cut to the new width and `x` clamped to `newCols - 1`, so the cursor stays on its row | xterm.js | `common/buffer/Buffer.ts:391-397`, `:251`; default `common/services/OptionsService.ts:50`; doc `typings/xterm.d.ts:227-232` |
+| Blanks before a cursor lifted past the new width are **wrapped as content** — *"If there are empty cells before the cursor, we assume it is explicit whitespace and need to wrap it like normal content"* — so the cursor lands on the next row | alacritty | `alacritty_terminal/src/grid/resize.rs:273-281` |
+| The cursor pin stops the trim — *"If the cursor is after blanks on the right, those cells are still before the next write and must reflow with it"* — so the space reflows to the next row with the cursor on it | ghostty | `terminal/PageList.zig:1600-1606` |
+| A resize can clear a redrawable prompt from its OSC 133 marks (`opts.prompt_redraw`) before the shell redraws — a separate mechanism, not measured here | ghostty | `terminal/Screen.zig:2068`, `clearPromptForRedraw` `:2161` |
+
+2 of 3 move the cursor down a row; xterm.js keeps it by a policy that also truncates real text past
+the new width. justerm keeps a parked cursor on its row for a narrowing only — the maintainer's call
+(2026-10-26), first made with ghostty's row unread and re-confirmed with it and with the measured
+fast-drag hole (27 → 25 still duplicates) in hand.

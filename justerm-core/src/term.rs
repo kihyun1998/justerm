@@ -1182,6 +1182,7 @@ impl Term {
                 alt,
                 VecDeque::new(),
                 self.cursor.point(),
+                self.cursor.pending_wrap,
                 &alt_pts,
                 ReflowDims {
                     limit: 0,
@@ -1210,6 +1211,7 @@ impl Term {
                 primary,
                 scrollback,
                 self.saved_cursor.point(),
+                self.saved_cursor.pending_wrap,
                 &marker_pts,
                 dims,
             );
@@ -1305,7 +1307,14 @@ impl Term {
             pts.extend(self.normal_watch.points());
 
             let primary = self.grid.take_lines();
-            let r = reflow_pane(primary, scrollback, self.cursor.point(), &pts, dims);
+            let r = reflow_pane(
+                primary,
+                scrollback,
+                self.cursor.point(),
+                self.cursor.pending_wrap,
+                &pts,
+                dims,
+            );
             self.grid.set_screen(r.screen, cols, rows);
             self.scrollback = r.scrollback;
             self.cursor.set_point(r.cursor, rows, cols);
@@ -1341,6 +1350,7 @@ impl Term {
                 alt,
                 VecDeque::new(),
                 (0, 0),
+                false,
                 &[],
                 ReflowDims {
                     limit: 0,
@@ -3149,11 +3159,12 @@ struct PaneReflow {
 /// Reflow one pane (its `scrollback` joined with `screen`) to `dims`, tracking the
 /// screen-relative cursor `point` plus any `extra_abs` points in absolute
 /// `[scrollback ++ screen]` coordinates. Returns the new screen rows, the scrollback capped
-/// to `dims.limit`, and where each point landed.
+/// to `dims.limit`, and where each point landed. `parked` is the cursor's deferred wrap.
 fn reflow_pane(
     screen: Vec<Row>,
     scrollback: VecDeque<Row>,
     point: (usize, usize),
+    parked: bool,
     extra_abs: &[(usize, usize)],
     dims: ReflowDims,
 ) -> PaneReflow {
@@ -3175,9 +3186,14 @@ fn reflow_pane(
         pts
     };
 
+    // A parked cursor that a narrowing leaves just past a full row stays on that row, parked on
+    // its last column (#1076): `docs/map/territory/reflow.md`.
+    let past_full_row = pts[0].1 == dims.cols;
+    let stays_parked = past_full_row && parked && dims.reflow && dims.cols < dims.old_cols;
+
     // A cursor one row past the content (#562) buys that row from history when the pane can
     // pay (`limit > 0`): `docs/map/territory/reflow.md`.
-    let cursor_abs = pts[0].0 + usize::from(pts[0].1 == dims.cols);
+    let cursor_abs = pts[0].0 + usize::from(past_full_row && !stays_parked);
     if dims.limit > 0 {
         while all.len() <= cursor_abs {
             all.push(Row::blank(dims.cols));
@@ -3196,10 +3212,13 @@ fn reflow_pane(
     // `reflow` may answer `col == cols` — "just after the last cell", which is a real place in the
     // logical line and no place in the grid (#562). The **cursor's** reading of it is the next
     // *write* position, so a full row means the start of the row after; the caller's row fit
-    // provides that row (`Grid::set_screen` pads at the bottom). A mark reads the same value the
-    // opposite way and keeps it verbatim — see `Term::resize`.
+    // provides that row (`Grid::set_screen` pads at the bottom) — unless `stays_parked`, where the
+    // next write is the deferred wrap itself. A mark reads the same value the opposite way and
+    // keeps it verbatim — see `Term::resize`.
     let cursor_row = pts[0].0.saturating_sub(split);
-    let cursor = if pts[0].1 == dims.cols {
+    let cursor = if stays_parked {
+        (cursor_row, dims.cols - 1)
+    } else if past_full_row {
         (cursor_row + 1, 0)
     } else {
         (cursor_row, pts[0].1)
