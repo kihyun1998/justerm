@@ -141,6 +141,10 @@ fn bash_redrawing_its_prompt_across_a_narrowing_drag_leaves_one_prompt() {
         assert_eq!(joined, PROMPT, "width {cols}: {rows:?}");
         // The cursor sits just after the prompt's trailing space.
         let (r, c, parked) = cursor(&t);
-        assert_eq!(r * cols + c + usize::from(parked), PROMPT_CELLS, "width {cols}");
+        assert_eq!(
+            r * cols + c + usize::from(parked),
+            PROMPT_CELLS,
+            "width {cols}"
+        );
     }
 }
