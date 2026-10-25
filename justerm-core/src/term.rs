@@ -3212,8 +3212,9 @@ fn reflow_pane(
     // `reflow` may answer `col == cols` — "just after the last cell", which is a real place in the
     // logical line and no place in the grid (#562). The **cursor's** reading of it is the next
     // *write* position, so a full row means the start of the row after; the caller's row fit
-    // provides that row (`Grid::set_screen` pads at the bottom). A mark reads the same value the
-    // opposite way and keeps it verbatim — see `Term::resize`.
+    // provides that row (`Grid::set_screen` pads at the bottom) — unless `stays_parked`, where the
+    // next write is the deferred wrap itself. A mark reads the same value the opposite way and
+    // keeps it verbatim — see `Term::resize`.
     let cursor_row = pts[0].0.saturating_sub(split);
     let cursor = if stays_parked {
         (cursor_row, dims.cols - 1)

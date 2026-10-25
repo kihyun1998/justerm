@@ -77,11 +77,9 @@ is the consumer-facing contract. No record governs it.
   the row *after* the prompt's start and climbs to it with `CUU`, so the next-row reading is the one
   that matches (`a_widening_that_lands_just_past_a_full_row_keeps_the_next_row`). Gated on the pane
   reflowing; the alt pane's own reading of `col == cols` is a hole below. Chosen by the maintainer
-  (2026-10-26) over xterm.js's mechanism, which reaches the same screen by not reflowing the
-  cursor's line at all (`reflowCursorLine`, default `false`, `common/buffer/Buffer.ts:391` @
-  `699f553`) and clamping `x` — a policy that also truncates real text past the new width.
-  alacritty treats blanks before the cursor as explicit whitespace and wraps them
-  (`grid/resize.rs:274` @ `852e971`), landing where justerm did before.
+  (2026-10-26) over xterm.js's not-reflowing-the-cursor-line policy; alacritty and ghostty wrap the
+  blank and move the cursor down
+  ([reference rows](../../agents/reference-facts.md#a-parked-cursor-on-a-trailing-blank-across-a-narrowing-1076-verified-2026-10-26)).
 - **What leaves the buffer differs by holder.** `PaneReflow::evicted` counts rows dropped off the
   front by the cap (primary) or by the shrink (alt). Tracked points on such a row are released;
   alt markers are disposed with `MarkerDisposed`; primary markers saturate to line 0
@@ -137,6 +135,8 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
   — the 2–2 split behind "extend, never trim".
 - [The deferred wrap across the rest of the verbs](../../agents/reference-facts.md#the-deferred-wrap-across-the-rest-of-the-verbs-848-verified-2026-09-03)
   — carrying the flag across a resize.
+- [A parked cursor on a trailing blank across a narrowing](../../agents/reference-facts.md#a-parked-cursor-on-a-trailing-blank-across-a-narrowing-1076-verified-2026-10-26)
+  — where the cursor lands, 2 of 3 moving it down (#1076).
 - [A selection when the screen changes under it](../../agents/reference-facts.md#a-selection-when-the-screen-changes-under-it-660-verified-2026-07-31)
   — dropping the selection on an alt-screen resize.
 - The DECAWM divergence is argued against ghostty's `Terminal.zig` with no pinned row.
@@ -192,11 +192,18 @@ rows rather than within one.
   (not who wrote it — that reading fails on the margins, which the application wrote and which reset
   anyway). It is deliberately not promoted: the trigger is a **fourth** field whose answer the
   references do not already give.
-- **A parked cursor is kept on its row only for a one-column step** (#1076). A jump that lands the
-  content end exactly on a new row boundary further down (27 → 13 for a 27-cell prompt) still
-  moves it below the row a shell believes, and a prompt with no trailing space whose last glyph
-  reflows to the next row is not covered at all; both still leave a duplicate prompt. Only
-  xterm.js's not-reflowing-the-cursor-line policy covers them.
+- **A parked cursor is kept on its row only where the trimmed content ends exactly at the new
+  width** (#1076) — after the trim, the cursor's own row comes out full. A one-column step past an
+  exact-fill prompt always meets it, and so can a wider one when several blanks were trimmed
+  (13 → 10 over `abcdefghij` + three spaces). Any narrowing past that width in one call wraps real
+  content, and the cursor lands below the row a shell believes: 27 → 25 for a 27-cell prompt
+  ends at `(1, 2)` and a redraw from row 0's belief leaves a duplicate (measured 2026-10-26) — a
+  fast drag that skips the exact width does this. A prompt with no trailing space is the same case
+  at a one-column step. Only xterm.js's not-reflowing-the-cursor-line policy covers them.
+- **The trimmed space under a parked cursor is gone for whatever follows the resize** (#1076,
+  measured 2026-10-26): the park now sits on the prompt's last glyph, so a combining mark fed
+  straight after the resize attaches to `$` rather than the space, and under `?7l` the next glyph
+  overwrites `$` (as xterm.js's clamped `x` does). A shell's redraw rewrites the row first.
 - **The alt pane reads a cursor on the last column as the next row on a narrowing** (measured
   2026-10-26): it does not reflow, so the cursor's column is the old one, and at `col == cols`
   `reflow_pane`'s next-row reading moves it — `(0, 12)` at 13 columns becomes `(1, 0)` at 12, parked
