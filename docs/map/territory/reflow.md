@@ -67,6 +67,21 @@ is the consumer-facing contract. No record governs it.
   row into history, gated on `limit > 0` (the alt pane passes `0`). Without it the next byte destroyed
   a character (a prompt at the bottom of a full screen). Tracked lines are bounded at
   `split + dims.rows - 1`, where the final geometry is known.
+- **Except a parked cursor that a narrowing leaves just past a full row** (#1076): it stays on that
+  row, parked on the last column, and buys no row. The case is a prompt whose trailing space filled
+  the row exactly: the content trim drops the space, the cursor parked on it answers `col == cols`,
+  and the next-row reading plus the deferred-wrap carry put it at `(row + 1, 1)` — one row below
+  the row bash believes it is on, so its SIGWINCH redraw (`\r ESC[K \r <prompt>`, no `CUU`, recorded
+  in `fixtures/resize_prompt.raw`) left a second prompt. **Narrowing only**: widening into the
+  same answer happens when a wrapped prompt unwraps, and there readline believes the cursor is on
+  the row *after* the prompt's start and climbs to it with `CUU`, so the next-row reading is the one
+  that matches (`a_widening_that_lands_just_past_a_full_row_keeps_the_next_row`). Gated on the pane
+  reflowing; the alt pane's own reading of `col == cols` is a hole below. Chosen by the maintainer
+  (2026-10-26) over xterm.js's mechanism, which reaches the same screen by not reflowing the
+  cursor's line at all (`reflowCursorLine`, default `false`, `common/buffer/Buffer.ts:391` @
+  `699f553`) and clamping `x` — a policy that also truncates real text past the new width.
+  alacritty treats blanks before the cursor as explicit whitespace and wraps them
+  (`grid/resize.rs:274` @ `852e971`), landing where justerm did before.
 - **What leaves the buffer differs by holder.** `PaneReflow::evicted` counts rows dropped off the
   front by the cap (primary) or by the shrink (alt). Tracked points on such a row are released;
   alt markers are disposed with `MarkerDisposed`; primary markers saturate to line 0
@@ -109,6 +124,7 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
 - `justerm-core/src/lib.rs` — `Engine::resize`
 - Tests: `justerm-core/tests/resize.rs`, `alt_no_reflow.rs`, `reflow_past_end_points.rs`,
   `reflow_point_mapping.rs`, `reflow_row_budget.rs`, `reflow_trim.rs`, `reflow_wide_pair.rs`,
+  `resize_parked_prompt.rs`,
   `alt_resize_markers.rs`, `alt_selection_resize.rs`, `resize_cursor_and_marker_state.rs`
 
 ## Reference behaviour
@@ -176,5 +192,14 @@ rows rather than within one.
   (not who wrote it — that reading fails on the margins, which the application wrote and which reset
   anyway). It is deliberately not promoted: the trigger is a **fourth** field whose answer the
   references do not already give.
+- **A parked cursor is kept on its row only for a one-column step** (#1076). A jump that lands the
+  content end exactly on a new row boundary further down (27 → 13 for a 27-cell prompt) still
+  moves it below the row a shell believes, and a prompt with no trailing space whose last glyph
+  reflows to the next row is not covered at all; both still leave a duplicate prompt. Only
+  xterm.js's not-reflowing-the-cursor-line policy covers them.
+- **The alt pane reads a cursor on the last column as the next row on a narrowing** (measured
+  2026-10-26): it does not reflow, so the cursor's column is the old one, and at `col == cols`
+  `reflow_pane`'s next-row reading moves it — `(0, 12)` at 13 columns becomes `(1, 0)` at 12, parked
+  or not. xterm.js and alacritty clamp the column instead.
 - **"The seam may create rows" narrows ADR-0025 and the ADR does not say so.** PR #569 (#567) let
   `reflow_pane` push a row for the cursor; ADR-0025's text still reads as if a resize creates none.

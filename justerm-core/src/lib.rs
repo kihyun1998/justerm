@@ -153,6 +153,11 @@ impl Engine {
     /// search at the new width — a reflow moves match coordinates and can change the match
     /// set), while the selection is carried to its new coordinates for you.
     ///
+    /// **A cursor parked at the end of an exactly full row** — a prompt whose trailing space
+    /// filled the last column — stays on that row across a narrowing, parked on the new last
+    /// column, so a shell's SIGWINCH redraw starts on the row the shell believes it is on
+    /// ([#1076](https://github.com/kihyun1998/justerm/issues/1076)).
+    ///
     /// **Two pieces of application-written state, answered differently.** The tab-stop table is
     /// *extended*, never rebuilt: a resize that changes only the row count — or one that changes
     /// nothing, since this call has no early return — leaves it exactly as the application set it,
