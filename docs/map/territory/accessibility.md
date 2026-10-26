@@ -197,8 +197,9 @@ sets no `aria-owns` under `src/browser`.
   accessible view have run only in the demo and have never met a real screen reader in a host.
 - **Command navigation on the alt screen still lands on the wrong buffer.** `CommandNavController.load`
   does not check the screen, and `DomAccessibleView.reveal` is a bounds check, so an in-range primary
-  line resolves onto alt-screen content. Core's `Engine::command_lines` doc says a bounds check does not
-  save a caller here; the web docs on `NavView.reveal` and `DomAccessibleView.reveal` claim it does.
+  line resolves onto alt-screen content. `Engine::command_lines`, `NavView.reveal` and `DomAccessibleView.reveal`
+  all say a bounds check does not save a caller here (the web two since 11f1fbb); pairing the line with
+  the primary document is the caller's, and `CommandNavController` does not.
 - **Zero records** for the announce model (cadence, gating, dedup, reset-on-reactivate); the
   reset-on-reactivate obligation is enforced by nothing and has been missed once.
 - **Two unpinned references, one not a terminal.** The behaviours borrowed from VSCode are product

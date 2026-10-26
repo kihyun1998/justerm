@@ -161,6 +161,3 @@ with the mode enabled.
   width-change question the mode exists for is uncompared.
 - **Nothing states what happens to existing cells when the mode is toggled mid-stream.** The
   segmentation changes; the buffer already written does not.
-- **The renderer's `DamageFrame::side_table` field doc says core "never unifies ZWJ / skin-tone / flag
-  sequences (each of those is its own cell)"**, which is false under mode 2027 — a stale premise in a
-  consumer of this territory.

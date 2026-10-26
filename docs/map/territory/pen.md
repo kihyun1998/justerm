@@ -122,7 +122,4 @@ From reading the source; there is no record.
 
 - **Zero governing records.** The template-cell model is a real architectural choice with a named
   prior art, and it lives in a doc-comment.
-- **`Pen`'s doc-comment still describes BCE as a later slice** ("a later slice can make erase … fill
-  … with `bg`"), while `clear_cells` and every structural blank have done it since before the crate
-  rename (#101). The reader of `cursor.rs` alone learns the opposite of the behaviour.
 - **`Default` as "follow the fg"** is a tri-state that no consumer-facing document explains.

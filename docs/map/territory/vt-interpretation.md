@@ -272,7 +272,7 @@ decision records above as their frame.
   | 95..276 | `xterm2` |
   | ≥ 277 | `sgr` |
 
-  The measurement ran at 1500 (0.15.0); the workspace is 0.30.0 at HEAD, so `DA2_VERSION` is 3000,
+  The measurement ran at 1500 (0.15.0); the workspace is 0.30.1 at HEAD (453396d), so `DA2_VERSION` is 3001,
   still past all three thresholds. A `0.2.x` would map to 200 and silently cost every consumer the
   SGR mouse encoding. Edges, all deliberate: a component of 100 or more carries into the next place;
   the pre-release suffix is cut at the **first** `-` (or `+`) — alacritty cuts at the last and

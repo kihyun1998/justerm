@@ -151,8 +151,9 @@ wasm output (no version-range mirror at all).
   until both the range moves and someone mirrors it.
 - **The web package's own range lags the version every real consumer runs.** `^0.22.0` cannot
   resolve 0.30.0, so PenTerm needs a `pnpm.overrides` entry to give the widget the decoder it pins;
-  the web's own tests and e2e run on 0.22.0. Not a live defect: decoder source has not changed since
-  the range was taken (4ed55d3), so both versions are one decoder; the gap opens with the next change
+  the web's own tests and e2e run on 0.22.0. Not a live defect: decoder code has not changed since
+  the range was taken (4ed55d3; 11f1fbb touched only comments in `serialize.rs`), so both versions
+  are one decoder; the gap opens with the next change
   to `justerm-wasm-decode/src` or `serialize.rs`.
 - **Nothing in the family checks `wireVersion()` for the consumer.** ADR-0008 offers it as optional;
   the widget does not call it, so a consumer that skips the check gets `BadVersion` per frame instead

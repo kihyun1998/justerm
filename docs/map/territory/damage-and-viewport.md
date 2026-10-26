@@ -24,8 +24,8 @@ weeks, owed a *translation layer* — "map screen damage → viewport damage, su
 ops while scrolled". None was built, because the answer was a definition rather than a mapping: damage
 is defined against **what the consumer can see**, and the screen is merely where it is recorded. That
 paragraph outlived its issue (#13); a reader planning from it would have rebuilt a solved problem.
-§Cadence now records it as settled — and §Serialization still calls the remap "the consumer/cadence
-concern in #13", the same staleness one section over.
+§Cadence now records it as settled, and §Serialization, which still called the remap "the
+consumer/cadence concern in #13" when the map was rebuilt, points there since 11f1fbb (#1074).
 
 **Second, a frame with no damage** (#1043). Defining damage by visibility means output while scrolled
 up leaves *none* — yet it moves `scrollback_len` and `display_offset` in the header, which the

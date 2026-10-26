@@ -135,9 +135,12 @@ From the capture scripts' and capture tests' own doc comments, and the issues th
 - `justerm-core/tests/fixtures/` — the corpus. `capture-closed-loop.sh` is the closed-loop recorder and
   embeds its pty harness; `capture-dogfood.sh`, `capture-softwrap.sh`, `capture-title-stack.sh`,
   `capture-clipboard.sh`, `capture-cursor-color.sh`, `capture-kitty.sh`, `capture-undercurl.sh`,
-  `capture-hyperlink.sh`, `capture-osc133.sh` and `capture-written-space.sh` are the rest — open loop,
-  and three of them (`capture-softwrap.sh`, `capture-undercurl.sh`, `capture-hyperlink.sh`) also emit a
-  deterministic printf beside the real application
+  `capture-hyperlink.sh`, `capture-osc133.sh`, `capture-written-space.sh` and `capture-resize-prompt.sh`
+  are the rest — open loop, and three of them (`capture-softwrap.sh`, `capture-undercurl.sh`,
+  `capture-hyperlink.sh`) also emit a deterministic printf beside the real application.
+  `capture-resize-prompt.sh` (#1076) records across resizes, so its `resize_prompt.raw` is framed —
+  `<cols> <len>\n` then that many bytes per record — and is read by its own parser
+  (`resize_parked_prompt.rs — records`), not fed whole
 - `justerm-core/examples/reply_filter.rs` — the consumer the closed loop runs through: `Engine` plus a
   policy answer for every `TermEvent` query (`answer_events`)
 - `justerm-core/tests/closed_loop_capture.rs` — `OPEN_LOOP`, `da2_version`, `xtgettcap_names`: the two
@@ -187,6 +190,11 @@ a known rule for one more recorder rather than revealing a fact that holds acros
 
 ## Known holes / open
 
+- **`span_bounds.rs` replays the framed `resize_prompt.raw` as one stream.** Its glob takes every
+  `*.raw` by extension (`span_bounds.rs:430-434`), so the record headers go in as printable bytes at
+  the test's fixed geometries rather than as resizes. Harmless for a bounds sweep, but it is the first
+  `.raw` that is not a plain stream, and the "321 today" in that test's comment predates it (not
+  re-counted).
 - **Only one policy arm is recorded.** The white-background run is measured and described, not checked
   in, so the claim that policy changes the bytes is documented rather than pinned.
 - **vim's ten XTGETTCAP questions go unanswered.** The closed-loop capture proves they are reached in

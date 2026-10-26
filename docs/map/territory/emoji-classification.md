@@ -112,5 +112,3 @@ under Design model — a comparison with no pinned SHA.
 - **No pinned comparison** against beamterm's `width >= 2`, the approach it replaced.
 - **An achromatic VS16 emoji is tinted when mode 2027 is off** (the default). This is the boundary
   rule working, not a renderer defect; it lasts as long as core's default stays per-character.
-- **`emoji.rs` still names #301 as the owner of the VS16 gap**; #301 was closed into #295, which
-  shipped mode 2027 — the docs predate it (see report).

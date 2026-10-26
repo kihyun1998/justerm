@@ -1,7 +1,7 @@
 # MAP — the justerm family dependency graph
 
-<!-- grill-map build stamp: e1ef9ba -->
-<!-- grill-map synced at: 7bb31f7 (2026-10-22) -->
+<!-- grill-map build stamp: 8afe5e1 -->
+<!-- grill-map synced at: 453396d (2026-10-26) -->
 
 The wiring diagram you open **before** starting work. Not a document index — a graph that answers two
 questions:

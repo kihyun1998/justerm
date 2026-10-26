@@ -169,8 +169,7 @@ consumer passes (the cap is consumer policy), and its wire count is `u32` since 
 - **`search_with` has no error channel.** An invalid regex yields an empty result, so the contract is
   "call two functions or be silently wrong", recorded in no decision.
 - **Zero governing records** for the match model, smart-case or the dialect.
-- **The invalidate-vs-re-anchor rule is unrecorded** beyond `term/search.rs`'s module doc (which still
-  says "called eight times"; there are nine since `Term::clear`).
+- **The invalidate-vs-re-anchor rule is unrecorded** beyond `term/search.rs`'s module doc.
 - **A match handed back after a resize is not rejected.** Invalidation drops what the engine holds and
   says nothing about what the consumer hands back later; `match_spans` bounds it at the projection
   (#678), and whether an intake should reject instead is open — #663 answered "reject" for a

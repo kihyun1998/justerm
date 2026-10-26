@@ -17,9 +17,9 @@ widget chrome a consumer colours (the scrollbar thumb).
 - [ADR-0017 — mechanism in core, policy in the consumer](../../adr/0017-core-consumer-boundary-mechanism-vs-policy.md)
   is why every knob here is a consumer-set value over a renderer-owned mechanism (each setter's doc
   says so).
-- **`palette.rs` cites ADR-0002 for the injection principle**, a record whose Status line names
-  ADR-0018 as its successor. The principle — the consumer owns the scheme and injects it — is
-  live and stated as a boundary invariant in `CLAUDE.md`; the citation points at a tombstone.
+- **The injection principle is ADR-0002's rule, which ADR-0018 keeps** (`palette.rs`'s module doc,
+  since 11f1fbb). ADR-0002's Status line names ADR-0018 as its successor; the principle — the consumer
+  owns the scheme and injects it — is live and stated as a boundary invariant in `CLAUDE.md`.
 
 ## Design model
 
@@ -242,8 +242,6 @@ colour gets it in every state. The longhand, not the `background` shorthand: the
 
 ## Known holes / open
 
-- **A stale ADR citation in `palette.rs`.** The injection principle is current; the record it names
-  (ADR-0002) was replaced by ADR-0018, and the live statement is in `CLAUDE.md`.
 - **A "faithful port" with no pinned row for the port itself.** `ensure_contrast_ratio` is pinned
   byte-exact to the deleted web port, not to xterm's source.
 - **The renderer's copy of the colour encoding has no parity test.** Core and `colors.js` are held by
@@ -251,8 +249,6 @@ colour gets it in every state. The longhand, not the `background` shorthand: the
   only the wire version would announce a change.
 - **`DEFAULT_CURSOR_CONTRAST` can drift from the renderer's default** — the renderer exposes no
   getter, so nothing compares them.
-- **`contrast.rs`'s module doc still says "justerm has no alpha"**, which `setBgAlpha` (#577) made
-  false of the family; the conclusion it supports survives (see Design model).
 - **`unicode-width` is pinned twice** — `justerm-core` and `justerm-renderer` each declare `"0.2"` in
   separate lockfiles (both resolve 0.2.2 at 7bb31f7), and nothing checks they stay equal; see
   [renderer encodings are held by convention](../invariant/renderer-encodings-are-held-by-convention.md).

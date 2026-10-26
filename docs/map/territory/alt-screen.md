@@ -162,8 +162,10 @@ Tests that pin it: `justerm-core/tests/alt_screen.rs`, `alt_no_reflow.rs`, `alt_
 
 ## Known holes / open
 
-- **PenTerm still reads the alt flag through a whole frame** (`gate_of` above) until it takes the
-  core release carrying `Engine::alt_screen`.
+- **PenTerm still reads the alt flag through a whole frame** (`gate_of` above). `v0.30.1` carries
+  `Engine::alt_screen` and PenTerm's `justerm-core = "0.30"` admits it, but its lockfile holds
+  `0.30.0` and `gate_of` still calls `engine.frame()` (penterm 729ae0588, 2026-10-26 — `Cargo.lock`,
+  `src-tauri/src/engine/native.rs`).
 - **`decsc` is one slot shared by both screens.** A DECSC on the primary followed by a DECRC inside an
   alt application restores the primary's position; whether the references keep a saved cursor per
   screen was not compared.

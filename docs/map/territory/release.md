@@ -86,8 +86,8 @@ ADR: the shared version number line (2026-09-04) and per-track semver surfaces (
 - **A version range decides when a drift is reachable, and the quiet state is the normal one.**
   Measured 2026-08-06: `renderer-v0.11.0` was published while `justerm-web` pinned `^0.10.0`, so
   0.11.0 was unreachable from the widget until the pin moved. At HEAD the same shape stands on the
-  decoder: `justerm-web` pins `justerm-wasm-decode` `^0.22.0` (0.x caret: `<0.23.0`) while `v0.30.0`
-  is tagged, and penterm overrides the widget's decoder to `0.30.0` (penterm 7dadc3c95
+  decoder: `justerm-web` pins `justerm-wasm-decode` `^0.22.0` (0.x caret: `<0.23.0`) while `v0.30.1`
+  is tagged (453396d), and penterm overrides the widget's decoder to `0.30.0` (penterm 7dadc3c95
   `package.json` — `pnpm.overrides`), outside the range the widget's own types were gated against.
 - **The npm version of the two wasm packages is written in `Cargo.toml`.** wasm-pack derives
   `pkg/package.json` from the crate, so neither has a `package.json` to bump; the one in
@@ -197,6 +197,7 @@ consumes its own wasm package through a version range.
 - **The consumer can step outside the widget's declared range.** penterm's `pnpm.overrides` runs
   `justerm-web` against a decoder its published types were never gated against; nothing on this side
   can see that combination. Inert today: no commit since the widget took `^0.22.0` (4ed55d3) changed
-  `justerm-wasm-decode/src` or `serialize.rs`, so 0.22.0 and 0.30.0 are the same decoder. It opens
+  code in `justerm-wasm-decode/src` or `serialize.rs` (11f1fbb touched only `serialize.rs`'s
+  comments), so 0.22.0 through 0.30.1 are the same decoder. It opens
   the first time decoder source changes while the range stands.
 - **No reference comparison** for the release model (§ Reference behaviour).

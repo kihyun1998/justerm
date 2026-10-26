@@ -59,7 +59,7 @@ is the consumer-facing contract. No record governs it.
   2026-07-27 after five designs that made `reflow` itself materialise a row were measured and
   rejected — a cursor at column 59 resized to width 4 emptied the buffer; a blank-line exemption
   turned 22 alt lines into 21). `col` may equal `new_cols`, and each holder reads it its own way: the
-  cursor as the start of the next row; an OSC 133 mark as an exclusive bound; a selection endpoint is
+  cursor as the start of the next row (except when parked on a narrowing, below); an OSC 133 mark as an exclusive bound; a selection endpoint is
   clamped to `(cols - 1, Side::Right)` in `Term::selection_reflowed` (#1032 — keeping its old side
   dropped or gained the row's last character).
 - **The seam, not `reflow`, buys the cursor's row** (#567, PR #569): when the cursor reflows to
@@ -75,7 +75,10 @@ is the consumer-facing contract. No record governs it.
   in `fixtures/resize_prompt.raw`) left a second prompt. **Narrowing only**: widening into the
   same answer happens when a wrapped prompt unwraps, and there readline believes the cursor is on
   the row *after* the prompt's start and climbs to it with `CUU`, so the next-row reading is the one
-  that matches (`a_widening_that_lands_just_past_a_full_row_keeps_the_next_row`). Gated on the pane
+  that matches (`a_widening_that_lands_just_past_a_full_row_keeps_the_next_row`). The primary's saved cursor,
+  reflowed with the primary pane while alt is up, carries its own park through the same rule
+  (`Term::resize` passes `saved_cursor.pending_wrap`;
+  `a_saved_cursor_parked_on_the_prompt_returns_to_its_row_after_the_alt_screen`). Gated on the pane
   reflowing; the alt pane's own reading of `col == cols` is a hole below. Chosen by the maintainer
   (2026-10-26) over xterm.js's not-reflowing-the-cursor-line policy; alacritty and ghostty wrap the
   blank and move the cursor down
