@@ -454,12 +454,11 @@ pub(crate) fn reflow(
     rows: Vec<Row>,
     new_cols: usize,
     points: &[(usize, usize)],
-    keep: Option<usize>,
+    keep: usize,
 ) -> (Vec<Row>, Vec<(usize, usize)>) {
     // The kept logical line's rows: back from `keep` while the row above soft-wraps into it,
-    // forward while the row soft-wraps on. A line with no content is not kept: it reads the same
-    // either way, and the absorbed-blank path below keeps its point without spending a row.
-    let keep = keep
+    // forward while the row soft-wraps on. A line with no content is not kept.
+    let keep = Some(keep)
         .filter(|&k| k < rows.len())
         .map(|k| {
             let mut start = k;
@@ -496,28 +495,26 @@ pub(crate) fn reflow(
     // Per point: (logical line, offset, found-yet).
     let mut tracked: Vec<(usize, usize, bool)> = vec![(0, 0, false); points.len()];
     for (i, row) in rows.into_iter().enumerate() {
-        if let Some(run) = keep.as_ref().filter(|run| run.contains(&i)) {
-            for (pi, &(pr, pc)) in points.iter().enumerate() {
-                if i == pr && !tracked[pi].2 {
-                    tracked[pi] = (logical.len(), 0, true);
+        let kept_run = keep.as_ref().filter(|run| run.contains(&i));
+        for (pi, &(pr, pc)) in points.iter().enumerate() {
+            if i == pr && !tracked[pi].2 {
+                tracked[pi] = (logical.len(), current.len() + pc, true);
+                if let Some(run) = kept_run {
                     kept_pts[pi] = Some((i - run.start(), pc));
                 }
             }
+        }
+        if let Some(run) = kept_run {
             kept_rows.push(row);
+            // The kept line takes one `logical` slot, with no cells; its rows are `kept_rows`.
             if i == *run.end() {
-                // A non-empty placeholder, so the trailing-blank absorption below never takes it.
                 kept_li = Some(logical.len());
-                logical.push(vec![Cell::default()]);
+                logical.push(Vec::new());
                 logical_comb.push(Combining::new());
                 logical_links.push(Links::new());
                 logical_ucolors.push(UColors::new());
             }
             continue;
-        }
-        for (pi, &(pr, pc)) in points.iter().enumerate() {
-            if i == pr && !tracked[pi].2 {
-                tracked[pi] = (logical.len(), current.len() + pc, true);
-            }
         }
         let soft = row.is_wrapped();
         let base = current.len();
@@ -580,8 +577,9 @@ pub(crate) fn reflow(
         logical_ucolors.push(current_ucolors);
     }
     // Trailing blank lines are absorbed, not preserved as rows (the maps are
-    // trimmed in lockstep so all four stay index-aligned).
-    while logical.last().is_some_and(|l| l.is_empty()) {
+    // trimmed in lockstep so all four stay index-aligned) — down to the kept line, never past it.
+    let floor = kept_li.map_or(0, |k| k + 1);
+    while logical.len() > floor && logical.last().is_some_and(|l| l.is_empty()) {
         logical.pop();
         logical_comb.pop();
         logical_links.pop();
@@ -635,8 +633,7 @@ pub(crate) fn reflow(
         if kept_li == Some(li) {
             for mut row in std::mem::take(&mut kept_rows) {
                 row.resize(new_cols);
-                // A wide lead the cut stranded on a row that continues becomes the wrap artefact,
-                // as the re-split leaves it (#533); a later join drops it.
+                // A wide lead the cut stranded on a row that continues becomes the wrap artefact.
                 if row.is_wrapped() && row.cells[new_cols - 1].is_wide() {
                     row.cells[new_cols - 1] = Cell::default();
                     row.cells[new_cols - 1].set_leading_spacer();

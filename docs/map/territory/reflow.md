@@ -202,9 +202,15 @@ rows rather than within one.
   anyway). It is deliberately not promoted: the trigger is a **fourth** field whose answer the
   references do not already give.
 - **The cursor's line loses what is past the new width, also after widening back** (ADR-0035's
-  accepted cost, xterm.js's too): a program that does not redraw — an unfinished `progress:` line —
-  keeps only the cut row. A cursor that was not parked lands on the last kept cell, so its next glyph
-  overwrites that cell, as xterm.js's clamped `x` does.
+  accepted cost, xterm.js's too, measured 2026-10-26): a program that does not redraw — an unfinished
+  `progress:` line — keeps only the cut row. On a line of several rows each row is cut, so the loss
+  is from the middle (a 40-cell line at 30 → 10 → 30 keeps its first and last ten). A cursor that was
+  not parked lands on the last kept cell, so its next glyph overwrites that cell: `read -p` with
+  input typed, narrowed, then typed on, reads `Name of td` / `ef`. Which side of this trade-off a
+  pane takes is policy, and is decided with #1083 (ADR-0035's amendment).
+- **A prompt split over two logical lines still leaves a piece** (measured 2026-10-26): zsh with a
+  two-line `PS1` climbs one `ESC[A` for its top line's old row count, but the top line is its own
+  logical line and re-splits, so `top line h` stays above the redraw. #1083 is the fix that covers it.
 - **The space cut from under a parked cursor is gone for whatever follows the resize** (#1076,
   measured 2026-10-26): the park sits on the prompt's last glyph, so a combining mark fed straight
   after the resize attaches to `$` rather than the space, and under `?7l` the next glyph overwrites

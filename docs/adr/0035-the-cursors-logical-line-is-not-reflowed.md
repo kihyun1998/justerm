@@ -27,7 +27,7 @@ unchanged.
   bash 5.2.21 answers SIGWINCH with `\r ESC[K \r`, plus `ESC[A ESC[K \r` per row its prompt took **at
   the old width**, then the prompt at the new width; zsh (`-f`) climbs the same `ESC[A` and clears
   with `ESC[J`. Both find the prompt by relative motion counted in old-width rows, so any rule that
-  re-splits the cursor's line sends them to the wrong row. The bytes are
+  re-splits the cursor's line sends them to the wrong row (overstated — see the amendment). The bytes are
   `justerm-core/tests/fixtures/resize_shell_redraw.raw`, recorded by the script beside it.
 - **The replay.** Those bytes, after `OUT1\r\nOUT2\r\n` and the prompt on a 30-column screen, left
   exactly one prompt in 6 of 6 cases under xterm.js (`@xterm/headless` 6.1.0-beta.301) and failed 6 of
@@ -74,3 +74,28 @@ endpoints, marks, tracked points, the paint change record) keep their row with `
 new width, which each holder already reads. An OSC 133 mark on the prompt line is therefore not moved
 to where the shell's redraw puts its text; before this decision the leftover prompt piece put the
 redraw on the wrong rows instead.
+
+## Amendment (2026-10-26, after #1084's review)
+
+Facts measured after D1 was decided, so D1 was **not** decided on them. The maintainer has seen them
+and kept D1 for now; where the trade-off lands next is #1083.
+
+- **The cut is a splice, not only a lost tail.** A cursor line spanning several rows is cut row by row:
+  `ABCDEFGHIJ0123456789abcdefghij456789abcd` at 30 columns, resized to 10 and back to 30, reads
+  `ABCDEFGHIJ` / `456789abcd` — 20 characters from the middle are gone. xterm.js reads the same.
+- **A program that echoes input and does not redraw loses it.** `read -p 'Name of the thing please: '`
+  with `abc` typed, 30 → 10, then `def` typed, reads `Name of td` / `ef`; before #1082 it read
+  `…ease: abcd` / `ef`. xterm.js reads the same as now. A line rewritten with `\r` (a progress bar), or
+  a cursor on a blank line after output (D3), is untouched.
+- **A prompt split over two logical lines still leaves a piece.** zsh with
+  `PS1=$'top line here\nuser@host:~$ '`, 30 → 10: zsh climbs one `ESC[A` (the top line's rows at 30),
+  but the top line is a separate logical line and re-splits into two rows, so `top line h` is left
+  above the redraw. Better than before (a whole duplicate), not fixed.
+- **"Any rule that re-splits the cursor's line sends them to the wrong row" is overstated.** Re-splitting
+  the line's content while placing the cursor at its old row offset within the line would, read off
+  the recorded bytes, also land the six redraws (argued, not measured). It still breaks the `read -p`
+  case above, so it is not a way out of the trade-off. It is just one this record did not weigh.
+- **Which side of the trade-off a pane takes is policy, not mechanism** (`CLAUDE.md`'s routing rule):
+  it depends on what runs in the pane, and xterm.js exposes it as an option. The mechanism is
+  `grid::reflow`'s `keep`. Whether a consumer selects it, and its default, are decided with #1083,
+  which uses OSC 133 to tell a prompt from command output where a shell reports it.
