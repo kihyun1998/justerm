@@ -1,0 +1,75 @@
+bash-13-narrow start 30 155
+To run a command as administrator (user "root"), use "sudo <command>".
+See "man sudo_root" for details.
+
+]133;D;0]133;A[?2004huser@host:~$ ]133;Bbash-13-narrow resize 10 26
+[Kuser@host:~$ ]133;Bbash-two-narrow start 30 170
+To run a command as administrator (user "root"), use "sudo <command>".
+See "man sudo_root" for details.
+
+]133;D;0]133;A[?2004htop line here
+user@host:~$ ]133;Bbash-two-narrow resize 10 26
+[Kuser@host:~$ ]133;Bbash-typed-narrow start 30 155
+To run a command as administrator (user "root"), use "sudo <command>".
+See "man sudo_root" for details.
+
+]133;D;0]133;A[?2004huser@host:~$ ]133;Bbash-typed-narrow type 30 16
+echo hello worldbash-typed-narrow resize 10 42
+[Kuser@host:~$ ]133;Becho hello worldbash-32-widen start 30 174
+To run a command as administrator (user "root"), use "sudo <command>".
+See "man sudo_root" for details.
+
+]133;D;0]133;A[?2004huser@host:~/a/very/long/path/x$ ]133;Bbash-32-widen resize 40 52
+[K[A[Kuser@host:~/a/very/long/path/x$ ]133;Bbash-steps start 15 155
+To run a command as administrator (user "root"), use "sudo <command>".
+See "man sudo_root" for details.
+
+]133;D;0]133;A[?2004huser@host:~$ ]133;Bbash-steps resize 14 26
+[Kuser@host:~$ ]133;Bbash-steps resize 13 26
+[Kuser@host:~$ ]133;Bbash-steps resize 12 26
+[Kuser@host:~$ ]133;Bbash-steps resize 11 33
+[K[A[Kuser@host:~$ ]133;Bbash-steps resize 10 33
+[K[A[Kuser@host:~$ ]133;Bbash-readp start 30 155
+To run a command as administrator (user "root"), use "sudo <command>".
+See "man sudo_root" for details.
+
+]133;D;0]133;A[?2004huser@host:~$ ]133;Bbash-readp type 30 85
+read -p 'Name of the thing please: ' x
+[?2004l]133;CName of the thing please: bash-readp type 30 3
+abcbash-readp resize 10 0
+bash-readp type 10 3
+defbash-ctrll start 30 164
+To run a command as administrator (user "root"), use "sudo <command>".
+See "man sudo_root" for details.
+
+]133;D;0]133;A;redraw=1[?2004huser@host:~$ ]133;Bbash-ctrll type 30 156
+echo WWWWWWWWWWWWWWWWWWWWWWWWWWWW; seq 3
+[?2004l]133;CWWWWWWWWWWWWWWWWWWWWWWWWWWWW
+1
+2
+3
+]133;D;0]133;A;redraw=1[?2004huser@host:~$ ]133;Bbash-ctrll type 30 28
+[H[2Juser@host:~$ ]133;Bbash-ctrll resize 10 26
+[Kuser@host:~$ ]133;Bzsh-two-narrow start 30 144
+[1m[7m%[27m[1m[0m                              ]133;D;0[0m[27m[24m[J]133;Atop line here
+user@host:~$ ]133;B[K[?1h=[?2004hzsh-two-narrow resize 10 66
+[A[0m[27m[24m[J]133;Atop line here
+user@host:~$ ]133;Bzsh1-13-narrow start 30 138
+[1m[7m%[27m[1m[0m                              ]133;D;0[0m[27m[24m[J]133;A;redraw=1user@host:~$ ]133;B[K[?1h=[?2004hzsh1-13-narrow resize 10 57
+[0m[27m[24m[J]133;A;redraw=1user@host:~$ ]133;Bzsh1-two-narrow start 30 153
+[1m[7m%[27m[1m[0m                              ]133;D;0[0m[27m[24m[J]133;A;redraw=1top line here
+user@host:~$ ]133;B[K[?1h=[?2004hzsh1-two-narrow resize 10 75
+[A[0m[27m[24m[J]133;A;redraw=1top line here
+user@host:~$ ]133;Bzsh1-32-widen start 30 157
+[1m[7m%[27m[1m[0m                              ]133;D;0[0m[27m[24m[J]133;A;redraw=1user@host:~/a/very/long/path/x$ ]133;B[K[?1h=[?2004hzsh1-32-widen resize 40 79
+[A[0m[27m[24m[J]133;A;redraw=1user@host:~/a/very/long/path/x$ ]133;Bzsh1-python-narrow start 40 148
+[1m[7m%[27m[1m[0m                                        ]133;D;0[0m[27m[24m[J]133;A;redraw=1user@host:~$ ]133;B[K[?1h=[?2004hzsh1-python-narrow type 40 42
+ppython3 -q[?1l>[?2004l
+]133;C>>> zsh1-python-narrow type 40 34
+print("hello world from the repl")zsh1-python-narrow resize 12 43
+[K>>> print("hello world from the repl")zsh1-python-widen start 20 128
+[1m[7m%[27m[1m[0m                    ]133;D;0[0m[27m[24m[J]133;A;redraw=1user@host:~$ ]133;B[K[?1h=[?2004hzsh1-python-widen type 20 49
+ppython3 [K  -q[?1l>[?2004l
+]133;C>>> zsh1-python-widen type 20 34
+print("hello world from the repl")zsh1-python-widen resize 40 50
+[K[A[K>>> print("hello world from the repl")

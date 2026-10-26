@@ -15,6 +15,9 @@ public method is named for either — the only entry is `Engine::resize`.
   (#1082): D1 is the maintainer's judgement and reverses #1076's choice; D2 (the cursor's clamp and
   park), D3 (a line with no content reflows), D4 (the primary's cursor on alt) and D5 (a stranded
   wide lead on a continuing row) are derivations.
+- [ADR-0036 — a live prompt is left to the shell's redraw as far as its `133;A` says](../../adr/0036-a-live-prompt-is-left-to-the-shell-by-its-redraw-option.md)
+  (#1083): D1–D4 are the maintainer's judgements (kitty's way; no option = ADR-0035; output keeps
+  the cursor line; no switch), D5–D8 derivations (the live-prompt guards, `k=s`, alt, per-`A` reset).
 - [ADR-0025 — row and wide-pair cell state ownership](../../adr/0025-row-and-wide-pair-cell-state-ownership.md)
   bounds it from one side: D4 governs the verbs that *edit*, and a resize is a **reallocation**, so a
   wide lead left without its spacer by `Row::resize` is a legal state rather than a violation (#529).
@@ -82,6 +85,16 @@ is the consumer-facing contract. No record governs it.
   joined it mid-line and an overwrite took its neighbour for its spacer. On a hard-ended row it stays
   a lead, ADR-0025's last-column state (#529). **While alt is up, the line kept is
   `primary_cursor_on_alt`'s** ([alt screen](alt-screen.md)), not the `saved_cursor` slot's.
+- **How much is kept is the shell's statement on its last `133;A`** (#1083,
+  [ADR-0036](../../adr/0036-a-live-prompt-is-left-to-the-shell-by-its-redraw-option.md)).
+  `Term::resize_keep_from` picks `keep`'s first row: the cursor's line with no option, `redraw=last` or
+  a `k=s` line; the prompt's `A` with `redraw=1`; nothing (a plain reflow, the cursor following its
+  content) with `redraw=0`. The last two apply only to a **live prompt** (`Term::live_prompt_start`):
+  an `A` paired with the cursor by recency past `B`s and before any `C`/`D`, on screen, with the
+  cursor still on the input line — each guard is a measured failure (Ctrl-L's stale `A` cut history;
+  a shell with no `C` had its output kept as prompt). `reflow` then keeps the run from the `A`'s
+  logical line through the cursor's, several logical lines when the prompt has a hard newline. The
+  option lives in `Term::prompt_redraw`, reset by every `A`; a `k=s` `A` records no mark.
 - **The seam, not `reflow`, buys the cursor's row** (#567, PR #569): a cursor on a blank line the join
   absorbed comes back past the last row emitted, and `reflow_pane` pushes blank rows up to it so the
   pane scrolls into history, gated on `limit > 0` (the alt pane passes `0`). Without it the next byte
@@ -122,7 +135,8 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
 
 - `justerm-core/src/grid.rs` — `reflow` (the join and re-split, taking and returning `points`),
   `Row::resize`, `Grid::take_lines`, `Grid::set_screen`
-- `justerm-core/src/term.rs` — `Term::resize`, `ReflowDims`, `PaneReflow`, `reflow_pane`,
+- `justerm-core/src/term.rs` — `Term::resize`, `Term::resize_keep_from`, `Term::live_prompt_start`,
+  `PromptRedraw`, `ReflowDims`, `PaneReflow`, `reflow_pane`,
   `is_default_tab_stop`, `default_tabs`
 - `justerm-core/src/term/selection.rs` — `Term::selection_reflowed`
 - `justerm-core/src/term/paint.rs` — `ChangeWatch::points`, `ChangeWatch::reflowed`
@@ -130,6 +144,7 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
 - Tests: `justerm-core/tests/resize.rs`, `alt_no_reflow.rs`, `reflow_past_end_points.rs`,
   `reflow_point_mapping.rs`, `reflow_row_budget.rs`, `reflow_trim.rs`, `reflow_wide_pair.rs`,
   `resize_parked_prompt.rs`, `resize_cursor_line.rs` (with `fixtures/resize_shell_redraw.raw`),
+  `resize_prompt_marks.rs` (with `fixtures/resize_prompt_marks.raw`),
   `alt_resize_markers.rs`, `alt_selection_resize.rs`, `resize_cursor_and_marker_state.rs`
 
 ## Reference behaviour
@@ -145,6 +160,8 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
 - [A parked cursor on a trailing blank across a narrowing](../../agents/reference-facts.md#a-parked-cursor-on-a-trailing-blank-across-a-narrowing-1076-verified-2026-10-26)
   — where the cursor lands: xterm.js does not reflow its line, alacritty and ghostty move it down
   (#1076, #1082).
+- [A prompt the shell redraws, handed to it on a resize](../../agents/reference-facts.md#a-prompt-the-shell-redraws-handed-to-it-on-a-resize-1083-verified-2026-10-26)
+  — kitty's keep-and-paste, Ghostty's clear, and the hints their own shell scripts send (#1083).
 - [A selection when the screen changes under it](../../agents/reference-facts.md#a-selection-when-the-screen-changes-under-it-660-verified-2026-07-31)
   — dropping the selection on an alt-screen resize.
 - The DECAWM divergence is argued against ghostty's `Terminal.zig` with no pinned row.
@@ -207,10 +224,12 @@ rows rather than within one.
   is from the middle (a 40-cell line at 30 → 10 → 30 keeps its first and last ten). A cursor that was
   not parked lands on the last kept cell, so its next glyph overwrites that cell: `read -p` with
   input typed, narrowed, then typed on, reads `Name of td` / `ef`. Which side of this trade-off a
-  pane takes is policy, and is decided with #1083 (ADR-0035's amendment).
+  pane takes is policy; ADR-0036 decided it (#1083): output keeps the cursor line, so `read -p` stays cut,
+  because a readline REPL after `C` redraws like a shell and the two are indistinguishable.
 - **A prompt split over two logical lines still leaves a piece** (measured 2026-10-26): zsh with a
   two-line `PS1` climbs one `ESC[A` for its top line's old row count, but the top line is its own
-  logical line and re-splits, so `top line h` stays above the redraw. #1083 is the fix that covers it.
+  logical line and re-splits, so `top line h` stays above the redraw. Fixed where the shell sends
+  `133;A;redraw=1` (ADR-0036); with no option the piece stays, by decision.
 - **The space cut from under a parked cursor is gone for whatever follows the resize** (#1076,
   measured 2026-10-26): the park sits on the prompt's last glyph, so a combining mark fed straight
   after the resize attaches to `$` rather than the space, and under `?7l` the next glyph overwrites

@@ -97,5 +97,6 @@ and kept D1 for now; where the trade-off lands next is #1083.
   case above, so it is not a way out of the trade-off. It is just one this record did not weigh.
 - **Which side of the trade-off a pane takes is policy, not mechanism** (`CLAUDE.md`'s routing rule):
   it depends on what runs in the pane, and xterm.js exposes it as an option. The mechanism is
-  `grid::reflow`'s `keep`. Whether a consumer selects it, and its default, are decided with #1083,
+  `grid::reflow`'s `keep`. Whether a consumer selects it, and its default, are decided with #1083 —
+  decided in ADR-0036 (the shell's `133;A` states the extent; no consumer switch yet) —
   which uses OSC 133 to tell a prompt from command output where a shell reports it.

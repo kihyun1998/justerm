@@ -3718,3 +3718,24 @@ the new width. #1076 kept a parked cursor on its row for a narrowing only. **#10
 xterm.js's policy** (ADR-0035): recorded bash and zsh redraws climb `CUU` by the prompt's rows at the
 *old* width, so only an un-reflowed cursor line puts them on the prompt — replayed, xterm.js 6 of 6
 clean, justerm `a264e46` 6 of 6 broken, including an output line erased on a widening.
+
+## A prompt the shell redraws, handed to it on a resize (#1083, verified 2026-10-26)
+
+How a terminal keeps reflow from leaving its own copy of a prompt the shell is about to redraw.
+kitty is not a pinned tree here; it was read raw (`gh api …/contents/<path>?ref=<sha>`) at the SHA
+given.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Before the rewrap, walk up from the cursor to a `PROMPT_START` or `SECONDARY_PROMPT` row, stopping at `OUTPUT_START`; copy those rows aside, blank them (a fake space up to the cursor row so the resize sees content), rewrap the rest, paste them back unwrapped — *"the shell … gets confused if the cursor vertical position relative to the first prompt line changes"* | kitty `2805c0e` | `kitty/screen.c:570-610`, called from the resize at `:679` |
+| `A` resets the prompt settings and turns redraw on; options parsed are `k=s` (a secondary prompt line) and `redraw=0` (off) — no `redraw=1`, no `last` | kitty `2805c0e` | `kitty/screen.c:3605-3645` (`parse_prompt_mark`, `shell_prompt_marking`) |
+| Its bash integration inserts `133;A;k=s` before the **last** line of a multi-line PS1 — *"bash does not redraw the leading lines in a multiline prompt so mark the last line as a secondary prompt"* — and `A;k=s` on PS2 | kitty `2805c0e` | `shell-integration/bash/kitty.bash:188-194`, `:265` |
+| After the reflow, clear the prompt rows from the prompt's start down (`.last`: the cursor's row) — gated on the cursor's semantic content not being output, which **defaults to `.output`**, so with no OSC 133 nothing is cleared | ghostty `e6e26e1` | `src/terminal/Screen.zig:2161` `clearPromptForRedraw`, gate `:2177`, default `:173` |
+| `redraw=` parses `0`, `1` and `last`; anything else is no option | ghostty `e6e26e1` | `src/terminal/osc/parsers/semantic_prompt.zig:205-209`, tests `:868-915` |
+| Its bash integration sends `133;A;redraw=last`; secondary lines use `133;P;k=s` | ghostty `e6e26e1` | `src/shell-integration/bash/ghostty.bash:188`, `:146`, `:157` |
+
+Both references ship their own shell integration, which is how they get the hint. justerm reads the
+options but cannot ship the script, so no option keeps today's behaviour (ADR-0036 D2). Measured
+against PenTerm's snippet marks in a prototype: Ghostty's clear blanked a running command's output
+when the shell sends no `C`, and an unpaired `A` cut history after bash's Ctrl-L — both are why
+ADR-0036 D1 and D5 differ from a straight port.

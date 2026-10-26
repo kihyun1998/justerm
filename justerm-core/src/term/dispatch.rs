@@ -516,7 +516,7 @@ impl Perform for Term {
             // pairing + navigation is consumer policy (#160). Unknown subcommands
             // (or none) are ignored. `D`'s exit field parses to `i32`, else None.
             b"133" => match params.get(1).copied() {
-                Some(b"A") => self.add_command_mark(MarkerKind::PromptStart),
+                Some(b"A") => self.prompt_start(&params[2..]),
                 Some(b"B") => self.add_command_mark(MarkerKind::CommandStart),
                 Some(b"C") => self.add_command_mark(MarkerKind::OutputStart),
                 Some(b"D") => {
