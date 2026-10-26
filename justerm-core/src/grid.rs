@@ -446,22 +446,23 @@ impl DerefMut for Row {
 /// Common-90%: trailing blanks on a hard-ended row are trimmed by *content*, so a BCE-coloured
 /// tail does not re-split into a phantom row (#530).
 ///
-/// **`keep` names a row whose logical line is not reflowed** (#1082): its wrapped run is emitted
-/// row for row, each cut or padded to `new_cols` by [`Row::resize`], and a point on it keeps its
-/// row with `col` clamped to `new_cols`. The caller passes the cursor's row. A run with no
-/// content is reflowed as usual.
+/// **`keep = (from, to)` names rows that are not reflowed** (#1082, #1083): the run from the
+/// logical line holding `from` through the one holding `to` is emitted row for row, each cut or
+/// padded to `new_cols` by [`Row::resize`], and a point on it keeps its row with `col` clamped to
+/// `new_cols`. The caller passes the cursor's row as `to`, and as `from` either the same row or
+/// the row of the prompt's `A`. A run with no content is reflowed as usual.
 pub(crate) fn reflow(
     rows: Vec<Row>,
     new_cols: usize,
     points: &[(usize, usize)],
-    keep: usize,
+    keep: Option<(usize, usize)>,
 ) -> (Vec<Row>, Vec<(usize, usize)>) {
-    // The kept logical line's rows: back from `keep` while the row above soft-wraps into it,
-    // forward while the row soft-wraps on. A line with no content is not kept.
-    let keep = Some(keep)
-        .filter(|&k| k < rows.len())
-        .map(|k| {
-            let mut start = k;
+    // The kept rows: back from `from` while the row above soft-wraps into it, forward from `to`
+    // while the row soft-wraps on. A run with no content is not kept.
+    let keep = keep
+        .filter(|&(from, to)| from <= to && to < rows.len())
+        .map(|(from, k)| {
+            let mut start = from;
             while start > 0 && rows[start - 1].is_wrapped() {
                 start -= 1;
             }

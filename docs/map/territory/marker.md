@@ -37,6 +37,10 @@ below comes from the source and its doc-comments (read at 7bb31f7) and from the 
 - **`MarkerKind` carries a *role*, not a style.** `Plain` plus the four OSC 133 boundaries:
   `PromptStart`, `CommandStart`, `OutputStart`, `CommandFinished(Option<i32>)`. The exit code parses
   to `i32` or becomes `None` — absent, empty and non-numeric collapse to "not reported".
+- **`133;A`'s options are read, and are not a mark's** (#1083, `Term::prompt_start`):
+  `redraw=0` / `1` / `last` set `Term::prompt_redraw` for the resize rule
+  ([reflow](reflow.md), ADR-0036), reset by every `A`; an `A` carrying `k=s` (kitty's secondary prompt
+  line) records **no** mark, since as a `PromptStart` it would add a prompt to command navigation.
 - **Two populations, `normal_markers` and `alt_markers`, routed by the active buffer**
   (`markers_mut`, #186/#187). An alt-screen region scroll rotates *alt* marks and leaves the primary
   list untouched with no guard at the call site; primary marks survive a `vim` session (#118/#158),
@@ -258,6 +262,12 @@ below comes from the source and its doc-comments (read at 7bb31f7) and from the 
 
 ## Known holes / open
 
+- **Ghostty's `133;P` (a prompt start without the fresh line) is not read**, `P;k=s` included; only
+  the `A` form of the redraw options is (#1083). A shell that sends `P;k=s` for a secondary line
+  gets no narrowing.
+- **bash re-sends `133;B` on every SIGWINCH redraw**, so a window drag adds one `CommandStart`
+  per resize event (measured: 36 resizes, 3 → 39 marks), bounded by `MAX_MARKERS`. Older than #1083,
+  which only reads past them.
 - **The cursor row keeps its marks even when an erase blanks it whole** — the reference edge,
   pinned rather than fixed. `ESC[H ESC[0J` (or `ESC[H ESC[J`, `tput ed`) leaves **one** phantom over an
   *empty* document, while `ESC[1;16H ESC[1J` at 16 columns leaves **all four with zero disposals**

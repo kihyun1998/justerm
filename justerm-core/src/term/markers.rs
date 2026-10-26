@@ -23,7 +23,7 @@ use crate::serialize::{MarkerId, MarkerKind, MarkerPosition};
 
 use super::{
     CommandLine, CommandRecord, MAX_COMMAND_TEXT, MAX_COMMAND_TEXT_TOTAL, MAX_MARKERS, Marker,
-    MarkerEntry, MarkerIndex, Term, TextCharge, prefix_chars,
+    MarkerEntry, MarkerIndex, PromptRedraw, Term, TextCharge, prefix_chars,
 };
 
 impl Term {
@@ -117,6 +117,32 @@ impl Term {
             epoch: self.marker_epoch,
         });
         id
+    }
+
+    /// OSC `133;A` with its options (#1083). `redraw=0` / `1` / `last` set how much of the
+    /// prompt the shell redraws on SIGWINCH ([`PromptRedraw`]); with none, it is unstated. A
+    /// `k=s` line (a secondary prompt line) records no mark and narrows the redraw to the
+    /// prompt's last line.
+    pub(super) fn prompt_start(&mut self, options: &[&[u8]]) {
+        if self.on_alt {
+            return;
+        }
+        if options.contains(&&b"k=s"[..]) {
+            if self.prompt_redraw != PromptRedraw::Off {
+                self.prompt_redraw = PromptRedraw::Last;
+            }
+            return;
+        }
+        self.prompt_redraw = PromptRedraw::Unstated;
+        for option in options {
+            match *option {
+                b"redraw=1" => self.prompt_redraw = PromptRedraw::Full,
+                b"redraw=last" => self.prompt_redraw = PromptRedraw::Last,
+                b"redraw=0" => self.prompt_redraw = PromptRedraw::Off,
+                _ => {}
+            }
+        }
+        self.add_command_mark(MarkerKind::PromptStart);
     }
 
     /// Record an OSC 133 command-boundary mark at the cursor's current line

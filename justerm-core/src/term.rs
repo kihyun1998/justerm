@@ -84,6 +84,8 @@ pub struct Term {
     /// Whether the alternate screen is currently active. Guards enter/leave so a
     /// double-enter or double-leave is a no-op.
     on_alt: bool,
+    /// The redraw extent the shell's last OSC `133;A` stated (#1083).
+    prompt_redraw: PromptRedraw,
     /// One flag per column: is there a tab stop here? Explicit per-column state
     /// (HTS sets, TBC clears), not a fixed modulo. Default = every 8th column.
     tabs: Vec<bool>,
@@ -536,6 +538,20 @@ struct Marker {
     command: Option<Box<CommandRecord>>,
 }
 
+/// How much of its prompt the shell redraws on SIGWINCH, from the option on its last OSC `133;A`
+/// (#1083). A column resize keeps that much of a live prompt un-reflowed for the redraw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PromptRedraw {
+    /// No option: only the cursor's line is kept, as without marks.
+    Unstated,
+    /// `redraw=1`: the whole prompt, from its `A` down to the cursor.
+    Full,
+    /// `redraw=last`, or a `k=s` line: the prompt's last line, the cursor's.
+    Last,
+    /// `redraw=0`: none of it; the prompt reflows like output.
+    Off,
+}
+
 /// The part of a command that is not in the buffer, frozen on its `OutputStart` mark: the
 /// command `text` when `C` arrives, and the `exit` code when `D` is parsed (#750). Neither
 /// can be recovered from cells afterwards: `docs/map/territory/marker.md`.
@@ -690,6 +706,7 @@ impl Term {
             saved_cursor: Cursor::default(),
             primary_cursor_on_alt: (0, 0),
             on_alt: false,
+            prompt_redraw: PromptRedraw::Unstated,
             origin_mode: false,
             autowrap: true,
             insert_mode: false,
@@ -1193,6 +1210,7 @@ impl Term {
                     reflow: false,
                     ..dims
                 },
+                None,
             );
             self.grid.set_screen(r_alt.screen, cols, rows);
             self.cursor.set_point(r_alt.cursor, rows, cols);
@@ -1215,6 +1233,11 @@ impl Term {
             let saved_off = marker_pts.len();
             let (saved_row, saved_col) = self.saved_cursor.point();
             marker_pts.push((scrollback.len() + saved_row, saved_col));
+            let keep_from = self.resize_keep_from(
+                scrollback.len() + self.primary_cursor_on_alt.0,
+                &scrollback,
+                &self.alt_grid,
+            );
             let primary = self.alt_grid.take_lines();
             let r = reflow_pane(
                 primary,
@@ -1222,6 +1245,7 @@ impl Term {
                 self.primary_cursor_on_alt,
                 &marker_pts,
                 dims,
+                keep_from,
             );
             self.alt_grid.set_screen(r.screen, cols, rows);
             self.scrollback = r.scrollback;
@@ -1318,8 +1342,17 @@ impl Term {
             let watch_off = pts.len();
             pts.extend(self.normal_watch.points());
 
+            let keep_from =
+                self.resize_keep_from(scrollback.len() + self.cursor.row, &scrollback, &self.grid);
             let primary = self.grid.take_lines();
-            let r = reflow_pane(primary, scrollback, self.cursor.point(), &pts, dims);
+            let r = reflow_pane(
+                primary,
+                scrollback,
+                self.cursor.point(),
+                &pts,
+                dims,
+                keep_from,
+            );
             self.grid.set_screen(r.screen, cols, rows);
             self.scrollback = r.scrollback;
             self.cursor.set_point(r.cursor, rows, cols);
@@ -1361,6 +1394,7 @@ impl Term {
                     reflow: false,
                     ..dims
                 },
+                None,
             );
             self.alt_grid.set_screen(r.screen, cols, rows);
         }
@@ -1399,6 +1433,55 @@ impl Term {
         self.line_damage = vec![LineBounds::undamaged(cols); rows];
         self.scroll = None;
         self.mark_fully_damaged();
+    }
+
+    /// Where a column resize starts keeping the primary's rows un-reflowed, for its cursor at
+    /// absolute line `cursor` (#1082, #1083): the cursor's own line by default, the prompt's `A`
+    /// when a live prompt's shell stated `redraw=1`, nothing when it stated `redraw=0`.
+    /// `scrollback` and `screen` are the primary's.
+    fn resize_keep_from(
+        &self,
+        cursor: usize,
+        scrollback: &VecDeque<Row>,
+        screen: &Grid,
+    ) -> Option<usize> {
+        match (
+            self.live_prompt_start(cursor, scrollback, screen),
+            self.prompt_redraw,
+        ) {
+            (Some(prompt), PromptRedraw::Full) => Some(prompt),
+            (Some(_), PromptRedraw::Off) => None,
+            _ => Some(cursor),
+        }
+    }
+
+    /// The line of the `A` opening the prompt the cursor is typing on, if any (#1083). Walking
+    /// back by recency over the OSC 133 marks at or above the cursor, past any `B`, an `A` comes
+    /// before any `C` or `D`; that `A` is on screen; and every row from the last mark down to the
+    /// cursor soft-wraps, so the cursor is still on the input line.
+    fn live_prompt_start(
+        &self,
+        cursor: usize,
+        scrollback: &VecDeque<Row>,
+        screen: &Grid,
+    ) -> Option<usize> {
+        let marks = || {
+            self.normal_markers
+                .iter()
+                .rev()
+                .filter(move |m| m.kind != MarkerKind::Plain && m.line <= cursor)
+        };
+        let last = marks().next()?.line;
+        let prompt = marks()
+            .find(|m| m.kind != MarkerKind::CommandStart)
+            .filter(|m| m.kind == MarkerKind::PromptStart)?
+            .line;
+        let history = scrollback.len();
+        let wrapped = |line: usize| match line.checked_sub(history) {
+            Some(row) => screen.is_row_wrapped(row),
+            None => scrollback[line].is_wrapped(),
+        };
+        (prompt >= history && (last..cursor).all(wrapped)).then_some(prompt)
     }
 
     pub fn grid(&self) -> &Grid {
@@ -3164,13 +3247,16 @@ struct PaneReflow {
 /// Reflow one pane (its `scrollback` joined with `screen`) to `dims`, tracking the
 /// screen-relative cursor `point` plus any `extra_abs` points in absolute
 /// `[scrollback ++ screen]` coordinates. Returns the new screen rows, the scrollback capped
-/// to `dims.limit`, and where each point landed.
+/// to `dims.limit`, and where each point landed. `keep_from` is the absolute row the kept run
+/// starts at — the cursor's own, or its prompt's `A` — or `None` to keep nothing
+/// ([`Term::resize_keep_from`]).
 fn reflow_pane(
     screen: Vec<Row>,
     scrollback: VecDeque<Row>,
     point: (usize, usize),
     extra_abs: &[(usize, usize)],
     dims: ReflowDims,
+    keep_from: Option<usize>,
 ) -> PaneReflow {
     let scroll_len = scrollback.len();
     let mut all: Vec<Row> = scrollback.into();
@@ -3182,13 +3268,16 @@ fn reflow_pane(
     pts.push((scroll_len + point.0, point.1));
     pts.extend_from_slice(extra_abs);
 
-    // The cursor's own logical line is not reflowed (#1082), so the cursor keeps its row and its
+    // A kept run holds the cursor's line (#1082, #1083), so the cursor keeps its row and its
     // column, clamped onto the last column when the row got narrower than it:
     // `docs/map/territory/reflow.md`.
     let pts = if dims.reflow && dims.cols != dims.old_cols {
-        let (rows, mut np) = crate::grid::reflow(all, dims.cols, &pts, pts[0].0);
+        let keep = keep_from.map(|from| (from, pts[0].0));
+        let (rows, mut np) = crate::grid::reflow(all, dims.cols, &pts, keep);
         all = rows;
-        np[0].1 = point.1.min(dims.cols - 1);
+        if keep.is_some() {
+            np[0].1 = point.1.min(dims.cols - 1);
+        }
         np
     } else {
         pts

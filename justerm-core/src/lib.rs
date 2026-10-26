@@ -163,6 +163,15 @@ impl Engine {
     /// [ADR-0035](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0035-the-cursors-logical-line-is-not-reflowed.md)).
     /// Every other line, history included, still reflows.
     ///
+    /// **A shell's OSC `133;A` option widens or drops that** for the prompt it is typing on
+    /// ([#1083](https://github.com/kihyun1998/justerm/issues/1083),
+    /// [ADR-0036](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0036-a-live-prompt-is-left-to-the-shell-by-its-redraw-option.md)):
+    /// `redraw=1` keeps the whole prompt, from its `133;A` down to the cursor, so a shell that
+    /// redraws a multi-line prompt lands on it; `redraw=0` reflows the prompt like output;
+    /// `redraw=last`, a `k=s` line, or no option keep only the cursor's line. Only a prompt the
+    /// cursor is still typing on counts, so after `133;C` (command output) the cursor's line is
+    /// kept as without marks.
+    ///
     /// **Two pieces of application-written state, answered differently.** The tab-stop table is
     /// *extended*, never rebuilt: a resize that changes only the row count — or one that changes
     /// nothing, since this call has no early return — leaves it exactly as the application set it,
