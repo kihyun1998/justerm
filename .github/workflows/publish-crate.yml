@@ -9,8 +9,8 @@
 # short-lived crates.io token and revokes it when the step exits. No repository secret. Setup once on
 # crates.io: justerm-core → Settings → Trusted Publishing (`docs/agents/release.md` § Registry auth).
 #
-# A crates.io version cannot be re-published: re-tagging an already-published version fails here
-# ("already uploaded").
+# A crates.io version cannot be re-published. A crate whose version is already on crates.io is skipped,
+# so re-running a tag that published only part of the set finishes the rest.
 name: publish-crate
 
 on:
@@ -55,27 +55,50 @@ jobs:
           echo "tag=$tag crate=$crate"
           test "$tag" = "$crate" || { echo "::error::tag v$tag != crate version $crate"; exit 1; }
 
-      # justerm-core, then justerm-pty, which depends on that exact version (cargo waits for it to be
-      # live). justerm-wasm-decode is publish = false (npm-only), so it is never sent to crates.io.
-      # The exchange is done here rather than with rust-lang/crates-io-auth-action, so no third-party
-      # code runs in a job that can mint a publish credential (`docs/map/territory/release.md`).
+      # justerm-core, then justerm-pty, which depends on that exact version. justerm-wasm-decode is
+      # publish = false (npm-only), so it is never sent to crates.io. The exchange is done here rather
+      # than with rust-lang/crates-io-auth-action, so no third-party code runs in a job that can mint a
+      # publish credential (`docs/map/territory/release.md`).
+      #
+      # Each crate gets its own short-lived token, and a version already on crates.io is skipped, so a
+      # re-run after a partial publish finishes the rest. Between the two, the job waits — holding no
+      # token — until justerm-core's version is in the sparse index that resolves justerm-pty's
+      # dependency (`docs/agents/release.md` § A partial publish).
       - name: Publish to crates.io (trusted publishing)
         run: |
           set -euo pipefail
           api=https://crates.io/api/v1/trusted_publishing/tokens
           ua="justerm-publish-crate (github.com/kihyun1998/justerm)"
-          jwt="$(curl -sS --fail-with-body -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=crates.io" | jq -r .value)"
-          test -n "$jwt" && test "$jwt" != null || { echo "::error::no GitHub OIDC token (is id-token: write set?)"; exit 1; }
-          echo "::add-mask::$jwt"
-          token="$(curl -sS --fail-with-body -A "$ua" -H 'Content-Type: application/json' \
-            -d "{\"jwt\":\"$jwt\"}" "$api" | jq -r .token)"
-          test -n "$token" && test "$token" != null || { echo "::error::crates.io returned no token"; exit 1; }
-          echo "::add-mask::$token"
-          # Revoke on every exit path, publish failure included.
-          trap 'curl -sS -X DELETE -A "$ua" -H "Authorization: Bearer $token" "$api" || true' EXIT
-          CARGO_REGISTRY_TOKEN="$token" cargo publish -p justerm-core --locked
-          CARGO_REGISTRY_TOKEN="$token" cargo publish -p justerm-pty --locked
+          version="${GITHUB_REF_NAME#v}"
+          published() {
+            test "$(curl -sS -o /dev/null -w '%{http_code}' -A "$ua" "https://crates.io/api/v1/crates/$1/$version")" = 200
+          }
+          publish() {
+            if published "$1"; then echo "$1 $version is already on crates.io; skipped"; return; fi
+            local jwt token
+            jwt="$(curl -sS --fail-with-body -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=crates.io" | jq -r .value)"
+            test -n "$jwt" && test "$jwt" != null || { echo "::error::no GitHub OIDC token (is id-token: write set?)"; exit 1; }
+            echo "::add-mask::$jwt"
+            token="$(curl -sS --fail-with-body -A "$ua" -H 'Content-Type: application/json' \
+              -d "{\"jwt\":\"$jwt\"}" "$api" | jq -r .token)"
+            test -n "$token" && test "$token" != null || { echo "::error::crates.io returned no token"; exit 1; }
+            echo "::add-mask::$token"
+            # Revoke on every exit path, publish failure included.
+            trap "curl -sS -X DELETE -A '$ua' -H 'Authorization: Bearer $token' '$api' || true" EXIT
+            CARGO_REGISTRY_TOKEN="$token" cargo publish -p "$1" --locked
+            curl -sS -X DELETE -A "$ua" -H "Authorization: Bearer $token" "$api" || true
+            trap - EXIT
+          }
+          publish justerm-core
+          for i in $(seq 1 120); do
+            index="$(curl -sS -A "$ua" https://index.crates.io/ju/st/justerm-core || true)"
+            [[ "$index" == *"\"vers\":\"$version\""* ]] && break
+            test "$i" -lt 120 || { echo "::error::justerm-core $version is not in the index after 40 minutes"; exit 1; }
+            echo "waiting for justerm-core $version in the index ($i/120)"
+            sleep 20
+          done
+          publish justerm-pty
 
   # A manual run proves the registry accepts this workflow's OIDC token for justerm-core, and publishes
   # nothing (`docs/agents/release.md` § Registry auth).

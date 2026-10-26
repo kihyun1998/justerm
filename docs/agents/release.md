@@ -75,6 +75,24 @@ That tag push is the publish trigger. Verify it:
 - `gh run list --workflow=publish-crate.yml --limit 1`
 - `gh run list --workflow=publish-wasm.yml --limit 1`
 
+## A partial publish
+
+`publish-crate.yml` publishes two crates from one tag, and `justerm-pty` resolves `justerm-core`'s new
+version through the crates.io **index**, which can lag the upload. `v0.31.0` hit it: `justerm-core`
+0.31.0 was on the API at 06:35 UTC while the sparse and git indexes still ended at 0.30.1 13 minutes
+later (status page: operational), so cargo's 60-second wait ran out and `justerm-pty` failed with
+"failed to select a version". The workflow could not be re-run then: it published `justerm-core`
+first and stopped on "already uploaded". `v0.32.0` re-released the same code, with the workflow
+changed so this cannot strand a tag again:
+
+- a crate whose version is already on crates.io is **skipped**, so re-running the tag's workflow
+  after a partial publish finishes the rest;
+- between the two, the job polls the sparse index (`index.crates.io/ju/st/justerm-core`) for up to
+  40 minutes, **holding no token** — each crate exchanges its own short-lived one.
+
+If the index takes longer than that, the run fails after `justerm-core` and a re-run of the same tag
+publishes `justerm-pty`. Never publish the rest by hand.
+
 ## What CI does on a `v*` tag
 
 | Workflow | Publishes | Gate | Auth |

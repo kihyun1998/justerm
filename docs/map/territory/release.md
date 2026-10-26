@@ -41,7 +41,10 @@ ADR: the shared version number line (2026-09-04) and per-track semver surfaces (
 
   One `v*` tag fires two workflows — the lockstep made mechanical. Reading only crates.io gives half
   the picture. `justerm-pty` depends on the exact `justerm-core` version, so `publish-crate.yml`
-  sends core first and cargo waits for it to be live.
+  sends core first and waits — up to 40 minutes, holding no token — for it to reach the sparse index
+  before sending `justerm-pty`; a version already on crates.io is skipped, so a re-run of the tag
+  finishes a partial publish. cargo's own 60-second wait was not enough at `v0.31.0`
+  (`docs/agents/release.md` § A partial publish).
 - **The lockstep lives in the manifest, not in a script.** `[workspace.package] version` in the root
   `Cargo.toml` is the single source for `justerm-core`, `justerm-wasm-decode` and `justerm-pty`
   (each takes `version.workspace = true`), which is why the facade had to be excluded from the
