@@ -454,7 +454,7 @@ dependencies = [
 
 [[package]]
 name = "justerm-core"
-version = "0.31.0"
+version = "0.32.0"
 dependencies = [
  "bitflags 2.13.2",
  "criterion",
@@ -468,7 +468,7 @@ dependencies = [
 
 [[package]]
 name = "justerm-pty"
-version = "0.31.0"
+version = "0.32.0"
 dependencies = [
  "anyhow",
  "justerm-core",
@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "justerm-wasm-decode"
-version = "0.31.0"
+version = "0.32.0"
 dependencies = [
  "js-sys",
  "justerm-core",
