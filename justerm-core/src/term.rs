@@ -1210,8 +1210,8 @@ impl Term {
             // The primary change record rides last (#967).
             let watch_off = marker_pts.len();
             marker_pts.extend(self.normal_watch.points());
-            // The `?1049` / `?1048` save slot rides as a point: it is not the primary's cursor
-            // (`?47` writes none, `?1048h` here writes alt coordinates), `primary_cursor_on_alt` is.
+            // The `?1049` / `?1048` save slot rides as a point; the primary's cursor is
+            // `primary_cursor_on_alt`.
             let saved_off = marker_pts.len();
             let (saved_row, saved_col) = self.saved_cursor.point();
             marker_pts.push((scrollback.len() + saved_row, saved_col));
@@ -3186,7 +3186,7 @@ fn reflow_pane(
     // column, clamped onto the last column when the row got narrower than it:
     // `docs/map/territory/reflow.md`.
     let pts = if dims.reflow && dims.cols != dims.old_cols {
-        let (rows, mut np) = crate::grid::reflow(all, dims.cols, &pts, Some(pts[0].0));
+        let (rows, mut np) = crate::grid::reflow(all, dims.cols, &pts, pts[0].0);
         all = rows;
         np[0].1 = point.1.min(dims.cols - 1);
         np
