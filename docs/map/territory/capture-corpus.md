@@ -138,7 +138,7 @@ From the capture scripts' and capture tests' own doc comments, and the issues th
   `capture-hyperlink.sh`, `capture-osc133.sh`, `capture-written-space.sh`, `capture-resize-prompt.sh`
   and `capture-resize-shell-redraw.sh` are the rest — open loop, and three of them (`capture-softwrap.sh`, `capture-undercurl.sh`,
   `capture-hyperlink.sh`) also emit a deterministic printf beside the real application.
-  `capture-resize-prompt.sh` (#1076) records across resizes, so its `resize_prompt.raw` is framed —
+  `capture-resize-prompt.sh` (#1076) records across resizes, so its `justerm-core/tests/fixtures/resize_prompt.raw` is framed —
   `<cols> <len>\n` then that many bytes per record — and is read by its own parser
   (`resize_parked_prompt.rs — records`), not fed whole. `capture-resize-shell-redraw.sh` (#1082)
   frames the same way with a case name in front — `<case> <cols> <len>\n`, three records per case
