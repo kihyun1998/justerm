@@ -323,10 +323,11 @@ fn reflow_after_a_wide_char_wrap_injects_no_phantom_space() {
     // #303-surfaced pre-existing bug: a wide char that wrapped at the boundary leaves a
     // leading-spacer placeholder in the vacated last column. Reflow must DROP it on the soft-wrap
     // join — else a column resize injects a phantom space into every text reader.
-    let mut t = Engine::new(2, 2);
-    t.feed("a\u{D55C}".as_bytes()); // 'a' + 한 (wide) → 한 wraps to row 1
+    // A third row for the cursor, whose own line is not reflowed (#1082).
+    let mut t = Engine::new(2, 3);
+    t.feed("a\u{D55C}\r\n".as_bytes()); // 'a' + 한 (wide) → 한 wraps to row 1
     assert_eq!(t.accessible_text().trim_end(), "a\u{D55C}");
-    t.resize(3, 2); // widen — 한 now fits on one line
+    t.resize(3, 3); // widen — 한 now fits on one line
     assert_eq!(
         t.accessible_text().trim_end(),
         "a\u{D55C}",
@@ -334,11 +335,11 @@ fn reflow_after_a_wide_char_wrap_injects_no_phantom_space() {
     );
 
     // The relocation path (#303) is a second producer of leading spacers — same invariant.
-    let mut t2 = Engine::new(2, 2);
+    let mut t2 = Engine::new(2, 3);
     t2.feed(b"\x1b[?2027h");
-    t2.feed("X\u{1F1F0}\u{1F1F7}".as_bytes()); // relocate flag to row 1
+    t2.feed("X\u{1F1F0}\u{1F1F7}\r\n".as_bytes()); // relocate flag to row 1
     assert_eq!(t2.accessible_text().trim_end(), "X\u{1F1F0}\u{1F1F7}");
-    t2.resize(3, 2);
+    t2.resize(3, 3);
     assert_eq!(
         t2.accessible_text().trim_end(),
         "X\u{1F1F0}\u{1F1F7}",

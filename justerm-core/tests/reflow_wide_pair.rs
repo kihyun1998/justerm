@@ -35,7 +35,9 @@ use justerm_core::Engine;
 #[test]
 fn reflow_marks_the_wide_wrap_artefact_it_creates() {
     let mut term = Engine::new(5, 4);
-    term.feed("ab한cd".as_bytes()); // 한 is cols 2..=3, "cd" is col 4 + wrap
+    // 한 is cols 2..=3, "cd" is col 4 + wrap; the cursor leaves the line, its own not being
+    // reflowed (#1082)
+    term.feed("ab한cd\r\n".as_bytes());
     assert_eq!(
         term.accessible_text().replace('\n', ""),
         "ab한cd",
@@ -67,7 +69,7 @@ fn reflow_marks_the_wide_wrap_artefact_it_creates() {
 #[test]
 fn a_narrow_then_widen_round_trip_restores_the_line() {
     let mut term = Engine::new(5, 4);
-    term.feed("ab한cd".as_bytes());
+    term.feed("ab한cd\r\n".as_bytes()); // off the line: the cursor's is not reflowed (#1082)
 
     term.resize(3, 4);
     term.resize(5, 4);

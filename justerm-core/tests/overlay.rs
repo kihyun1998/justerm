@@ -712,7 +712,9 @@ fn frame_overlay_marker_disposed_on_region_scroll_out() {
 #[test]
 fn frame_overlay_marker_reflows_on_resize() {
     let mut term = Engine::new(6, 4);
-    term.feed(b"abcdefXY"); // row 0 = "abcdef" (WRAPLINE), row 1 = "XY"
+    // row 0 = "abcdef" (WRAPLINE), row 1 = "XY"; the cursor leaves the line, whose own line is
+    // not reflowed (#1082)
+    term.feed(b"abcdefXY\r\n");
 
     let id = term.add_marker(1); // "XY" wrapped row (abs 1)
     assert_eq!(
@@ -741,7 +743,7 @@ fn frame_overlay_marker_reflows_on_resize() {
 #[test]
 fn frame_overlay_marker_reflows_during_alt_excursion() {
     let mut term = Engine::new(6, 4);
-    term.feed(b"abcdefXY"); // primary: row0="abcdef"(wrap), row1="XY"
+    term.feed(b"abcdefXY\r\n"); // primary: row0="abcdef"(wrap), row1="XY"; cursor off it (#1082)
     let id = term.add_marker(1); // "XY" (abs 1)
 
     term.feed(b"\x1b[?1049h"); // enter alt

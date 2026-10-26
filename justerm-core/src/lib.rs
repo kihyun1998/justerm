@@ -153,10 +153,15 @@ impl Engine {
     /// search at the new width — a reflow moves match coordinates and can change the match
     /// set), while the selection is carried to its new coordinates for you.
     ///
-    /// **A cursor parked at the end of an exactly full row** — a prompt whose trailing space
-    /// filled the last column — stays on that row across a narrowing, parked on the new last
-    /// column, so a shell's SIGWINCH redraw starts on the row the shell believes it is on
-    /// ([#1076](https://github.com/kihyun1998/justerm/issues/1076)).
+    /// **The logical line holding the cursor is not reflowed**, on a narrowing or a widening: its
+    /// rows are cut or padded to the new width, and the cursor stays on its row, clamped onto the
+    /// last column if the row got narrower than it. A shell's SIGWINCH redraw climbs to its prompt
+    /// by the rows the prompt took at the *old* width, so this is what lands it on the prompt
+    /// instead of leaving a piece of it, or erasing a line of output above it. The cost is the
+    /// xterm.js one: text past the new width on the cursor's line is gone, also after widening
+    /// back ([#1082](https://github.com/kihyun1998/justerm/issues/1082),
+    /// [ADR-0035](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0035-the-cursors-logical-line-is-not-reflowed.md)).
+    /// Every other line, history included, still reflows.
     ///
     /// **Two pieces of application-written state, answered differently.** The tab-stop table is
     /// *extended*, never rebuilt: a resize that changes only the row count — or one that changes

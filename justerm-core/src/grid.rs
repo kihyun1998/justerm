@@ -445,11 +445,42 @@ impl DerefMut for Row {
 ///
 /// Common-90%: trailing blanks on a hard-ended row are trimmed by *content*, so a BCE-coloured
 /// tail does not re-split into a phantom row (#530).
+///
+/// **`keep` names a row whose logical line is not reflowed** (#1082): its wrapped run is emitted
+/// row for row, each cut or padded to `new_cols` by [`Row::resize`], and a point on it keeps its
+/// row with `col` clamped to `new_cols`. The caller passes the cursor's row. A run with no
+/// content is reflowed as usual.
 pub(crate) fn reflow(
     rows: Vec<Row>,
     new_cols: usize,
     points: &[(usize, usize)],
+    keep: Option<usize>,
 ) -> (Vec<Row>, Vec<(usize, usize)>) {
+    // The kept logical line's rows: back from `keep` while the row above soft-wraps into it,
+    // forward while the row soft-wraps on. A line with no content is not kept: it reads the same
+    // either way, and the absorbed-blank path below keeps its point without spending a row.
+    let keep = keep
+        .filter(|&k| k < rows.len())
+        .map(|k| {
+            let mut start = k;
+            while start > 0 && rows[start - 1].is_wrapped() {
+                start -= 1;
+            }
+            let mut end = k;
+            while end + 1 < rows.len() && rows[end].is_wrapped() {
+                end += 1;
+            }
+            start..=end
+        })
+        .filter(|run| {
+            rows[run.clone()]
+                .iter()
+                .any(|r| !r.cells.iter().all(Cell::is_blank))
+        });
+    let mut kept_rows: Vec<Row> = Vec::new();
+    // The kept line's index in `logical`, and per point its `(row in the run, col)` there.
+    let mut kept_li: Option<usize> = None;
+    let mut kept_pts: Vec<Option<(usize, usize)>> = vec![None; points.len()];
     // 1. Join soft-wrapped rows into logical lines, recording each tracked
     //    point's logical coordinate (line index + offset within the line). The
     //    combining map is carried alongside: a row's entries are re-keyed by the
@@ -465,6 +496,24 @@ pub(crate) fn reflow(
     // Per point: (logical line, offset, found-yet).
     let mut tracked: Vec<(usize, usize, bool)> = vec![(0, 0, false); points.len()];
     for (i, row) in rows.into_iter().enumerate() {
+        if let Some(run) = keep.as_ref().filter(|run| run.contains(&i)) {
+            for (pi, &(pr, pc)) in points.iter().enumerate() {
+                if i == pr && !tracked[pi].2 {
+                    tracked[pi] = (logical.len(), 0, true);
+                    kept_pts[pi] = Some((i - run.start(), pc));
+                }
+            }
+            kept_rows.push(row);
+            if i == *run.end() {
+                // A non-empty placeholder, so the trailing-blank absorption below never takes it.
+                kept_li = Some(logical.len());
+                logical.push(vec![Cell::default()]);
+                logical_comb.push(Combining::new());
+                logical_links.push(Links::new());
+                logical_ucolors.push(UColors::new());
+            }
+            continue;
+        }
         for (pi, &(pr, pc)) in points.iter().enumerate() {
             if i == pr && !tracked[pi].2 {
                 tracked[pi] = (logical.len(), current.len() + pc, true);
@@ -583,6 +632,24 @@ pub(crate) fn reflow(
         let ucolors = &logical_ucolors[li];
         let start = out.len();
         segments.clear();
+        if kept_li == Some(li) {
+            for mut row in std::mem::take(&mut kept_rows) {
+                row.resize(new_cols);
+                // A wide lead the cut stranded on a row that continues becomes the wrap artefact,
+                // as the re-split leaves it (#533); a later join drops it.
+                if row.is_wrapped() && row.cells[new_cols - 1].is_wide() {
+                    row.cells[new_cols - 1] = Cell::default();
+                    row.cells[new_cols - 1].set_leading_spacer();
+                }
+                out.push(row);
+            }
+            for (pi, kept) in kept_pts.iter().enumerate() {
+                if let Some((r, c)) = *kept {
+                    new_points[pi] = (start + r, c.min(new_cols));
+                }
+            }
+            continue;
+        }
         if line.is_empty() {
             out.push(Row::blank(new_cols));
         } else {

@@ -163,7 +163,7 @@ fn the_style_survives_scrolling_into_scrollback_and_back() {
 #[test]
 fn the_style_survives_a_reflow_across_a_resize() {
     let mut e = Engine::new(6, 3);
-    e.feed(b"\x1b[4:3mABCDEFGH");
+    e.feed(b"\x1b[4:3mABCDEFGH\r\n"); // off the line: the cursor's is not reflowed (#1082)
     e.resize(4, 3);
     let mut seen = 0;
     for r in 0..3 {

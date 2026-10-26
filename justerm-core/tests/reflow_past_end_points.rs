@@ -208,7 +208,7 @@ fn a_selection_starting_past_the_text_starts_after_the_last_character_when_the_r
     // a full row skips to the next line (`a_selection_starting_past_a_full_row_skips_to_the_next_line`),
     // so the copy that was `"\nnext"` at 10 columns is `"next"` at the width the text fills.
     let mut t = Engine::new(10, 5);
-    t.feed(b"abc\r\nnext");
+    t.feed(b"abc\r\nnext\r\n"); // off the line: the cursor's own line is not reflowed (#1082)
     t.selection_begin(0, 8, Side::Left, SelectionType::Char);
     t.selection_extend(1, 3, Side::Right);
     t.resize(3, 5);
@@ -262,30 +262,30 @@ fn a_point_on_an_absorbed_blank_line_does_not_jump_a_row() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_cursor_past_a_full_last_row_writes_after_it() {
-    // #562 symptom 3. The mapping already produced the right row; a defensive clamp against
-    // `out.len()` — a row count `reflow` does not own, the caller's fit does — pulled it back onto
-    // the last glyph and the next byte destroyed the `f`.
+fn the_cursor_past_the_new_width_is_clamped_onto_its_rows_last_cell() {
+    // The cursor's own line is not reflowed (#1082): `abcdef` is cut to `abc`, the cursor (not
+    // parked) is clamped onto the last column, and the next byte lands there — xterm.js's answer
+    // for the same bytes. #562 symptom 3 was the clamp of a *reflowed* cursor; this one is not.
     let mut t = Engine::new(8, 10);
     t.feed(b"abcdef");
 
     t.resize(3, 10);
     t.feed(b"X");
 
-    assert_eq!(t.accessible_text().trim_end(), "abcdef\nX");
+    assert_eq!(t.accessible_text().trim_end(), "abX");
 }
 
 #[test]
-fn the_same_when_the_resize_grows_instead_of_shrinking() {
-    // The issue frames this as a narrowing problem. It is not: widening re-splits too, and the
-    // clamp fires the same way.
+fn a_widening_keeps_the_cursor_lines_rows_and_column() {
+    // The mirror on a widening: the two rows stay two, padded, and the next byte follows `gh` —
+    // xterm.js's answer for the same bytes.
     let mut t = Engine::new(6, 6);
     t.feed(b"abcdefgh");
 
     t.resize(8, 6);
     t.feed(b"Z");
 
-    assert_eq!(t.accessible_text().trim_end(), "abcdefgh\nZ");
+    assert_eq!(t.accessible_text().trim_end(), "abcdef  ghZ");
 }
 
 #[test]
@@ -336,8 +336,9 @@ fn a_hard_line_break_survives_the_resize() {
     // next one and deletes a break the application emitted. `pending_wrap` means *continue this
     // logical line*, and the cursor reaching a line's end does not mean that — in justerm the flag
     // is carried beside the reflow, so a `col == cols` coming back out of it for a cursor that was
-    // not parked is a cursor parked past content by CUP, never a deferred wrap. (One that arrived
-    // parked keeps its park on a narrowing: #1076, `resize_parked_prompt.rs`.)
+    // not parked is a cursor parked past content by CUP, never a deferred wrap. (Since #1082 the
+    // cursor's line is not reflowed and the cursor is clamped onto it, parked only if it arrived
+    // parked: `resize_cursor_line.rs`.)
     let mut t = Engine::new(8, 4);
     t.feed(b"abcdef\r\n$ \x1b[1;7H\x1b[K");
 

@@ -39,14 +39,15 @@ use justerm_core::Engine;
 #[test]
 fn a_column_resize_keeps_the_deferred_wrap() {
     // `"abcdef"` fills all six columns, so the cursor parks on the last one with the wrap pending.
-    // After the resize the next byte must still wrap rather than overwrite `f`.
+    // The cursor's own line is not reflowed (#1082) and is cut to `abc`; the next byte must still
+    // wrap rather than overwrite `c`.
     let mut t = Engine::new(6, 10);
     t.feed(b"abcdef");
 
     t.resize(3, 10);
     t.feed(b"X");
 
-    assert_eq!(t.accessible_text().trim_end(), "abcdefX");
+    assert_eq!(t.accessible_text().trim_end(), "abcX");
 }
 
 #[test]

@@ -147,26 +147,30 @@ fn a_primary_marker_shifts_by_what_the_scrollback_cap_evicted() {
     // subtraction had no test — measured, removing it left the whole suite green — while being
     // exactly the translation whose alt-side twin produced a line past the end of the buffer.
     //
-    // Here the narrowing doubles every line, the buffer outgrows a cap of 2, and one row is evicted:
-    // a marker below it must come down by one.
+    // Here the narrowing doubles every `lineN` line, the buffer outgrows a cap of 2, and four rows
+    // are evicted: every marker must come down by four.
     let mut t = Engine::with_scrollback(8, 3, 2);
     for i in 0..5 {
         t.feed(format!("line{i}xx\r\n").as_bytes());
     }
-    // Park the cursor **on** content rather than on the blank line after it. Otherwise the seam's
-    // row budget (#567 ①) buys a row for the cursor, one more line scrolls into history, and the cap
-    // evicts one more — which moves these numbers for a reason that has nothing to do with the
-    // translation this test exists to pin. Isolating the variable, not chasing the expectation.
-    t.feed(b"\x1b[1;1H");
+    // Park the cursor **on** content rather than on a blank line. Otherwise the seam's row budget
+    // (#567 ①) buys a row for the cursor, one more line scrolls into history, and the cap evicts one
+    // more — which moves these numbers for a reason that has nothing to do with the translation this
+    // test exists to pin. The content is one short line, because the cursor's own line is not
+    // reflowed (#1082) and `z` reads the same either way. Isolating the variable, not chasing the
+    // expectation.
+    t.feed(b"z");
     let ids: Vec<_> = (0..3).map(|r| t.add_marker(r)).collect();
     assert_eq!(marker_lines(&t), vec![2, 3, 4], "fixture");
 
     t.resize(4, 3);
 
+    // `line1`..`line4` take two rows each and `z` one: nine rows, three on screen, six in a
+    // history capped at two.
     assert_eq!(
         marker_lines(&t),
-        vec![1, 3, 4],
-        "the marker above the eviction moves down by the one row the cap dropped"
+        vec![0, 2, 4],
+        "each marker moves down by the four rows the cap dropped"
     );
     assert!(
         marker_lines(&t).iter().all(|&l| l < buffer_lines(&t)),
