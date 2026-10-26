@@ -76,7 +76,9 @@ fn the_surviving_cells_keep_their_background() {
     // #530 is untouched: trimming decides where a line *ends*, it does not blank a cell. A red
     // column that is still on screen after the resize is still red.
     let mut t = Engine::new(8, 3);
-    t.feed(b"\x1b[41mabcdefgh"); // a full red row, all with content
+    // A full red row, all with content; the cursor leaves it, its own line not being reflowed
+    // (#1082).
+    t.feed(b"\x1b[41mabcdefgh\x1b[m\r\n");
     assert_eq!(t.grid().cell(0, 4).bg(), Color::Indexed(1), "fixture");
 
     t.resize(5, 3);
@@ -91,7 +93,7 @@ fn the_surviving_cells_keep_their_background() {
 fn a_wide_char_tail_still_splits_correctly() {
     // Guard: a real wide glyph at the end is content and must survive the trim.
     let mut t = Engine::new(6, 3);
-    t.feed("abcd\u{D55C}".as_bytes()); // 한 wraps to the next row already
+    t.feed("abcd\u{D55C}\r\n".as_bytes()); // 한 wraps to the next row already; cursor off it (#1082)
     t.resize(4, 3);
     assert_eq!(t.accessible_text().trim_end(), "abcd\u{D55C}");
 }

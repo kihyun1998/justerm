@@ -116,7 +116,8 @@ fn the_wrap_survives_a_cell_write_at_the_last_column_across_reflow() {
     // The end-to-end consequence: a resize re-splits by logical line, so a lost wrap changes the
     // resulting geometry, not just the text.
     let mut t = wrapped_line();
-    t.feed(b"\x1b[1;4HQ");
+    // Then off the line: the cursor's own line is not reflowed (#1082).
+    t.feed(b"\x1b[1;4HQ\x1b[3;1H");
     t.resize(8, 3);
     assert_eq!(
         t.accessible_text().trim_end(),

@@ -74,7 +74,7 @@ fn the_drift_accumulates_across_several_short_rows() {
     // both of them two cells early — far enough to land on an unrelated glyph rather than merely
     // one column off. Cells: a b 한(2,3) c d e 한(7,8) f.
     let mut t = Engine::new(12, 10);
-    t.feed("ab한cde한f".as_bytes());
+    t.feed("ab한cde한f\r\n".as_bytes()); // off the line: the cursor's is not reflowed (#1082)
     select_cell(&mut t, 0, 9);
     assert_eq!(t.selection_text().as_deref(), Some("f"), "fixture");
 
@@ -88,22 +88,21 @@ fn the_drift_accumulates_across_several_short_rows() {
 }
 
 #[test]
-fn the_cursor_rides_the_same_mapping() {
+fn the_cursor_does_not_ride_the_mapping() {
+    // The cursor's own line is not reflowed (#1082), so the cursor never goes through the
+    // mapping: it keeps its row, clamped onto the last column, parked as it arrived. The drift
+    // this file is about is pinned without the cursor by
+    // `a_wide_glyph_on_the_boundary_does_not_drift_a_selection`.
     let mut t = Engine::new(6, 10);
     t.feed("ab한cd".as_bytes());
     assert_eq!((t.cursor().row, t.cursor().col), (0, 5), "fixture");
 
     t.resize(3, 10);
 
-    // Rows after the re-split: "ab"+artefact | 한 c | d.
-    //
-    // `(2, 1)`, not `(2, 0)`: the fixture fills all six columns, so the cursor is parked on `d`
-    // with the wrap **deferred** — it is logically one past `d`, and `d` lands at `(2, 0)`. This
-    // assertion originally read `(2, 0)` because `resize` used to drop `pending_wrap`, which put
-    // the cursor *on* `d` and let the next byte overwrite it. Both this expectation and that
-    // reset moved in the same change; the drift this test is about is unchanged either way, and
-    // `a_wide_glyph_on_the_boundary_does_not_drift_a_selection` pins it without the cursor.
-    assert_eq!((t.cursor().row, t.cursor().col), (2, 1));
+    assert_eq!(
+        (t.cursor().row, t.cursor().col, t.cursor().pending_wrap),
+        (0, 2, true)
+    );
 }
 
 #[test]
@@ -114,6 +113,7 @@ fn an_osc133_command_mark_rides_the_same_mapping() {
     t.feed(b"\x1b]133;A\x07");
     t.feed("ab한cd".as_bytes());
     t.feed(b"\x1b]133;B\x07");
+    t.feed(b"\r\n"); // off the line: the cursor's own line is not reflowed (#1082)
     let before = t.command_marks();
     assert_eq!(before.len(), 2, "fixture: prompt-start and command-start");
 
@@ -126,7 +126,7 @@ fn an_osc133_command_mark_rides_the_same_mapping() {
     );
     assert_eq!(
         after[1].1, 2,
-        "the command start was at the cursor, which now sits on the third row"
+        "the command start was just past `d`, which now sits on the third row"
     );
 }
 
@@ -144,8 +144,8 @@ fn the_drift_reaches_a_frame_mode_consumer_through_the_wire() {
     t.resize(3, 10);
 
     let frame = decode(&encode(&t.frame())).expect("round-trip");
-    // One past `d`, for the reason spelled out in `the_cursor_rides_the_same_mapping`.
-    assert_eq!((frame.cursor_row, frame.cursor_col), (2, 1));
+    // On its own row, for the reason spelled out in `the_cursor_does_not_ride_the_mapping`.
+    assert_eq!((frame.cursor_row, frame.cursor_col), (0, 2));
 }
 
 // ---- side conditions: what must NOT change ---------------------------------------------------
@@ -153,14 +153,15 @@ fn the_drift_reaches_a_frame_mode_consumer_through_the_wire() {
 #[test]
 fn a_point_past_a_partial_last_row_stays_on_it() {
     // Offset == line length with room left on the row: the point belongs just after the content,
-    // on the same row. `"abcde"` at 3 columns is "abc" | "de", and the cursor sits at column 2.
+    // on the same row. `"abcde"` at 3 columns is "abc" | "de", and the point sits at column 2. A
+    // tracked point, since the cursor's own line is not reflowed (#1082).
     let mut t = Engine::new(6, 10);
-    t.feed(b"abcde");
-    assert_eq!((t.cursor().row, t.cursor().col), (0, 5), "fixture");
+    t.feed(b"abcde\r\n");
+    let p = t.track_point(0, 5);
 
     t.resize(3, 10);
 
-    assert_eq!((t.cursor().row, t.cursor().col), (1, 2));
+    assert_eq!(t.tracked_point(p), Some((1, 2)));
 }
 
 #[test]
@@ -168,14 +169,15 @@ fn a_point_past_a_full_last_row_moves_to_the_next_row() {
     // The mirror: offset == line length with the last row *full*, so there is no column left and
     // the point belongs at the start of the row after it. Pinned because the loop-based mapping
     // has no segment containing that offset and must not clamp it back onto the full row.
+    // A tracked point, since the cursor's own line is not reflowed (#1082); it keeps the mapping's
+    // raw `col == cols`, which is "just after the last cell" of row 1.
     let mut t = Engine::new(8, 10);
     t.feed(b"abcdef\r\nQQ");
-    t.feed(b"\x1b[1;7H");
-    assert_eq!((t.cursor().row, t.cursor().col), (0, 6), "fixture");
+    let p = t.track_point(0, 6);
 
     t.resize(3, 10);
 
-    assert_eq!((t.cursor().row, t.cursor().col), (2, 0));
+    assert_eq!(t.tracked_point(p), Some((1, 3)));
 }
 
 #[test]
@@ -190,7 +192,9 @@ fn a_point_past_a_full_last_row_of_the_last_line_does_not_name_a_row_that_does_n
     // short row makes impossible, so a line with a wide pair on the boundary — this change's whole
     // subject — was safe before. Caught by the refuting lens, not by me.
     let mut t = Engine::new(12, 2);
-    t.feed("ab한cdef".as_bytes()); // 8 cells; at 3 columns: "ab"+artefact | 한 c | d e f
+    // 8 cells; at 3 columns: "ab"+artefact | 한 c | d e f. The cursor leaves the line, its own not
+    // being reflowed (#1082).
+    t.feed("ab한cdef\r\n".as_bytes());
     t.selection_begin(0, 0, Side::Left, SelectionType::Char);
     t.selection_extend(0, 8, Side::Right);
 
@@ -228,13 +232,13 @@ fn a_wide_glyph_that_does_not_land_on_the_boundary_changes_nothing() {
     // The negative control for the guard itself: `"ab한cd"` re-split at **4** fits the pair
     // without a short row, so the mapping had nothing to get wrong and must stay put.
     let mut t = Engine::new(6, 10);
-    t.feed("ab한cd".as_bytes());
+    t.feed("ab한cd\r\n".as_bytes()); // off the line: the cursor's is not reflowed (#1082)
+    select_cell(&mut t, 0, 5);
 
     t.resize(4, 10);
 
-    // Rows: "ab한" | "cd". One past `d` at `(1, 1)` is `(1, 2)` — again the deferred wrap, not the
-    // mapping, which is exactly this test's point: no short row is emitted at width 4.
-    assert_eq!((t.cursor().row, t.cursor().col), (1, 2));
+    // Rows: "ab한" | "cd", with `d` at `(1, 1)` — no short row is emitted at width 4.
+    assert_eq!(t.selection_text().as_deref(), Some("d"));
     assert_eq!(t.accessible_text().trim_end(), "ab한cd");
 }
 

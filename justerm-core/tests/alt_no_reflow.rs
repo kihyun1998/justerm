@@ -62,7 +62,7 @@ fn the_primary_screen_still_reflows() {
     // bytes on the primary screen do unwrap, because there the content *is* a flow and there is
     // history to keep readable.
     let mut t = Engine::new(4, 4);
-    t.feed(b"abcdefgh");
+    t.feed(b"abcdefgh\r\n"); // off the line: the cursor's own line is not reflowed (#1082)
     assert!(t.grid().is_row_wrapped(0), "fixture");
 
     t.resize(8, 4);

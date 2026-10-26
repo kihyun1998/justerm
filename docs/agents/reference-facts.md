@@ -3708,8 +3708,13 @@ narrowed by one. Where the cursor lands decides whether a shell's SIGWINCH redra
 | Blanks before a cursor lifted past the new width are **wrapped as content** — *"If there are empty cells before the cursor, we assume it is explicit whitespace and need to wrap it like normal content"* — so the cursor lands on the next row | alacritty | `alacritty_terminal/src/grid/resize.rs:273-281` |
 | The cursor pin stops the trim — *"If the cursor is after blanks on the right, those cells are still before the next write and must reflow with it"* — so the space reflows to the next row with the cursor on it | ghostty | `terminal/PageList.zig:1600-1606` |
 | A resize can clear a redrawable prompt from its OSC 133 marks (`opts.prompt_redraw`) before the shell redraws — a separate mechanism, not measured here | ghostty | `terminal/Screen.zig:2068`, `clearPromptForRedraw` `:2161` |
+| …and it fires only when the cursor is *not* on command output, which is the default: `semantic_content` starts as `.output`, so without OSC 133 nothing is cleared (#1082) | ghostty | `terminal/Screen.zig:173`, the gate `:2177` |
+| The **widening** skips the cursor's wrapped run too, under the same option (#1082) | xterm.js | `common/buffer/BufferReflow.ts:45-51` (`reflowLargerGetLinesToRemove`), called from `common/buffer/Buffer.ts:337-338` |
+| The cut is **not restored** on widening back: a shrink cuts every line after the reflow, and a growing `BufferLine` fills its new cells with the null cell — measured, `progress: 0123456789abcdefghij` at 30 → 10 → 30 keeps `progress: ` (#1082) | xterm.js | `common/buffer/Buffer.ts:266-270`; `common/buffer/BufferLine.ts:398-400` |
+| On a shrink the cursor follows its content: the loop that re-splits a row moves `cursor.point.line` with the rows it wraps | alacritty | `alacritty_terminal/src/grid/resize.rs:336-344` |
 
 2 of 3 move the cursor down a row; xterm.js keeps it by a policy that also truncates real text past
-the new width. justerm keeps a parked cursor on its row for a narrowing only — the maintainer's call
-(2026-10-26), first made with ghostty's row unread and re-confirmed with it and with the measured
-fast-drag hole (27 → 25 still duplicates) in hand.
+the new width. #1076 kept a parked cursor on its row for a narrowing only. **#1082 replaced that with
+xterm.js's policy** (ADR-0035): recorded bash and zsh redraws climb `CUU` by the prompt's rows at the
+*old* width, so only an un-reflowed cursor line puts them on the prompt — replayed, xterm.js 6 of 6
+clean, justerm `a264e46` 6 of 6 broken, including an output line erased on a widening.

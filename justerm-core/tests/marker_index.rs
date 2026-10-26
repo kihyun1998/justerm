@@ -670,6 +670,8 @@ fn a_reflow_moves_the_column_under_a_new_generation() {
     e.drain_events();
     e.feed(b"abcdef\x1b]133;B\x07");
     let born = births(&mut e);
+    // Off the line: the cursor's own line is not reflowed (#1082).
+    e.feed(b"\r\n");
     assert_eq!(born, vec![(MarkerKind::CommandStart, 0, 6, 0)]);
 
     e.resize(4, 5);
@@ -692,7 +694,8 @@ fn a_reflow_moves_the_column_under_a_new_generation() {
 #[test]
 fn a_reflow_under_the_alt_screen_moves_the_primary_column_too() {
     let mut e = Engine::new(10, 5);
-    e.feed(b"abcdef\x1b]133;B\x07");
+    // Off the line: the cursor's own line is not reflowed (#1082).
+    e.feed(b"abcdef\x1b]133;B\x07\r\n");
     e.feed(b"\x1b[?1049h");
 
     e.resize(4, 5);

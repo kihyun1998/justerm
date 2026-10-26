@@ -717,7 +717,9 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   through the re-split. All three can sit *just after* the content, and when the last row comes out
   full that is a column the grid does not have — so the returned point is allowed to leave the grid
   (`col == new_cols`, or a row the fit has not created yet) and the **seam in `Term::resize` resolves
-  it per kind**: the cursor reads it as the next write position (the row after), a command mark keeps
+  it per kind**: the cursor reads it as the next write position (the row after) — since #1082 only on
+  the alt pane, because on the primary the cursor's own logical line is not re-split and the cursor
+  keeps its row, clamped to `cols - 1` ([ADR-0035](adr/0035-the-cursors-logical-line-is-not-reflowed.md)) — a command mark keeps
   it as an **exclusive** bound meaning "all of this row" (`extract_lines` clips `[b, c)`), each selection
   endpoint (anchor and focus) is clamped to `(cols - 1, Right)` — the same boundary, after the last
   cell (#1032). Deciding it inside `reflow` picked one kind's answer for all three — a mark then

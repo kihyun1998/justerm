@@ -774,7 +774,7 @@ fn selection_rotates_with_reverse_index() {
 #[test]
 fn selection_survives_reflow_on_resize() {
     let mut term = Engine::new(6, 4);
-    term.feed(b"abcdef"); // row 0 = "abcdef"
+    term.feed(b"abcdef\r\n"); // row 0 = "abcdef"; the cursor's own line is not reflowed (#1082)
 
     term.selection_begin(0, 0, Side::Left, SelectionType::Char);
     term.selection_extend(0, 5, Side::Right);

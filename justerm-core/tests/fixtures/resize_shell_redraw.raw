@@ -1,0 +1,30 @@
+bash13-30-10 30 21
+[?2004huser@host:~$ bash13-30-10 10 18
+[Kuser@host:~$ bash13-30-10 10 32
+
+[?2004l[?2004huser@host:~$ bash32-30-10 30 40
+[?2004huser@host:~/a/very/long/path/x$ bash32-30-10 10 44
+[K[A[Kuser@host:~/a/very/long/path/x$ bash32-30-10 10 51
+
+[?2004l[?2004huser@host:~/a/very/long/path/x$ bash32-30-40 30 40
+[?2004huser@host:~/a/very/long/path/x$ bash32-30-40 40 44
+[K[A[Kuser@host:~/a/very/long/path/x$ bash32-30-40 40 51
+
+[?2004l[?2004huser@host:~/a/very/long/path/x$ bash13typed-30-10 30 37
+[?2004huser@host:~$ echo hello worldbash13typed-30-10 10 34
+[Kuser@host:~$ echo hello worldbash13typed-30-10 10 45
+
+[?2004lhello world
+[?2004huser@host:~$ bash26-57-21 57 34
+[?2004huser@host:~/projects/app$ bash26-57-21 21 31
+[Kuser@host:~/projects/app$ bash26-57-21 21 45
+
+[?2004l[?2004huser@host:~/projects/app$ zsh13-30-10 30 96
+[1m[7m%[27m[1m[0m                              [0m[27m[24m[Juser@host:~$ [K[?2004hzsh13-30-10 10 32
+[0m[27m[24m[Juser@host:~$ zsh13-30-10 10 87
+[?2004l
+[1m[7m%[27m[1m[0m          [0m[27m[24m[Juser@host:~$ [K[?2004hzsh32-30-10 30 115
+[1m[7m%[27m[1m[0m                              [0m[27m[24m[Juser@host:~/a/very/long/path/x$ [K[?2004hzsh32-30-10 10 54
+[A[0m[27m[24m[Juser@host:~/a/very/long/path/x$ zsh32-30-10 10 106
+[?2004l
+[1m[7m%[27m[1m[0m          [0m[27m[24m[Juser@host:~/a/very/long/path/x$ [K[?2004h

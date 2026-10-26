@@ -2112,14 +2112,15 @@ fn rep_is_not_armed_by_a_wide_glyph_that_was_dropped() {
 ///
 /// The reflow **narrows**, and that is deliberate. Widening moves the anchored cell to a
 /// blank, so a stale anchor repeats blanks and the grid looks identical either way —
-/// which is how the first version of this test passed with the disarm deleted. Narrowing
-/// puts a *different glyph* under the stale anchor: `abcde` on three columns anchors on
-/// `e` at (1, 1), and after the reflow to two columns that cell holds `d`.
+/// which is how the first version of this test passed with the disarm deleted. The
+/// anchor is on the cursor's own line, which is not reflowed (#1082): `abcde` on three
+/// columns anchors on `e` at (1, 1) and is cut to `ab` / `de` at two, the cursor on `e`.
+/// A stale anchor repeats `e` from there, on into row 2.
 #[test]
 fn rep_after_a_resize_repeats_nothing() {
     let mut term = Engine::new(3, 3);
     term.feed(b"abcde"); // soft-wraps: row 0 "abc", row 1 "de"; anchored on 'e' at (1, 1)
-    term.resize(2, 3); // reflow: "ab" / "cd" / "e" — (1, 1) now holds 'd'
+    term.resize(2, 3); // the cursor's line is cut: "ab" / "de", the cursor at (1, 1)
     term.feed(b"\x1b[3b");
 
     let rows: Vec<String> = (0..3)
@@ -2127,8 +2128,8 @@ fn rep_after_a_resize_repeats_nothing() {
         .collect();
     assert_eq!(
         rows,
-        ["ab", "cd", "e "],
-        "a stale anchor would repeat 'd' here"
+        ["ab", "de", "  "],
+        "a stale anchor would repeat 'e' into row 2 here"
     );
 }
 

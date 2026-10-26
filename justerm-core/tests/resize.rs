@@ -53,7 +53,7 @@ fn shrink_rows_preserves_top_lines_in_scrollback() {
 #[test]
 fn shrink_cols_rewraps_soft_wrapped_line() {
     let mut term = Engine::new(4, 4);
-    term.feed(b"abcdef"); // "abcd"(WRAPLINE) + "ef"
+    term.feed(b"abcdef\r\n"); // "abcd"(WRAPLINE) + "ef"; the cursor's line is not reflowed (#1082)
     assert!(term.grid().is_row_wrapped(0));
 
     term.resize(2, 4); // narrow to 2 cols → "abcdef" rewraps as ab|cd|ef
@@ -80,7 +80,7 @@ fn shrink_cols_rewraps_soft_wrapped_line() {
 #[test]
 fn widen_cols_merges_wrapped_segments() {
     let mut term = Engine::new(2, 4);
-    term.feed(b"abcdef"); // 2 cols → ab|cd|ef across three wrapped rows
+    term.feed(b"abcdef\r\n"); // 2 cols → ab|cd|ef across three wrapped rows
 
     term.resize(6, 4); // widen → merge back onto one row
 
@@ -108,17 +108,17 @@ fn resize_reflows_scrollback_too() {
     assert_eq!((top[0].c(), top[1].c()), ('a', 'b'));
 }
 
-/// The cursor follows its content through a reflow instead of being clamped to
-/// a stale position.
+/// The cursor's own line is not reflowed (#1082): the cursor keeps its row, clamped onto the last
+/// column, and the lines around it reflow.
 #[test]
-fn cursor_follows_content_through_reflow() {
+fn the_cursor_keeps_its_row_through_a_reflow() {
     let mut term = Engine::new(4, 4);
     term.feed(b"abcdef"); // "abcd"(WRAPLINE) | "ef"
-    term.feed(b"\x1b[1;3H"); // cursor onto 'c' at (0, 2) — logical position 2
+    term.feed(b"\x1b[1;3H"); // cursor onto 'c' at (0, 2)
 
-    term.resize(2, 4); // "abcdef" rewraps as ab|cd|ef; 'c' moves to (1, 0)
+    term.resize(2, 4); // the cursor's line is cut to "ab" | "ef"
 
-    assert_eq!((term.cursor().row, term.cursor().col), (1, 0));
+    assert_eq!((term.cursor().row, term.cursor().col), (0, 1));
 }
 
 /// A degenerate resize to zero is clamped to a 1x1 minimum, not a panic.
@@ -138,7 +138,7 @@ fn resize_to_zero_is_clamped_not_a_panic() {
 #[test]
 fn reflow_keeps_wide_char_together_at_boundary() {
     let mut term = Engine::new(4, 4);
-    term.feed("a한".as_bytes()); // 'a' + a width-2 glyph
+    term.feed("a한\r\n".as_bytes()); // 'a' + a width-2 glyph
 
     term.resize(2, 4); // 'a' takes col 0; '한' can't fit in the last col → wraps whole
 

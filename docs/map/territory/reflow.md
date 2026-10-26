@@ -11,8 +11,10 @@ public method is named for either — the only entry is `Engine::resize`.
 
 ## Governing decisions
 
-**None.**
-
+- [ADR-0035 — a column resize does not reflow the logical line holding the cursor](../../adr/0035-the-cursors-logical-line-is-not-reflowed.md)
+  (#1082): D1 is the maintainer's judgement and reverses #1076's choice; D2 (the cursor's clamp and
+  park), D3 (a line with no content reflows), D4 (the primary's cursor on alt) and D5 (a stranded
+  wide lead on a continuing row) are derivations.
 - [ADR-0025 — row and wide-pair cell state ownership](../../adr/0025-row-and-wide-pair-cell-state-ownership.md)
   bounds it from one side: D4 governs the verbs that *edit*, and a resize is a **reallocation**, so a
   wide lead left without its spacer by `Row::resize` is a legal state rather than a violation (#529).
@@ -52,37 +54,39 @@ is the consumer-facing contract. No record governs it.
 - `reflow` takes a `points` slice and returns where each landed, index-aligned. `Term::resize`
   assembles it by an offset idiom: on the primary, the selection's two endpoints, then markers, then
   tracked points, then the settled-cell-paint change record (`ChangeWatch::points`, #967); the cursor rides in
-  `reflow_pane` as point 0. On the alt screen the primary pane carries markers, tracked points and
+  `reflow_pane` as point 0, and its row is `reflow`'s `keep` (below). On the alt screen the primary pane carries markers, tracked points and
   the watch, the alt pane carries alt markers and alt tracked points, converted to alt-local rows and
   re-anchored on the new base because the primary history may rewrap underneath them.
 - **A returned point is a position in the logical line, not necessarily a cell** (#562, closed
   2026-07-27 after five designs that made `reflow` itself materialise a row were measured and
   rejected — a cursor at column 59 resized to width 4 emptied the buffer; a blank-line exemption
   turned 22 alt lines into 21). `col` may equal `new_cols`, and each holder reads it its own way: the
-  cursor as the start of the next row (except when parked on a narrowing, below); an OSC 133 mark as an exclusive bound; a selection endpoint is
+  cursor as the start of the next row (only the re-fit alt pane still hands it one, below); an OSC 133 mark as an exclusive bound; a selection endpoint is
   clamped to `(cols - 1, Side::Right)` in `Term::selection_reflowed` (#1032 — keeping its old side
   dropped or gained the row's last character).
-- **The seam, not `reflow`, buys the cursor's row** (#567, PR #569): when the cursor reflows to
-  "just after the content" on a full pane, `reflow_pane` pushes a blank row so the pane scrolls one
-  row into history, gated on `limit > 0` (the alt pane passes `0`). Without it the next byte destroyed
-  a character (a prompt at the bottom of a full screen). Tracked lines are bounded at
+- **The cursor's own logical line is not reflowed** (#1082, [ADR-0035](../../adr/0035-the-cursors-logical-line-is-not-reflowed.md)).
+  `reflow_pane` passes the cursor's row as `reflow`'s `keep`; `reflow` walks out to the line's whole
+  wrapped run and emits its rows as they are, cut or padded by `Row::resize`, wrap flags kept. A
+  point on the run keeps its row with `col` clamped to `new_cols`. The cursor's column comes from its
+  own point, not the re-split, clamped to `cols - 1`, and its deferred wrap is left as it arrived — so
+  the content trim cannot pull it left over trailing blanks, and a cursor that was not parked is
+  never armed (that glued its row to the next line, #562 constraint 2). The reason is the shells:
+  bash and zsh answer SIGWINCH by climbing `CUU` once per row the prompt took **at the old width**
+  (recorded in `fixtures/resize_shell_redraw.raw`), so a re-split cursor line sent the redraw to the
+  wrong row — a piece of the prompt left above it on a narrowing, a line of output erased by `EL` on a
+  widening. This replaced #1076's narrower rule (keep a parked cursor that lands exactly past a full
+  row), which a narrowing past the exact width in one call did not meet. **A line with no content is
+  reflowed as before**: it reads the same either way, and keeping it would spend a row on a pane
+  with no history. **A wide lead the cut strands on a kept row that continues becomes the wrap
+  artefact** (`set_leading_spacer`), as the re-split leaves it (#533): left a lead, a later reflow
+  joined it mid-line and an overwrite took its neighbour for its spacer. On a hard-ended row it stays
+  a lead, ADR-0025's last-column state (#529). **While alt is up, the line kept is
+  `primary_cursor_on_alt`'s** ([alt screen](alt-screen.md)), not the `saved_cursor` slot's.
+- **The seam, not `reflow`, buys the cursor's row** (#567, PR #569): a cursor on a blank line the join
+  absorbed comes back past the last row emitted, and `reflow_pane` pushes blank rows up to it so the
+  pane scrolls into history, gated on `limit > 0` (the alt pane passes `0`). Without it the next byte
+  destroyed a character (a prompt at the bottom of a full screen). Tracked lines are bounded at
   `split + dims.rows - 1`, where the final geometry is known.
-- **Except a parked cursor that a narrowing leaves just past a full row** (#1076): it stays on that
-  row, parked on the last column, and buys no row. The case is a prompt whose trailing space filled
-  the row exactly: the content trim drops the space, the cursor parked on it answers `col == cols`,
-  and the next-row reading plus the deferred-wrap carry put it at `(row + 1, 1)` — one row below
-  the row bash believes it is on, so its SIGWINCH redraw (`\r ESC[K \r <prompt>`, no `CUU`, recorded
-  in `fixtures/resize_prompt.raw`) left a second prompt. **Narrowing only**: widening into the
-  same answer happens when a wrapped prompt unwraps, and there readline believes the cursor is on
-  the row *after* the prompt's start and climbs to it with `CUU`, so the next-row reading is the one
-  that matches (`a_widening_that_lands_just_past_a_full_row_keeps_the_next_row`). The primary's saved cursor,
-  reflowed with the primary pane while alt is up, carries its own park through the same rule
-  (`Term::resize` passes `saved_cursor.pending_wrap`;
-  `a_saved_cursor_parked_on_the_prompt_returns_to_its_row_after_the_alt_screen`). Gated on the pane
-  reflowing; the alt pane's own reading of `col == cols` is a hole below. Chosen by the maintainer
-  (2026-10-26) over xterm.js's not-reflowing-the-cursor-line policy; alacritty and ghostty wrap the
-  blank and move the cursor down
-  ([reference rows](../../agents/reference-facts.md#a-parked-cursor-on-a-trailing-blank-across-a-narrowing-1076-verified-2026-10-26)).
 - **What leaves the buffer differs by holder.** `PaneReflow::evicted` counts rows dropped off the
   front by the cap (primary) or by the shrink (alt). Tracked points on such a row are released;
   alt markers are disposed with `MarkerDisposed`; primary markers saturate to line 0
@@ -125,7 +129,7 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
 - `justerm-core/src/lib.rs` — `Engine::resize`
 - Tests: `justerm-core/tests/resize.rs`, `alt_no_reflow.rs`, `reflow_past_end_points.rs`,
   `reflow_point_mapping.rs`, `reflow_row_budget.rs`, `reflow_trim.rs`, `reflow_wide_pair.rs`,
-  `resize_parked_prompt.rs`,
+  `resize_parked_prompt.rs`, `resize_cursor_line.rs` (with `fixtures/resize_shell_redraw.raw`),
   `alt_resize_markers.rs`, `alt_selection_resize.rs`, `resize_cursor_and_marker_state.rs`
 
 ## Reference behaviour
@@ -139,7 +143,8 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
 - [The deferred wrap across the rest of the verbs](../../agents/reference-facts.md#the-deferred-wrap-across-the-rest-of-the-verbs-848-verified-2026-09-03)
   — carrying the flag across a resize.
 - [A parked cursor on a trailing blank across a narrowing](../../agents/reference-facts.md#a-parked-cursor-on-a-trailing-blank-across-a-narrowing-1076-verified-2026-10-26)
-  — where the cursor lands, 2 of 3 moving it down (#1076).
+  — where the cursor lands: xterm.js does not reflow its line, alacritty and ghostty move it down
+  (#1076, #1082).
 - [A selection when the screen changes under it](../../agents/reference-facts.md#a-selection-when-the-screen-changes-under-it-660-verified-2026-07-31)
   — dropping the selection on an alt-screen resize.
 - The DECAWM divergence is argued against ghostty's `Terminal.zig` with no pinned row.
@@ -181,7 +186,8 @@ rows rather than within one.
 
 ## Known holes / open
 
-- **Zero governing records** for the operation with the widest blast radius in the engine.
+- **One governing record, for one line of it.** ADR-0035 decides the cursor's line; the rest of the
+  operation with the widest blast radius in the engine has none.
 - **The DECAWM divergence is deliberate and unrecorded in a decision.** It diverges from a named
   reference with three stated reasons, held by this note and a rustdoc paragraph.
 - **Nothing states which point sets must be passed.** The `points` slice is an offset convention in
@@ -195,21 +201,25 @@ rows rather than within one.
   (not who wrote it — that reading fails on the margins, which the application wrote and which reset
   anyway). It is deliberately not promoted: the trigger is a **fourth** field whose answer the
   references do not already give.
-- **A parked cursor is kept on its row only where the trimmed content ends exactly at the new
-  width** (#1076) — after the trim, the cursor's own row comes out full. A one-column step past an
-  exact-fill prompt always meets it, and so can a wider one when several blanks were trimmed
-  (13 → 10 over `abcdefghij` + three spaces). Any narrowing past that width in one call wraps real
-  content, and the cursor lands below the row a shell believes: 27 → 25 for a 27-cell prompt
-  ends at `(1, 2)` and a redraw from row 0's belief leaves a duplicate (measured 2026-10-26) — a
-  fast drag that skips the exact width does this. A prompt with no trailing space is the same case
-  at a one-column step. Only xterm.js's not-reflowing-the-cursor-line policy covers them.
-- **The trimmed space under a parked cursor is gone for whatever follows the resize** (#1076,
-  measured 2026-10-26): the park now sits on the prompt's last glyph, so a combining mark fed
-  straight after the resize attaches to `$` rather than the space, and under `?7l` the next glyph
-  overwrites `$` (as xterm.js's clamped `x` does). A shell's redraw rewrites the row first.
+- **The cursor's line loses what is past the new width, also after widening back** (ADR-0035's
+  accepted cost, xterm.js's too): a program that does not redraw — an unfinished `progress:` line —
+  keeps only the cut row. A cursor that was not parked lands on the last kept cell, so its next glyph
+  overwrites that cell, as xterm.js's clamped `x` does.
+- **The space cut from under a parked cursor is gone for whatever follows the resize** (#1076,
+  measured 2026-10-26): the park sits on the prompt's last glyph, so a combining mark fed straight
+  after the resize attaches to `$` rather than the space, and under `?7l` the next glyph overwrites
+  `$`. A shell's redraw rewrites the row first.
+- **A widening leaves the cursor's line padded inside** (ADR-0035): its rows keep their wrap flags,
+  so `abcdef` + `gh` widened to 8 reads `abcdef  gh` in text and search until something rewrites it,
+  and a later reflow joins the blanks in. xterm.js reads the same.
+- **An OSC 133 mark on the prompt line is not moved to where the redraw puts its text** (#1082): it
+  keeps its row with its column clamped, while the shell redraws the prompt at the new width from
+  the prompt's first row. bash with the marks in `PS1` re-emits them in that redraw (measured
+  2026-10-26), which places fresh ones; marks emitted any other way were not measured.
 - **The alt pane reads a cursor on the last column as the next row on a narrowing** (measured
   2026-10-26): it does not reflow, so the cursor's column is the old one, and at `col == cols`
   `reflow_pane`'s next-row reading moves it — `(0, 12)` at 13 columns becomes `(1, 0)` at 12, parked
-  or not. xterm.js and alacritty clamp the column instead.
+  or not. xterm.js and alacritty clamp the column instead, as the primary's cursor line now does
+  (ADR-0035 D2); the alt pane is the only one still handed that reading.
 - **"The seam may create rows" narrows ADR-0025 and the ADR does not say so.** PR #569 (#567) let
   `reflow_pane` push a row for the cursor; ADR-0025's text still reads as if a resize creates none.

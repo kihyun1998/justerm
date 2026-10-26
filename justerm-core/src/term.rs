@@ -77,6 +77,10 @@ pub struct Term {
     cursor: Cursor,
     /// Cursor saved on alt-screen enter (DEC 1049), restored on leave.
     saved_cursor: Cursor,
+    /// While the alt screen is up, the primary's cursor: where the cursor was when the screen
+    /// switched, screen-relative, carried through each resize. Its line is the one a resize keeps
+    /// un-reflowed on the primary (#1082).
+    primary_cursor_on_alt: (usize, usize),
     /// Whether the alternate screen is currently active. Guards enter/leave so a
     /// double-enter or double-leave is a no-op.
     on_alt: bool,
@@ -684,6 +688,7 @@ impl Term {
             alt_grid: Grid::new(cols, rows),
             cursor: Cursor::default(),
             saved_cursor: Cursor::default(),
+            primary_cursor_on_alt: (0, 0),
             on_alt: false,
             origin_mode: false,
             autowrap: true,
@@ -1182,7 +1187,6 @@ impl Term {
                 alt,
                 VecDeque::new(),
                 self.cursor.point(),
-                self.cursor.pending_wrap,
                 &alt_pts,
                 ReflowDims {
                     limit: 0,
@@ -1206,18 +1210,26 @@ impl Term {
             // The primary change record rides last (#967).
             let watch_off = marker_pts.len();
             marker_pts.extend(self.normal_watch.points());
+            // The `?1049` / `?1048` save slot rides as a point: it is not the primary's cursor
+            // (`?47` writes none, `?1048h` here writes alt coordinates), `primary_cursor_on_alt` is.
+            let saved_off = marker_pts.len();
+            let (saved_row, saved_col) = self.saved_cursor.point();
+            marker_pts.push((scrollback.len() + saved_row, saved_col));
             let primary = self.alt_grid.take_lines();
             let r = reflow_pane(
                 primary,
                 scrollback,
-                self.saved_cursor.point(),
-                self.saved_cursor.pending_wrap,
+                self.primary_cursor_on_alt,
                 &marker_pts,
                 dims,
             );
             self.alt_grid.set_screen(r.screen, cols, rows);
             self.scrollback = r.scrollback;
-            self.saved_cursor.set_point(r.cursor, rows, cols);
+            self.primary_cursor_on_alt = r.cursor;
+            let (saved_line, saved_col) = r.extras[saved_off];
+            let saved_row = saved_line.saturating_sub(r.evicted + self.scrollback.len());
+            self.saved_cursor
+                .set_point((saved_row, saved_col), rows, cols);
             self.normal_watch
                 .reflowed(&r.extras[watch_off..], r.evicted);
             for (i, m) in self.normal_markers.iter_mut().enumerate() {
@@ -1307,14 +1319,7 @@ impl Term {
             pts.extend(self.normal_watch.points());
 
             let primary = self.grid.take_lines();
-            let r = reflow_pane(
-                primary,
-                scrollback,
-                self.cursor.point(),
-                self.cursor.pending_wrap,
-                &pts,
-                dims,
-            );
+            let r = reflow_pane(primary, scrollback, self.cursor.point(), &pts, dims);
             self.grid.set_screen(r.screen, cols, rows);
             self.scrollback = r.scrollback;
             self.cursor.set_point(r.cursor, rows, cols);
@@ -1350,7 +1355,6 @@ impl Term {
                 alt,
                 VecDeque::new(),
                 (0, 0),
-                false,
                 &[],
                 ReflowDims {
                     limit: 0,
@@ -1603,6 +1607,7 @@ impl Term {
         if !self.normal_markers.is_empty() || !self.alt_markers.is_empty() {
             self.bump_marker_epoch();
         }
+        self.primary_cursor_on_alt = self.cursor.point();
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
         self.grid.clear();
         self.swap_kitty_keyboard();
@@ -3159,12 +3164,11 @@ struct PaneReflow {
 /// Reflow one pane (its `scrollback` joined with `screen`) to `dims`, tracking the
 /// screen-relative cursor `point` plus any `extra_abs` points in absolute
 /// `[scrollback ++ screen]` coordinates. Returns the new screen rows, the scrollback capped
-/// to `dims.limit`, and where each point landed. `parked` is the cursor's deferred wrap.
+/// to `dims.limit`, and where each point landed.
 fn reflow_pane(
     screen: Vec<Row>,
     scrollback: VecDeque<Row>,
     point: (usize, usize),
-    parked: bool,
     extra_abs: &[(usize, usize)],
     dims: ReflowDims,
 ) -> PaneReflow {
@@ -3178,22 +3182,22 @@ fn reflow_pane(
     pts.push((scroll_len + point.0, point.1));
     pts.extend_from_slice(extra_abs);
 
+    // The cursor's own logical line is not reflowed (#1082), so the cursor keeps its row and its
+    // column, clamped onto the last column when the row got narrower than it:
+    // `docs/map/territory/reflow.md`.
     let pts = if dims.reflow && dims.cols != dims.old_cols {
-        let (reflowed, np) = crate::grid::reflow(all, dims.cols, &pts);
-        all = reflowed;
+        let (rows, mut np) = crate::grid::reflow(all, dims.cols, &pts, Some(pts[0].0));
+        all = rows;
+        np[0].1 = point.1.min(dims.cols - 1);
         np
     } else {
         pts
     };
 
-    // A parked cursor that a narrowing leaves just past a full row stays on that row, parked on
-    // its last column (#1076): `docs/map/territory/reflow.md`.
-    let past_full_row = pts[0].1 == dims.cols;
-    let stays_parked = past_full_row && parked && dims.reflow && dims.cols < dims.old_cols;
-
     // A cursor one row past the content (#562) buys that row from history when the pane can
     // pay (`limit > 0`): `docs/map/territory/reflow.md`.
-    let cursor_abs = pts[0].0 + usize::from(past_full_row && !stays_parked);
+    let past_full_row = pts[0].1 == dims.cols;
+    let cursor_abs = pts[0].0 + usize::from(past_full_row);
     if dims.limit > 0 {
         while all.len() <= cursor_abs {
             all.push(Row::blank(dims.cols));
@@ -3209,16 +3213,13 @@ fn reflow_pane(
         dropped += 1;
     }
 
-    // `reflow` may answer `col == cols` — "just after the last cell", which is a real place in the
-    // logical line and no place in the grid (#562). The **cursor's** reading of it is the next
-    // *write* position, so a full row means the start of the row after; the caller's row fit
-    // provides that row (`Grid::set_screen` pads at the bottom) — unless `stays_parked`, where the
-    // next write is the deferred wrap itself. A mark reads the same value the opposite way and
-    // keeps it verbatim — see `Term::resize`.
+    // A cursor column equal to `cols` is "just after the last cell" (#562), a real place in the
+    // line and no place in the grid; the cursor reads it as the start of the row after, which the
+    // caller's row fit provides (`Grid::set_screen` pads at the bottom). Only the re-fit alt pane
+    // still hands the cursor one. A mark reads the same value the opposite way and keeps it
+    // verbatim — see `Term::resize`.
     let cursor_row = pts[0].0.saturating_sub(split);
-    let cursor = if stays_parked {
-        (cursor_row, dims.cols - 1)
-    } else if past_full_row {
+    let cursor = if past_full_row {
         (cursor_row + 1, 0)
     } else {
         (cursor_row, pts[0].1)

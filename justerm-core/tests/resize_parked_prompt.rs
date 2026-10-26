@@ -58,13 +58,14 @@ fn a_parked_prompt_on_the_bottom_row_does_not_scroll_the_screen() {
 }
 
 #[test]
-fn real_text_past_the_new_width_still_reflows_and_the_cursor_follows_it() {
+fn real_text_past_the_new_width_on_the_cursor_line_is_cut() {
+    // The cursor's line is not reflowed (#1082): the text past the new width goes.
     let mut t = Engine::new(13, 6);
     t.feed(b"abcdefghijklm");
     t.resize(12, 6);
     assert_eq!(row(&t, 0), "abcdefghijkl");
-    assert_eq!(row(&t, 1), "m");
-    assert_eq!(cursor(&t), (1, 1, false));
+    assert_eq!(row(&t, 1), "");
+    assert_eq!(cursor(&t), (0, 11, true));
 }
 
 #[test]
@@ -76,17 +77,18 @@ fn a_widening_from_the_same_state_steps_the_cursor_past_the_space() {
 }
 
 #[test]
-fn a_widening_that_lands_just_past_a_full_row_keeps_the_next_row() {
+fn a_widening_keeps_a_wrapped_prompt_on_its_two_rows() {
     // 26 visible cells and the space wrap to two rows at 13 columns, parked on the second. readline
     // believes the cursor is one row below the prompt's start and climbs one row on SIGWINCH, so
-    // the cursor stays on the row after the content.
+    // the prompt keeps both rows and the cursor stays on the second (#1082).
     let mut t = Engine::new(13, 6);
     t.feed(b"\r\n\r\nabcdefghijklmnopqrstuvwxy ");
     assert_eq!(cursor(&t), (3, 12, true));
 
     t.resize(25, 6);
-    assert_eq!(row(&t, 2), "abcdefghijklmnopqrstuvwxy");
-    assert_eq!(cursor(&t), (3, 1, false));
+    assert_eq!(row(&t, 2), "abcdefghijklm");
+    assert_eq!(row(&t, 3), "nopqrstuvwxy");
+    assert_eq!(cursor(&t), (3, 13, false));
 }
 
 #[test]

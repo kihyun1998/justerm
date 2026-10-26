@@ -61,8 +61,12 @@ From reading the source and tests at HEAD 7bb31f7.
   re-splits when the column count changes, and on a real htop recording across a live `SIGWINCH` it
   left debris in cells htop does not overwrite (htop repaints without erasing; vim hides it by
   clearing). Pinned by `a_real_htop_repaint_is_not_polluted_by_a_re_split`.
-- **While on alt, a resize still reflows the inactive primary** with `saved_cursor` as its cursor,
-  carrying the primary markers, primary tracked points and the primary change record. The alt half
+- **While on alt, a resize still reflows the inactive primary** with `primary_cursor_on_alt` as its
+  cursor — where the cursor was when the screen switched, which is the line it keeps un-reflowed
+  (#1082) — carrying the primary markers, primary tracked points, the primary change record and the
+  `saved_cursor` slot as a point. The slot cannot be the primary's cursor: `?47` / `?1047` write
+  nothing to it and `?1048h` on the alt screen writes alt coordinates; keeping the line under a stale
+  slot cut unrelated primary text. The alt half
   converts alt markers and alt tracked points to alt-local rows, re-fits, and re-bases them on the
   primary scrollback's new length; one whose row the shrink pushed off is disposed (markers announce
   `MarkerDisposed`, tracked points are released silently). Before that repair, the alt half's extras
@@ -102,7 +106,7 @@ From reading the source and tests at HEAD 7bb31f7.
 - `justerm-core/src/term.rs` — `Term::switch_to_alt`, `Term::switch_to_primary`,
   `Term::enter_alt_screen`, `Term::leave_alt_screen`, `Term::save_alt_cursor`,
   `Term::restore_alt_cursor`, `Term::swap_kitty_keyboard`, `Term::settle_restored_wrap`; the fields
-  `on_alt`, `alt_grid`, `saved_cursor`, `alt_markers`, `alt_tracked`, `alt_watch`,
+  `on_alt`, `alt_grid`, `saved_cursor`, `primary_cursor_on_alt`, `alt_markers`, `alt_tracked`, `alt_watch`,
   `kitty_flags_inactive`, `kitty_stack_inactive`; `Term::resize`'s alt branch with `reflow_pane` and
   `ReflowDims`; `Term::linefeed_inner` (no history on alt); `Term::erase_history`, `Term::clear`
 - `justerm-core/src/term/dispatch.rs` — `Term::set_dec_private_mode`, the `47` / `1047` / `1048` /
@@ -148,7 +152,7 @@ Tests that pin it: `justerm-core/tests/alt_screen.rs`, `alt_no_reflow.rs`, `alt_
   `on_alt`; they assume the swap is the only place the active list changes, and that leave disposes the
   alt population
 - [reflow](reflow.md) — assumes the alt pane is re-fit, never re-split, and that the primary is
-  reflowed through `saved_cursor` while alt is up
+  reflowed around `primary_cursor_on_alt`'s line while alt is up
 - [wide glyph](wide-glyph.md) — the alt resize leaves leads without spacers; the relocation bound
   `2 < cols` exists for that state
 - [soft wrap](soft-wrap.md) — the write path's two reaches into scrollback are guarded by `on_alt`

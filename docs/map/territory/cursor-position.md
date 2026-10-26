@@ -80,7 +80,8 @@ Read out of the source and the issues cited; there is no record to read instead.
 - **Three cursor slots exist, not two.** `cursor` (live), `saved_cursor` (the alt-screen save,
   `?1048` and `?1049`) and `decsc` (a `SavedCursor`: position, pen, flag, DECOM, charsets — written by
   DECSC / SCOSC, restored by DECRC / SCORC, reset by DECSTR). Visibility is in neither save. The alt
-  pairing is [alt screen](alt-screen.md)'s.
+  pairing is [alt screen](alt-screen.md)'s. A fourth position is not a slot: `primary_cursor_on_alt`
+  records where the cursor was when the screen switched, for a resize on alt to keep that line (#1082).
 - **Reverse wraparound (`?45`) does two things to a step back** (#80, #873). At column 0 of a
   soft-wrapped row it moves to the end of the previous row (soft wraps only — xterm's
   `!LineTstWrapped(ld)` too), and at a **parked** cursor it spends the deferred wrap as the first unit,

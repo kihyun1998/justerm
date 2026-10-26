@@ -94,11 +94,12 @@ fn a_wide_glyph_is_a_whole_pair_at_the_floor() {
 /// `[a][b][한 WIDE][' ' spacer][c][d]` for the same content.
 #[test]
 fn print_and_reflow_agree_at_the_floor() {
+    // Both end on a new line, because the cursor's own line is not reflowed (#1082).
     let mut printed = Engine::new(1, 8);
-    printed.feed("ab한cd".as_bytes());
+    printed.feed("ab한cd\r\n".as_bytes());
 
     let mut reflowed = Engine::new(8, 8);
-    reflowed.feed("ab한cd".as_bytes());
+    reflowed.feed("ab한cd\r\n".as_bytes());
     reflowed.resize(1, 8);
 
     assert_eq!(cells(&printed), cells(&reflowed));
@@ -133,7 +134,7 @@ fn frame_does_not_panic_at_the_floor_after_a_wide_glyph() {
 #[test]
 fn narrowing_never_splits_a_pair_across_rows() {
     let mut term = Engine::new(8, 8);
-    term.feed("ab한cd".as_bytes());
+    term.feed("ab한cd\r\n".as_bytes()); // off the line: the cursor's is not reflowed (#1082)
     term.resize(1, 8);
 
     let (row, col) = wide_lead(&term).expect("the wide lead survives the narrowing");

@@ -175,7 +175,7 @@ fn a_painted_colour_scrolls_into_scrollback_with_its_text() {
 #[test]
 fn a_painted_colour_survives_reflow() {
     let mut term = Engine::new(10, 3);
-    term.feed(b"xxERROR");
+    term.feed(b"xxERROR\r\n"); // off the line: the cursor's own line is not reflowed (#1082)
     let lines = take(&mut term);
     assert!(term.paint_logical_line(lines[0].at, "xxERROR", &[fg_span(2, 7, RED)]));
 
