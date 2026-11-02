@@ -451,12 +451,15 @@ impl DerefMut for Row {
 /// padded to `new_cols` by [`Row::resize`], and a point on it keeps its row with `col` clamped to
 /// `new_cols`. The caller passes the cursor's row as `to`, and as `from` either the same row or
 /// the row of the prompt's `A`. A run with no content is reflowed as usual.
+///
+/// Beside each mapped point it returns a [`PointPlace`]: where the point sat against its line's
+/// content, which the mapped position alone does not say.
 pub(crate) fn reflow(
     rows: Vec<Row>,
     new_cols: usize,
     points: &[(usize, usize)],
     keep: Option<(usize, usize)>,
-) -> (Vec<Row>, Vec<(usize, usize)>) {
+) -> (Vec<Row>, Vec<(usize, usize)>, Vec<PointPlace>) {
     // The kept rows: back from `from` while the row above soft-wraps into it, forward from `to`
     // while the row soft-wraps on. A run with no content is not kept.
     let keep = keep
@@ -591,6 +594,7 @@ pub(crate) fn reflow(
     //    tracked point to its new (row, col).
     let mut out: Vec<Row> = Vec::new();
     let mut new_points = vec![(0usize, 0usize); points.len()];
+    let mut places = vec![PointPlace::Line; points.len()];
     // Where each emitted row of the current logical line actually starts and how many content
     // cells it actually holds: `(first offset, cells, row index)`. The re-split loop is the owner
     // of that extent — it is the thing that decides `take` — so the point mapping below reads it
@@ -644,6 +648,7 @@ pub(crate) fn reflow(
             for (pi, kept) in kept_pts.iter().enumerate() {
                 if let Some((r, c)) = *kept {
                     new_points[pi] = (start + r, c.min(new_cols));
+                    places[pi] = PointPlace::Kept;
                 }
             }
             continue;
@@ -711,6 +716,9 @@ pub(crate) fn reflow(
                 continue;
             }
             let off = poff.min(line.len());
+            if poff > off {
+                places[pi] = PointPlace::PastContent(poff - off);
+            }
             new_points[pi] = match segments.last() {
                 // The empty-line branch emits one blank row and runs no segment loop, so the only
                 // offset a point can have here is 0.
@@ -788,7 +796,20 @@ pub(crate) fn reflow(
         }
     }
 
-    (out, new_points)
+    (out, new_points, places)
+}
+
+/// Where a point [`reflow`] tracked sat against its logical line's content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PointPlace {
+    /// On the line's content, just after it (`col` may equal `new_cols`), or on a trailing blank
+    /// line the join absorbed.
+    Line,
+    /// This many cells past the end of the line's content; the mapped position is that end.
+    PastContent(usize),
+    /// On a row that was not re-split: a kept run, or a pane that is only re-fit. `col` is
+    /// clamped to `new_cols`.
+    Kept,
 }
 
 /// The current screen: `rows` × `cols` cells.

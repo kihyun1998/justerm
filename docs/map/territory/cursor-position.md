@@ -58,9 +58,9 @@ Read out of the source and the issues cited; there is no record to read instead.
   asks `Term::wrapline_advances` before `begin_wrap`; it was the one caller that did not until #540's
   completeness pass, where a row-shift verb inherited the bogus flag and merged two logical lines.
 - **A restored deferred wrap settles where it is not at the last column** (#848). `resize` applies the
-  translation to the live cursor; the two saved slots are not reflowed (`decsc` is untouched by resize
-  and clamped at DECRC, the alt slot is reflowed by the primary pane only while alt is up), so the
-  repair runs at restore — where ghostty puts it for its reflowed saved cursor. Measured before the
+  translation to the live cursor; the saved slots carry only their point through a resize (each DECSC
+  slot rides its own screen's pane, #1088; the alt slot is reflowed by the primary pane only while
+  alt is up), so the repair runs at restore — where ghostty puts it for its reflowed saved cursor. Measured before the
   fix: 4 columns, `abcd`, `DECSC`, `resize(8, 3)`, `DECRC` left the flag armed at column 3 of an
   8-column grid and the next print wrapped instead of landing at column 4.
 - **Relative vertical motion stops at a scroll margin from its inner side** (#898): `Term::move_up`
@@ -77,9 +77,12 @@ Read out of the source and the issues cited; there is no record to read instead.
 - **Origin mode (DECOM) makes addressing relative** to the top margin and clamps to the bottom margin
   (`addressable_rows`); setting it homes the cursor, resetting it leaves the cursor put. DECSC saves
   and DECRC restores it (ADR-0004).
-- **Three cursor slots exist, not two.** `cursor` (live), `saved_cursor` (the alt-screen save,
-  `?1048` and `?1049`) and `decsc` (a `SavedCursor`: position, pen, flag, DECOM, charsets — written by
-  DECSC / SCOSC, restored by DECRC / SCORC, reset by DECSTR). Visibility is in neither save. The alt
+- **Three kinds of cursor slot exist, not two.** `cursor` (live), `saved_cursor` (the alt-screen
+  save, `?1048` and `?1049`) and the DECSC slot (a `SavedCursor`: position, pen, flag, DECOM,
+  charsets — written by DECSC / SCOSC, restored by DECRC / SCORC, reset by DECSTR), which is one per
+  screen: `decsc` is the active screen's, the other screen's waits in `decsc_inactive`, and the two
+  swap on a screen switch (#1088), so DECSTR resets only the active screen's, as xterm's resets
+  `sc[whichBuf]`. Visibility is in neither save. The alt
   pairing is [alt screen](alt-screen.md)'s. A fourth position is not a slot: `primary_cursor_on_alt`
   records where the cursor was when the screen switched, for a resize on alt to keep that line (#1082).
 - **Reverse wraparound (`?45`) does two things to a step back** (#80, #873). At column 0 of a
@@ -107,8 +110,9 @@ Read out of the source and the issues cited; there is no record to read instead.
   `Term::goto`, `Term::addressable_rows`, `Term::vertical_position_relative`, `Term::carriage_return`,
   `Term::linefeed`, `Term::reverse_index`, `Term::put_tab`, `Term::put_back_tab`,
   `Term::insert_lines`, `Term::delete_lines`, `Term::save_cursor`, `Term::restore_cursor`,
-  `Term::settle_restored_wrap`, `SavedCursor`; the fields `origin_mode`, `autowrap`,
-  `reverse_wraparound`, `decsc`, `saved_cursor`
+  `Term::settle_restored_wrap`, `Term::swap_decsc`, `SavedCursor`, `SavedCursor::point`,
+  `SavedCursor::set_point`; the fields `origin_mode`, `autowrap`, `reverse_wraparound`, `decsc`,
+  `decsc_inactive`, `saved_cursor`
 - `justerm-core/src/term/dispatch.rs` — `Term::set_dec_private_mode` (DECOM, DECAWM, `?45`)
 
 ## Reference behaviour

@@ -83,9 +83,10 @@ From reading the source and tests at HEAD 7bb31f7.
   | tracked points | `alt_tracked` cleared on leave, unannounced; a point of the inactive buffer answers `None` (#691) | scoped to the active buffer |
   | paint change record | per buffer (`normal_watch` / `alt_watch`, #967) | a coordinate carries its buffer (`LineRef::alt`) |
   | kitty keyboard flags + stack | swapped per screen (`swap_kitty_keyboard`, #941) | independent of the primary's |
+  | DECSC slot | swapped per screen (`decsc` / `decsc_inactive`, `swap_decsc`, #1088) — xterm `sc[whichBuf]`, xterm.js `Buffer.savedX`/`savedY`, ghostty `Screen.saved_cursor`, alacritty `grid.saved_cursor` | the alt slot rides the alt re-fit, the primary slot the primary reflow |
 
 - **What does not swap.** Tab stops, scroll margins, DEC modes (mouse, bracketed paste, DECAWM…),
-  charsets, the pen (a `?47` switch keeps the cursor and its pen), `decsc` and the title stacks are
+  charsets, the pen (a `?47` switch keeps the cursor and its pen) and the title stacks are
   one copy shared by both screens (`architecture.md` § Hidden VT state: "tab stops + scroll margins
   are *not* per-screen").
 - **Out-of-band and in-band clears on alt.** `Engine::clear` returns `false` and changes nothing on the
@@ -119,7 +120,7 @@ From reading the source and tests at HEAD 7bb31f7.
 - `justerm-core/src/serialize.rs` — `Frame` (`alt_screen`)
 
 Tests that pin it: `justerm-core/tests/alt_screen.rs`, `alt_no_reflow.rs`, `alt_markers.rs`,
-`alt_resize_markers.rs`, `alt_selection_resize.rs`, and the alt cases in `accessible.rs`,
+`alt_resize_markers.rs`, `alt_selection_resize.rs`, `decsc_resize.rs`, and the alt cases in `accessible.rs`,
 `kitty.rs`, `ed3.rs`, `clear.rs`, `tracked_points.rs`.
 
 ## Reference behaviour
@@ -170,9 +171,12 @@ Tests that pin it: `justerm-core/tests/alt_screen.rs`, `alt_no_reflow.rs`, `alt_
   `Engine::alt_screen` and PenTerm's `justerm-core = "0.30"` admits it, but its lockfile holds
   `0.30.0` and `gate_of` still calls `engine.frame()` (penterm 729ae0588, 2026-10-26 — `Cargo.lock`,
   `src-tauri/src/engine/native.rs`).
-- **`decsc` is one slot shared by both screens.** A DECSC on the primary followed by a DECRC inside an
-  alt application restores the primary's position; whether the references keep a saved cursor per
-  screen was not compared.
+- **Whether the alt screen's DECSC slot resets when the alt screen is entered again** was not
+  compared against the references; today it keeps what the last alt session saved (#1088).
+- **`?1049h` saves into `saved_cursor`, not the primary's DECSC slot.** xterm.js's `?1049h` calls its
+  `saveCursor` (the active buffer's DECSC slot; `common/InputHandler.ts:2011-2012` @ `699f553`), so a
+  DECSC on the primary is overwritten there by the enter and not here; xterm, ghostty and alacritty
+  were not compared (#1088).
 - **`?47` clears the alt grid on enter, following xterm.js**; xterm's own `?47` / `?1047` semantics
   (which of enter or leave clears) were not compared.
 - **Viewing alt scrollback is impossible by construction.** If it ever becomes a feature,
