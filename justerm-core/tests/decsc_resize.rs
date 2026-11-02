@@ -123,11 +123,10 @@ fn a_decrc_on_the_alt_screen_does_not_read_the_primary_slot() {
 #[test]
 fn the_primary_slot_rides_a_resize_made_while_the_alt_screen_is_up() {
     let mut t = Engine::new(10, 6);
-    // The `?1049h` save is taken on the empty row below `xy`, away from the DECSC point, so the
-    // two slots differ; an empty cursor line is reflowed like any other.
-    t.feed(b"0123456789abcdef\r\nxy\x1b7\r\n\x1b[?1049h");
+    // `?1049h` saves into the primary's DECSC slot just after `xy` (#1092).
+    t.feed(b"0123456789abcdef\r\nxy\x1b[?1049h");
     t.resize(5, 6);
-    t.feed(b"\x1b[?1049l\x1b[1;1H\x1b8X");
+    t.feed(b"\x1b[?1049lX");
     assert_eq!(rows(&t), ["01234", "56789", "abcde", "f", "xyX", ""]);
     assert_eq!(cursor(&t), (4, 3));
 }
@@ -243,10 +242,12 @@ fn the_alt_slot_rides_the_alt_screens_refit() {
 #[test]
 fn the_primary_slot_past_its_content_keeps_its_column_across_a_resize_on_the_alt_screen() {
     let mut t = Engine::new(10, 6);
-    t.feed(b"$ \x1b7\x1b[4;1Hstatus\x1b[?1049h");
-    t.resize(8, 6);
-    t.feed(b"\x1b[?1049l\x1b8X");
-    assert_eq!(rows(&t)[0], "$ X");
+    // `?1049h` saves at column 5 of the empty line between `a` and `b`; an empty cursor line is
+    // reflowed, not kept, so the saved point goes through the past-content mapping.
+    t.feed(b"a\r\n\r\nb\x1b[2;6H\x1b[?1049h");
+    t.resize(12, 6);
+    t.feed(b"\x1b[?1049lX");
+    assert_eq!(rows(&t)[1], "     X");
 }
 
 #[test]

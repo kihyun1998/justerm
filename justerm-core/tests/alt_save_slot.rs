@@ -14,7 +14,11 @@ fn cursor(t: &Engine) -> (usize, usize) {
 fn an_alt_screen_round_trip_saves_into_the_decsc_slot() {
     let mut t = Engine::new(10, 6);
     t.feed(b"\x1b[2;3H\x1b7\x1b[5;6H\x1b[?1049h\x1b[?1049l\x1b[1;1H\x1b8");
-    assert_eq!(cursor(&t), (4, 5), "the ?1049h save overwrote the DECSC one");
+    assert_eq!(
+        cursor(&t),
+        (4, 5),
+        "the ?1049h save overwrote the DECSC one"
+    );
 }
 
 #[test]
@@ -44,7 +48,11 @@ fn leaving_the_alt_screen_restores_the_origin_mode_saved_on_entering() {
     let mut t = Engine::new(10, 6);
     // Margins rows 2..5 with DECOM on, turned off inside the alternate screen.
     t.feed(b"\x1b[2;5r\x1b[?6h\x1b[?1049h\x1b[?6l\x1b[?1049l\x1b[1;1H");
-    assert_eq!(cursor(&t), (1, 0), "CUP 1;1 homes to the top margin under DECOM");
+    assert_eq!(
+        cursor(&t),
+        (1, 0),
+        "CUP 1;1 homes to the top margin under DECOM"
+    );
 }
 
 #[test]
@@ -66,4 +74,12 @@ fn leaving_the_alt_screen_keeps_the_cursor_visibility() {
     let mut t = Engine::new(10, 6);
     t.feed(b"\x1b[?1049h\x1b[?25l\x1b[?1049l");
     assert!(!t.cursor().visible, "DECTCEM is not part of the save");
+}
+
+#[test]
+fn a_second_1049_set_keeps_the_shape_from_before_the_first() {
+    let mut t = Engine::new(10, 6);
+    // Bar before entering; Block inside; a second ?1049h on the alt screen; then leave.
+    t.feed(b"\x1b[6 q\x1b[?1049h\x1b[2 q\x1b[?1049h\x1b[?1049l");
+    assert_eq!(t.frame().cursor_shape, Some(CursorShape::Bar));
 }

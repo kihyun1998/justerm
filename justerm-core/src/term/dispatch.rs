@@ -53,8 +53,8 @@ impl Term {
             // switching. ?1049 is the two combined.
             ('h', 47) | ('h', 1047) => self.switch_to_alt(),
             ('l', 47) | ('l', 1047) => self.switch_to_primary(),
-            ('h', 1048) => self.save_alt_cursor(),
-            ('l', 1048) => self.restore_alt_cursor(),
+            ('h', 1048) => self.save_cursor(),
+            ('l', 1048) => self.restore_cursor(),
             ('h', 6) => {
                 // DECOM: set homes the cursor to the region top.
                 self.origin_mode = true;

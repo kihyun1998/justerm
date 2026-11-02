@@ -75,8 +75,8 @@ pub struct Term {
     /// no scrollback (#3 only rings the primary).
     alt_grid: Grid,
     cursor: Cursor,
-    /// Cursor saved on alt-screen enter (DEC 1049), restored on leave.
-    saved_cursor: Cursor,
+    /// The caret shape and blink from before `?1049h`, restored by `?1049l` (#927, #1092).
+    caret_before_alt: (Option<CursorShape>, bool),
     /// While the alt screen is up, the primary's cursor: where the cursor was when the screen
     /// switched, screen-relative, carried through each resize. Its line is the one a resize keeps
     /// un-reflowed on the primary (#1082).
@@ -289,9 +289,9 @@ pub struct Term {
     /// What [`Term::changed_logical_lines`] reports next, per buffer (#967).
     normal_watch: ChangeWatch,
     alt_watch: ChangeWatch,
-    /// The active screen's cursor state saved by DECSC (ESC 7), restored by DECRC (ESC 8). A
-    /// slot separate from `saved_cursor` (which is the alt-screen save). Defaults to
-    /// home/default so a DECRC with no prior DECSC restores a sane state.
+    /// The active screen's cursor state saved by DECSC (ESC 7) and by `?1048h` / `?1049h`,
+    /// restored by DECRC (ESC 8) and by `?1048l` / `?1049l`. Defaults to home/default so a
+    /// DECRC with no prior DECSC restores a sane state.
     decsc: SavedCursor,
     /// The other screen's DECSC slot, swapped with `decsc` on a screen switch (#1088).
     decsc_inactive: SavedCursor,
@@ -718,7 +718,7 @@ impl Term {
             grid: Grid::new(cols, rows),
             alt_grid: Grid::new(cols, rows),
             cursor: Cursor::default(),
-            saved_cursor: Cursor::default(),
+            caret_before_alt: (None, false),
             primary_cursor_on_alt: (0, 0),
             on_alt: false,
             prompt_redraw: PromptRedraw::Unstated,
@@ -1254,12 +1254,8 @@ impl Term {
             // The primary change record rides after the tracked points (#967).
             let watch_off = marker_pts.len();
             marker_pts.extend(self.normal_watch.points());
-            // The `?1049` / `?1048` save slot rides as a point; the primary's cursor is
+            // The primary's DECSC slot rides the primary pane too (#1088); the primary's cursor is
             // `primary_cursor_on_alt`.
-            let saved_off = marker_pts.len();
-            let (saved_row, saved_col) = self.saved_cursor.point();
-            marker_pts.push((scrollback.len() + saved_row, saved_col));
-            // The primary's DECSC slot rides the primary pane too (#1088).
             let decsc_off = marker_pts.len();
             let (decsc_row, decsc_col) = self.decsc_inactive.point();
             marker_pts.push((scrollback.len() + decsc_row, decsc_col));
@@ -1281,12 +1277,6 @@ impl Term {
             self.alt_grid.set_screen(r.screen, cols, rows);
             self.scrollback = r.scrollback;
             self.primary_cursor_on_alt = r.cursor;
-            let (saved_line, saved_col) = r.extras[saved_off];
-            let saved_row = saved_line.saturating_sub(r.evicted + self.scrollback.len());
-            let (saved_col, saved_wrap) = saved_cursor_col(saved_col, r.places[saved_off], cols);
-            self.saved_cursor
-                .set_point((saved_row, saved_col), rows, cols);
-            self.saved_cursor.pending_wrap |= saved_wrap;
             let (decsc_line, decsc_col) = r.extras[decsc_off];
             let decsc_row = decsc_line.saturating_sub(r.evicted + self.scrollback.len());
             let (decsc_col, decsc_wrap) = saved_cursor_col(decsc_col, r.places[decsc_off], cols);
@@ -1717,22 +1707,6 @@ impl Term {
 
     // ---- alt screen (DEC 1049) -----------------------------------------------
 
-    /// Save the cursor into the alt-screen slot — `?1048` set, and the first half of `?1049`
-    /// enter (#72).
-    fn save_alt_cursor(&mut self) {
-        self.saved_cursor = self.cursor;
-    }
-
-    /// Restore the cursor from the alt-screen slot — `?1048` reset, and the
-    /// second half of `?1049` leave. DECTCEM visibility is a standalone mode, not
-    /// part of the save, so preserve it across the restore (#38/#72).
-    fn restore_alt_cursor(&mut self) {
-        let visible = self.cursor.visible;
-        self.cursor = self.saved_cursor;
-        self.cursor.visible = visible;
-        self.settle_restored_wrap();
-    }
-
     /// Switch to the (cleared) alternate buffer without touching the cursor —
     /// `?47`/`?1047` set, and the second half of `?1049` enter (#72).
     fn switch_to_alt(&mut self) {
@@ -1797,24 +1771,26 @@ impl Term {
         std::mem::swap(&mut self.decsc, &mut self.decsc_inactive);
     }
 
-    /// Enter the alternate screen: save the cursor, swap in the other grid, and
-    /// clear it.
+    /// `?1049h`: DECSC on the active screen; from the primary, also stash the caret shape and
+    /// blink and switch to the cleared alternate screen.
     fn enter_alt_screen(&mut self) {
+        self.save_cursor();
         if self.on_alt {
             return;
         }
-        self.save_alt_cursor();
+        self.caret_before_alt = (self.cursor.shape, self.cursor.blink);
         self.switch_to_alt();
     }
 
-    /// Leave the alternate screen: swap the primary grid back in and restore the
-    /// saved cursor.
+    /// `?1049l`: from the alternate screen, switch back to the primary, DECRC there, and restore
+    /// the caret shape and blink stashed by `?1049h`.
     fn leave_alt_screen(&mut self) {
         if !self.on_alt {
             return;
         }
         self.switch_to_primary();
-        self.restore_alt_cursor();
+        self.restore_cursor();
+        (self.cursor.shape, self.cursor.blink) = self.caret_before_alt;
     }
 
     /// RI (ESC M): move up one line. At the top margin, scroll the region down
