@@ -2,7 +2,7 @@
 //! history (#1089), as ghostty does (`src/terminal/PageList.zig:2415-2431` @ `e6e26e1`). A row with
 //! content is never dropped from below the cursor, and the cursor's own row is never trimmed.
 
-use justerm_core::Engine;
+use justerm_core::{CellFlags, Engine, SelectionType, Side};
 
 fn rows(t: &Engine) -> Vec<String> {
     let g = t.grid();
@@ -112,4 +112,79 @@ fn an_empty_pane_with_no_history_narrows_and_shrinks() {
     t.resize(5, 2);
     assert_eq!(rows(&t), ["", ""]);
     assert_eq!(cursor(&t), (0, 0));
+}
+
+#[test]
+fn a_decsc_point_on_a_blank_row_below_the_cursor_stops_the_trim_there() {
+    let mut t = Engine::new(10, 6);
+    // DECSC on blank row 3, then the cursor goes back up to `b`.
+    t.feed(b"a\r\nb\r\nc\r\n\x1b7\x1b[2;1H");
+    t.resize(10, 3);
+    t.feed(b"\x1b8Z");
+    assert_eq!(
+        rows(&t),
+        ["b", "c", "Z"],
+        "the restore lands below `c`, not on it"
+    );
+    assert_eq!(t.scrollback_len(), 1);
+}
+
+#[test]
+fn a_tracked_point_on_a_blank_row_below_the_cursor_stays_off_the_content() {
+    let mut t = Engine::new(10, 6);
+    t.feed(b"a\r\nb\r\nc\x1b[2;1H");
+    let id = t.track_point(4, 3);
+    t.resize(10, 3);
+    let (line, col) = t.tracked_point(id).expect("its row was kept, not evicted");
+    let row = line - t.scrollback_len();
+    assert_eq!(rows(&t)[row], "", "the point is still on a blank row");
+    assert_eq!(col, 3);
+}
+
+#[test]
+fn a_selection_of_blank_rows_below_the_cursor_takes_in_no_content() {
+    let mut t = Engine::new(10, 6);
+    t.feed(b"a\r\nb\r\nc\x1b[2;1H");
+    t.selection_begin(4, 0, Side::Left, SelectionType::Char);
+    t.selection_extend(5, 9, Side::Right);
+    t.resize(10, 3);
+    let text = t.selection_text().unwrap_or_default();
+    assert!(!text.contains('c'), "selection took in {text:?}");
+}
+
+#[test]
+fn a_row_of_styled_spaces_is_content() {
+    let mut t = Engine::new(10, 6);
+    // Row 4 holds ten inverse spaces the application drew.
+    t.feed(b"a\r\nb\x1b[5;1H\x1b[7m          \x1b[0m\x1b[2;1H");
+    t.resize(10, 3);
+    let g = t.grid();
+    let inverse_row = (0..g.rows()).find(|&r| g.cell(r, 0).flags().contains(CellFlags::INVERSE));
+    assert!(inverse_row.is_some(), "the inverse row was dropped");
+}
+
+#[test]
+fn a_blank_row_a_wrapped_row_continues_into_is_kept() {
+    let mut t = Engine::new(10, 6);
+    // Eleven spaces from row 1 wrap into row 2; `x` on row 0 holds the cursor.
+    t.feed(b"\x1b[2;1H           \x1b[1;1Hx");
+    t.resize(10, 2);
+    assert!(
+        !t.grid().is_row_wrapped(t.grid().rows() - 1),
+        "the last row does not wrap into a row that is gone"
+    );
+}
+
+#[test]
+fn the_alt_screen_under_the_primary_gives_up_its_blank_rows_too() {
+    let mut t = Engine::new(10, 6);
+    // The alt screen's DECSC slot at (1, 1) over a blank alt grid.
+    t.feed(b"\x1b[?1049h\x1b[2;2H\x1b7\x1b[?1049l");
+    t.resize(10, 3);
+    t.feed(b"\x1b[?1049h\x1b8");
+    assert_eq!(
+        cursor(&t),
+        (1, 1),
+        "the slot's row was not pushed off the top"
+    );
 }
