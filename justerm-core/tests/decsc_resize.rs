@@ -266,6 +266,10 @@ fn a_decsc_point_past_the_content_of_a_row_the_narrowing_filled_keeps_the_next_w
     t.feed(b"abcd\x1b[1;6H\x1b7\x1b[3;1H");
     t.resize(4, 6);
     t.feed(b"\x1b8X");
-    assert_eq!(&rows(&t)[..2], ["abcd", "X"], "the d survives, as for a point right after it");
+    assert_eq!(
+        &rows(&t)[..2],
+        ["abcd", "X"],
+        "the d survives, as for a point right after it"
+    );
     assert_eq!(cursor(&t), (1, 1));
 }
