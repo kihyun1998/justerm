@@ -125,20 +125,27 @@ is the consumer-facing contract. No record governs it.
   pane scrolls into history, gated on `limit > 0` (the alt pane passes `0`). Without it the next byte
   destroyed a character (a prompt at the bottom of a full screen). Tracked lines are bounded at
   `split + dims.rows - 1`, where the final geometry is known.
-- **A screen losing rows gives up its blank rows below the cursor first** (#1089). Before the split,
-  `reflow_pane` pops trailing blank rows (no content, the trim's `Cell::is_blank` test, so a
-  background-only row counts) that sit below the cursor's row, at most as many as the screen loses;
-  only the rest comes off the top, into history on the primary and gone on the alt pane. Before
-  this every lost row came off the top: `a` `b` `c` with the cursor on `b`, 6 → 3 rows, left a
-  blank screen and all three in history, and on the alt screen they were gone. A row with content is
-  never dropped from below the cursor and the cursor's row is never trimmed, so content the cursor
-  sits above still goes to history. The bound is the rows the *screen* loses, not the pane's
-  excess: bounded by the pane, a grow with history trimmed blank rows and pulled more history
-  down. Same rule in all four panes, the re-fit alt pane included. ghostty's rule
-  (`src/terminal/PageList.zig:2415-2431` @ `e6e26e1`, which cites macOS Terminal.app); xterm.js
-  (`common/buffer/Buffer.ts:222-233` @ `699f553`) and alacritty (`grid/resize.rs:78-97` @
-  `852e971`) drop the rows below the cursor whatever they hold, which the maintainer did not choose
-  (2026-11-02, #1089 triage).
+- **A screen losing rows gives up its vacant rows below the cursor first** (#1089). Before the
+  split, `reflow_pane` pops trailing rows below the cursor's row, at most as many as the screen
+  loses; only the rest comes off the top, into history on the primary and gone on the alt pane. It
+  stops at the first row that is not `Row::is_vacant` (a glyph, an SGR attribute or a link on any
+  cell; a background colour alone is vacant, as an erase leaves it), that a soft-wrapped row
+  continues into (popping it would leave the wrap flag pointing at nothing), or that an extra point
+  sits on — selection endpoint, marker, tracked point, change record, saved cursor. A point never
+  lands on a row that left, so its fate is unchanged: the content it was on is still there.
+  - The cursor's row is never trimmed, and content the cursor sits above still goes to history.
+  - The bound is the rows the *screen* loses, not the pane's excess: bounded by the pane, a grow
+    with history trimmed blank rows and pulled more history down.
+  - Same rule in all four panes, the re-fit alt pane included. On a column change the primary's
+    reflow has already absorbed its trailing blank lines, so the trim finds nothing there; it acts
+    on a rows-only resize and on the alt panes.
+  - Sources: ghostty trims trailing rows with no text and stops at a row holding a tracked pin
+    (`src/terminal/PageList.zig:2415-2431`, `trimTrailingBlankRows` `:2748-2792` @ `e6e26e1`; its
+    comment cites macOS Terminal.app). ghostty's "no text" is codepoint 0, so a typed space is
+    text there; justerm stores an erased cell as a space and cannot tell the two apart, so a plain
+    default-pen space row counts as vacant. xterm.js (`common/buffer/Buffer.ts:222-233` @
+    `699f553`) and alacritty (`grid/resize.rs:78-97` @ `852e971`) drop the rows below the cursor
+    whatever they hold, which the maintainer did not choose (2026-11-02, #1089 triage).
 - **What leaves the buffer differs by holder.** `PaneReflow::evicted` counts rows dropped off the
   front by the cap (primary) or by the shrink (alt). Tracked points on such a row are released;
   alt markers are disposed with `MarkerDisposed`; primary markers saturate to line 0
@@ -173,7 +180,7 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
 ## Code
 
 - `justerm-core/src/grid.rs` — `reflow` (the join and re-split, taking and returning `points`),
-  `PointPlace`, `Row::resize`, `Grid::take_lines`, `Grid::set_screen`
+  `PointPlace`, `Row::resize`, `Row::is_vacant`, `Grid::take_lines`, `Grid::set_screen`
 - `justerm-core/src/term.rs` — `Term::resize`, `Term::resize_keep_from`, `Term::live_prompt_start`,
   `PromptRedraw`, `ReflowDims`, `PaneReflow`, `reflow_pane`, `saved_cursor_col`,
   `is_default_tab_stop`, `default_tabs`
