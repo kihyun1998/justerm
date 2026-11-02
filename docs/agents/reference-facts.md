@@ -3749,6 +3749,8 @@ ADR-0036 D1 and D5 differ from a straight port.
 | `?1049h` calls `saveCursor` first, so the enter overwrites the primary's DECSC slot | xterm.js `699f553` | `common/InputHandler.ts:2011-2012` |
 | The saved cursor is a field of each `Screen`; a resize tracks it as a pin through the reflow and reads it back after | ghostty `e6e26e1` | `src/terminal/Screen.zig:54`; resize `:1970-1979`, `:2083` |
 | The saved cursor is a field of each `Grid` | alacritty `852e971` | `alacritty_terminal/src/grid/mod.rs:117`; DECSC `term/mod.rs:1619-1622` |
+| A reflow widens a row's trimmed length to include every tracked pin in the blanks right of its content, first clamping a pin past the destination width to its last column; the cursor pin widens it too | ghostty `e6e26e1` | `src/terminal/PageList.zig:1576-1597`, cursor `:1599-1605` |
+| A resize clamps the saved column to the new width and does nothing else to it | alacritty `852e971`, xterm.js `699f553` | `alacritty_terminal/src/grid/resize.rs:387`; `common/buffer/Buffer.ts:256` |
 
 justerm keeps the `?1049` save in its own slot (`saved_cursor`), so the xterm.js overwrite does not
 happen here; that difference was not compared further.

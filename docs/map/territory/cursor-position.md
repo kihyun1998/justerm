@@ -77,11 +77,12 @@ Read out of the source and the issues cited; there is no record to read instead.
 - **Origin mode (DECOM) makes addressing relative** to the top margin and clamps to the bottom margin
   (`addressable_rows`); setting it homes the cursor, resetting it leaves the cursor put. DECSC saves
   and DECRC restores it (ADR-0004).
-- **Three cursor slots exist, not two.** `cursor` (live), `saved_cursor` (the alt-screen save,
-  `?1048` and `?1049`) and `decsc` (a `SavedCursor`: position, pen, flag, DECOM, charsets — written by
-  DECSC / SCOSC, restored by DECRC / SCORC, reset by DECSTR). `decsc` is the active screen's; the
-  other screen's waits in `decsc_inactive` and the two swap on a screen switch (#1088), so DECSTR
-  resets only the active screen's, as xterm's resets `sc[whichBuf]`. Visibility is in neither save. The alt
+- **Three kinds of cursor slot exist, not two.** `cursor` (live), `saved_cursor` (the alt-screen
+  save, `?1048` and `?1049`) and the DECSC slot (a `SavedCursor`: position, pen, flag, DECOM,
+  charsets — written by DECSC / SCOSC, restored by DECRC / SCORC, reset by DECSTR), which is one per
+  screen: `decsc` is the active screen's, the other screen's waits in `decsc_inactive`, and the two
+  swap on a screen switch (#1088), so DECSTR resets only the active screen's, as xterm's resets
+  `sc[whichBuf]`. Visibility is in neither save. The alt
   pairing is [alt screen](alt-screen.md)'s. A fourth position is not a slot: `primary_cursor_on_alt`
   records where the cursor was when the screen switched, for a resize on alt to keep that line (#1082).
 - **Reverse wraparound (`?45`) does two things to a step back** (#80, #873). At column 0 of a

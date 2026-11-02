@@ -66,6 +66,23 @@ is the consumer-facing contract. No record governs it.
   screen's pane**, so a DECRC after a resize returns to the content it saved (#1088); a slot whose
   line was evicted lands on the top row, as `saved_cursor` does. ChangeWatch reads only its first two
   mapped points, so a set after it is safe.
+- **A saved slot keeps a column past its line's content** (#1088). The content trim maps a point in
+  the blanks right of the last glyph — after a prompt's trailing space, on an empty line between
+  content, past a short line — to the content's end, which pulled a saved cursor left on a resize
+  that did not even need to re-split the line (`xy` saved at column 7, widened: DECRC at column 2).
+  So `reflow` returns a `PointPlace` beside every point (`Line`, `PastContent(n)`, `Kept`), and
+  `saved_cursor_col` turns it into the two saved slots' column (DECSC and `saved_cursor`): a point
+  `n` cells past the content keeps that distance, a `Line` point at `col == cols` (just past a row
+  the narrowing filled) is the last column with the wrap deferred — the logical position after the
+  glyph, as #848 represents it — and every column is clamped to the last. Selection anchors,
+  markers and tracked points ignore the place and keep the content-end answer: the change was scoped
+  to the slots (maintainer, 2026-11-02, #1088). ghostty widens the line to include every tracked pin
+  in the blanks (`terminal/PageList.zig:1576-1597` @ `e6e26e1`); xterm.js and alacritty only clamp
+  the saved column (`common/buffer/Buffer.ts:256` @ `699f553`, `grid/resize.rs:387` @ `852e971`).
+- **A slot stores the clamped column**, so a narrowing then a widening does not bring the column
+  back (a slot at column 8, 10 → 5 → 10 columns, restores at column 4). The live cursor and all three
+  references clamp at resize the same way; before #1088 the DECSC slot was clamped only at DECRC
+  because it never moved.
 - **A returned point is a position in the logical line, not necessarily a cell** (#562, closed
   2026-07-27 after five designs that made `reflow` itself materialise a row were measured and
   rejected — a cursor at column 59 resized to width 4 emptied the buffer; a blank-line exemption
@@ -140,9 +157,9 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
 ## Code
 
 - `justerm-core/src/grid.rs` — `reflow` (the join and re-split, taking and returning `points`),
-  `Row::resize`, `Grid::take_lines`, `Grid::set_screen`
+  `PointPlace`, `Row::resize`, `Grid::take_lines`, `Grid::set_screen`
 - `justerm-core/src/term.rs` — `Term::resize`, `Term::resize_keep_from`, `Term::live_prompt_start`,
-  `PromptRedraw`, `ReflowDims`, `PaneReflow`, `reflow_pane`,
+  `PromptRedraw`, `ReflowDims`, `PaneReflow`, `reflow_pane`, `saved_cursor_col`,
   `is_default_tab_stop`, `default_tabs`
 - `justerm-core/src/term/selection.rs` — `Term::selection_reflowed`
 - `justerm-core/src/term/paint.rs` — `ChangeWatch::points`, `ChangeWatch::reflowed`
