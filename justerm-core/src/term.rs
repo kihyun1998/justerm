@@ -3333,6 +3333,7 @@ fn reflow_pane(
     keep_from: Option<usize>,
 ) -> PaneReflow {
     let scroll_len = scrollback.len();
+    let removed_rows = screen.len().saturating_sub(dims.rows);
     let mut all: Vec<Row> = scrollback.into();
     all.extend(screen);
 
@@ -3368,14 +3369,17 @@ fn reflow_pane(
         }
     }
 
-    // A pane taller than the screen first gives up its blank rows below the cursor's row (#1089).
-    while all.len() > dims.rows
-        && all.len() - 1 > cursor_abs
+    // A screen losing rows first gives up its blank rows below the cursor's row, up to the number
+    // it loses (#1089).
+    let mut trim = removed_rows;
+    while trim > 0
+        && all.len() > cursor_abs + 1
         && all
             .last()
             .is_some_and(|row| row.iter().all(crate::cell::Cell::is_blank))
     {
         all.pop();
+        trim -= 1;
     }
 
     let split = all.len().saturating_sub(dims.rows);

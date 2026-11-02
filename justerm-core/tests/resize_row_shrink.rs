@@ -105,3 +105,11 @@ fn growing_rows_trims_nothing() {
     assert_eq!(cursor(&t), (1, 0));
     assert_eq!(t.scrollback_len(), 4);
 }
+
+#[test]
+fn an_empty_pane_with_no_history_narrows_and_shrinks() {
+    let mut t = Engine::with_scrollback(10, 3, 0);
+    t.resize(5, 2);
+    assert_eq!(rows(&t), ["", ""]);
+    assert_eq!(cursor(&t), (0, 0));
+}
