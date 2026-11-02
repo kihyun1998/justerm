@@ -289,10 +289,12 @@ pub struct Term {
     /// What [`Term::changed_logical_lines`] reports next, per buffer (#967).
     normal_watch: ChangeWatch,
     alt_watch: ChangeWatch,
-    /// Cursor state saved by DECSC (ESC 7), restored by DECRC (ESC 8). A slot
-    /// separate from `saved_cursor` (which is the alt-screen save). Defaults to
+    /// The active screen's cursor state saved by DECSC (ESC 7), restored by DECRC (ESC 8). A
+    /// slot separate from `saved_cursor` (which is the alt-screen save). Defaults to
     /// home/default so a DECRC with no prior DECSC restores a sane state.
     decsc: SavedCursor,
+    /// The other screen's DECSC slot, swapped with `decsc` on a screen switch (#1088).
+    decsc_inactive: SavedCursor,
     /// SCS-designated character sets G0..G3 (#62). `gl` indexes the active (GL)
     /// set, switched by SI (→G0) / SO (→G1). First cut uses G0/G1.
     charsets: [Charset; 4],
@@ -515,6 +517,19 @@ struct SavedCursor {
     /// sets and the active GL shift (#62).
     charsets: [Charset; 4],
     gl: usize,
+}
+
+impl SavedCursor {
+    /// The saved `(row, col)` position.
+    fn point(&self) -> (usize, usize) {
+        (self.row, self.col)
+    }
+
+    /// Set the saved position, clamped to a `rows` x `cols` screen.
+    fn set_point(&mut self, point: (usize, usize), rows: usize, cols: usize) {
+        self.row = point.0.min(rows - 1);
+        self.col = point.1.min(cols - 1);
+    }
 }
 
 /// An engine-owned decoration marker (#118): a stable id bound to an absolute
@@ -769,6 +784,7 @@ impl Term {
             normal_watch: ChangeWatch::default(),
             alt_watch: ChangeWatch::default(),
             decsc: SavedCursor::default(),
+            decsc_inactive: SavedCursor::default(),
             charsets: [Charset::Ascii; 4],
             gl: 0,
         }
@@ -1199,6 +1215,9 @@ impl Term {
                     .iter()
                     .map(|p| (p.line.saturating_sub(old_base), p.col)),
             );
+            // The alt screen's DECSC slot rides the re-fit (#1088).
+            let alt_decsc_off = alt_pts.len();
+            alt_pts.push(self.decsc.point());
             let alt = self.grid.take_lines();
             let r_alt = reflow_pane(
                 alt,
@@ -1214,6 +1233,12 @@ impl Term {
             );
             self.grid.set_screen(r_alt.screen, cols, rows);
             self.cursor.set_point(r_alt.cursor, rows, cols);
+            let (decsc_line, decsc_col) = r_alt.extras[alt_decsc_off];
+            self.decsc.set_point(
+                (decsc_line.saturating_sub(r_alt.evicted), decsc_col),
+                rows,
+                cols,
+            );
 
             // Primary is inactive here, but markers anchor primary content, so they reflow with it,
             // carrying `(line, col)` (#166). No primary selection exists while `on_alt`.
@@ -1233,6 +1258,10 @@ impl Term {
             let saved_off = marker_pts.len();
             let (saved_row, saved_col) = self.saved_cursor.point();
             marker_pts.push((scrollback.len() + saved_row, saved_col));
+            // The primary's DECSC slot rides the primary pane too (#1088).
+            let decsc_off = marker_pts.len();
+            let (decsc_row, decsc_col) = self.decsc_inactive.point();
+            marker_pts.push((scrollback.len() + decsc_row, decsc_col));
             let keep_from = self.resize_keep_from(
                 scrollback.len() + self.primary_cursor_on_alt.0,
                 &scrollback,
@@ -1254,6 +1283,10 @@ impl Term {
             let saved_row = saved_line.saturating_sub(r.evicted + self.scrollback.len());
             self.saved_cursor
                 .set_point((saved_row, saved_col), rows, cols);
+            let (decsc_line, decsc_col) = r.extras[decsc_off];
+            let decsc_row = decsc_line.saturating_sub(r.evicted + self.scrollback.len());
+            self.decsc_inactive
+                .set_point((decsc_row, decsc_col), rows, cols);
             self.normal_watch
                 .reflowed(&r.extras[watch_off..], r.evicted);
             for (i, m) in self.normal_markers.iter_mut().enumerate() {
@@ -1341,6 +1374,9 @@ impl Term {
             // The change record rides last (#967).
             let watch_off = pts.len();
             pts.extend(self.normal_watch.points());
+            // The primary's DECSC slot rides with its content (#1088).
+            let decsc_off = pts.len();
+            pts.push((scrollback.len() + self.decsc.row, self.decsc.col));
 
             let keep_from =
                 self.resize_keep_from(scrollback.len() + self.cursor.row, &scrollback, &self.grid);
@@ -1358,6 +1394,9 @@ impl Term {
             self.cursor.set_point(r.cursor, rows, cols);
             self.normal_watch
                 .reflowed(&r.extras[watch_off..], r.evicted);
+            let (decsc_line, decsc_col) = r.extras[decsc_off];
+            let decsc_row = decsc_line.saturating_sub(r.evicted + self.scrollback.len());
+            self.decsc.set_point((decsc_row, decsc_col), rows, cols);
             // A selection endpoint is UI state: a `col == cols` result (#562) is clamped into the grid.
             self.selection_reflowed(&r.extras[..sel_pts.len()], r.evicted, cols);
             let marker_off = sel_pts.len();
@@ -1383,12 +1422,13 @@ impl Term {
                 }
             });
 
+            // The alt screen's DECSC slot rides the alt re-fit (#1088).
             let alt = self.alt_grid.take_lines();
             let r = reflow_pane(
                 alt,
                 VecDeque::new(),
                 (0, 0),
-                &[],
+                &[self.decsc_inactive.point()],
                 ReflowDims {
                     limit: 0,
                     reflow: false,
@@ -1397,6 +1437,12 @@ impl Term {
                 None,
             );
             self.alt_grid.set_screen(r.screen, cols, rows);
+            let (decsc_line, decsc_col) = r.extras[0];
+            self.decsc_inactive.set_point(
+                (decsc_line.saturating_sub(r.evicted), decsc_col),
+                rows,
+                cols,
+            );
         }
 
         // Carry the deferred wrap across the resize — it is cursor state (#848). Where the reflow
@@ -1694,6 +1740,7 @@ impl Term {
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
         self.grid.clear();
         self.swap_kitty_keyboard();
+        self.swap_decsc();
         self.on_alt = true;
         self.display_offset = 0; // the alt screen has no scrollback to view
         self.selection = None; // a selection cannot survive a screen swap
@@ -1721,6 +1768,7 @@ impl Term {
         self.alt_tracked.clear();
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
         self.swap_kitty_keyboard();
+        self.swap_decsc();
         self.on_alt = false;
         self.display_offset = 0; // return to the primary at its bottom
         self.selection = None; // a selection cannot survive a screen swap
@@ -1732,6 +1780,11 @@ impl Term {
     fn swap_kitty_keyboard(&mut self) {
         std::mem::swap(&mut self.kitty_flags, &mut self.kitty_flags_inactive);
         std::mem::swap(&mut self.kitty_stack, &mut self.kitty_stack_inactive);
+    }
+
+    /// Exchange the active screen's DECSC slot with the other screen's (#1088).
+    fn swap_decsc(&mut self) {
+        std::mem::swap(&mut self.decsc, &mut self.decsc_inactive);
     }
 
     /// Enter the alternate screen: save the cursor, swap in the other grid, and
