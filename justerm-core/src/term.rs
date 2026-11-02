@@ -12,7 +12,7 @@ use crate::color::Color;
 use crate::cursor::{Cursor, CursorShape, Pen};
 use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
 use crate::event::TermEvent;
-use crate::grid::{ExtAttrs, Grid, Row};
+use crate::grid::{ExtAttrs, Grid, PointPlace, Row};
 use crate::input::{
     KeyEvent, MouseEncoding, MouseEvent, MouseProtocol, encode_focus, encode_key, encode_mouse,
     encode_paste,
@@ -1250,7 +1250,7 @@ impl Term {
             // Primary-scoped tracked points reflow with this pane too (#691).
             let tracked_off = marker_pts.len();
             marker_pts.extend(self.normal_tracked.iter().map(|p| (p.line, p.col)));
-            // The primary change record rides last (#967).
+            // The primary change record rides after the tracked points (#967).
             let watch_off = marker_pts.len();
             marker_pts.extend(self.normal_watch.points());
             // The `?1049` / `?1048` save slot rides as a point; the primary's cursor is
@@ -1281,12 +1281,16 @@ impl Term {
             self.primary_cursor_on_alt = r.cursor;
             let (saved_line, saved_col) = r.extras[saved_off];
             let saved_row = saved_line.saturating_sub(r.evicted + self.scrollback.len());
+            let (saved_col, saved_wrap) = saved_cursor_col(saved_col, r.places[saved_off], cols);
             self.saved_cursor
                 .set_point((saved_row, saved_col), rows, cols);
+            self.saved_cursor.pending_wrap |= saved_wrap;
             let (decsc_line, decsc_col) = r.extras[decsc_off];
             let decsc_row = decsc_line.saturating_sub(r.evicted + self.scrollback.len());
+            let (decsc_col, decsc_wrap) = saved_cursor_col(decsc_col, r.places[decsc_off], cols);
             self.decsc_inactive
                 .set_point((decsc_row, decsc_col), rows, cols);
+            self.decsc_inactive.pending_wrap |= decsc_wrap;
             self.normal_watch
                 .reflowed(&r.extras[watch_off..], r.evicted);
             for (i, m) in self.normal_markers.iter_mut().enumerate() {
@@ -1371,7 +1375,7 @@ impl Term {
             // Tracked points ride after the markers, by the same offset idiom (#691).
             let tracked_off = pts.len();
             pts.extend(self.normal_tracked.iter().map(|p| (p.line, p.col)));
-            // The change record rides last (#967).
+            // The change record rides after the tracked points (#967).
             let watch_off = pts.len();
             pts.extend(self.normal_watch.points());
             // The primary's DECSC slot rides with its content (#1088).
@@ -1396,7 +1400,9 @@ impl Term {
                 .reflowed(&r.extras[watch_off..], r.evicted);
             let (decsc_line, decsc_col) = r.extras[decsc_off];
             let decsc_row = decsc_line.saturating_sub(r.evicted + self.scrollback.len());
+            let (decsc_col, decsc_wrap) = saved_cursor_col(decsc_col, r.places[decsc_off], cols);
             self.decsc.set_point((decsc_row, decsc_col), rows, cols);
+            self.decsc.pending_wrap |= decsc_wrap;
             // A selection endpoint is UI state: a `col == cols` result (#562) is clamped into the grid.
             self.selection_reflowed(&r.extras[..sel_pts.len()], r.evicted, cols);
             let marker_off = sel_pts.len();
@@ -3290,11 +3296,25 @@ struct PaneReflow {
     /// index-aligned with `extra_abs`, before any history the caller discards. Raw, with
     /// `evicted` beside it, because the primary and alt callers translate differently.
     extras: Vec<(usize, usize)>,
+    /// Where each extra sat against its line's content, index-aligned with `extras`.
+    places: Vec<PointPlace>,
     /// Rows that left the buffer entirely off the front of this pane's history. For the primary
     /// that is the scrollback cap's eviction; for the alt pane, whose limit is `0` because it has
     /// no history, it is every row the shrink pushed off the top. An extra whose raw line is below
     /// this **is not in the buffer any more** — the caller decides what that means for its kind.
     evicted: usize,
+}
+
+/// A saved cursor's column and deferred wrap after [`reflow_pane`] mapped its point to `col` at
+/// `place` (#1088). A point past its line's content keeps its distance from that content; a point
+/// just past a full row becomes the last column with the wrap deferred; every column is clamped
+/// to the last one.
+fn saved_cursor_col(col: usize, place: PointPlace, cols: usize) -> (usize, bool) {
+    match place {
+        PointPlace::PastContent(past) => ((col + past).min(cols - 1), false),
+        PointPlace::Line if col >= cols => (cols - 1, true),
+        _ => (col.min(cols - 1), false),
+    }
 }
 
 /// Reflow one pane (its `scrollback` joined with `screen`) to `dims`, tracking the
@@ -3324,16 +3344,17 @@ fn reflow_pane(
     // A kept run holds the cursor's line (#1082, #1083), so the cursor keeps its row and its
     // column, clamped onto the last column when the row got narrower than it:
     // `docs/map/territory/reflow.md`.
-    let pts = if dims.reflow && dims.cols != dims.old_cols {
+    let (pts, places) = if dims.reflow && dims.cols != dims.old_cols {
         let keep = keep_from.map(|from| (from, pts[0].0));
-        let (rows, mut np) = crate::grid::reflow(all, dims.cols, &pts, keep);
+        let (rows, mut np, places) = crate::grid::reflow(all, dims.cols, &pts, keep);
         all = rows;
         if keep.is_some() {
             np[0].1 = point.1.min(dims.cols - 1);
         }
-        np
+        (np, places)
     } else {
-        pts
+        let places = vec![PointPlace::Kept; pts.len()];
+        (pts, places)
     };
 
     // A cursor one row past the content (#562) buys that row from history when the pane can
@@ -3379,6 +3400,7 @@ fn reflow_pane(
             .iter()
             .map(|&(l, c)| (l.min(max_line), c))
             .collect(),
+        places: places[1..].to_vec(),
         evicted: dropped,
         screen: all,
         scrollback: sb,

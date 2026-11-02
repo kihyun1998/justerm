@@ -206,7 +206,11 @@ fn a_saved_deferred_wrap_off_the_cursor_line_rides_the_reflow() {
 fn decstr_resets_only_the_active_screens_slot() {
     let mut t = Engine::new(10, 6);
     t.feed(b"\x1b[2;3H\x1b7\x1b[?1049h\x1b[4;5H\x1b7\x1b[!p\x1b[?1049l\x1b[1;1H\x1b8");
-    assert_eq!(cursor(&t), (1, 2), "the primary's slot survived the alt screen's DECSTR");
+    assert_eq!(
+        cursor(&t),
+        (1, 2),
+        "the primary's slot survived the alt screen's DECSTR"
+    );
 }
 
 #[test]
@@ -233,4 +237,24 @@ fn the_alt_slot_rides_the_alt_screens_refit() {
     t.feed(b"\x1b[1;1H\x1b8X");
     assert_eq!(rows(&t)[1], "zX");
     assert_eq!(cursor(&t), (1, 2));
+}
+
+#[test]
+fn the_primary_slot_past_its_content_keeps_its_column_across_a_resize_on_the_alt_screen() {
+    let mut t = Engine::new(10, 6);
+    t.feed(b"$ \x1b7\x1b[4;1Hstatus\x1b[?1049h");
+    t.resize(8, 6);
+    t.feed(b"\x1b[?1049l\x1b8X");
+    assert_eq!(rows(&t)[0], "$ X");
+}
+
+#[test]
+fn a_decsc_point_on_the_kept_cursor_line_is_clamped_without_a_deferred_wrap() {
+    let mut t = Engine::new(10, 6);
+    // The cursor stays on the saved line, so the narrowing keeps that line and cuts it.
+    t.feed(b"0123456789\x1b[1;9H\x1b7");
+    t.resize(5, 6);
+    t.feed(b"\x1b8X");
+    assert_eq!(&rows(&t)[..2], ["0123X", ""]);
+    assert_eq!(cursor(&t), (0, 4));
 }
