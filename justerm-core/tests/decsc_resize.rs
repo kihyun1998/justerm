@@ -71,7 +71,8 @@ fn a_decsc_point_whose_line_was_evicted_lands_on_the_top_row() {
 #[test]
 fn the_alt_slot_rides_a_resize_made_while_the_primary_is_up() {
     let mut t = Engine::new(10, 6);
-    t.feed(b"\x1b[?1049h\x1b[5;2H\x1b7\x1b[?1049l");
+    // Every alt row holds content, so the shrink has no blank row to trim (#1089).
+    t.feed(b"\x1b[?1049h1\r\n2\r\n3\r\n4\r\n5\r\n6\x1b[5;2H\x1b7\x1b[?1049l");
     // Three rows shorter: the alt grid's re-fit drops its top three rows, and the slot with them.
     t.resize(10, 3);
     t.feed(b"\x1b[?1049h\x1b8");

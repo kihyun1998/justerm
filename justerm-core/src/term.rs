@@ -3368,6 +3368,16 @@ fn reflow_pane(
         }
     }
 
+    // A pane taller than the screen first gives up its blank rows below the cursor's row (#1089).
+    while all.len() > dims.rows
+        && all.len() - 1 > cursor_abs
+        && all
+            .last()
+            .is_some_and(|row| row.iter().all(crate::cell::Cell::is_blank))
+    {
+        all.pop();
+    }
+
     let split = all.len().saturating_sub(dims.rows);
     let history: Vec<Row> = all.drain(0..split).collect();
     let mut sb: VecDeque<Row> = history.into();
