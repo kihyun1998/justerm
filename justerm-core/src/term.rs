@@ -3369,15 +3369,17 @@ fn reflow_pane(
         }
     }
 
-    // A screen losing rows first gives up its blank rows below the cursor's row, up to the number
-    // it loses (#1089).
+    // A screen losing rows first gives up its vacant rows below the cursor's row, up to the number
+    // it loses, stopping at a row a point is tracked on or a wrapped row continues into (#1089).
     let mut trim = removed_rows;
-    while trim > 0
-        && all.len() > cursor_abs + 1
-        && all
-            .last()
-            .is_some_and(|row| row.iter().all(crate::cell::Cell::is_blank))
-    {
+    while trim > 0 && all.len() > cursor_abs + 1 {
+        let last = all.len() - 1;
+        if !all[last].is_vacant()
+            || all[last - 1].is_wrapped()
+            || pts[1..].iter().any(|&(line, _)| line == last)
+        {
+            break;
+        }
         all.pop();
         trim -= 1;
     }

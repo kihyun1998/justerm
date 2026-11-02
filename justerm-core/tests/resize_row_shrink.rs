@@ -188,3 +188,14 @@ fn the_alt_screen_under_the_primary_gives_up_its_blank_rows_too() {
         "the slot's row was not pushed off the top"
     );
 }
+
+#[test]
+fn a_row_of_linked_spaces_is_content() {
+    let mut t = Engine::new(10, 6);
+    // Row 4 holds three spaces inside an OSC 8 hyperlink.
+    t.feed(b"a\r\nb\x1b[5;1H\x1b]8;;https://example.com\x07   \x1b]8;;\x07\x1b[2;1H");
+    t.resize(10, 3);
+    let g = t.grid();
+    let linked_row = (0..g.rows()).find(|&r| g.cell(r, 0).is_linked());
+    assert!(linked_row.is_some(), "the linked row was dropped");
+}
