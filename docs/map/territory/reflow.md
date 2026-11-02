@@ -130,9 +130,21 @@ is the consumer-facing contract. No record governs it.
   loses; only the rest comes off the top, into history on the primary and gone on the alt pane. It
   stops at the first row that is not `Row::is_vacant` (a glyph, an SGR attribute or a link on any
   cell; a background colour alone is vacant, as an erase leaves it), that a soft-wrapped row
-  continues into (popping it would leave the wrap flag pointing at nothing), or that an extra point
-  sits on — selection endpoint, marker, tracked point, change record, saved cursor. A point never
-  lands on a row that left, so its fate is unchanged: the content it was on is still there.
+  continues into (popping it would leave the wrap flag pointing at nothing), or that a selection
+  endpoint, marker or tracked point sits on (`reflow_pane`'s first `pinned` extras). Those points
+  never land on a row that left, so their fate is unchanged.
+  - **A saved cursor does not pin** (maintainer, 2026-11-02, #1089): a DECSC or `?1048`/`?1049`
+    slot on a trimmed row clamps onto the last row, as a slot pushed off the top lands on the top
+    row. A saved cursor is often stale — bash's `tput sc` / `tput rc` (`\E7` / `\E8`) leaves one on
+    a row a later `clear` blanks — and pinning it sent the prompt to history after a `clear`
+    (output, `ESC 7` on row 8, `CSI 2J`, `$ `, 10 → 4 rows: blank screen, history 5). ghostty does
+    pin its saved cursor (`src/terminal/Screen.zig:1966-1979` @ `e6e26e1`); that was shown and not
+    chosen. The cost: `ESC 8` to such a slot writes on the last row's content.
+  - **The paint change record does not pin**: `resize` ends in `mark_fully_damaged`, which rewrites
+    `changed_from` to the top of the screen, so keeping its row bought nothing and cost a row of
+    history.
+  - A row of background-coloured spaces an application drew is vacant too: justerm stores an erase
+    as a space with a background, so the two cannot be told apart (ghostty keeps the drawn one).
   - The cursor's row is never trimmed, and content the cursor sits above still goes to history.
   - The bound is the rows the *screen* loses, not the pane's excess: bounded by the pane, a grow
     with history trimmed blank rows and pulled more history down.

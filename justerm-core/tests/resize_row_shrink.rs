@@ -219,3 +219,19 @@ fn a_row_of_linked_spaces_is_content() {
     let linked_row = (0..g.rows()).find(|&r| g.cell(r, 0).is_linked());
     assert!(linked_row.is_some(), "the linked row was dropped");
 }
+
+#[test]
+fn a_marker_on_a_blank_row_below_the_cursor_stays_off_the_content() {
+    let mut t = Engine::new(10, 6);
+    t.feed(b"a\r\nb\r\nc\x1b[2;1H");
+    let id = t.add_marker(4);
+    t.resize(10, 3);
+    let entry = t
+        .marker_index()
+        .markers
+        .into_iter()
+        .find(|m| m.id == id)
+        .expect("the marker's row was kept");
+    let row = entry.line as usize - t.scrollback_len();
+    assert_eq!(rows(&t)[row], "", "the marker is still on a blank row");
+}
