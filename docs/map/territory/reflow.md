@@ -125,6 +125,20 @@ is the consumer-facing contract. No record governs it.
   pane scrolls into history, gated on `limit > 0` (the alt pane passes `0`). Without it the next byte
   destroyed a character (a prompt at the bottom of a full screen). Tracked lines are bounded at
   `split + dims.rows - 1`, where the final geometry is known.
+- **A screen losing rows gives up its blank rows below the cursor first** (#1089). Before the split,
+  `reflow_pane` pops trailing blank rows (no content, the trim's `Cell::is_blank` test, so a
+  background-only row counts) that sit below the cursor's row, at most as many as the screen loses;
+  only the rest comes off the top, into history on the primary and gone on the alt pane. Before
+  this every lost row came off the top: `a` `b` `c` with the cursor on `b`, 6 → 3 rows, left a
+  blank screen and all three in history, and on the alt screen they were gone. A row with content is
+  never dropped from below the cursor and the cursor's row is never trimmed, so content the cursor
+  sits above still goes to history. The bound is the rows the *screen* loses, not the pane's
+  excess: bounded by the pane, a grow with history trimmed blank rows and pulled more history
+  down. Same rule in all four panes, the re-fit alt pane included. ghostty's rule
+  (`src/terminal/PageList.zig:2415-2431` @ `e6e26e1`, which cites macOS Terminal.app); xterm.js
+  (`common/buffer/Buffer.ts:222-233` @ `699f553`) and alacritty (`grid/resize.rs:78-97` @
+  `852e971`) drop the rows below the cursor whatever they hold, which the maintainer did not choose
+  (2026-11-02, #1089 triage).
 - **What leaves the buffer differs by holder.** `PaneReflow::evicted` counts rows dropped off the
   front by the cap (primary) or by the shrink (alt). Tracked points on such a row are released;
   alt markers are disposed with `MarkerDisposed`; primary markers saturate to line 0
@@ -170,7 +184,8 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
   `reflow_point_mapping.rs`, `reflow_row_budget.rs`, `reflow_trim.rs`, `reflow_wide_pair.rs`,
   `resize_parked_prompt.rs`, `resize_cursor_line.rs` (with `fixtures/resize_shell_redraw.raw`), `decsc_resize.rs`,
   `resize_prompt_marks.rs` (with `fixtures/resize_prompt_marks.raw`),
-  `alt_resize_markers.rs`, `alt_selection_resize.rs`, `resize_cursor_and_marker_state.rs`
+  `alt_resize_markers.rs`, `alt_selection_resize.rs`, `resize_cursor_and_marker_state.rs`,
+  `resize_row_shrink.rs`
 
 ## Reference behaviour
 
