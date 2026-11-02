@@ -5,7 +5,7 @@
 The alternate screen buffer: a second grid that a full-screen application (vim, htop, less) swaps in
 with DECSET `?1049` (save the cursor, switch, clear), `?47` / `?1047` (switch and clear, no cursor
 save) or `?1048` (cursor save/restore, no switch), and swaps out again on reset. It owns the `on_alt`
-flag, the swap itself, the alt-screen cursor slot, the per-screen kitty keyboard state, and what every
+flag, the swap itself, the caret-shape stash `?1049` carries, the per-screen kitty keyboard state, and what every
 other piece of engine state does at the swap and while the alt screen is up: no scrollback, no reflow
 on resize, and a rule per holder of a buffer coordinate (markers, tracked points, selection, search,
 paint, text readers).
@@ -35,15 +35,25 @@ From reading the source and tests at HEAD 7bb31f7.
   swaps the kitty state, sets `on_alt`, zeroes `display_offset`, drops the selection, invalidates search
   highlights and marks full damage; `Term::switch_to_primary` mirrors it (no clear — the primary comes
   back as it was). Both are guarded, so a double enter or leave is a no-op. `enter_alt_screen`
-  (`?1049h`) is `save_alt_cursor` then `switch_to_alt`; `leave_alt_screen` (`?1049l`) is
-  `switch_to_primary` then `restore_alt_cursor`. `?47` and `?1047` are treated identically, switch
+  (`?1049h`) is DECSC (`save_cursor`) then, from the primary, the caret stash and `switch_to_alt`;
+  `leave_alt_screen` (`?1049l`) is `switch_to_primary`, DECRC (`restore_cursor`) and the caret stash
+  back. `?47` and `?1047` are treated identically, switch
   only and clearing on enter, which is xterm.js's model (`justerm-core/tests/alt_screen.rs` header,
   #72); `?1049` = `?1048` + `?47`.
-- **The cursor slot is `saved_cursor`, separate from DECSC's `decsc`.** `?1048h` and `?1049h` copy the
-  whole `Cursor` (position, pen, deferred-wrap flag); the restore keeps the current DECTCEM visibility
-  (#38/#72) and then settles a restored park that is no longer at the last column
-  (`Term::settle_restored_wrap`, #848 — [cursor position](cursor-position.md)). A bare `?1048` on the
-  primary uses the same slot.
+- **The cursor save is the DECSC slot** (#1092). `?1048h` / `?1048l` are DECSC / DECRC on the active
+  screen; `?1049h` is DECSC on the active screen (on the alternate screen too, so a second `?1049h`
+  saves into the alternate screen's slot) and `?1049l` DECRCs from the primary's slot after the
+  switch — on the primary too, where there is no switch (xterm `charproc.c:7733-7736`, xterm.js
+  `InputHandler.ts:2268-2270`, ghostty `Terminal.zig:4408`; alacritty guards it,
+  `term/mod.rs:2009-2013`; maintainer, 2026-11-02). So the save set is DECSC's (position, pen, deferred-wrap flag, DECOM, charsets), DECTCEM
+  visibility is left alone, and a restored park no longer at the last column settles
+  (`Term::settle_restored_wrap`, #848 — [cursor position](cursor-position.md)). All four references
+  save there: xterm `charproc.c:7730` and `:7908-7913`, xterm.js `common/InputHandler.ts:2008-2012`,
+  ghostty `src/terminal/Terminal.zig:4364`, alacritty `alacritty_terminal/src/term/mod.rs:719-720`.
+- **The caret shape and blink ride `?1049` in a stash of their own** (`caret_before_alt`), taken when
+  `?1049h` leaves the primary and put back by `?1049l`, so #927 holds ([caret report](caret-report.md)).
+  Any exit from the alternate screen clears it, so after an entry or exit by `?47` / `?1047` a
+  `?1049l` leaves the shape alone. `?1048` does not touch them.
 - **The alt screen has no scrollback.** `Term::linefeed_inner` pushes history only on a top-anchored
   *primary* scroll; on the alt screen every scroll is a region scroll and the evicted row is gone.
   The concatenated `[scrollback ++ grid]` space therefore holds the **primary's** history under the
@@ -64,9 +74,8 @@ From reading the source and tests at HEAD 7bb31f7.
 - **While on alt, a resize still reflows the inactive primary** with `primary_cursor_on_alt` as its
   cursor — where the cursor was when the screen switched, which is the line it keeps un-reflowed
   (#1082) — carrying the primary markers, primary tracked points, the primary change record and the
-  `saved_cursor` slot as a point. The slot cannot be the primary's cursor: `?47` / `?1047` write
-  nothing to it and `?1048h` on the alt screen writes alt coordinates; keeping the line under a stale
-  slot cut unrelated primary text. The alt half
+  primary's DECSC slot as a point. The slot cannot stand in for the primary's cursor: `?47` / `?1047`
+  write nothing to it; keeping the line under a stale slot cut unrelated primary text. The alt half
   converts alt markers and alt tracked points to alt-local rows, re-fits, and re-bases them on the
   primary scrollback's new length; one whose row the shrink pushed off is disposed (markers announce
   `MarkerDisposed`, tracked points are released silently). Before that repair, the alt half's extras
@@ -83,7 +92,7 @@ From reading the source and tests at HEAD 7bb31f7.
   | tracked points | `alt_tracked` cleared on leave, unannounced; a point of the inactive buffer answers `None` (#691) | scoped to the active buffer |
   | paint change record | per buffer (`normal_watch` / `alt_watch`, #967) | a coordinate carries its buffer (`LineRef::alt`) |
   | kitty keyboard flags + stack | swapped per screen (`swap_kitty_keyboard`, #941) | independent of the primary's |
-  | DECSC slot | swapped per screen (`decsc` / `decsc_inactive`, `swap_decsc`, #1088) — xterm `sc[whichBuf]`, xterm.js `Buffer.savedX`/`savedY`, ghostty `Screen.saved_cursor`, alacritty `grid.saved_cursor` | the alt slot rides the alt re-fit, the primary slot the primary reflow |
+  | DECSC slot | swapped per screen (`decsc` / `decsc_inactive`, `swap_decsc`, #1088) — xterm `sc[whichBuf]`, xterm.js `Buffer.savedX`/`savedY`, ghostty `Screen.saved_cursor`, alacritty `grid.saved_cursor` | the alt slot rides the alt re-fit, the primary slot the primary reflow; the alt slot survives leaving and re-entering, as in all four references (xterm `ToAlternate` / `SwitchBufs` leave `sc[1]`, `charproc.c:9523-9592`; xterm.js `Buffer.clear` leaves `savedX`/`savedY`, `common/buffer/Buffer.ts:147-157`; ghostty reuses its alternate `Screen`, `Terminal.zig:4281`; alacritty resets `saved_cursor` only on RIS, `grid/mod.rs:343`) |
 
 - **What does not swap.** Tab stops, scroll margins, DEC modes (mouse, bracketed paste, DECAWM…),
   charsets, the pen (a `?47` switch keeps the cursor and its pen) and the title stacks are
@@ -105,9 +114,9 @@ From reading the source and tests at HEAD 7bb31f7.
 ## Code
 
 - `justerm-core/src/term.rs` — `Term::switch_to_alt`, `Term::switch_to_primary`,
-  `Term::enter_alt_screen`, `Term::leave_alt_screen`, `Term::save_alt_cursor`,
-  `Term::restore_alt_cursor`, `Term::swap_kitty_keyboard`, `Term::settle_restored_wrap`; the fields
-  `on_alt`, `alt_grid`, `saved_cursor`, `primary_cursor_on_alt`, `alt_markers`, `alt_tracked`, `alt_watch`,
+  `Term::enter_alt_screen`, `Term::leave_alt_screen`, `Term::save_cursor`,
+  `Term::restore_cursor`, `Term::swap_decsc`, `Term::swap_kitty_keyboard`, `Term::settle_restored_wrap`; the fields
+  `on_alt`, `alt_grid`, `caret_before_alt`, `decsc_inactive`, `primary_cursor_on_alt`, `alt_markers`, `alt_tracked`, `alt_watch`,
   `kitty_flags_inactive`, `kitty_stack_inactive`; `Term::resize`'s alt branch with `reflow_pane` and
   `ReflowDims`; `Term::linefeed_inner` (no history on alt); `Term::erase_history`, `Term::clear`
 - `justerm-core/src/term/dispatch.rs` — `Term::set_dec_private_mode`, the `47` / `1047` / `1048` /
@@ -171,12 +180,15 @@ Tests that pin it: `justerm-core/tests/alt_screen.rs`, `alt_no_reflow.rs`, `alt_
   `Engine::alt_screen` and PenTerm's `justerm-core = "0.30"` admits it, but its lockfile holds
   `0.30.0` and `gate_of` still calls `engine.frame()` (penterm 729ae0588, 2026-10-26 — `Cargo.lock`,
   `src-tauri/src/engine/native.rs`).
-- **Whether the alt screen's DECSC slot resets when the alt screen is entered again** was not
-  compared against the references; today it keeps what the last alt session saved (#1088).
-- **`?1049h` saves into `saved_cursor`, not the primary's DECSC slot.** xterm.js's `?1049h` calls its
-  `saveCursor` (the active buffer's DECSC slot; `common/InputHandler.ts:2011-2012` @ `699f553`), so a
-  DECSC on the primary is overwritten there by the enter and not here; xterm, ghostty and alacritty
-  were not compared (#1088).
+- **A second `?1049h` saves but does not clear the alternate screen.** xterm (`ClearScreen`,
+  `charproc.c:7732`) and ghostty (`eraseDisplay(.complete)`, `Terminal.zig:4391`) clear it; xterm.js
+  (`activateAltBuffer` returns early) and alacritty (no-op) do not. Not decided (#1092 kept it as it
+  was).
+- **An open OSC 8 hyperlink stays open across `?1049h`**, so text drawn on the alternate screen joins
+  it. xterm.js (`urlId` on the current attributes, cleared only by an OSC 8 close,
+  `common/InputHandler.ts:3134`, `:3141`) and alacritty (the link on the cursor template, copied into
+  the alternate grid, `term/mod.rs:717`, `:1876`) do the same; ghostty ends it on a screen switch
+  (`Terminal.zig:4278`); xterm has no OSC 8. Kept (maintainer, 2026-11-02).
 - **`?47` clears the alt grid on enter, following xterm.js**; xterm's own `?47` / `?1047` semantics
   (which of enter or leave clears) were not compared.
 - **Viewing alt scrollback is impossible by construction.** If it ever becomes a feature,

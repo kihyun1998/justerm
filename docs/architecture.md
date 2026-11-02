@@ -597,9 +597,10 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   margin it scrolls the region up (a line-feed without the carriage return). RI moves up — at the
   *top* margin it scrolls the region *down* (a blank line appears at the top, the bottom region line
   is lost). Off the margin, each just moves the cursor. [#8]
-- **Alt-screen is a second grid swapped in (DEC 1049).** `?1049h` saves the cursor and swaps to a
-  fresh (cleared) alternate grid; `?1049l` swaps back and restores the cursor. Guarded so a
-  double-enter/leave is a no-op. The alt screen has no scrollback, and tab stops + scroll margins are
+- **Alt-screen is a second grid swapped in (DEC 1049).** `?1049h` saves the cursor (DECSC on the
+  active screen) and swaps to a fresh (cleared) alternate grid; `?1049l` swaps back and restores the
+  cursor (DECRC on the primary). The swap is guarded, so a second enter or leave does not swap again;
+  the save and the restore run every time, as in xterm (#1092). The alt screen has no scrollback, and tab stops + scroll margins are
   *not* per-screen — they persist across the swap. The engine emits whichever grid is active; the
   switch is transparent to consumers. DEC private modes arrive as a `?` in the CSI `intermediates`. [#8]
 - **The alt screen resizes but does not reflow.** Both grids take the new dimensions on every resize

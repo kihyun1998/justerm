@@ -67,24 +67,25 @@ maintainer calls recorded on #927.
   such reply exists today. **The precedence runs opposite to blink's**: blink's consumer setting
   forces over the application (#575), shape's is a fallback under it.
 - **Leaving the alternate screen restores the shape from before it — deliberately unlike every
-  reference** (#927, maintainer call on a capture). `save_alt_cursor` copies the whole `Cursor`, so
-  the shape rides the 1049 save; xterm, alacritty and xterm.js keep the style outside the saved
-  cursor. The reason is measured: nvim under `TERM=xterm-256color` emits both its `CSI 2 SP q`
+  reference** (#927, maintainer call on a capture). `?1049h` stashes the shape and blink in
+  `caret_before_alt` when it leaves the primary and `?1049l` puts them back; the position and the rest
+  of the save go to the DECSC slot (#1092, [alt screen](alt-screen.md)). xterm, alacritty and xterm.js
+  keep the style outside the saved cursor. The reason is measured: nvim under `TERM=xterm-256color` emits both its `CSI 2 SP q`
   (terminfo `Se=\E[2 q`) **inside** the alternate screen (bytes 202 and 246, between `?1049h` at 112
   and `?1049l` at 287), so restoring on leave is what returns the consumer's default after nvim
   exits. A program that resets the shape *outside* the alternate screen with `2` still pins a block —
   as an xterm.js pane does.
-- **The 1049 decision reaches two cases nobody ruled on.** `?1048h/l` goes through the same
-  `save_alt_cursor` / `restore_alt_cursor`, so it restores the shape too, while DECSC/DECRC
-  (`SavedCursor`, which holds row/col/pen/wrap/origin/charsets and no shape) do not — two "save
-  cursor" verbs that disagree. And DECSTR clears `cursor.shape` but not `saved_cursor`, so a shape set
-  before `?1049h` returns at `?1049l` even when a DECSTR ran in between.
+- **`?1048` does not save the shape** (#1092, maintainer, 2026-11-02): it is DECSC/DECRC, whose
+  `SavedCursor` holds row/col/pen/wrap/origin/charsets and no shape, as in all four references. Only
+  `?1049` carries the shape, in its own stash. **Still unruled**: DECSTR clears `cursor.shape` but not
+  `caret_before_alt`, so a shape set before `?1049h` returns at `?1049l` even when a DECSTR ran in
+  between.
 - **Outside input**: none of unbounded size — the report is five fixed-width scalars.
 
 ## Code
 
 - `justerm-core/src/cursor.rs` — `CursorShape`, `Cursor` (`visible`, `shape`, `blink`)
-- `justerm-core/src/term.rs` — `Term::frame` (the `display_offset == 0` gate), `Term::frame_damage`, `Term::set_cursor_style`, `Term::soft_reset`, `Term::save_alt_cursor`, `Term::restore_alt_cursor`, `SavedCursor`
+- `justerm-core/src/term.rs` — `Term::frame` (the `display_offset == 0` gate), `Term::frame_damage`, `Term::set_cursor_style`, `Term::soft_reset`, `Term::enter_alt_screen`, `Term::leave_alt_screen`, `SavedCursor`; the field `caret_before_alt`
 - `justerm-core/src/serialize.rs` — `Frame`'s `cursor_row` / `cursor_col` / `cursor_visible` / `cursor_shape` / `cursor_blink`, `CURSOR_SHAPE_UNSET`
 - `justerm-web/src/cursor.ts` — `resolveCursorShape`; also resolves the blink policy and owns the phase
 - `justerm-web/src/justerm-renderer.ts` — `JustermRenderer.setCursorStyle`, `JustermRendererOptions`
@@ -119,8 +120,8 @@ maintainer calls recorded on #927.
   rely on `None` meaning "use the consumer default".
 - [input encoding](input-encoding.md) — the IME anchor reads `cursor_row`/`cursor_col` while the
   caret is hidden (#921); a change that stops them being true while hidden breaks it.
-- [alt screen](alt-screen.md) — the shape rides the 1049/1048 cursor save; a change to what that
-  save holds changes the post-nvim caret.
+- [alt screen](alt-screen.md) — the shape rides `?1049` in `caret_before_alt`; a change to what that
+  stash holds or when it is cleared changes the post-nvim caret.
 - [widget lifecycle](widget-lifecycle.md) — the blink policy and the default shape resolve in
   `justerm-web`, so this territory spans the crate boundary.
 
@@ -133,5 +134,4 @@ maintainer calls recorded on #927.
   makes `CSI 0 SP q` a blinking block; the three implementations make it "the default". The blink half
   keeps today's value — `0` turns the application's blink mode off — which matches neither xterm
   (blinking) nor xterm.js (back to the user's option).
-- **DECSC/DECRC and `?1048` disagree on whether the shape is saved**, and DECSTR does not clear the
-  saved shape — both unruled (above).
+- **DECSTR does not clear the shape stashed by `?1049h`** — unruled (above).

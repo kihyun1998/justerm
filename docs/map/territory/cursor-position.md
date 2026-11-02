@@ -30,8 +30,8 @@ Read out of the source and the issues cited; there is no record to read instead.
   doc-comment is authoritative): **armed** unconditionally by the print path — `Term::write_glyph`,
   `Term::promote_cluster_to_wide`, `Term::relocate_cluster_wide`; **consumed** by `Term::wrapline`
   (performs the wrap) and by `Term::step_back` under `?45` (spends it as the first unit of a move);
-  **translated** by `Term::resize`; **cleared** per verb; **restored** by `Term::restore_cursor` and
-  `Term::restore_alt_cursor`, each followed by `Term::settle_restored_wrap`; and **read as a `+1`** by
+  **translated** by `Term::resize`; **cleared** per verb; **restored** by `Term::restore_cursor`
+  (DECRC, `?1048l`, `?1049l`), followed by `Term::settle_restored_wrap`; and **read as a `+1`** by
   `Term::add_command_mark` for an exclusive command-text bound.
 - **The clear is per-verb and not derivable (#848).** "A verb clears iff it acted" is false: `CUF` at
   the last column moves nothing and all four references clear anyway, while `HT` (and `CHT`, which
@@ -59,8 +59,7 @@ Read out of the source and the issues cited; there is no record to read instead.
   completeness pass, where a row-shift verb inherited the bogus flag and merged two logical lines.
 - **A restored deferred wrap settles where it is not at the last column** (#848). `resize` applies the
   translation to the live cursor; the saved slots carry only their point through a resize (each DECSC
-  slot rides its own screen's pane, #1088; the alt slot is reflowed by the primary pane only while
-  alt is up), so the repair runs at restore — where ghostty puts it for its reflowed saved cursor. Measured before the
+  slot rides its own screen's pane, #1088), so the repair runs at restore — where ghostty puts it for its reflowed saved cursor. Measured before the
   fix: 4 columns, `abcd`, `DECSC`, `resize(8, 3)`, `DECRC` left the flag armed at column 3 of an
   8-column grid and the next print wrapped instead of landing at column 4.
 - **Relative vertical motion stops at a scroll margin from its inner side** (#898): `Term::move_up`
@@ -77,12 +76,12 @@ Read out of the source and the issues cited; there is no record to read instead.
 - **Origin mode (DECOM) makes addressing relative** to the top margin and clamps to the bottom margin
   (`addressable_rows`); setting it homes the cursor, resetting it leaves the cursor put. DECSC saves
   and DECRC restores it (ADR-0004).
-- **Three kinds of cursor slot exist, not two.** `cursor` (live), `saved_cursor` (the alt-screen
-  save, `?1048` and `?1049`) and the DECSC slot (a `SavedCursor`: position, pen, flag, DECOM,
-  charsets — written by DECSC / SCOSC, restored by DECRC / SCORC, reset by DECSTR), which is one per
-  screen: `decsc` is the active screen's, the other screen's waits in `decsc_inactive`, and the two
-  swap on a screen switch (#1088), so DECSTR resets only the active screen's, as xterm's resets
-  `sc[whichBuf]`. Visibility is in neither save. The alt
+- **Two kinds of cursor slot exist.** `cursor` (live) and the DECSC slot (a `SavedCursor`: position,
+  pen, flag, DECOM, charsets — written by DECSC / SCOSC / `?1048h` / `?1049h`, restored by DECRC /
+  SCORC / `?1048l` / `?1049l`, reset by DECSTR), which is one per screen: `decsc` is the active
+  screen's, the other screen's waits in `decsc_inactive`, and the two swap on a screen switch (#1088),
+  so DECSTR resets only the active screen's, as xterm's resets `sc[whichBuf]`. Visibility is not saved; the caret shape
+  rides `?1049` in `caret_before_alt` ([caret report](caret-report.md)). The alt
   pairing is [alt screen](alt-screen.md)'s. A fourth position is not a slot: `primary_cursor_on_alt`
   records where the cursor was when the screen switched, for a resize on alt to keep that line (#1082).
 - **Reverse wraparound (`?45`) does two things to a step back** (#80, #873). At column 0 of a
@@ -112,7 +111,7 @@ Read out of the source and the issues cited; there is no record to read instead.
   `Term::insert_lines`, `Term::delete_lines`, `Term::save_cursor`, `Term::restore_cursor`,
   `Term::settle_restored_wrap`, `Term::swap_decsc`, `SavedCursor`, `SavedCursor::point`,
   `SavedCursor::set_point`; the fields `origin_mode`, `autowrap`, `reverse_wraparound`, `decsc`,
-  `decsc_inactive`, `saved_cursor`
+  `decsc_inactive`
 - `justerm-core/src/term/dispatch.rs` — `Term::set_dec_private_mode` (DECOM, DECAWM, `?45`)
 
 ## Reference behaviour
