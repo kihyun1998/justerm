@@ -59,19 +59,20 @@ is the consumer-facing contract. No record governs it.
   tracked points, then the settled-cell-paint change record (`ChangeWatch::points`, #967), then the
   primary's DECSC slot (#1088); the cursor rides in
   `reflow_pane` as point 0, and its row is `reflow`'s `keep` (below). On the alt screen the primary pane carries markers, tracked points,
-  the watch, the `saved_cursor` slot and the primary's DECSC slot; the alt pane carries alt markers, alt tracked points and the
+  the watch and the primary's DECSC slot; the alt pane carries alt markers, alt tracked points and the
   alt screen's DECSC slot, converted to alt-local rows and
   re-anchored on the new base because the primary history may rewrap underneath them. On the
   primary the alt pane's only point is the alt screen's DECSC slot. **Each DECSC slot rides its own
   screen's pane**, so a DECRC after a resize returns to the content it saved (#1088); a slot whose
-  line was evicted lands on the top row, as `saved_cursor` does. ChangeWatch reads only its first two
+  line was evicted lands on the top row. ChangeWatch reads only its first two
   mapped points, so a set after it is safe.
 - **A saved slot keeps a column past its line's content** (#1088). The content trim maps a point in
   the blanks right of the last glyph — after a prompt's trailing space, on an empty line between
   content, past a short line — to the content's end, which pulled a saved cursor left on a resize
   that did not even need to re-split the line (`xy` saved at column 7, widened: DECRC at column 2).
   So `reflow` returns a `PointPlace` beside every point (`Line`, `PastContent(n)`, `Kept`), and
-  `saved_cursor_col` turns it into the two saved slots' column (DECSC and `saved_cursor`): a point at
+  `saved_cursor_col` turns it into the DECSC slots' column (which `?1048` / `?1049` save into too,
+  #1092): a point at
   or past the end of a row the narrowing filled (`col == cols`, whatever its place) is the last
   column with the wrap deferred — the logical position after the glyph, as #848 represents it — so
   one column further right does not overwrite the glyph that one column left keeps; otherwise a
@@ -109,7 +110,7 @@ is the consumer-facing contract. No record governs it.
   artefact** (`set_leading_spacer`), as the re-split leaves it (#533): left a lead, a later reflow
   joined it mid-line and an overwrite took its neighbour for its spacer. On a hard-ended row it stays
   a lead, ADR-0025's last-column state (#529). **While alt is up, the line kept is
-  `primary_cursor_on_alt`'s** ([alt screen](alt-screen.md)), not the `saved_cursor` slot's.
+  `primary_cursor_on_alt`'s** ([alt screen](alt-screen.md)), not the primary DECSC slot's.
 - **How much is kept is the shell's statement on its last `133;A`** (#1083,
   [ADR-0036](../../adr/0036-a-live-prompt-is-left-to-the-shell-by-its-redraw-option.md)).
   `Term::resize_keep_from` picks `keep`'s first row: the cursor's line with no option, `redraw=last` or
