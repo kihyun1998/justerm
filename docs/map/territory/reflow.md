@@ -125,6 +125,39 @@ is the consumer-facing contract. No record governs it.
   pane scrolls into history, gated on `limit > 0` (the alt pane passes `0`). Without it the next byte
   destroyed a character (a prompt at the bottom of a full screen). Tracked lines are bounded at
   `split + dims.rows - 1`, where the final geometry is known.
+- **A screen losing rows gives up its vacant rows below the cursor first** (#1089). Before the
+  split, `reflow_pane` pops trailing rows below the cursor's row, at most as many as the screen
+  loses; only the rest comes off the top, into history on the primary and gone on the alt pane. It
+  stops at the first row that is not `Row::is_vacant` (a glyph, an SGR attribute or a link on any
+  cell; a background colour alone is vacant, as an erase leaves it), that a soft-wrapped row
+  continues into (popping it would leave the wrap flag pointing at nothing), or that a selection
+  endpoint, marker or tracked point sits on (`reflow_pane`'s first `pinned` extras). Those points
+  never land on a row that left, so their fate is unchanged.
+  - **A saved cursor does not pin** (maintainer, 2026-11-02, #1089): a DECSC or `?1048`/`?1049`
+    slot on a trimmed row clamps onto the last row, as a slot pushed off the top lands on the top
+    row. A saved cursor is often stale — bash's `tput sc` / `tput rc` (`\E7` / `\E8`) leaves one on
+    a row a later `clear` blanks — and pinning it sent the prompt to history after a `clear`
+    (output, `ESC 7` on row 8, `CSI 2J`, `$ `, 10 → 4 rows: blank screen, history 5). ghostty does
+    pin its saved cursor (`src/terminal/Screen.zig:1966-1979` @ `e6e26e1`); that was shown and not
+    chosen. The cost: `ESC 8` to such a slot writes on the last row's content.
+  - **The paint change record does not pin**: `resize` ends in `mark_fully_damaged`, which rewrites
+    `changed_from` to the top of the screen, so keeping its row bought nothing and cost a row of
+    history.
+  - A row of background-coloured spaces an application drew is vacant too: justerm stores an erase
+    as a space with a background, so the two cannot be told apart (ghostty keeps the drawn one).
+  - The cursor's row is never trimmed, and content the cursor sits above still goes to history.
+  - The bound is the rows the *screen* loses, not the pane's excess: bounded by the pane, a grow
+    with history trimmed blank rows and pulled more history down.
+  - Same rule in all four panes, the re-fit alt pane included. On a column change the primary's
+    reflow has already absorbed its trailing blank lines, so the trim finds nothing there; it acts
+    on a rows-only resize and on the alt panes.
+  - Sources: ghostty trims trailing rows with no text and stops at a row holding a tracked pin
+    (`src/terminal/PageList.zig:2415-2431`, `trimTrailingBlankRows` `:2748-2792` @ `e6e26e1`; its
+    comment cites macOS Terminal.app). ghostty's "no text" is codepoint 0, so a typed space is
+    text there; justerm stores an erased cell as a space and cannot tell the two apart, so a plain
+    default-pen space row counts as vacant. xterm.js (`common/buffer/Buffer.ts:222-233` @
+    `699f553`) and alacritty (`grid/resize.rs:78-97` @ `852e971`) drop the rows below the cursor
+    whatever they hold, which the maintainer did not choose (2026-11-02, #1089 triage).
 - **What leaves the buffer differs by holder.** `PaneReflow::evicted` counts rows dropped off the
   front by the cap (primary) or by the shrink (alt). Tracked points on such a row are released;
   alt markers are disposed with `MarkerDisposed`; primary markers saturate to line 0
@@ -159,7 +192,7 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
 ## Code
 
 - `justerm-core/src/grid.rs` — `reflow` (the join and re-split, taking and returning `points`),
-  `PointPlace`, `Row::resize`, `Grid::take_lines`, `Grid::set_screen`
+  `PointPlace`, `Row::resize`, `Row::is_vacant`, `Grid::take_lines`, `Grid::set_screen`
 - `justerm-core/src/term.rs` — `Term::resize`, `Term::resize_keep_from`, `Term::live_prompt_start`,
   `PromptRedraw`, `ReflowDims`, `PaneReflow`, `reflow_pane`, `saved_cursor_col`,
   `is_default_tab_stop`, `default_tabs`
@@ -170,7 +203,8 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
   `reflow_point_mapping.rs`, `reflow_row_budget.rs`, `reflow_trim.rs`, `reflow_wide_pair.rs`,
   `resize_parked_prompt.rs`, `resize_cursor_line.rs` (with `fixtures/resize_shell_redraw.raw`), `decsc_resize.rs`,
   `resize_prompt_marks.rs` (with `fixtures/resize_prompt_marks.raw`),
-  `alt_resize_markers.rs`, `alt_selection_resize.rs`, `resize_cursor_and_marker_state.rs`
+  `alt_resize_markers.rs`, `alt_selection_resize.rs`, `resize_cursor_and_marker_state.rs`,
+  `resize_row_shrink.rs`
 
 ## Reference behaviour
 

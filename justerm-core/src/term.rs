@@ -1224,6 +1224,7 @@ impl Term {
                 VecDeque::new(),
                 self.cursor.point(),
                 &alt_pts,
+                alt_decsc_off,
                 ReflowDims {
                     limit: 0,
                     reflow: false,
@@ -1273,6 +1274,7 @@ impl Term {
                 scrollback,
                 self.primary_cursor_on_alt,
                 &marker_pts,
+                watch_off,
                 dims,
                 keep_from,
             );
@@ -1390,6 +1392,7 @@ impl Term {
                 scrollback,
                 self.cursor.point(),
                 &pts,
+                watch_off,
                 dims,
                 keep_from,
             );
@@ -1435,6 +1438,7 @@ impl Term {
                 VecDeque::new(),
                 (0, 0),
                 &[self.decsc_inactive.point()],
+                0,
                 ReflowDims {
                     limit: 0,
                     reflow: false,
@@ -3321,18 +3325,21 @@ fn saved_cursor_col(col: usize, place: PointPlace, cols: usize) -> (usize, bool)
 /// Reflow one pane (its `scrollback` joined with `screen`) to `dims`, tracking the
 /// screen-relative cursor `point` plus any `extra_abs` points in absolute
 /// `[scrollback ++ screen]` coordinates. Returns the new screen rows, the scrollback capped
-/// to `dims.limit`, and where each point landed. `keep_from` is the absolute row the kept run
-/// starts at — the cursor's own, or its prompt's `A` — or `None` to keep nothing
+/// to `dims.limit`, and where each point landed. The first `pinned` extras keep their row
+/// through a row shrink's trim; the rest do not stop it. `keep_from` is the absolute row the kept
+/// run starts at — the cursor's own, or its prompt's `A` — or `None` to keep nothing
 /// ([`Term::resize_keep_from`]).
 fn reflow_pane(
     screen: Vec<Row>,
     scrollback: VecDeque<Row>,
     point: (usize, usize),
     extra_abs: &[(usize, usize)],
+    pinned: usize,
     dims: ReflowDims,
     keep_from: Option<usize>,
 ) -> PaneReflow {
     let scroll_len = scrollback.len();
+    let removed_rows = screen.len().saturating_sub(dims.rows);
     let mut all: Vec<Row> = scrollback.into();
     all.extend(screen);
 
@@ -3366,6 +3373,21 @@ fn reflow_pane(
         while all.len() <= cursor_abs {
             all.push(Row::blank(dims.cols));
         }
+    }
+
+    // A screen losing rows first gives up its vacant rows below the cursor's row, up to the number
+    // it loses, stopping at a row a pinned point sits on or a wrapped row continues into (#1089).
+    let mut trim = removed_rows;
+    while trim > 0 && all.len() > cursor_abs + 1 {
+        let last = all.len() - 1;
+        if !all[last].is_vacant()
+            || all[last - 1].is_wrapped()
+            || pts[1..=pinned].iter().any(|&(line, _)| line == last)
+        {
+            break;
+        }
+        all.pop();
+        trim -= 1;
     }
 
     let split = all.len().saturating_sub(dims.rows);

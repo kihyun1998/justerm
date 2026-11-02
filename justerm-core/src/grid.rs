@@ -278,6 +278,14 @@ impl Row {
         self.wrapped
     }
 
+    /// Does this row hold nothing an application drew — no glyph, no SGR attribute, no link? A
+    /// background colour alone is allowed: an erase leaves one.
+    pub(crate) fn is_vacant(&self) -> bool {
+        self.cells
+            .iter()
+            .all(|c| c.is_blank() && c.flags().is_empty() && !c.is_linked())
+    }
+
     /// Mark (or unmark) this row as soft-wrapped into the next.
     ///
     /// Unmarking is per-verb, not derivable from what was erased — see `Term::end_wrap`, which is

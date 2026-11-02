@@ -135,8 +135,11 @@ impl Engine {
         self.frame_pending = true;
     }
 
-    /// Resize the screen to `cols` x `rows`. Rows that scroll off the top enter
-    /// scrollback; the whole screen is damaged.
+    /// Resize the screen to `cols` x `rows`. A screen losing rows first drops blank
+    /// rows below the cursor — rows with no glyph, attribute or link (a background colour
+    /// alone counts as blank) and no selection endpoint, marker or tracked point on them; a
+    /// saved cursor on a dropped row moves to the last row. The rows still too many scroll
+    /// off the top into scrollback. The whole screen is damaged.
     ///
     /// **The primary screen reflows; the alternate screen does not.** On the
     /// primary, soft-wrapped logical lines are re-split at the new width — scrollback
