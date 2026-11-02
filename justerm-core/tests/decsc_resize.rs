@@ -46,6 +46,39 @@ fn decrc_after_a_widening_returns_to_the_saved_line() {
 }
 
 #[test]
+fn decrc_after_a_narrowing_with_history_returns_to_the_saved_line() {
+    let mut t = Engine::new(10, 3);
+    // Three lines of history, then DECSC just after `f` (screen row 1), on a row above the
+    // cursor's. The save comes after the last scroll: a scroll does not move a saved screen row.
+    t.feed(b"L1\r\nL2\r\nL3\r\n0123456789abcdef\r\nxy\x1b[2;7H\x1b7\x1b[3;3H");
+    t.resize(5, 3);
+    t.feed(b"\x1b8X");
+    assert_eq!(rows(&t), ["abcde", "fX", "xy"]);
+    assert_eq!(cursor(&t), (1, 2));
+}
+
+#[test]
+fn a_decsc_point_whose_line_was_evicted_lands_on_the_top_row() {
+    let mut t = Engine::with_scrollback(10, 3, 0);
+    // DECSC on the first line, which the narrowing pushes off a pane with no history.
+    t.feed(b"0123456789abcdef\r\nxy\x1b[1;3H\x1b7\x1b[3;3H");
+    t.resize(5, 3);
+    t.feed(b"\x1b8X");
+    assert_eq!(rows(&t), ["abXde", "f", "xy"]);
+    assert_eq!(cursor(&t), (0, 3));
+}
+
+#[test]
+fn the_alt_slot_rides_a_resize_made_while_the_primary_is_up() {
+    let mut t = Engine::new(10, 6);
+    t.feed(b"\x1b[?1049h\x1b[5;2H\x1b7\x1b[?1049l");
+    // Three rows shorter: the alt grid's re-fit drops its top three rows, and the slot with them.
+    t.resize(10, 3);
+    t.feed(b"\x1b[?1049h\x1b8");
+    assert_eq!(cursor(&t), (1, 1));
+}
+
+#[test]
 fn decrc_with_no_resize_restores_the_saved_row_column_and_pen() {
     let mut t = Engine::new(10, 4);
     t.feed(b"\x1b[3;5H\x1b[1m\x1b7\x1b[0m\x1b[1;1Hab\x1b8X");
@@ -85,11 +118,14 @@ fn a_decrc_on_the_alt_screen_does_not_read_the_primary_slot() {
 #[test]
 fn the_primary_slot_rides_a_resize_made_while_the_alt_screen_is_up() {
     let mut t = Engine::new(10, 6);
-    t.feed(b"0123456789abcdef\r\nxy\x1b7\x1b[?1049h");
+    // The `?1049h` save is taken on the empty last row, away from the DECSC point, so the two
+    // slots differ; an empty cursor line is reflowed like any other.
+    t.feed(b"0123456789abcdef\r\nxy\x1b7\x1b[6;1H\x1b[?1049h");
     t.resize(5, 6);
     t.feed(b"\x1b[?1049l\x1b[1;1H\x1b8X");
-    assert_eq!(rows(&t), ["01234", "56789", "abcde", "f", "xyX", ""]);
-    assert_eq!(cursor(&t), (4, 3));
+    // The parked cursor keeps its three rows below `xy`, so two rows of output went to history.
+    assert_eq!(rows(&t), ["abcde", "f", "xyX", "", "", ""]);
+    assert_eq!(cursor(&t), (2, 3));
 }
 
 #[test]
