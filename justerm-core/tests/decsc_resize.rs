@@ -101,7 +101,11 @@ fn each_screen_keeps_its_own_slot() {
     // DECSC on the alt screen at (3, 4), then leave.
     t.feed(b"\x1b[4;5H\x1b7\x1b[?1049l");
     t.feed(b"\x1b[1;1H\x1b8");
-    assert_eq!(cursor(&t), (1, 2), "the primary's DECRC reads the primary's slot");
+    assert_eq!(
+        cursor(&t),
+        (1, 2),
+        "the primary's DECRC reads the primary's slot"
+    );
 }
 
 #[test]
@@ -135,7 +139,11 @@ fn the_alt_slot_rides_the_alt_screens_refit() {
     t.feed(b"\x1b[?1049h\x1b[5;1Hz\x1b7\x1b[6;1H");
     // Three rows shorter: the re-fit drops the top three, so `z`'s row becomes row 1.
     t.resize(10, 3);
-    assert_eq!(rows(&t)[1], "z", "fixture: the re-fit moved z's row up three");
+    assert_eq!(
+        rows(&t)[1],
+        "z",
+        "fixture: the re-fit moved z's row up three"
+    );
     t.feed(b"\x1b[1;1H\x1b8X");
     assert_eq!(rows(&t)[1], "zX");
     assert_eq!(cursor(&t), (1, 2));
