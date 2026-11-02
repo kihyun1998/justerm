@@ -3739,3 +3739,16 @@ options but cannot ship the script, so no option keeps today's behaviour (ADR-00
 against PenTerm's snippet marks in a prototype: Ghostty's clear blanked a running command's output
 when the shell sends no `C`, and an unpaired `A` cut history after bash's Ctrl-L — both are why
 ADR-0036 D1 and D5 differ from a straight port.
+
+## The DECSC slot per screen, and across a resize (#1088, verified 2026-11-02)
+
+| Fact | Source | Where |
+|---|---|---|
+| DECSC saves into the **active buffer's** slot; DECRC reads it back; DECSTR homes only that slot | xterm `6380a3e` | `cursor.c:419-422` (`CursorSave` → `sc[screen->whichBuf]`), restore `:520`, DECSTR `charproc.c:14521-14522` |
+| The saved point is a field of each `Buffer`, written on `_activeBuffer`; a resize trims `savedY` with the rows it drops and clamps `savedX` to the new width | xterm.js `699f553` | `common/buffer/Buffer.ts:39-40`, resize `:245`, `:256`; write `common/InputHandler.ts:2990` |
+| `?1049h` calls `saveCursor` first, so the enter overwrites the primary's DECSC slot | xterm.js `699f553` | `common/InputHandler.ts:2011-2012` |
+| The saved cursor is a field of each `Screen`; a resize tracks it as a pin through the reflow and reads it back after | ghostty `e6e26e1` | `src/terminal/Screen.zig:54`; resize `:1970-1979`, `:2083` |
+| The saved cursor is a field of each `Grid` | alacritty `852e971` | `alacritty_terminal/src/grid/mod.rs:117`; DECSC `term/mod.rs:1619-1622` |
+
+justerm keeps the `?1049` save in its own slot (`saved_cursor`), so the xterm.js overwrite does not
+happen here; that difference was not compared further.

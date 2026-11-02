@@ -1154,7 +1154,7 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   the same `feed` (consumer-bound output, not terminal state) and (b) **signal full damage** (a fresh
   reconstruct has none, so the consumer would not repaint the blanked screen). The vte parser lives
   outside `Term`, so replacing `self` is safe. **DECSTR** (`CSI ! p`, soft reset) is a *subset* that does
-  **not** destroy content: cursor-visible on, scroll margins full, SGR default, saved-cursor (DECSC) home,
+  **not** destroy content: cursor-visible on, scroll margins full, SGR default, the active screen's saved-cursor (DECSC) slot home (#1088),
   charsets default, and origin/app-cursor-keys/bracketed-paste/insert **off** — but it pointedly does
   **NOT** clear the screen/scrollback, move the *active* cursor, or reset mouse/focus tracking (so a stuck
   mouse is recovered only by RIS, never DECSTR). The load-bearing detail, source-verified against

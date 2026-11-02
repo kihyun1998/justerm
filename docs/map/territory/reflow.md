@@ -56,10 +56,16 @@ is the consumer-facing contract. No record governs it.
 **Coordinates through the move.**
 - `reflow` takes a `points` slice and returns where each landed, index-aligned. `Term::resize`
   assembles it by an offset idiom: on the primary, the selection's two endpoints, then markers, then
-  tracked points, then the settled-cell-paint change record (`ChangeWatch::points`, #967); the cursor rides in
-  `reflow_pane` as point 0, and its row is `reflow`'s `keep` (below). On the alt screen the primary pane carries markers, tracked points and
-  the watch, the alt pane carries alt markers and alt tracked points, converted to alt-local rows and
-  re-anchored on the new base because the primary history may rewrap underneath them.
+  tracked points, then the settled-cell-paint change record (`ChangeWatch::points`, #967), then the
+  primary's DECSC slot (#1088); the cursor rides in
+  `reflow_pane` as point 0, and its row is `reflow`'s `keep` (below). On the alt screen the primary pane carries markers, tracked points,
+  the watch, the `saved_cursor` slot and the primary's DECSC slot; the alt pane carries alt markers, alt tracked points and the
+  alt screen's DECSC slot, converted to alt-local rows and
+  re-anchored on the new base because the primary history may rewrap underneath them. On the
+  primary the alt pane's only point is the alt screen's DECSC slot. **Each DECSC slot rides its own
+  screen's pane**, so a DECRC after a resize returns to the content it saved (#1088); a slot whose
+  line was evicted lands on the top row, as `saved_cursor` does. ChangeWatch reads only its first two
+  mapped points, so a set after it is safe.
 - **A returned point is a position in the logical line, not necessarily a cell** (#562, closed
   2026-07-27 after five designs that made `reflow` itself materialise a row were measured and
   rejected — a cursor at column 59 resized to width 4 emptied the buffer; a blank-line exemption
@@ -143,7 +149,7 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
 - `justerm-core/src/lib.rs` — `Engine::resize`
 - Tests: `justerm-core/tests/resize.rs`, `alt_no_reflow.rs`, `reflow_past_end_points.rs`,
   `reflow_point_mapping.rs`, `reflow_row_budget.rs`, `reflow_trim.rs`, `reflow_wide_pair.rs`,
-  `resize_parked_prompt.rs`, `resize_cursor_line.rs` (with `fixtures/resize_shell_redraw.raw`),
+  `resize_parked_prompt.rs`, `resize_cursor_line.rs` (with `fixtures/resize_shell_redraw.raw`), `decsc_resize.rs`,
   `resize_prompt_marks.rs` (with `fixtures/resize_prompt_marks.raw`),
   `alt_resize_markers.rs`, `alt_selection_resize.rs`, `resize_cursor_and_marker_state.rs`
 
@@ -209,7 +215,7 @@ rows rather than within one.
   reference with three stated reasons, held by this note and a rustdoc paragraph.
 - **Nothing states which point sets must be passed.** The `points` slice is an offset convention in
   `Term::resize`: forget an anchor set and it is silently misplaced, with no compiler or test naming
-  the omission. Four sets ride it on the primary today.
+  the omission. Five sets ride it on the primary today.
 - **Which fields a resize may reset has no record**, though the three that raised it are each
   decided (#848 the deferred wrap, #849 the tab table, the margins here). The counterpart for the
   other reset — [RIS keeps configuration, drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
