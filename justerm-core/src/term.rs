@@ -75,8 +75,9 @@ pub struct Term {
     /// no scrollback (#3 only rings the primary).
     alt_grid: Grid,
     cursor: Cursor,
-    /// The caret shape and blink from before `?1049h`, restored by `?1049l` (#927, #1092).
-    caret_before_alt: (Option<CursorShape>, bool),
+    /// The caret shape and blink from before `?1049h`, restored by `?1049l`; `None` once the
+    /// alternate screen is left without it, or when it was entered another way (#927, #1092).
+    caret_before_alt: Option<(Option<CursorShape>, bool)>,
     /// While the alt screen is up, the primary's cursor: where the cursor was when the screen
     /// switched, screen-relative, carried through each resize. Its line is the one a resize keeps
     /// un-reflowed on the primary (#1082).
@@ -718,7 +719,7 @@ impl Term {
             grid: Grid::new(cols, rows),
             alt_grid: Grid::new(cols, rows),
             cursor: Cursor::default(),
-            caret_before_alt: (None, false),
+            caret_before_alt: None,
             primary_cursor_on_alt: (0, 0),
             on_alt: false,
             prompt_redraw: PromptRedraw::Unstated,
@@ -1738,6 +1739,7 @@ impl Term {
         if !self.on_alt {
             return;
         }
+        self.caret_before_alt = None;
         // Dispose the alt buffer's markers on leave, as xterm's `activateNormalBuffer` →
         // `clearAllMarkers` does (#177, #187).
         for m in self.alt_markers.drain(..) {
@@ -1778,19 +1780,20 @@ impl Term {
         if self.on_alt {
             return;
         }
-        self.caret_before_alt = (self.cursor.shape, self.cursor.blink);
+        self.caret_before_alt = Some((self.cursor.shape, self.cursor.blink));
         self.switch_to_alt();
     }
 
-    /// `?1049l`: from the alternate screen, switch back to the primary, DECRC there, and restore
-    /// the caret shape and blink stashed by `?1049h`.
+    /// `?1049l`: switch back to the primary if the alternate screen is up, DECRC on the primary,
+    /// and restore the caret shape and blink if `?1049h` stashed them.
     fn leave_alt_screen(&mut self) {
-        if !self.on_alt {
-            return;
-        }
+        let caret = self.caret_before_alt.take();
         self.switch_to_primary();
         self.restore_cursor();
-        (self.cursor.shape, self.cursor.blink) = self.caret_before_alt;
+        if let Some((shape, blink)) = caret {
+            self.cursor.shape = shape;
+            self.cursor.blink = blink;
+        }
     }
 
     /// RI (ESC M): move up one line. At the top margin, scroll the region down
