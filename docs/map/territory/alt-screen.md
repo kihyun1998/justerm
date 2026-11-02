@@ -184,6 +184,11 @@ Tests that pin it: `justerm-core/tests/alt_screen.rs`, `alt_no_reflow.rs`, `alt_
   `charproc.c:7732`) and ghostty (`eraseDisplay(.complete)`, `Terminal.zig:4391`) clear it; xterm.js
   (`activateAltBuffer` returns early) and alacritty (no-op) do not. Not decided (#1092 kept it as it
   was).
+- **An open OSC 8 hyperlink stays open across `?1049h`**, so text drawn on the alternate screen joins
+  it. xterm.js (`urlId` on the current attributes, cleared only by an OSC 8 close,
+  `common/InputHandler.ts:3134`, `:3141`) and alacritty (the link on the cursor template, copied into
+  the alternate grid, `term/mod.rs:717`, `:1876`) do the same; ghostty ends it on a screen switch
+  (`Terminal.zig:4278`); xterm has no OSC 8. Kept (maintainer, 2026-11-02).
 - **`?47` clears the alt grid on enter, following xterm.js**; xterm's own `?47` / `?1047` semantics
   (which of enter or leave clears) were not compared.
 - **Viewing alt scrollback is impossible by construction.** If it ever becomes a feature,
