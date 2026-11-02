@@ -94,3 +94,14 @@ fn the_primary_under_the_alt_screen_keeps_the_content_beside_its_cursor() {
     assert_eq!(cursor(&t), (1, 0));
     assert_eq!(t.scrollback_len(), 0);
 }
+
+#[test]
+fn growing_rows_trims_nothing() {
+    let mut t = Engine::new(10, 3);
+    // History above, `x` beside the cursor, two blank rows below it.
+    t.feed(b"1\r\n2\r\n3\r\n4\r\n5\r\nx\r\n\r\n\x1b[1;1H");
+    t.resize(10, 4);
+    assert_eq!(rows(&t), ["5", "x", "", ""]);
+    assert_eq!(cursor(&t), (1, 0));
+    assert_eq!(t.scrollback_len(), 4);
+}
