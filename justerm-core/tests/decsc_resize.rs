@@ -258,3 +258,14 @@ fn a_decsc_point_on_the_kept_cursor_line_is_clamped_without_a_deferred_wrap() {
     assert_eq!(&rows(&t)[..2], ["0123X", ""]);
     assert_eq!(cursor(&t), (0, 4));
 }
+
+#[test]
+fn a_decsc_point_past_the_content_of_a_row_the_narrowing_filled_keeps_the_next_write_after_it() {
+    let mut t = Engine::new(10, 6);
+    // DECSC one blank past `abcd`; at 4 columns `abcd` fills its row, so the point is past it.
+    t.feed(b"abcd\x1b[1;6H\x1b7\x1b[3;1H");
+    t.resize(4, 6);
+    t.feed(b"\x1b8X");
+    assert_eq!(&rows(&t)[..2], ["abcd", "X"], "the d survives, as for a point right after it");
+    assert_eq!(cursor(&t), (1, 1));
+}
