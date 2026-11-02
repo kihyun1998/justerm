@@ -3306,14 +3306,15 @@ struct PaneReflow {
 }
 
 /// A saved cursor's column and deferred wrap after [`reflow_pane`] mapped its point to `col` at
-/// `place` (#1088). A point past its line's content keeps its distance from that content; a point
-/// just past a full row becomes the last column with the wrap deferred; every column is clamped
-/// to the last one.
+/// `place` (#1088). A point at or past the end of a full row becomes the last column with the wrap
+/// deferred; a point past its line's content otherwise keeps its distance from that content; every
+/// column is clamped to the last one.
 fn saved_cursor_col(col: usize, place: PointPlace, cols: usize) -> (usize, bool) {
     match place {
+        PointPlace::Kept => (col.min(cols - 1), false),
+        _ if col >= cols => (cols - 1, true),
         PointPlace::PastContent(past) => ((col + past).min(cols - 1), false),
-        PointPlace::Line if col >= cols => (cols - 1, true),
-        _ => (col.min(cols - 1), false),
+        PointPlace::Line => (col, false),
     }
 }
 
