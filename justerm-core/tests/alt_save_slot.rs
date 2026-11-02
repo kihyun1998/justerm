@@ -83,3 +83,48 @@ fn a_second_1049_set_keeps_the_shape_from_before_the_first() {
     t.feed(b"\x1b[6 q\x1b[?1049h\x1b[2 q\x1b[?1049h\x1b[?1049l");
     assert_eq!(t.frame().cursor_shape, Some(CursorShape::Bar));
 }
+
+#[test]
+fn mode_1049_reset_on_the_primary_is_decrc() {
+    let mut t = Engine::new(10, 6);
+    // xterm, xterm.js and ghostty restore on `?1049l` whichever screen is up.
+    t.feed(b"\x1b[3;4H\x1b7\x1b[5;6H\x1b[?1049l");
+    assert_eq!(cursor(&t), (2, 3));
+}
+
+#[test]
+fn leaving_by_1049_after_entering_by_47_keeps_the_shape() {
+    let mut t = Engine::new(10, 6);
+    // Nothing stashed a shape, so `?1049l` has none to put back.
+    t.feed(b"\x1b[6 q\x1b[?47h\x1b[?1049l");
+    assert_eq!(t.frame().cursor_shape, Some(CursorShape::Bar));
+}
+
+#[test]
+fn a_stash_left_by_a_1047_exit_is_not_restored_by_a_later_1049_exit() {
+    let mut t = Engine::new(10, 6);
+    // ?1049h stashes Block, ?1047l leaves without using it, Bar is set, ?1047h, ?1049l.
+    t.feed(b"\x1b[2 q\x1b[?1049h\x1b[?1047l\x1b[6 q\x1b[?1047h\x1b[?1049l");
+    assert_eq!(t.frame().cursor_shape, Some(CursorShape::Bar));
+}
+
+#[test]
+fn leaving_by_1049_after_entering_by_47_restores_the_primary_slot() {
+    let mut t = Engine::new(10, 6);
+    t.feed(b"\x1b[3;3H\x1b7\x1b[?47h\x1b[5;5H\x1b[?1049l");
+    assert_eq!(cursor(&t), (2, 2));
+}
+
+#[test]
+fn mode_1048_set_on_the_alt_screen_does_not_reach_the_primary() {
+    let mut t = Engine::new(10, 6);
+    t.feed(b"\x1b[2;2H\x1b[?1049h\x1b[4;4H\x1b[?1048h\x1b[?1049l");
+    assert_eq!(cursor(&t), (1, 1));
+}
+
+#[test]
+fn mode_1048_reset_with_nothing_saved_resets_the_charsets() {
+    let mut t = Engine::new(10, 6);
+    t.feed(b"\x1b(0\x1b[?1048lq");
+    assert_eq!(t.grid().cell(0, 0).c(), 'q');
+}
