@@ -37,8 +37,8 @@ From reading the source; there is no record.
   (`Term::vacate_for_wrap`, #528), as every reference does — see [wide glyph](wide-glyph.md).
 - **`Pen::reset()` is SGR 0** and restores every field at once, including the underline colour and
   style. DECSTR resets the pen too (`soft_reset`), and `DECSC`/`DECRC` save and restore it with the
-  position (`SavedCursor`). The alt-screen save (`?1048`/`?1049`) copies the whole `Cursor`, pen
-  included.
+  position (`SavedCursor`). The alt-screen modes `?1048` / `?1049` save and restore it the same way, being
+  DECSC / DECRC (#1092).
 - **Colours are references, never resolved.** `Color` is `Default | Indexed(u8) | Rgb(..)` and is
   deliberately exhaustive (#843) — the engine is theme-agnostic by identity, so the pen never holds a
   hex value.

@@ -5,7 +5,7 @@
 The alternate screen buffer: a second grid that a full-screen application (vim, htop, less) swaps in
 with DECSET `?1049` (save the cursor, switch, clear), `?47` / `?1047` (switch and clear, no cursor
 save) or `?1048` (cursor save/restore, no switch), and swaps out again on reset. It owns the `on_alt`
-flag, the swap itself, the alt-screen cursor slot, the per-screen kitty keyboard state, and what every
+flag, the swap itself, the caret-shape stash `?1049` carries, the per-screen kitty keyboard state, and what every
 other piece of engine state does at the swap and while the alt screen is up: no scrollback, no reflow
 on resize, and a rule per holder of a buffer coordinate (markers, tracked points, selection, search,
 paint, text readers).
@@ -43,14 +43,17 @@ From reading the source and tests at HEAD 7bb31f7.
 - **The cursor save is the DECSC slot** (#1092). `?1048h` / `?1048l` are DECSC / DECRC on the active
   screen; `?1049h` is DECSC on the active screen (on the alternate screen too, so a second `?1049h`
   saves into the alternate screen's slot) and `?1049l` DECRCs from the primary's slot after the
-  switch. So the save set is DECSC's (position, pen, deferred-wrap flag, DECOM, charsets), DECTCEM
+  switch — on the primary too, where there is no switch (xterm `charproc.c:7733-7736`, xterm.js
+  `InputHandler.ts:2268-2270`, ghostty `Terminal.zig:4408`; alacritty guards it,
+  `term/mod.rs:2009-2013`; maintainer, 2026-11-02). So the save set is DECSC's (position, pen, deferred-wrap flag, DECOM, charsets), DECTCEM
   visibility is left alone, and a restored park no longer at the last column settles
   (`Term::settle_restored_wrap`, #848 — [cursor position](cursor-position.md)). All four references
   save there: xterm `charproc.c:7730` and `:7908-7913`, xterm.js `common/InputHandler.ts:2008-2012`,
   ghostty `src/terminal/Terminal.zig:4364`, alacritty `alacritty_terminal/src/term/mod.rs:719-720`.
 - **The caret shape and blink ride `?1049` in a stash of their own** (`caret_before_alt`), taken when
   `?1049h` leaves the primary and put back by `?1049l`, so #927 holds ([caret report](caret-report.md)).
-  `?1048` does not touch them.
+  Any exit from the alternate screen clears it, so after an entry or exit by `?47` / `?1047` a
+  `?1049l` leaves the shape alone. `?1048` does not touch them.
 - **The alt screen has no scrollback.** `Term::linefeed_inner` pushes history only on a top-anchored
   *primary* scroll; on the alt screen every scroll is a region scroll and the evicted row is gone.
   The concatenated `[scrollback ++ grid]` space therefore holds the **primary's** history under the
@@ -177,6 +180,10 @@ Tests that pin it: `justerm-core/tests/alt_screen.rs`, `alt_no_reflow.rs`, `alt_
   `Engine::alt_screen` and PenTerm's `justerm-core = "0.30"` admits it, but its lockfile holds
   `0.30.0` and `gate_of` still calls `engine.frame()` (penterm 729ae0588, 2026-10-26 — `Cargo.lock`,
   `src-tauri/src/engine/native.rs`).
+- **A second `?1049h` saves but does not clear the alternate screen.** xterm (`ClearScreen`,
+  `charproc.c:7732`) and ghostty (`eraseDisplay(.complete)`, `Terminal.zig:4391`) clear it; xterm.js
+  (`activateAltBuffer` returns early) and alacritty (no-op) do not. Not decided (#1092 kept it as it
+  was).
 - **`?47` clears the alt grid on enter, following xterm.js**; xterm's own `?47` / `?1047` semantics
   (which of enter or leave clears) were not compared.
 - **Viewing alt scrollback is impossible by construction.** If it ever becomes a feature,

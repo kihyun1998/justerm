@@ -159,9 +159,9 @@ fn a_command_mark_on_the_cursor_line_is_bounded_by_the_new_width() {
 
 #[test]
 fn under_the_alt_screen_the_kept_line_is_the_primarys_cursor_line() {
-    // `?47` / `?1047` save no cursor, and `?1048h` on the alt screen writes alt coordinates into
-    // the slot, so neither can name the primary's line: the line kept is the one the cursor was on
-    // when the screen switched.
+    // `?47` / `?1047` save no cursor, and `?1048h` on the alt screen saves into the alt screen's
+    // slot, so none names the primary's line: the line kept is the one the cursor was on when the
+    // screen switched.
     for enter in [
         &b"\x1b[?47h"[..],
         b"\x1b[?1047h",

@@ -12,8 +12,9 @@ way is ambiguous across all three. Follow the links; the content lives there.
 ## Why these three sit together
 
 They share a **struct** and a set of **writing verbs**, not a purpose. `Cursor` (`cursor.rs`) holds the
-position, the `Pen`, and the visibility / shape / blink the caret report reads; the print path, DECSC /
-DECRC and the alt-screen save touch all of them at once. That is the whole relationship. Sharing a
+position, the `Pen`, and the visibility / shape / blink the caret report reads; the print path touches
+all of them at once, DECSC / DECRC (and `?1048` / `?1049`, which are DECSC / DECRC) the position and
+the pen, and `?1049` alone the shape and blink. That is the whole relationship. Sharing a
 struct reads like sharing a concept until the blast radii are written out — they barely overlap.
 
 ## What splits them
@@ -33,7 +34,7 @@ Each answers to a different authority.
 
 *"Cursor"* is a singular noun hiding a merge. A territory named with an `&` announces that it covers
 two things and gets questioned; this one did not, and the three were written as one note until their
-blast lists were written out separately and barely overlapped. A field added to `Cursor` is saved and
-restored by the alt-screen save, which copies the whole struct, and not by DECSC's `SavedCursor`, which
-copies field by field — whether or not it belongs to the position. Check which of the three concepts
+blast lists were written out separately and barely overlapped. A field added to `Cursor` is saved by
+nothing until a save names it: DECSC's `SavedCursor` copies field by field, and `?1049`'s stash holds
+only the shape and blink. Check which of the three concepts
 it is before adding it.

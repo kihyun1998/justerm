@@ -183,7 +183,7 @@ fn a_decsc_point_just_past_a_row_the_narrowing_filled_keeps_the_next_write_after
 }
 
 #[test]
-fn the_alt_screen_save_slot_keeps_a_column_past_the_lines_content() {
+fn a_1048_save_keeps_a_column_past_the_lines_content() {
     let mut t = Engine::new(10, 6);
     // `?1048h` saves at col 7 past `xy`; `?47` switches without touching that slot.
     t.feed(b"xy\x1b[1;8H\x1b[?1048h\x1b[3;1Habc\x1b[?47h");

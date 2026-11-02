@@ -82,8 +82,8 @@ pub struct Term {
     /// switched, screen-relative, carried through each resize. Its line is the one a resize keeps
     /// un-reflowed on the primary (#1082).
     primary_cursor_on_alt: (usize, usize),
-    /// Whether the alternate screen is currently active. Guards enter/leave so a
-    /// double-enter or double-leave is a no-op.
+    /// Whether the alternate screen is currently active. Guards the swap so a second enter or
+    /// leave does not swap again.
     on_alt: bool,
     /// The redraw extent the shell's last OSC `133;A` stated (#1083).
     prompt_redraw: PromptRedraw,

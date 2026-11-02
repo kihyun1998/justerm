@@ -120,8 +120,8 @@ maintainer calls recorded on #927.
   rely on `None` meaning "use the consumer default".
 - [input encoding](input-encoding.md) — the IME anchor reads `cursor_row`/`cursor_col` while the
   caret is hidden (#921); a change that stops them being true while hidden breaks it.
-- [alt screen](alt-screen.md) — the shape rides the 1049/1048 cursor save; a change to what that
-  save holds changes the post-nvim caret.
+- [alt screen](alt-screen.md) — the shape rides `?1049` in `caret_before_alt`; a change to what that
+  stash holds or when it is cleared changes the post-nvim caret.
 - [widget lifecycle](widget-lifecycle.md) — the blink policy and the default shape resolve in
   `justerm-web`, so this territory spans the crate boundary.
 
