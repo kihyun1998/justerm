@@ -71,17 +71,19 @@ is the consumer-facing contract. No record governs it.
   content, past a short line — to the content's end, which pulled a saved cursor left on a resize
   that did not even need to re-split the line (`xy` saved at column 7, widened: DECRC at column 2).
   So `reflow` returns a `PointPlace` beside every point (`Line`, `PastContent(n)`, `Kept`), and
-  `saved_cursor_col` turns it into the two saved slots' column (DECSC and `saved_cursor`): a point
-  `n` cells past the content keeps that distance, a `Line` point at `col == cols` (just past a row
-  the narrowing filled) is the last column with the wrap deferred — the logical position after the
-  glyph, as #848 represents it — and every column is clamped to the last. Selection anchors,
+  `saved_cursor_col` turns it into the two saved slots' column (DECSC and `saved_cursor`): a point at
+  or past the end of a row the narrowing filled (`col == cols`, whatever its place) is the last
+  column with the wrap deferred — the logical position after the glyph, as #848 represents it — so
+  one column further right does not overwrite the glyph that one column left keeps; otherwise a
+  point `n` cells past the content keeps that distance; every column is clamped to the last. A
+  `Kept` point is only clamped. Selection anchors,
   markers and tracked points ignore the place and keep the content-end answer: the change was scoped
   to the slots (maintainer, 2026-11-02, #1088). ghostty widens the line to include every tracked pin
   in the blanks (`terminal/PageList.zig:1576-1597` @ `e6e26e1`); xterm.js and alacritty only clamp
   the saved column (`common/buffer/Buffer.ts:256` @ `699f553`, `grid/resize.rs:387` @ `852e971`).
 - **A slot stores the clamped column**, so a narrowing then a widening does not bring the column
-  back (a slot at column 8, 10 → 5 → 10 columns, restores at column 4). The live cursor and all three
-  references clamp at resize the same way; before #1088 the DECSC slot was clamped only at DECRC
+  back (a slot at column 8, 10 → 5 → 10 columns, restores at column 4). All three references clamp
+  the saved column at resize the same way; before #1088 the DECSC slot was clamped only at DECRC
   because it never moved.
 - **A returned point is a position in the logical line, not necessarily a cell** (#562, closed
   2026-07-27 after five designs that made `reflow` itself materialise a row were measured and
