@@ -115,18 +115,38 @@ fn an_empty_pane_with_no_history_narrows_and_shrinks() {
 }
 
 #[test]
-fn a_decsc_point_on_a_blank_row_below_the_cursor_stops_the_trim_there() {
+fn a_saved_cursor_on_a_trimmed_row_does_not_stop_the_trim_and_lands_on_the_last_row() {
     let mut t = Engine::new(10, 6);
     // DECSC on blank row 3, then the cursor goes back up to `b`.
     t.feed(b"a\r\nb\r\nc\r\n\x1b7\x1b[2;1H");
     t.resize(10, 3);
-    t.feed(b"\x1b8Z");
-    assert_eq!(
-        rows(&t),
-        ["b", "c", "Z"],
-        "the restore lands below `c`, not on it"
-    );
-    assert_eq!(t.scrollback_len(), 1);
+    assert_eq!(rows(&t), ["a", "b", "c"]);
+    assert_eq!(t.scrollback_len(), 0);
+    t.feed(b"\x1b8");
+    assert_eq!(cursor(&t), (2, 0), "clamped onto the last row");
+}
+
+#[test]
+fn a_stale_saved_cursor_left_from_before_a_clear_does_not_send_the_prompt_to_history() {
+    let mut t = Engine::new(20, 10);
+    // Output, DECSC on row 8 (as `tput sc` leaves it), then a clear and a fresh prompt.
+    t.feed(b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n\x1b7\x1b[H\x1b[2J\x1b[3J$ ");
+    t.resize(20, 4);
+    assert_eq!(rows(&t), ["$", "", "", ""]);
+    assert_eq!(cursor(&t), (0, 2));
+    assert_eq!(t.scrollback_len(), 0);
+}
+
+#[test]
+fn the_paint_change_record_does_not_stop_the_trim() {
+    let mut t = Engine::new(20, 10);
+    t.feed(b"1\r\n2\r\n3\r\n$ ");
+    t.changed_logical_lines();
+    // A change below the prompt: down a row, erase below, back up.
+    t.feed(b"\x1b7\r\n\x1b[J\x1b8");
+    t.resize(20, 4);
+    assert_eq!(rows(&t), ["1", "2", "3", "$"]);
+    assert_eq!(t.scrollback_len(), 0);
 }
 
 #[test]
