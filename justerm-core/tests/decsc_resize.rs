@@ -122,14 +122,100 @@ fn a_decrc_on_the_alt_screen_does_not_read_the_primary_slot() {
 #[test]
 fn the_primary_slot_rides_a_resize_made_while_the_alt_screen_is_up() {
     let mut t = Engine::new(10, 6);
-    // The `?1049h` save is taken on the empty last row, away from the DECSC point, so the two
-    // slots differ; an empty cursor line is reflowed like any other.
-    t.feed(b"0123456789abcdef\r\nxy\x1b7\x1b[6;1H\x1b[?1049h");
+    // The `?1049h` save is taken on the empty row below `xy`, away from the DECSC point, so the
+    // two slots differ; an empty cursor line is reflowed like any other.
+    t.feed(b"0123456789abcdef\r\nxy\x1b7\r\n\x1b[?1049h");
     t.resize(5, 6);
     t.feed(b"\x1b[?1049l\x1b[1;1H\x1b8X");
-    // The parked cursor keeps its three rows below `xy`, so two rows of output went to history.
-    assert_eq!(rows(&t), ["abcde", "f", "xyX", "", "", ""]);
-    assert_eq!(cursor(&t), (2, 3));
+    assert_eq!(rows(&t), ["01234", "56789", "abcde", "f", "xyX", ""]);
+    assert_eq!(cursor(&t), (4, 3));
+}
+
+#[test]
+fn a_decsc_point_past_the_lines_content_keeps_its_column_on_a_widening() {
+    let mut t = Engine::new(10, 6);
+    t.feed(b"xy\x1b[1;8H\x1b7\x1b[3;1Habc");
+    t.resize(20, 6);
+    t.feed(b"\x1b8X");
+    assert_eq!(rows(&t)[0], "xy     X");
+    assert_eq!(cursor(&t), (0, 8));
+}
+
+#[test]
+fn a_decsc_point_after_a_trailing_space_keeps_it_on_a_narrowing() {
+    let mut t = Engine::new(10, 6);
+    t.feed(b"$ \x1b7\x1b[4;1Hstatus");
+    t.resize(8, 6);
+    t.feed(b"\x1b8X");
+    assert_eq!(rows(&t)[0], "$ X");
+    assert_eq!(cursor(&t), (0, 3));
+}
+
+#[test]
+fn a_decsc_point_on_an_empty_line_between_content_keeps_its_column() {
+    let mut t = Engine::new(10, 6);
+    t.feed(b"a\r\n\r\nb\x1b[2;6H\x1b7\x1b[5;1H");
+    t.resize(12, 6);
+    t.feed(b"\x1b8X");
+    assert_eq!(rows(&t)[1], "     X");
+    assert_eq!(cursor(&t), (1, 6));
+}
+
+#[test]
+fn a_decsc_point_past_the_new_width_lands_on_the_last_column() {
+    let mut t = Engine::new(10, 6);
+    t.feed(b"xy\x1b[1;9H\x1b7\x1b[3;1Habc");
+    t.resize(5, 6);
+    t.feed(b"\x1b8X");
+    assert_eq!(rows(&t)[0], "xy  X");
+}
+
+#[test]
+fn a_decsc_point_just_past_a_row_the_narrowing_filled_keeps_the_next_write_after_it() {
+    let mut t = Engine::new(10, 6);
+    // DECSC just after `d`; at 4 columns `abcd` fills its row, so the point is one past it.
+    t.feed(b"abcd\x1b7\r\n\r\n");
+    t.resize(4, 6);
+    t.feed(b"\x1b8X");
+    assert_eq!(&rows(&t)[..2], ["abcd", "X"]);
+    assert!(t.grid().is_row_wrapped(0), "X continues abcd's line");
+    assert_eq!(cursor(&t), (1, 1));
+}
+
+#[test]
+fn the_alt_screen_save_slot_keeps_a_column_past_the_lines_content() {
+    let mut t = Engine::new(10, 6);
+    // `?1048h` saves at col 7 past `xy`; `?47` switches without touching that slot.
+    t.feed(b"xy\x1b[1;8H\x1b[?1048h\x1b[3;1Habc\x1b[?47h");
+    t.resize(20, 6);
+    t.feed(b"\x1b[?47l\x1b[?1048lX");
+    assert_eq!(rows(&t)[0], "xy     X");
+}
+
+#[test]
+fn a_saved_deferred_wrap_off_the_cursor_line_rides_the_reflow() {
+    let mut t = Engine::new(10, 6);
+    // DECSC parked after `9` with the wrap deferred, then the cursor leaves the line.
+    t.feed(b"0123456789\x1b7\x1b[4;1H");
+    t.resize(5, 6);
+    t.feed(b"\x1b8X");
+    assert_eq!(&rows(&t)[..3], ["01234", "56789", "X"]);
+}
+
+#[test]
+fn decstr_resets_only_the_active_screens_slot() {
+    let mut t = Engine::new(10, 6);
+    t.feed(b"\x1b[2;3H\x1b7\x1b[?1049h\x1b[4;5H\x1b7\x1b[!p\x1b[?1049l\x1b[1;1H\x1b8");
+    assert_eq!(cursor(&t), (1, 2), "the primary's slot survived the alt screen's DECSTR");
+}
+
+#[test]
+fn the_alt_slot_is_clamped_not_re_split_on_a_narrowing() {
+    let mut t = Engine::new(10, 6);
+    t.feed(b"\x1b[?1049h\x1b[2;1H0123456789\x1b[2;8H\x1b7\x1b[6;1H");
+    t.resize(5, 6);
+    t.feed(b"\x1b8");
+    assert_eq!(cursor(&t), (1, 4));
 }
 
 #[test]
