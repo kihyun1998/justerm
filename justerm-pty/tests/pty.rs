@@ -145,6 +145,28 @@ fn helper(mode: &str) {
                 say(&size());
             }
         }
+        // Count the SIGWINCHs received; print the count and size now, and after every line read.
+        #[cfg(unix)]
+        "winch-on-line" => {
+            static WINCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            extern "C" fn on_winch(_: libc::c_int) {
+                WINCHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            unsafe {
+                libc::signal(libc::SIGWINCH, on_winch as *const () as libc::sighandler_t);
+            }
+            let report = || {
+                let (terminal_size::Width(w), terminal_size::Height(h)) =
+                    terminal_size::terminal_size().expect("stdout is a terminal");
+                let n = WINCHES.load(std::sync::atomic::Ordering::SeqCst);
+                format!("WINCH:{n}@{w}x{h};")
+            };
+            say(&report());
+            loop {
+                read_line();
+                say(&report());
+            }
+        }
         other => panic!("unknown helper mode {other}"),
     }
 }
@@ -506,6 +528,129 @@ fn a_too_narrow_resize_reaches_the_child_at_the_adopted_size() {
     pty.terminate();
     rx.recv_timeout(Duration::from_secs(20))
         .expect("terminated");
+}
+
+/// How many times `needle` occurs in `haystack`.
+fn count(haystack: &str, needle: &str) -> usize {
+    haystack.matches(needle).count()
+}
+
+/// The engine's grid size, `(cols, rows)`.
+fn grid_size(pty: &Pty) -> (usize, usize) {
+    let session = pty.session().expect("a frame-mode pty has a session");
+    let session = session.lock().unwrap();
+    let grid = session.engine().grid();
+    (grid.cols(), grid.rows())
+}
+
+fn a_screen_resize_leaves_the_child_at_its_size_until_resize_child() {
+    let (pty, _rec, rx) = spawn("size-on-line", Options::default());
+    assert!(eventually(Duration::from_secs(10), || screen(&pty)
+        .contains("SIZE:80x24;")));
+    // A drag: the screen follows every step, the child hears none of them.
+    assert_eq!(pty.resize_screen(90, 24), Some((90, 24)));
+    assert_eq!(pty.resize_screen(100, 30), Some((100, 30)));
+    assert_eq!(pty.resize_screen(70, 20), Some((70, 20)));
+    assert_eq!(grid_size(&pty), (70, 20));
+    pty.write(b"\r").unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || count(
+            &screen(&pty),
+            "SIZE:80x24;"
+        ) == 2),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    // The drag ends: the child hears the last size once.
+    assert_eq!(pty.resize_child(), Some((70, 20)));
+    pty.write(b"\r").unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || screen(&pty)
+            .contains("SIZE:70x20;")),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    let text = screen(&pty);
+    assert_eq!(count(&text, "SIZE:80x24;"), 2, "screen: {text:?}");
+    for heard in ["SIZE:90x24;", "SIZE:100x30;"] {
+        assert!(!text.contains(heard), "the child heard a step: {text:?}");
+    }
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
+fn resize_child_tells_the_child_the_width_the_engine_raised() {
+    let (pty, _rec, rx) = spawn("size-on-line", Options::default());
+    assert!(eventually(Duration::from_secs(10), || screen(&pty)
+        .contains("SIZE:80x24;")));
+    let min = justerm_core::MIN_COLUMNS;
+    assert_eq!(pty.resize_screen(1, 12), Some((min, 12)));
+    assert_eq!(pty.resize_child(), Some((min, 12)));
+    pty.write(b"\r").unwrap();
+    let want = format!("SIZE:{min}x12;");
+    assert!(
+        eventually(Duration::from_secs(10), || screen(&pty).contains(&want)),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    assert!(!screen(&pty).contains("SIZE:1x12;"));
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
+/// Unix only: a drag that comes back to the child's size signals the child once.
+#[cfg(unix)]
+fn a_drag_back_to_the_childs_size_still_signals_the_child_once() {
+    let (pty, _rec, rx) = spawn("winch-on-line", Options::default());
+    let sees = |want: &str| {
+        let want = want.to_owned();
+        pty.write(b"\r").unwrap();
+        let ok = eventually(Duration::from_secs(10), || screen(&pty).contains(&want));
+        assert!(ok, "want {want}, screen: {:?}", screen(&pty));
+    };
+    sees("WINCH:0@80x24;");
+    // The screen narrows and comes back; the child's size never changed.
+    assert_eq!(pty.resize_screen(40, 24), Some((40, 24)));
+    assert_eq!(pty.resize_screen(80, 24), Some((80, 24)));
+    assert_eq!(pty.resize_child(), Some((80, 24)));
+    sees("WINCH:1@80x24;");
+    // Nothing moved since, or a resize to the size the screen has: no second signal.
+    assert_eq!(pty.resize_child(), Some((80, 24)));
+    assert_eq!(pty.resize_screen(80, 24), Some((80, 24)));
+    assert_eq!(pty.resize_child(), Some((80, 24)));
+    // A real change is still signalled once, by the kernel.
+    assert_eq!(pty.resize_screen(50, 24), Some((50, 24)));
+    assert_eq!(pty.resize_child(), Some((50, 24)));
+    sees("WINCH:2@50x24;");
+    // The same round trip ended by `Pty::resize`.
+    assert_eq!(pty.resize_screen(30, 24), Some((30, 24)));
+    assert_eq!(pty.resize(50, 24), (50, 24));
+    sees("WINCH:3@50x24;");
+    // A round trip in the rows only.
+    assert_eq!(pty.resize_screen(50, 12), Some((50, 12)));
+    assert_eq!(pty.resize_screen(50, 24), Some((50, 24)));
+    assert_eq!(pty.resize_child(), Some((50, 24)));
+    sees("WINCH:4@50x24;");
+    assert!(
+        !screen(&pty).contains("WINCH:5"),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
+fn both_resize_halves_still_resize_the_session_after_exit() {
+    let (pty, _rec, rx) = spawn("print-exit-7", Options::default());
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child exits");
+    assert_eq!(pty.resize_screen(100, 30), Some((100, 30)));
+    assert_eq!(grid_size(&pty), (100, 30));
+    assert_eq!(pty.resize_child(), Some((100, 30)));
+    assert_eq!(grid_size(&pty), (100, 30));
 }
 
 /// A stand-in legacy encoding with one two-byte character, enough to test a decoder that carries
@@ -908,6 +1053,40 @@ fn raw_mode_hands_the_output_to_the_sink_with_no_session() {
     );
 }
 
+fn raw_mode_has_no_screen_to_resize_apart_from_the_child() {
+    let sink = RawRecorder::default();
+    let (pty, rx, _exited) = spawn_raw("size-on-line", Options::default(), sink.clone());
+    assert!(eventually(Duration::from_secs(10), || sink
+        .text()
+        .contains("SIZE:80x24;")));
+    assert_eq!(pty.resize_screen(100, 30), None);
+    assert_eq!(pty.resize_child(), None);
+    pty.write(b"\r").unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || count(
+            &sink.text(),
+            "SIZE:80x24;"
+        ) == 2),
+        "sink: {:?}",
+        sink.text()
+    );
+    let before = sink.text();
+    assert!(!before.contains("SIZE:100x30;"), "sink: {before:?}");
+    // The control: the same child does hear a `Pty::resize`.
+    assert_eq!(pty.resize(100, 30), (100, 30));
+    pty.write(b"\r").unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || sink
+            .text()
+            .contains("SIZE:100x30;")),
+        "sink: {:?}",
+        sink.text()
+    );
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
 /// Windows only: a ConPTY asks for the cursor position before it runs the child, and the pty
 /// answers it, so the child runs with nothing written and the query never reaches the sink.
 #[cfg(windows)]
@@ -1205,6 +1384,22 @@ fn main() {
             a_too_narrow_resize_reaches_the_child_at_the_adopted_size,
         ),
         (
+            "a_screen_resize_leaves_the_child_at_its_size_until_resize_child",
+            a_screen_resize_leaves_the_child_at_its_size_until_resize_child,
+        ),
+        (
+            "resize_child_tells_the_child_the_width_the_engine_raised",
+            resize_child_tells_the_child_the_width_the_engine_raised,
+        ),
+        (
+            "both_resize_halves_still_resize_the_session_after_exit",
+            both_resize_halves_still_resize_the_session_after_exit,
+        ),
+        (
+            "raw_mode_has_no_screen_to_resize_apart_from_the_child",
+            raw_mode_has_no_screen_to_resize_apart_from_the_child,
+        ),
+        (
             "the_decoder_sees_the_output_before_the_engine",
             the_decoder_sees_the_output_before_the_engine,
         ),
@@ -1284,6 +1479,10 @@ fn main() {
     ]);
     #[cfg(unix)]
     tests.extend([
+        (
+            "a_drag_back_to_the_childs_size_still_signals_the_child_once",
+            a_drag_back_to_the_childs_size_still_signals_the_child_once as fn(),
+        ),
         (
             "raw_mode_leaves_a_query_to_the_consumer",
             raw_mode_leaves_a_query_to_the_consumer as fn(),
