@@ -13,7 +13,8 @@ GLOSSARY "Raw mode"). Three threads run for it:
 - **writer:** the only thread that writes to the child — the engine's replies and the consumer's
   `Pty::write`s, in hand-over order, through the encoder.
 
-`Pty::resize` resizes the Session, then the pseudo-terminal to the size the engine adopted. The
+`Pty::resize` resizes the Session, then the pseudo-terminal to the size the engine adopted;
+`Pty::resize_screen` and `Pty::resize_child` are its two halves, called apart. The
 consumer keeps the policy: the command, the encoding (`Options::decoder` / `Options::encoder`), the
 pace (`Options::pump_every`, default 16 ms), and what to do on each chunk and tick
 (`Options::on_output`, `Options::on_tick`). `justerm-core` stays I/O-free (CLAUDE.md "No I/O"); every
@@ -27,8 +28,10 @@ OS call in the family lives here.
   lockstep, real-process tests on three OSes), its 2026-10-12 amendment (replies are not paced;
   `publish = false` until the loop was complete), its #1057 amendment R1–R6 (the observer, the tick,
   Raw mode, two constructors, pause/resume as the only backpressure, `Session::send_pending`, and the
-  macOS held-slave refinement), and its #1060 amendment P1–P3 (a Raw pty answers its ConPTY's
-  start-up query from a consumer-supplied cursor, recognised behind DEC private mode settings).
+  macOS held-slave refinement), its #1060 amendment P1–P3 (a Raw pty answers its ConPTY's
+  start-up query from a consumer-supplied cursor, recognised behind DEC private mode settings), and
+  its #1094 amendment S1–S3 (the screen and the child resize apart; a drag back to the child's size
+  is still signalled).
 - [ADR-0030 — which directory owns what](../../adr/0030-which-directory-owns-what.md) — the
   `justerm-pty/` row and its 2026-10-12 re-open note.
 - `docs/architecture.md` §Cadence — the timer paces frames only; replies and exit detection are off it.
@@ -50,8 +53,8 @@ that took them.
     reading its stdin used to fill the pty input queue and freeze the read loop.
 - **What a consumer may do through `Pty::session`** is in its doc-comment: subscribe, read, `edit`,
   `send_pending`. It must not `pump` (the drained replies would never reach the child), nor `feed` or
-  `end` (the reader's and the pump's), and it resizes through `Pty::resize`. Why `pump` drains replies
-  at all is the [Session](session.md)'s.
+  `end` (the reader's and the pump's), and it resizes through `Pty::resize` or its two halves. Why
+  `pump` drains replies at all is the [Session](session.md)'s.
 - **The observer and the tick run under the lock.** `on_output` runs under the Session's lock (in Raw
   mode, the raw state's), so it sees exactly the engine's input, in order; locking the Session from
   inside it deadlocks. `on_tick` runs under the same lock just before the pump, so it sees
@@ -77,7 +80,38 @@ that took them.
   its minimum; telling the child the requested width would make the two disagree, so the child is
   told the adopted one. The Session stays locked until the pty has its size, so two racing resizes
   cannot split. In Raw mode there is no engine: the child is told the size as asked. `pty_size`
-  saturates both axes at `u16::MAX`.
+  saturates both axes at `u16::MAX`. On Windows that is still too wide past 32767: `portable-pty`
+  0.9.0 casts each axis `as i16` for the ConPTY (`win/conpty.rs`, read at #1094), the resize fails,
+  and the error is dropped, so the child keeps its old size. No UI produces such a width.
+- **A drag can reflow the screen without telling the child** (#1094). `resize_screen` resizes the
+  Session only; `resize_child` takes no size and, under the Session lock, tells the pseudo-terminal
+  the size the engine holds, so the child still hears only an adopted size. Between the two the
+  engine and the child disagree on purpose, and when to close that window (a debounce, the end of a
+  drag) is the consumer's policy. The reason is the child's redraw, not the reflow: measured in
+  #1094, bash 5.0.17, 5.1.8 and 5.1.16 each left 6 pieces of a wrapped prompt when told 12
+  intermediate widths; bash 5.1.8 left one prompt when the screen walked the same widths but the
+  child heard only the last (4 runs; 5.0 was not run that way). The issue cites kitty's
+  `resize_debounce_time` as the same split (not read here). In Raw mode both halves do nothing and
+  return `None`, since there is no screen apart from the child. After the exit `resize_child` still
+  returns the engine's size; there is no pseudo-terminal left to tell.
+- **A drag that comes back to the child's size is still signalled** (#1094 lens F1; signalling it
+  here is the maintainer's call of 2026-11-03, over documenting it or leaving it to another slice,
+  theirs to reverse). While the screen was narrower the engine cut the cursor's line and the alt
+  screen's cells ([ADR-0035](../../adr/0035-the-cursors-logical-line-is-not-reflowed.md) relies on
+  the child redrawing them). Linux sends no `SIGWINCH` for a `TIOCSWINSZ` of the size it already
+  holds: measured under WSL Ubuntu-24.04 at #1094, a same-size set 0 signals, a changed size 1. So
+  `tell_child`, which every resize path ends in, sends `SIGWINCH` to the foreground process group
+  (`MasterPty::process_group_leader`, `tcgetpgrp`) when `screen_moved` is set and the size equals
+  the one the pty holds (`MasterPty::get_size`). `screen_moved` is set by a `resize_screen` that
+  changed the adopted size and cleared by every tell, so a repeated `resize_child`, or one after a
+  same-size `resize_screen` (a width clamped to `MIN_COLUMNS` both times), signals nothing: each
+  extra signal is one more redraw bash 5.0/5.1 may leave a row behind for. A ConPTY needs none: conhost
+  repaints on a same-size `ResizePseudoConsole` (#1094 lens, Windows 11). macOS is unmeasured; the
+  signal is sent there too.
+  - A ConPTY repaints the lines it holds after a pseudo-terminal resize (`ESC[H`, then each line
+    again), measured on Windows 11 26200 at #1094 through a Raw sink. So a test counting the
+    child's lines counts only output from before the resize
+    (`raw_mode_has_no_screen_to_resize_apart_from_the_child`).
 
 **Exit**
 - **Exit is polled, not awaited.** A ConPTY reader can stay blocked after the child has exited, so EOF
@@ -199,7 +233,8 @@ that took them.
 
 - `justerm-pty/src/lib.rs` — `Command`, `Decode`, `Encode`, `Options`, `CursorPosition`, `OnOutput`,
   `OnTick`, `RawSink`, `Flow`, `Exit::read_error`, `Exit::success`, `Pty::spawn`, `Pty::spawn_raw`,
-  `Pty::session`, `Pty::resume`, `Pty::write`, `Pty::resize`, `Pty::terminate`, `Target`, `Raw`,
+  `Pty::session`, `Pty::resume`, `Pty::write`, `Pty::resize`, `Pty::resize_screen`,
+  `Pty::resize_child`, `Pty::tell_child`, `Pty::screen_moved`, `Pty::terminate`, `Target`, `Raw`,
   `RawState`, `ChildState`, `Input`, `Master`, `start`, `start_with`, `pty_size`, `write_back`,
   `spawn_writer`, `Reading`, `spawn_reader`, `decode_and_feed`, `feed`, `feed_raw`, `feed_session`,
   `Pump::run`, `Pump::pump`, `Pump::wait_until_the_reader_is_idle`, `StartupQuery`, `Lead`, `lead`,
@@ -321,6 +356,14 @@ crate is where it is discharged.
   `a_write_after_the_exit_fails_with_broken_pipe` pins the kind and the message after an exit.
 - **A real failed read is proven through an injected reader only.** No real pty read failure can be
   arranged, so `a_failed_read_is_reported_on_the_exit` wraps the real reader (`start_with`).
+- **No test sees a second `SIGWINCH` on a real size change.** Signals of one kind do not queue:
+  the kernel's and one sent right after it reach the child as one. So `tell_child` signalling
+  without its `unchanged` check, or comparing the columns only, stays green (both mutations
+  survived under WSL at #1094); the check rests on the code. A missing signal is what
+  `a_drag_back_to_the_childs_size_still_signals_the_child_once` reddens on.
+- **No test reaches `resize_child`'s lock across the read and the resize.** A resize racing between
+  reading the engine's size and telling the pty cannot be arranged deterministically, so taking the
+  size under one lock and resizing under another stays green; it rests on the code.
 - **No test reaches the pid-reuse guard** (`ChildState::exited`). A reused pid cannot be arranged
   deterministically, so removing the guard stays green on every OS. It rests on reading
   `portable-pty`'s Unix killer.

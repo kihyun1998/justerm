@@ -10,7 +10,8 @@ Runs a command in a pseudo-terminal and drives a [`justerm-core`](https://crates
 - **Policy stays yours.** You choose the command, environment and directory. You build the engine and
   subscribe the frame sink. You decide what to do with each event.
 - **Input and resize.** `Pty::write` queues bytes for the child. `Pty::resize` tells the child the
-  size the engine actually adopted.
+  size the engine actually adopted. For a live drag, `Pty::resize_screen` reflows the screen at every
+  step and `Pty::resize_child` tells the child once, when you decide the drag has ended.
 - **Encodings.** For a child that does not write UTF-8, inject a decoder and an encoder through
   `Options`. The engine itself reads UTF-8 only. On Windows leave both unset: the ConPTY carries
   UTF-8 both ways, whatever the child's encoding, and a child's legacy encoding is set through its

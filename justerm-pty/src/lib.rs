@@ -282,6 +282,8 @@ pub struct Pty {
     child: Arc<Mutex<ChildState>>,
     input: Input,
     master: Master,
+    /// Whether [`Pty::resize_screen`] changed the screen's size since the child was last told one.
+    screen_moved: AtomicBool,
 }
 
 /// Where the child's output goes: into a [`Session`]'s engine, or to a [`RawSink`].
@@ -399,7 +401,8 @@ impl Pty {
     /// [`send_pending`](Session::send_pending) to show an edit at once. It must not
     /// [`pump`](Session::pump), which would take replies only this pty writes back to the child,
     /// nor [`feed`](Session::feed) or [`end`](Session::end), which are the reader's and the pump's;
-    /// and it resizes through [`Pty::resize`], so the child learns the size too.
+    /// and it resizes through [`Pty::resize`], so the child learns the size too, or through
+    /// [`Pty::resize_screen`] and later [`Pty::resize_child`].
     pub fn session(&self) -> Option<Arc<Mutex<Session>>> {
         match &self.target {
             Target::Frame(session) => Some(Arc::clone(session)),
@@ -511,6 +514,7 @@ fn start_with(
         child,
         input,
         master,
+        screen_moved: AtomicBool::new(false),
     })
 }
 
@@ -543,15 +547,14 @@ impl Pty {
     /// The engine widens a too-narrow width to its minimum (see
     /// [`Engine::resize`](justerm_core::Engine::resize)), and the child is told that width, never the
     /// one asked for, so the two never disagree. After the child has exited only the session is
-    /// resized. In [Raw mode](Pty::spawn_raw) there is no engine: the child is told `cols` × `rows`
-    /// as asked, and that is returned.
+    /// resized. A drag that ends here back at the child's size is signalled as in
+    /// [`Pty::resize_child`]. In [Raw mode](Pty::spawn_raw) there is no engine: the child is told
+    /// `cols` × `rows` as asked, and that is returned.
     pub fn resize(&self, cols: usize, rows: usize) -> (usize, usize) {
         let session = match &self.target {
             Target::Frame(session) => session,
             Target::Raw(_) => {
-                if let Some(master) = lock(&self.master).as_ref() {
-                    let _ = master.resize(pty_size(cols, rows));
-                }
+                self.tell_child((cols, rows));
                 return (cols, rows);
             }
         };
@@ -559,10 +562,90 @@ impl Pty {
         // the engine at one size and the child told the other.
         let mut session = lock(session);
         let adopted = session.resize(cols, rows);
-        if let Some(master) = lock(&self.master).as_ref() {
-            let _ = master.resize(pty_size(adopted.0, adopted.1));
-        }
+        self.tell_child(adopted);
         adopted
+    }
+
+    /// Resize the session only, and return the size the engine **adopted** as `(cols, rows)`. The
+    /// pseudo-terminal keeps its size, so the child is not told; [`Pty::resize_child`] tells it
+    /// later.
+    ///
+    /// This is the half of [`Pty::resize`] for a live drag: the screen reflows at every step, and
+    /// the child hears the size once, when the consumer decides the drag has ended. Until then the
+    /// engine and the child disagree on purpose: what the child writes meanwhile is laid out for
+    /// its old size, and the engine answers the child's queries (a cursor position report, a mouse
+    /// report) in its own.
+    ///
+    /// The engine widens a too-narrow width as in [`Pty::resize`]. It takes the session's lock, so
+    /// like `Pty::resize` it must not be called from `on_output` or `on_tick`. In
+    /// [Raw mode](Pty::spawn_raw) there is no screen to resize apart from the child, so this does
+    /// nothing and returns `None`.
+    pub fn resize_screen(&self, cols: usize, rows: usize) -> Option<(usize, usize)> {
+        match &self.target {
+            Target::Frame(session) => {
+                let mut session = lock(session);
+                let grid = session.engine().grid();
+                let before = (grid.cols(), grid.rows());
+                let adopted = session.resize(cols, rows);
+                if adopted != before {
+                    self.screen_moved.store(true, Ordering::Relaxed);
+                }
+                Some(adopted)
+            }
+            Target::Raw(_) => None,
+        }
+    }
+
+    /// Resize the pseudo-terminal to the size the engine holds now, and return that size as
+    /// `(cols, rows)`. It takes no size, so the child is only ever told a size the engine
+    /// adopted, after any number of [`Pty::resize_screen`]s.
+    ///
+    /// When [`Pty::resize_screen`] changed the screen's size and it came back to the size the child
+    /// already has, the child is still signalled once, on Unix with a `SIGWINCH` to its foreground
+    /// process group, so it redraws what the engine cut on the way. With no size changed since the
+    /// last tell, it signals nothing.
+    ///
+    /// It takes the session's lock, so it must not be called from `on_output` or `on_tick`. After
+    /// the child has exited there is no pseudo-terminal to resize, and the engine's size is still
+    /// returned. In [Raw mode](Pty::spawn_raw) there is no engine size to tell, so this does
+    /// nothing and returns `None`; [`Pty::resize`] resizes a Raw mode child.
+    pub fn resize_child(&self) -> Option<(usize, usize)> {
+        let session = match &self.target {
+            Target::Frame(session) => session,
+            Target::Raw(_) => return None,
+        };
+        let session = lock(session);
+        let grid = session.engine().grid();
+        let size = (grid.cols(), grid.rows());
+        self.tell_child(size);
+        Some(size)
+    }
+
+    /// Give the pseudo-terminal `size`, if it is still open, and on Unix send its foreground process
+    /// group `SIGWINCH` when the screen moved since the child was last told and `size` is the one
+    /// the pseudo-terminal already holds.
+    fn tell_child(&self, (cols, rows): (usize, usize)) {
+        let screen_moved = self.screen_moved.swap(false, Ordering::Relaxed);
+        let master = lock(&self.master);
+        let Some(master) = master.as_ref() else {
+            return;
+        };
+        let size = pty_size(cols, rows);
+        let unchanged = master
+            .get_size()
+            .is_ok_and(|held| (held.cols, held.rows) == (size.cols, size.rows));
+        let _ = master.resize(size);
+        #[cfg(unix)]
+        if screen_moved && unchanged {
+            if let Some(group) = master.process_group_leader() {
+                // SAFETY: `killpg` takes plain integers and touches no memory of ours.
+                unsafe {
+                    libc::killpg(group, libc::SIGWINCH);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = (screen_moved, unchanged);
     }
 
     /// End the child.

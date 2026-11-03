@@ -243,3 +243,36 @@ settings are allowed because conhost's order differs by version (microsoft/termi
 Windows 11 26200 send the query first). The #1060 lens found this; a first-bytes-only match would
 have hung on Windows 10's inbox conhost. Linux and macOS send no such query and are unchanged, which a Unix
 test proves with a child whose first output is its own `ESC[6n`.
+
+## Amended 2026-11-03, #1094: the screen and the child resize apart
+
+**S1 — A consumer can resize the screen without telling the child, and tell it later:
+`Pty::resize_screen(cols, rows)` and `Pty::resize_child()`.** `Pty::resize` keeps doing both under one
+lock. **A judgement made by the maintainer**: the split is #1094's own solution, and the two names
+were picked at its confirm stop over `tell_child_size` and `sync_child_size`. It was decided on #1094's
+measurement: under a real pty, bash 5.0.17, 5.1.8 and 5.1.16 each left 6 pieces of a wrapped prompt
+when told 12 intermediate widths, and bash 5.1.8 left one prompt when the screen walked the same widths
+but the child heard only the last (4 runs). So the lever is how many sizes the child hears, not how
+often the screen reflows, and when to tell it (a debounce, the end of a drag) is the consumer's policy,
+as D4 leaves pacing. The shapes are derivations: `resize_child` takes no size, so the child can only
+hear a size the engine adopted (the Context's "the PTY gets the adopted size" survives the split); both
+return `Option` and do nothing in Raw mode, where there is no screen apart from the child.
+
+**S2 — A drag that comes back to the child's size still signals the child, once.** On Unix the pty
+sends `SIGWINCH` to the foreground process group itself when a `resize_screen` changed the size since
+the child was last told and the size it is now told is the one the pseudo-terminal already holds.
+**A judgement made by the maintainer** after #1094's lens, over two alternatives shown with their
+consequences: documenting the case (a consumer would keep the cut screen, with nothing to do about it)
+and deferring it to another slice. Decided on:
+- while the screen is narrower the engine cuts the cursor's line and the alt screen's cells, and
+  [ADR-0035](0035-the-cursors-logical-line-is-not-reflowed.md) accepted that cut because the shell
+  redraws;
+- Linux sends no `SIGWINCH` for a `TIOCSWINSZ` of the size it holds (measured under WSL Ubuntu-24.04:
+  same size 0 signals, changed size 1), so without S2 the child never redraws;
+- conhost repaints on a same-size `ResizePseudoConsole` (#1094 lens, Windows 11), so Windows needs no
+  signal. macOS was not measured; the signal is sent there too.
+
+**S3 — Only a size change marks the screen as moved** (a derivation, from #1094's second review). A
+`resize_screen` that adopts the size the screen already has, such as a width clamped to the minimum
+both times, marks nothing, so it costs no signal: each extra `SIGWINCH` is one more redraw bash 5.0
+and 5.1 can leave a row behind for.
