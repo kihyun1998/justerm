@@ -636,12 +636,13 @@ impl Pty {
             .is_ok_and(|held| (held.cols, held.rows) == (size.cols, size.rows));
         let _ = master.resize(size);
         #[cfg(unix)]
-        if screen_moved && unchanged {
-            if let Some(group) = master.process_group_leader() {
-                // SAFETY: `killpg` takes plain integers and touches no memory of ours.
-                unsafe {
-                    libc::killpg(group, libc::SIGWINCH);
-                }
+        if screen_moved
+            && unchanged
+            && let Some(group) = master.process_group_leader()
+        {
+            // SAFETY: `killpg` takes plain integers and touches no memory of ours.
+            unsafe {
+                libc::killpg(group, libc::SIGWINCH);
             }
         }
         #[cfg(not(unix))]
