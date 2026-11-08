@@ -100,6 +100,9 @@ and why not baseline-diff (Mosh) or per-line seqno (wezterm): **ADR-0003**.
   returns `false` and does nothing on the alt screen (ghostty), leaving the keystroke to the TUI. Both
   drop lines off the *front*, so both advance `evicted_total` by the lines dropped and return the view
   to the bottom; a held absolute line rebases by that delta as it does after cap eviction.
+  `ED 3` is the only one a consumer can turn off (`set_erase_saved_lines`, on by default, survives RIS,
+  #1096): off, it is parsed and changes nothing on either screen. `clear()` is the consumer's own verb
+  and ignores the setting.
 
 ## Cadence — ack-paced state-diff (the consumer protocol)
 

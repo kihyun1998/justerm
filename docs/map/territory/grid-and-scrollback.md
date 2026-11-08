@@ -101,6 +101,16 @@ holders and missed search highlights. Each caller sets `display_offset` itself (
 it, the other two zero it), and that is not optional: every viewport read computes
 `scrollback.len() - display_offset`, and an offset that outlives its history underflows.
 
+**`ED 3` can be turned off; the other two cannot (#1096).** `Term::set_erase_saved_lines` (on by
+default, as xterm's `eraseSavedLines`; survives RIS) is consumer policy under ADR-0017, and a consumer
+cannot get this any other way without a parser of its own, since `ESC[3J` can split across two reads.
+The gate is on the `3` arm of `Term::erase_display`, **not in `Term::erase_history`**, because
+`Term::clear` calls that step directly and a terminal's Clear command is the consumer's own verb. Off,
+nothing left the front, so nothing is repaired: no holder moves, the view stays scrolled and the frame
+`Engine::feed` still owes carries no cells. Off does not make `clear` lossless: `ED 2` blanks the screen without pushing it into history,
+so only lines already in history stay (bytes of a real `clear`, `tests/ed3.rs —
+ignored_a_clear_empties_only_the_screen`).
+
 **Bounds on outside input.** The byte stream decides how many rows exist, and that count is bounded
 by `scrollback_limit + rows`; row width by `MAX_COLUMNS`; a cluster's tail by `MAX_CLUSTER_TAIL`.
 `scrollback_limit` itself is the consumer's constructor argument (`Engine::with_scrollback`, default
@@ -118,16 +128,18 @@ the consumer's choice.
   `Row::move_maps`; `ExtAttrs`, `LinkUri`
 - `justerm-core/src/term.rs` — `Term::with_scrollback`, `Term::linefeed_inner` (accrual and the cap),
   `Term::push_history`, `Term::lines_left_the_front`, `Term::erase_history`, `Term::clear`,
-  `Term::scroll_region_lines`, `Term::scrollback_len`, `DEFAULT_SCROLLBACK`
-- `justerm-core/src/lib.rs` — `Engine::with_scrollback`, `Engine::scrollback_len`, `Engine::clear`
+  `Term::erase_display`, `Term::set_erase_saved_lines`, `Term::scroll_region_lines`,
+  `Term::scrollback_len`, `DEFAULT_SCROLLBACK`
+- `justerm-core/src/lib.rs` — `Engine::with_scrollback`, `Engine::scrollback_len`, `Engine::clear`,
+  `Engine::set_erase_saved_lines`
 - `justerm-core/src/term/walk.rs` — the readers that treat the two stores as one buffer
 - Tests: `justerm-core/tests/size_bounds.rs`, `justerm-core/tests/ed3.rs`, `justerm-core/tests/clear.rs`
 
 ## Reference behaviour
 
 - [Dropping history — `ED 3` in band, and a Clear command out of band](../../agents/reference-facts.md#dropping-history--ed-3-in-band-and-a-clear-command-out-of-band-936-verified-2026-09-18)
-  — `ED 3` follows xterm including on the alt screen; `Engine::clear` does nothing there (ghostty, the
-  maintainer's call on #936).
+  — `ED 3` follows xterm including on the alt screen, unless the consumer turned it off; `Engine::clear`
+  does nothing there (ghostty, the maintainer's call on #936).
 - [OSC 8 hyperlinks — where the URI lives, and what frees it](../../agents/reference-facts.md#osc-8-hyperlinks--where-the-uri-lives-and-what-frees-it-628635-verified-2026-07-30)
   — the link side map's value and lifetime.
 - [What a blanked / freed cell is made of](../../agents/reference-facts.md#what-a-blanked--freed-cell-is-made-of)
@@ -145,7 +157,7 @@ the consumer's choice.
   constraint: `Cell::default` packs `' '`, so a written space is indistinguishable from a blank.
 - [RIS keeps configuration and drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
   — `scrollback_limit` survives `ESC c` by riding `Term::with_scrollback`'s argument in `full_reset`,
-  not the copy-back list, so auditing that list undercounts.
+  not the copy-back list, so auditing that list undercounts; `erase_saved_lines` is on the list.
 - [row-keyed side maps](../invariant/row-keyed-side-maps.md) — the storage site: `Row`'s three maps and
   the presence bits in `Cell`.
 

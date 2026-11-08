@@ -551,6 +551,21 @@ impl Engine {
         self.term.selection_carries_line_end()
     }
 
+    /// Choose whether `ED 3` (`CSI 3 J`) in the byte stream erases the scrollback — consumer
+    /// policy injected into a core mechanism
+    /// ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
+    /// On by default, as in xterm; survives RIS. Turning it off keeps the scrollback through a
+    /// program's `clear`, though the lines on the screen at that moment are still erased. The rule
+    /// is on [`Term::set_erase_saved_lines`].
+    pub fn set_erase_saved_lines(&mut self, on: bool) {
+        self.term.set_erase_saved_lines(on);
+    }
+
+    /// Whether [`set_erase_saved_lines`](Self::set_erase_saved_lines) is on.
+    pub fn erase_saved_lines(&self) -> bool {
+        self.term.erase_saved_lines()
+    }
+
     /// Clear the selection.
     pub fn selection_clear(&mut self) {
         self.term.selection_clear();

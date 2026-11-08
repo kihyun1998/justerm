@@ -3576,6 +3576,15 @@ command that wrapped keep their start; and the markers on what it keeps survive,
 the `CommandStart` of that command loses it from `command_lines` — the reason `EL` retires nothing
 (#750).
 
+**The setting (#1096, verified 2026-11-09).** `Term::set_erase_saved_lines` is xterm's `eraseSavedLines`
+resource, named after it and defaulting the same way: off, xterm's `case 3` skips the erase
+(`util.c:2053`). Two things differ. xterm's resource is fixed at startup (`charproc.c:11055-11056` is the
+only assignment in the tree), and justerm's can change while a session lives. And xterm's private form `CSI ? 3 J` runs the same arm
+(`CASE_DECSED` → `do_erase_display`), while justerm's dispatch sends every `CSI ? … J` to
+`Term::set_dec_private_mode`, so it never erases history in either setting (measured 2026-11-09: history
+2 → 2, `CSI 3 J` control 2 → 0). The real `clear` of ncurses 6.4 under `xterm-256color` writes
+`ESC[H ESC[2J ESC[3J` (`E3=\E[3J`).
+
 ## The kitty flag stack per screen, and legacy Alt on the C0 named keys (#941, verified 2026-09-18)
 
 Two encoder questions #941's lens and refuter raised while reading the frame's `modified_keys`
