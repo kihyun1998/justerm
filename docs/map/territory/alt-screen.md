@@ -100,8 +100,9 @@ From reading the source and tests at HEAD 7bb31f7.
   are *not* per-screen").
 - **Out-of-band and in-band clears on alt.** `Engine::clear` returns `false` and changes nothing on the
   alt screen (ghostty's answer, #936); `ED 3` drops the **primary's** history underneath, as xterm
-  does, and every alt line only shifts (`Term::erase_history`). RIS rebuilds `Term`, which leaves the
-  alt screen.
+  does, and every alt line only shifts (`Term::erase_history`), unless the consumer turned `ED 3` off
+  (`Term::set_erase_saved_lines`, #1096), when it does nothing here either. RIS rebuilds `Term`, which
+  leaves the alt screen.
 - **What a consumer sees.** The frame header carries `alt_screen` (wire v9, #149) and DECRQM reports
   `?47`/`?1047`/`?1049` from the one `on_alt` flag. `Term::accessible_text` shows only the alt buffer,
   and a wrapped alt line joins without primary bleed (`tests/accessible.rs`). PenTerm reads the flag

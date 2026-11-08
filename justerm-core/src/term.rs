@@ -98,6 +98,9 @@ pub struct Term {
     /// line ending (#1031) — consumer policy (ADR-0017), so it survives RIS. Off by default;
     /// set through `set_selection_carries_line_end`.
     selection_carries_line_end: bool,
+    /// Whether `ED 3` erases the saved lines — consumer policy (ADR-0017), so it survives RIS.
+    /// On by default; set through `set_erase_saved_lines`.
+    erase_saved_lines: bool,
     /// The window title the application last set (OSC 0/2), retained so a title pop has
     /// something to restore (#823). Application state, so it dies on RIS:
     /// `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md`.
@@ -756,6 +759,7 @@ impl Term {
             tabs: default_tabs(cols),
             word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
             selection_carries_line_end: false,
+            erase_saved_lines: true,
             window_title: String::new(),
             icon_name: String::new(),
             window_title_stack: Vec::new(),
@@ -1118,6 +1122,25 @@ impl Term {
     /// Whether [`Term::set_selection_carries_line_end`] is on.
     pub fn selection_carries_line_end(&self) -> bool {
         self.selection_carries_line_end
+    }
+
+    /// Choose whether `ED 3` (`CSI 3 J`) in the byte stream erases the saved lines — policy
+    /// injected into a core mechanism
+    /// ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
+    /// On by default, as in xterm.
+    ///
+    /// When off, `ED 3` is parsed and consumed and, on either screen, the history, the screen,
+    /// the cursor, the view and everything held on a history line stay as they were.
+    /// [`Term::clear`], the scrollback cap and a full reset still drop history.
+    ///
+    /// A program that clears to remove what it printed then leaves those lines in the scrollback.
+    pub fn set_erase_saved_lines(&mut self, on: bool) {
+        self.erase_saved_lines = on;
+    }
+
+    /// Whether [`Term::set_erase_saved_lines`] is on.
+    pub fn erase_saved_lines(&self) -> bool {
+        self.erase_saved_lines
     }
 
     /// Number of lines currently held in scrollback history.
@@ -1862,7 +1885,7 @@ impl Term {
     /// RIS (ESC c) — full reset to the power-on state (#53): rebuild `Term` from the
     /// constructor at the current dimensions and scrollback cap, and signal a full repaint.
     /// Carried across: the consumer-bound `replies`/`events`, the embedder's
-    /// `word_separators` and `selection_carries_line_end`, and the tracked-point and marker id
+    /// `word_separators`, `selection_carries_line_end` and `erase_saved_lines`, and the tracked-point and marker id
     /// counters and marker epoch. The title stacks and retained strings are dropped and the
     /// palette is not announced (#823, #835). Which survives and why: `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md`.
     fn full_reset(&mut self) {
@@ -1879,6 +1902,7 @@ impl Term {
         // Consumer policy, not terminal state (#545).
         let word_separators = std::mem::take(&mut self.word_separators);
         let selection_carries_line_end = self.selection_carries_line_end;
+        let erase_saved_lines = self.erase_saved_lines;
         // Tracked points die, but their id counter rides across: they have no disposal event,
         // so a reissued id would answer a stale ask with another point (#691).
         let next_tracked_id = self.next_tracked_id;
@@ -1891,6 +1915,7 @@ impl Term {
         self.events = events;
         self.word_separators = word_separators;
         self.selection_carries_line_end = selection_carries_line_end;
+        self.erase_saved_lines = erase_saved_lines;
         self.next_tracked_id = next_tracked_id;
         self.next_marker_id = next_marker_id;
         self.marker_epoch = marker_epoch;
@@ -2817,7 +2842,7 @@ impl Term {
                 }
             }
             // xterm's addition: erase saved lines. The screen and the cursor are untouched.
-            3 => self.erase_history(),
+            3 if self.erase_saved_lines => self.erase_history(),
             _ => {}
         }
     }
