@@ -1228,6 +1228,53 @@ fn a_resize_no_repaint_answers_still_reaches_the_engine() {
         .expect("terminated");
 }
 
+/// Windows only: a size given to the screen replaces one still waiting for a repaint.
+#[cfg(windows)]
+fn a_resize_screen_replaces_a_size_waiting_for_a_repaint() {
+    let options = Options {
+        decoder: Some(Box::new(NoRepaint)),
+        ..Options::default()
+    };
+    let (pty, _rec, rx) = spawn("print-then-sleep", options);
+    assert!(eventually(Duration::from_secs(10), || screen(&pty).contains(MARKER)));
+    pty.resize(100, 30);
+    assert_eq!(pty.resize_screen(70, 20), Some((70, 20)));
+    std::thread::sleep(Duration::from_millis(900));
+    let session = pty.session().unwrap();
+    {
+        let session = session.lock().unwrap();
+        let grid = session.engine().grid();
+        assert_eq!((grid.cols(), grid.rows()), (70, 20));
+    }
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
+/// Windows only: resize_child tells the child a size still waiting for a repaint, not the old one.
+#[cfg(windows)]
+fn resize_child_tells_the_size_waiting_for_a_repaint() {
+    let options = Options {
+        decoder: Some(Box::new(NoRepaint)),
+        ..Options::default()
+    };
+    let (pty, _rec, rx) = spawn("size-on-line", options);
+    assert!(eventually(Duration::from_secs(10), || screen(&pty)
+        .contains("SIZE:80x24;")));
+    pty.resize(100, 30);
+    assert_eq!(pty.resize_child(), Some((100, 30)));
+    pty.write(b"\r").unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || screen(&pty)
+            .contains("SIZE:100x30;")),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
 /// Windows only: the child ending before the console repaints still leaves the engine at the size.
 #[cfg(windows)]
 fn a_resize_just_before_the_exit_still_reaches_the_engine() {
@@ -1286,13 +1333,8 @@ fn a_conpty_widening_loses_no_line_with_grow_from_history_off() {
         );
     }
     // The console repaints the piece of the line across the screen top, so a line the engine also
-    // joined across that boundary would hold those cells twice. The console may instead leave that
-    // 20-cell piece out, which is the most this resize can cost.
-    let cells = text.matches('x').count();
-    assert!(
-        (40 * 96 - 20..=40 * 96).contains(&cells),
-        "{cells} cells: {text:?}"
-    );
+    // joined across that boundary would hold those cells twice.
+    assert_eq!(text.matches('x').count(), 40 * 96, "{text:?}");
 }
 
 /// Windows only: the same repaint, on a row grow.
@@ -1687,6 +1729,14 @@ fn main() {
         (
             "a_resize_just_before_the_exit_still_reaches_the_engine",
             a_resize_just_before_the_exit_still_reaches_the_engine as fn(),
+        ),
+        (
+            "a_resize_screen_replaces_a_size_waiting_for_a_repaint",
+            a_resize_screen_replaces_a_size_waiting_for_a_repaint as fn(),
+        ),
+        (
+            "resize_child_tells_the_size_waiting_for_a_repaint",
+            resize_child_tells_the_size_waiting_for_a_repaint as fn(),
         ),
         (
             "resizes_in_a_row_leave_the_engine_at_the_last_size",

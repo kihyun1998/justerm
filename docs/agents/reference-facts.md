@@ -3781,3 +3781,15 @@ justerm's blank-rows rule is narrower than xterm.js's and ghostty's: a cursor wi
 still takes a grow from history, by the maintainer's call on #1100. ghostty's `ED 2` wrap handling was
 not read. justerm's setting, unlike xterm.js's `windowsPty`, also covers a widening, on justerm's own
 ConPTY measurement (`docs/map/territory/reflow.md`).
+
+## What a ConPTY sends across a resize (#1104, verified 2026-11-09)
+
+microsoft/terminal is not in the pinned corpus; these were read at tag `v1.21.3231.0` and the installed console is a different build (10.0.26100.9949), so each source row is confirmed by the measured row beside it or says it was not.
+
+| Fact | Source | Where |
+|---|---|---|
+| Measured: after a resize conhost sends `ESC[?25l`, `ESC[8;24;120t`, then the `LF` it had not painted, then `ESC[H` and the repaint | conhost 10.0.26100.9949 | captured through a Raw sink, #1104 |
+| A resize asked for through the pseudo-console is followed by `SuppressResizeRepaint`, which stops the `ESC[8;rows;cols t` echo; measured 1 of 9 resizes carried one | microsoft/terminal `0c98216` | `src/host/PtySignalInputThread.cpp:182-185`, `src/renderer/vt/state.cpp:299-304`, `:416` |
+| A viewport that shrinks in either axis invalidates everything, so the frame paints from the top; a growth marks only new space, not measured separately (all three cases here repainted from `ESC[H`) | microsoft/terminal `0c98216` | `src/renderer/vt/state.cpp:315-326` |
+| A frame moving to (0,0) emits cursor home | microsoft/terminal `0c98216` | `src/renderer/vt/XtermEngine.cpp:252-256` |
+

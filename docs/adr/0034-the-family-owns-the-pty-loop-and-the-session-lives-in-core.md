@@ -276,3 +276,20 @@ and deferring it to another slice. Decided on:
 `resize_screen` that adopts the size the screen already has, such as a width clamped to the minimum
 both times, marks nothing, so it costs no signal: each extra `SIGWINCH` is one more redraw bash 5.0
 and 5.1 can leave a row behind for.
+
+## Amended 2026-11-09, #1104: on Windows the engine resize waits for the console's repaint
+
+**S4 — On Windows `Pty::resize` tells the pseudo-terminal first, and the engine takes the size when
+the console's repaint begins.** The first sentence of the resize contract, *engine first, then the
+PTY at the adopted size*, now holds on Unix only. **A judgement made by the maintainer**, shown the
+measurement below and two alternatives with their consequences: recording the loss and leaving the
+contract alone (a resize during output keeps losing a row), and the same order on every OS (Unix has no
+repaint to wait for, so it would hang on the bound and gain nothing). Decided on: conhost emits its
+unpainted scroll after the resize and before the repaint, and one recording replayed both ways lost
+a row in 56 of 120 sessions engine-first and in 0 of 120 with the engine after that scroll. The child
+still only hears an adopted size: the size is clamped as the engine would, without asking it.
+
+The shapes are derivations: the point is the repaint's `ESC[H` because `ESC[8;rows;cols t` comes before
+the scroll and is usually absent (1 of 9 resizes), and a 500 ms bound covers a repaint that never comes.
+`Pty::resize_screen` is unchanged, since the console is not being resized: S1's split is not covered by
+this. What it does not decide: whether a drag on Windows needs the same treatment.

@@ -650,6 +650,10 @@ impl Pty {
     /// its old size, and the engine answers the child's queries (a cursor position report, a mouse
     /// report) in its own.
     ///
+    /// This half does not wait for a console's repaint as a Windows [`Pty::resize`] does, since
+    /// the console is not being resized, so output arriving around a later [`Pty::resize_child`]
+    /// can cost a row there ([#1104](https://github.com/kihyun1998/justerm/issues/1104)).
+    ///
     /// The engine widens a too-narrow width as in [`Pty::resize`]. It takes the session's lock, so
     /// like `Pty::resize` it must not be called from `on_output` or `on_tick`. In
     /// [Raw mode](Pty::spawn_raw) there is no screen to resize apart from the child, so this does
@@ -671,9 +675,10 @@ impl Pty {
         }
     }
 
-    /// Resize the pseudo-terminal to the size the engine holds now, and return that size as
-    /// `(cols, rows)`. It takes no size, so the child is only ever told a size the engine
-    /// adopted, after any number of [`Pty::resize_screen`]s.
+    /// Resize the pseudo-terminal to the size the engine holds now, or the one a Windows
+    /// [`Pty::resize`] has it about to take, and return that size as `(cols, rows)`. It takes no
+    /// size, so the child is only ever told a size the engine adopted, after any number of
+    /// [`Pty::resize_screen`]s.
     ///
     /// When [`Pty::resize_screen`] changed the screen's size and it came back to the size the child
     /// already has, the child is still signalled once, on Unix with a `SIGWINCH` to its foreground
@@ -1220,6 +1225,8 @@ mod tests {
         let mut d = DeferredResize::default();
         assert_eq!(d.find_repaint(b"\x1b"), None);
         assert_eq!(d.find_repaint(b"[2H"), None);
+        let mut d = DeferredResize::default();
+        assert_eq!(d.find_repaint(b"\x1b\x1b[H"), Some(1));
     }
 
     #[test]

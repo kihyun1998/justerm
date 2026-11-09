@@ -307,18 +307,10 @@ rows rather than within one.
 - **Nothing in the family turns `grow_from_history` off yet** (#1100 left the wiring out, maintainer
   2026-11-09), so a ConPTY consumer still loses lines on a grow until `justerm-pty` or the consumer
   does.
-- **A resize that lands while ConPTY output is still arriving can lose the top row** (#1100). The
-  engine is then a row behind conhost, measured as history 56 against 57 with the screen's top row
-  one row earlier, and conhost's repaint overwrites what the engine holds there: with the last
-  output 0 ms old the 100-cell line across the top was gone in 4 of 5 runs, at 800 ms in 0 of 3. The
-  length of that window between those two points was not measured. No signal says that conhost's
-  output has all arrived, so the engine cannot close this alone. A real SSH session was not measured
-  either.
-- **Conhost sometimes does not repaint the piece at the screen top** (#1100, 1 of 2 runs of
-  `cargo test --workspace`; 0 of 19 runs of the pty suite alone): with the setting off, it drew from the next line, so the
-  20-cell piece of the line across the top was absent and the line read as its 80-cell head. Why
-  conhost differed was not established. `a_conpty_widening_loses_no_line_with_grow_from_history_off`
-  bounds the count to at most that piece's loss and no duplicate.
+- **A resize during ConPTY output is safe only through `Pty::resize`** (#1104): on Windows it holds
+  the engine resize for the console's repaint ([PTY loop](pty.md)). An `Engine::resize` called
+  directly, or `Pty::resize_screen`, is still ahead of the console. A real SSH session was not
+  measured.
 - **One governing record, for one line of it.** ADR-0035 decides the cursor's line; the rest of the
   operation with the widest blast radius in the engine has none.
 - **The DECAWM divergence is deliberate and unrecorded in a decision.** It diverges from a named
