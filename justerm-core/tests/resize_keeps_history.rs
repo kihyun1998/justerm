@@ -1,5 +1,5 @@
 //! A resize leaves the history alone when nothing below the cursor pushed it out, and
-//! `Engine::set_grow_from_history(false)` stops a row grow from taking rows out of it (#1100).
+//! `Engine::set_grow_from_history(false)` stops every resize from taking rows out of it (#1100).
 
 use justerm_core::Engine;
 
@@ -255,7 +255,7 @@ fn the_setting_survives_a_full_reset_and_still_governs_a_grow() {
 }
 
 #[test]
-fn off_a_column_change_with_no_rows_to_add_still_takes_from_history() {
+fn off_a_widening_with_no_rows_to_add_takes_nothing_from_history() {
     let mut t = Engine::new(4, 3);
     t.set_grow_from_history(false);
     // History `a`..`d`, a line wrapped over two rows, the cursor on the blank last row.
@@ -263,8 +263,103 @@ fn off_a_column_change_with_no_rows_to_add_still_takes_from_history() {
     assert_eq!(t.scrollback_len(), 4);
     assert_eq!(cursor_row(&t), 2);
     t.resize(8, 3);
+    assert_eq!(t.scrollback_len(), 4);
+    assert_eq!(cursor_row(&t), 1);
+    assert_eq!(row(&t, 0), "efghij");
+}
+
+#[test]
+fn off_a_line_across_the_screen_top_stays_whole_in_the_history() {
+    // 40 lines of two rows each and a blank cursor row: 57 rows of history, the last the head of
+    // L29, whose tail is the top screen row.
+    let mut t = Engine::new(40, 24);
+    t.set_grow_from_history(false);
+    for i in 1..=40 {
+        t.feed(format!("L{i}-{}\r\n", "x".repeat(70)).as_bytes());
+    }
+    assert_eq!(t.scrollback_len(), 57);
+    t.resize(80, 24);
+    assert_eq!(t.scrollback_len(), 29);
+    assert_eq!(cursor_row(&t), 11);
+    assert!(row(&t, 0).starts_with("L30-"), "{:?}", row(&t, 0));
+}
+
+#[test]
+fn both_clear_sequences_keep_the_history_across_a_resize() {
+    for (cols, rows) in [(80, 30), (100, 24), (60, 24), (80, 20)] {
+        let mut t = Engine::new(80, 24);
+        lines(&mut t, 40);
+        t.set_erase_saved_lines(false);
+        t.feed(b"\x1b[H\x1b[2J\x1b[3J$ ");
+        t.resize(cols, rows);
+        assert_eq!(t.scrollback_len(), 17, "{cols}x{rows}");
+        assert_eq!(cursor_row(&t), 0, "{cols}x{rows}");
+        assert_eq!(row(&t, 0), "$", "{cols}x{rows}");
+    }
+}
+
+#[test]
+fn a_blank_screen_top_under_a_line_from_history_keeps_it_in_the_history() {
+    let mut t = Engine::new(4, 3);
+    // `cccc` is the last history row and continues into the top screen row, `dddd`.
+    t.feed(b"a\r\nb\r\nccccdddd\r\ne\r\n\x1b[2;1H\x1b[J");
     assert_eq!(t.scrollback_len(), 3);
-    assert_eq!(cursor_row(&t), 2);
-    assert_eq!(row(&t, 0), "d");
-    assert_eq!(row(&t, 1), "efghij");
+    t.resize(8, 3);
+    assert_eq!(t.scrollback_len(), 3);
+    assert_eq!(cursor_row(&t), 0);
+    assert_eq!(row(&t, 0), "");
+    assert!(t.accessible_text().contains("ccccdddd"));
+}
+
+#[test]
+fn a_cursor_on_a_line_across_the_screen_top_stays_on_that_line() {
+    let mut t = Engine::new(4, 2);
+    t.set_grow_from_history(false);
+    // A `redraw=0` prompt lets the cursor's own line re-split, and it starts in the history.
+    t.feed(b"aaaabbbb\x1b]133;A;redraw=0\x07c");
+    assert_eq!(t.scrollback_len(), 1);
+    t.resize(16, 2);
+    assert_eq!(row(&t, 0), "aaaabbbbc");
+    assert_eq!((t.cursor().row, t.cursor().col), (0, 9));
+}
+
+/// `count` lines of 100 cells at 80 columns, the last history row the head of a line.
+fn hundred_cell_lines() -> Engine {
+    let mut t = Engine::new(80, 24);
+    for i in 1..=40 {
+        t.feed(format!("L{i}-{}\r\n", "x".repeat(96)).as_bytes());
+    }
+    assert_eq!(t.scrollback_len(), 57);
+    t
+}
+
+fn glyphs(t: &Engine) -> usize {
+    t.accessible_text()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .count()
+}
+
+#[test]
+fn a_clear_then_a_narrowing_loses_no_cell_of_the_history() {
+    let mut t = hundred_cell_lines();
+    t.feed(b"\x1b[H\x1b[2J$ ");
+    let before = glyphs(&t);
+    t.resize(40, 24);
+    assert_eq!(glyphs(&t), before);
+    assert_eq!(cursor_row(&t), 0);
+}
+
+#[test]
+fn output_after_a_clear_does_not_join_the_last_history_line() {
+    let mut t = hundred_cell_lines();
+    t.feed(b"\x1b[H\x1b[2Ja\r\nb\r\n$ ");
+    assert!(
+        !t.accessible_text()
+            .lines()
+            .any(|l| l.ends_with('a') && l.len() > 1)
+    );
+    t.resize(100, 24);
+    assert_eq!(row(&t, 0), "a");
+    assert_eq!(t.scrollback_len(), 29);
 }

@@ -101,8 +101,8 @@ pub struct Term {
     /// Whether `ED 3` erases the saved lines — consumer policy (ADR-0017), so it survives RIS.
     /// On by default; set through `set_erase_saved_lines`.
     erase_saved_lines: bool,
-    /// Whether a resize that adds rows may take them from the history.
-    /// On by default; set through `set_grow_from_history`.
+    /// Whether a resize may move history onto the screen — consumer policy (ADR-0017), so it
+    /// survives RIS. On by default; set through `set_grow_from_history`.
     grow_from_history: bool,
     /// The window title the application last set (OSC 0/2), retained so a title pop has
     /// something to restore (#823). Application state, so it dies on RIS:
@@ -1147,10 +1147,12 @@ impl Term {
         self.erase_saved_lines
     }
 
-    /// Choose whether a resize that adds rows may take them from the history. On by default.
+    /// Choose whether a resize may move history onto the screen. On by default.
     ///
-    /// When off, the added rows are blank rows at the bottom of the primary screen, and the
-    /// history and the cursor's row stay as they were. A resize with no rows to add is unchanged.
+    /// When off, no resize does: the rows a grow adds and a widening frees are blank rows at the
+    /// bottom of the primary screen, and the history is re-wrapped where it is. A narrowing still
+    /// pushes screen rows off the top into the history, and the line the cursor is on stays
+    /// whole on the screen.
     pub fn set_grow_from_history(&mut self, on: bool) {
         self.grow_from_history = on;
     }
@@ -2793,17 +2795,10 @@ impl Term {
         }
         if top > 0 {
             self.end_wrap(top - 1);
-        } else if !evicts_to_scrollback && !self.on_alt {
-            // At `top == 0` the row above is the last scrollback row on the primary; a linefeed
-            // (`evicts_to_scrollback`) keeps the adjacency, and the alt screen has none. Cleared with
-            // its artefact marker and without damage (`docs/map/territory/soft-wrap.md`).
-            if let Some(row) = self.scrollback.back_mut() {
-                row.set_wrapped(false);
-                if let Some(cell) = row.last_mut() {
-                    cell.clear_leading_spacer();
-                }
-                self.content_changed_at(self.scrollback.len() - 1);
-            }
+        } else if !evicts_to_scrollback {
+            // At `top == 0` the row above is the last scrollback row; a linefeed
+            // (`evicts_to_scrollback`) keeps the adjacency.
+            self.end_history_wrap();
         }
         // The row that lost its continuation: `bottom` going down, `bottom - 1` going up — but
         // not at the screen's bottom edge, where the wrap is waiting for the row the shift makes,
@@ -2823,6 +2818,22 @@ impl Term {
         }
     }
 
+    /// End the wrap from the last scrollback row into screen row 0 on the primary, with its
+    /// artefact marker and without damage (`docs/map/territory/soft-wrap.md`). The alt screen has
+    /// no such adjacency.
+    fn end_history_wrap(&mut self) {
+        if self.on_alt {
+            return;
+        }
+        if let Some(row) = self.scrollback.back_mut() {
+            row.set_wrapped(false);
+            if let Some(cell) = row.last_mut() {
+                cell.clear_leading_spacer();
+            }
+            self.content_changed_at(self.scrollback.len() - 1);
+        }
+    }
+
     fn erase_display(&mut self, mode: u16) {
         let (cols, rows) = (self.grid.cols(), self.grid.rows());
         let (cr, cc) = (self.cursor.row, self.cursor.col);
@@ -2832,6 +2843,9 @@ impl Term {
                 // — and the rows below cannot continue either.
                 self.clear_cells(cr, cc, cols);
                 self.end_wrap(cr);
+                if (cr, cc) == (0, 0) {
+                    self.end_history_wrap();
+                }
                 for row in (cr + 1)..rows {
                     self.clear_cells(row, 0, cols);
                     self.end_wrap(row);
@@ -2853,6 +2867,9 @@ impl Term {
                 if cc + 1 == cols {
                     self.end_wrap(cr);
                 }
+                if cr > 0 || cc + 1 == cols {
+                    self.end_history_wrap();
+                }
             }
             2 => {
                 for row in 0..rows {
@@ -2860,6 +2877,7 @@ impl Term {
                     self.end_wrap(row);
                     self.dispose_markers_on_row(row);
                 }
+                self.end_history_wrap();
             }
             // xterm's addition: erase saved lines. The screen and the cursor are untouched.
             3 if self.erase_saved_lines => self.erase_history(),
@@ -3312,7 +3330,7 @@ struct ReflowDims {
     /// Whether a column change may re-split this pane's content, or only re-fit its rows —
     /// false for the alt screen (#567, `docs/map/territory/reflow.md`).
     reflow: bool,
-    /// Whether added rows may come from this pane's history (`Term::set_grow_from_history`).
+    /// Whether this pane's history may move onto its screen (`Term::set_grow_from_history`).
     grow_from_history: bool,
 }
 
@@ -3366,11 +3384,10 @@ fn reflow_pane(
 ) -> PaneReflow {
     let scroll_len = scrollback.len();
     let removed_rows = screen.len().saturating_sub(dims.rows);
-    // Whether this resize leaves the history where it is: nothing below the cursor pushed it out,
-    // or the consumer forbade taking added rows from it: `docs/map/territory/reflow.md` (#1100).
+    // Whether this resize leaves the history where it is: `docs/map/territory/reflow.md` (#1100).
     let vacant_below =
         point.0 + 1 < screen.len() && screen[point.0 + 1..].iter().all(Row::is_vacant);
-    let holds_history = vacant_below || (!dims.grow_from_history && dims.rows > screen.len());
+    let holds_history = vacant_below || !dims.grow_from_history;
     let mut all: Vec<Row> = scrollback.into();
     all.extend(screen);
 
@@ -3397,7 +3414,10 @@ fn reflow_pane(
         let places = vec![PointPlace::Kept; pts.len()];
         (pts, places)
     };
-    let screen_top = pts.pop().map_or(0, |(line, _)| line);
+    // A top row that landed inside a line leaves that whole line in the history.
+    let screen_top = pts
+        .pop()
+        .map_or(0, |(line, col)| line + usize::from(col > 0));
     places.pop();
 
     // A cursor one row past the content (#562) buys that row from history when the pane can
@@ -3425,7 +3445,11 @@ fn reflow_pane(
         trim -= 1;
     }
 
-    let floor = if holds_history { screen_top } else { 0 };
+    let floor = if holds_history {
+        screen_top.min(cursor_abs)
+    } else {
+        0
+    };
     let split = all.len().saturating_sub(dims.rows).max(floor);
     let history: Vec<Row> = all.drain(0..split).collect();
     let mut sb: VecDeque<Row> = history.into();
