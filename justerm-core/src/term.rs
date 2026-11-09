@@ -1151,8 +1151,8 @@ impl Term {
     ///
     /// When off, no resize does: the rows a grow adds and a widening frees are blank rows at the
     /// bottom of the primary screen, and the history is re-wrapped where it is. A narrowing still
-    /// pushes screen rows off the top into the history, and the line the cursor is on stays
-    /// whole on the screen.
+    /// pushes screen rows off the top into the history. A column change ends a line that runs from
+    /// the history onto the top row at that boundary, so the two pieces re-wrap apart.
     pub fn set_grow_from_history(&mut self, on: bool) {
         self.grow_from_history = on;
     }
@@ -2826,10 +2826,7 @@ impl Term {
             return;
         }
         if let Some(row) = self.scrollback.back_mut() {
-            row.set_wrapped(false);
-            if let Some(cell) = row.last_mut() {
-                cell.clear_leading_spacer();
-            }
+            clear_row_wrap(row);
             self.content_changed_at(self.scrollback.len() - 1);
         }
     }
@@ -3390,6 +3387,11 @@ fn reflow_pane(
     let holds_history = vacant_below || !dims.grow_from_history;
     let mut all: Vec<Row> = scrollback.into();
     all.extend(screen);
+    // With history held back, a column change re-splits each side of the screen top on its own:
+    // `docs/map/territory/reflow.md` (#1100).
+    if !dims.grow_from_history && dims.cols != dims.old_cols && scroll_len > 0 {
+        clear_row_wrap(&mut all[scroll_len - 1]);
+    }
 
     // The cursor is screen-relative; lift it to absolute, then track it together
     // with the already-absolute extras.
@@ -3487,6 +3489,14 @@ fn reflow_pane(
         evicted: dropped,
         screen: all,
         scrollback: sb,
+    }
+}
+
+/// End `row`'s wrap into the next row, with its artefact marker.
+fn clear_row_wrap(row: &mut Row) {
+    row.set_wrapped(false);
+    if let Some(cell) = row.last_mut() {
+        cell.clear_leading_spacer();
     }
 }
 
