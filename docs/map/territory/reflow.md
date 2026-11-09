@@ -314,8 +314,8 @@ rows rather than within one.
   length of that window between those two points was not measured. No signal says that conhost's
   output has all arrived, so the engine cannot close this alone. A real SSH session was not measured
   either.
-- **Conhost sometimes does not repaint the piece at the screen top** (#1100, 1 of 23 local runs, during a
-  `cargo test --workspace`; 13 runs of the pty suite alone did not show it): with the setting off, it drew from the next line, so the
+- **Conhost sometimes does not repaint the piece at the screen top** (#1100, 1 of 2 runs of
+  `cargo test --workspace`; 0 of 19 runs of the pty suite alone): with the setting off, it drew from the next line, so the
   20-cell piece of the line across the top was absent and the line read as its 80-cell head. Why
   conhost differed was not established. `a_conpty_widening_loses_no_line_with_grow_from_history_off`
   bounds the count to at most that piece's loss and no duplicate.
