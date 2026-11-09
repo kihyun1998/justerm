@@ -1124,9 +1124,14 @@ fn a_raw_child_starts_with_no_consumer_write() {
 }
 
 /// The text of an 80x24 engine with `set_grow_from_history(false)`, after helper `mode` printed
-/// forty lines ending in `last` and the pty was resized to `cols` x `rows`.
+/// forty lines ending in `last` and, `settle` later, the pty was resized to `cols` x `rows`.
 #[cfg(windows)]
-fn text_after_a_conpty_resize(mode: &str, last: &str, cols: usize, rows: usize) -> String {
+fn text_after_a_conpty_resize(
+    mode: &str,
+    last: &str,
+    settle: Duration,
+    (cols, rows): (usize, usize),
+) -> String {
     let mut engine = Engine::new(80, 24);
     engine.set_grow_from_history(false);
     let (tx, rx) = mpsc::channel();
@@ -1153,9 +1158,16 @@ fn text_after_a_conpty_resize(mode: &str, last: &str, cols: usize, rows: usize) 
                 .any(|l| l.trim_end() == last)
     };
     assert!(eventually(Duration::from_secs(20), printed), "{:?}", text());
-    // Conhost's last frame has to land before the resize, or the screen top is not settled.
-    std::thread::sleep(Duration::from_millis(800));
+    std::thread::sleep(settle);
     pty.resize(cols, rows);
+    assert!(
+        eventually(Duration::from_secs(5), || {
+            let session = session.lock().unwrap();
+            let grid = session.engine().grid();
+            (grid.cols(), grid.rows()) == (cols, rows)
+        }),
+        "the engine never took {cols}x{rows}"
+    );
     pty.write(b"END\r\n").unwrap();
     rx.recv_timeout(Duration::from_secs(20))
         .expect("the child echoes and exits");
@@ -1164,12 +1176,108 @@ fn text_after_a_conpty_resize(mode: &str, last: &str, cols: usize, rows: usize) 
     text
 }
 
+/// Windows only: conhost sends the scroll it has not painted yet after the resize, just before its
+/// repaint. A resize with the last output barely read has to lose no row of it.
+#[cfg(windows)]
+fn a_conpty_resize_right_after_output_loses_no_row() {
+    let last = format!("L40-{}", "x".repeat(96));
+    for size in [(120, 24), (60, 24)] {
+        for _ in 0..4 {
+            let text = text_after_a_conpty_resize(
+                "forty-long-lines-then-echo",
+                &last,
+                Duration::ZERO,
+                size,
+            );
+            assert_eq!(text.matches('x').count(), 40 * 96, "{size:?}: {text:?}");
+        }
+    }
+}
+
+/// Hides the console's repaint from the engine, so a deferred resize never sees one begin.
+#[cfg(windows)]
+struct NoRepaint;
+
+#[cfg(windows)]
+impl Decode for NoRepaint {
+    fn decode(&mut self, bytes: &[u8]) -> Vec<u8> {
+        String::from_utf8_lossy(bytes)
+            .replace("\x1b[H", "")
+            .into_bytes()
+    }
+}
+
+/// Windows only: with no repaint to wait for, the engine still takes the size.
+#[cfg(windows)]
+fn a_resize_no_repaint_answers_still_reaches_the_engine() {
+    let options = Options {
+        decoder: Some(Box::new(NoRepaint)),
+        ..Options::default()
+    };
+    let (pty, _rec, rx) = spawn("print-then-sleep", options);
+    assert!(eventually(Duration::from_secs(10), || screen(&pty).contains(MARKER)));
+    pty.resize(100, 30);
+    let session = pty.session().unwrap();
+    assert!(eventually(Duration::from_secs(3), || {
+        let session = session.lock().unwrap();
+        let grid = session.engine().grid();
+        (grid.cols(), grid.rows()) == (100, 30)
+    }));
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
+/// Windows only: the child ending before the console repaints still leaves the engine at the size.
+#[cfg(windows)]
+fn a_resize_just_before_the_exit_still_reaches_the_engine() {
+    let options = Options {
+        decoder: Some(Box::new(NoRepaint)),
+        ..Options::default()
+    };
+    let (pty, _rec, rx) = spawn("print-then-sleep", options);
+    assert!(eventually(Duration::from_secs(10), || screen(&pty).contains(MARKER)));
+    let session = pty.session().unwrap();
+    pty.resize(100, 30);
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+    let session = session.lock().unwrap();
+    let grid = session.engine().grid();
+    assert_eq!((grid.cols(), grid.rows()), (100, 30));
+}
+
+/// Windows only: resizes faster than conhost repaints leave the engine at the last size asked for.
+#[cfg(windows)]
+fn resizes_in_a_row_leave_the_engine_at_the_last_size() {
+    let (pty, _rec, rx) = spawn("size-on-line", Options::default());
+    assert!(eventually(Duration::from_secs(10), || screen(&pty)
+        .contains("SIZE:80x24;")));
+    pty.resize(90, 25);
+    pty.resize(91, 26);
+    pty.resize(92, 27);
+    let session = pty.session().unwrap();
+    assert!(eventually(Duration::from_secs(5), || {
+        let session = session.lock().unwrap();
+        let grid = session.engine().grid();
+        (grid.cols(), grid.rows()) == (92, 27)
+    }));
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
 /// Windows only: conhost repaints the screen after a resize, so a widening that took lines from the
 /// history would lose them under the repaint.
 #[cfg(windows)]
 fn a_conpty_widening_loses_no_line_with_grow_from_history_off() {
     let last = format!("L40-{}", "x".repeat(96));
-    let text = text_after_a_conpty_resize("forty-long-lines-then-echo", &last, 120, 24);
+    let text = text_after_a_conpty_resize(
+        "forty-long-lines-then-echo",
+        &last,
+        Duration::from_millis(800),
+        (120, 24),
+    );
     for i in 1..=40 {
         let start = format!("L{i}-");
         assert!(
@@ -1190,7 +1298,12 @@ fn a_conpty_widening_loses_no_line_with_grow_from_history_off() {
 /// Windows only: the same repaint, on a row grow.
 #[cfg(windows)]
 fn a_conpty_row_grow_loses_no_line_with_grow_from_history_off() {
-    let text = text_after_a_conpty_resize("forty-lines-then-echo", "L40", 80, 30);
+    let text = text_after_a_conpty_resize(
+        "forty-lines-then-echo",
+        "L40",
+        Duration::from_millis(800),
+        (80, 30),
+    );
     for i in 1..=40 {
         let line = format!("L{i}");
         assert!(
@@ -1562,6 +1675,22 @@ fn main() {
         (
             "a_raw_child_starts_with_no_consumer_write",
             a_raw_child_starts_with_no_consumer_write as fn(),
+        ),
+        (
+            "a_conpty_resize_right_after_output_loses_no_row",
+            a_conpty_resize_right_after_output_loses_no_row as fn(),
+        ),
+        (
+            "a_resize_no_repaint_answers_still_reaches_the_engine",
+            a_resize_no_repaint_answers_still_reaches_the_engine as fn(),
+        ),
+        (
+            "a_resize_just_before_the_exit_still_reaches_the_engine",
+            a_resize_just_before_the_exit_still_reaches_the_engine as fn(),
+        ),
+        (
+            "resizes_in_a_row_leave_the_engine_at_the_last_size",
+            resizes_in_a_row_leave_the_engine_at_the_last_size as fn(),
         ),
         (
             "a_conpty_widening_loses_no_line_with_grow_from_history_off",

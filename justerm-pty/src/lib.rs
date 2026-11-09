@@ -34,7 +34,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use justerm_core::{Session, TermEvent};
+use justerm_core::{MAX_COLUMNS, MAX_ROWS, MIN_COLUMNS, Session, TermEvent};
 use portable_pty::{Child, MasterPty, PtySize, SlavePty, native_pty_system};
 
 /// The program to run in the pseudo-terminal, and how. Which shell, which environment and which
@@ -289,8 +289,59 @@ pub struct Pty {
 /// Where the child's output goes: into a [`Session`]'s engine, or to a [`RawSink`].
 #[derive(Clone)]
 enum Target {
-    Frame(Arc<Mutex<Session>>),
+    Frame(Arc<Mutex<Session>>, Deferred),
     Raw(Arc<Raw>),
+}
+
+/// The engine resize a Windows [`Pty::resize`] leaves for the console's repaint. Locked inside the
+/// Session lock, never around it.
+type Deferred = Arc<Mutex<DeferredResize>>;
+
+/// An engine resize waiting for the console's repaint to begin: `docs/map/territory/pty.md`.
+#[derive(Default)]
+struct DeferredResize {
+    /// The size the engine is to take, and when it was asked for.
+    pending: Option<((usize, usize), Instant)>,
+    /// How many bytes of [`REPAINT_START`] the last read ended on.
+    matched: usize,
+}
+
+impl DeferredResize {
+    /// Wait for the next repaint to give the engine `size`, replacing any size still waiting.
+    fn defer(&mut self, size: (usize, usize)) {
+        self.pending = Some((size, Instant::now()));
+        self.matched = 0;
+    }
+
+    /// Where in `bytes` the next [`REPAINT_START`] begins, `0` when it began in an earlier read.
+    fn find_repaint(&mut self, bytes: &[u8]) -> Option<usize> {
+        for (i, &byte) in bytes.iter().enumerate() {
+            if byte == REPAINT_START[self.matched] {
+                self.matched += 1;
+                if self.matched == REPAINT_START.len() {
+                    self.matched = 0;
+                    return Some((i + 1).saturating_sub(REPAINT_START.len()));
+                }
+            } else {
+                self.matched = usize::from(byte == REPAINT_START[0]);
+            }
+        }
+        None
+    }
+
+    /// Whether a size has waited [`REPAINT_WAIT`] for a repaint that has not come.
+    fn overdue(&self) -> bool {
+        self.pending
+            .is_some_and(|(_, since)| since.elapsed() >= REPAINT_WAIT)
+    }
+}
+
+/// Give the engine the size waiting in `deferred`, if there is one.
+fn apply_deferred(session: &mut Session, deferred: &Mutex<DeferredResize>) {
+    let pending = lock(deferred).pending.take();
+    if let Some(((cols, rows), _)) = pending {
+        session.resize(cols, rows);
+    }
 }
 
 /// A Raw mode pty's sink, and the reader's pause.
@@ -332,6 +383,12 @@ type Master = Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>;
 /// reader to drain the rest of the output.
 const DRAIN_AFTER_EXIT: Duration = Duration::from_millis(500);
 
+/// What a console's repaint opens with: the cursor going home.
+const REPAINT_START: &[u8] = b"\x1b[H";
+
+/// How long a deferred engine resize waits for a repaint before it is applied anyway.
+const REPAINT_WAIT: Duration = Duration::from_millis(500);
+
 /// How long the reader must sit in one `read` before a held slave is closed at exit.
 const READER_IDLE: Duration = Duration::from_millis(20);
 
@@ -359,7 +416,7 @@ impl Pty {
     ) -> std::io::Result<Pty> {
         let grid = session.engine().grid();
         let size = pty_size(grid.cols(), grid.rows());
-        let target = Target::Frame(Arc::new(Mutex::new(session)));
+        let target = Target::Frame(Arc::new(Mutex::new(session)), Deferred::default());
         start(command, size, target, options, on_event, on_exit)
     }
 
@@ -405,7 +462,7 @@ impl Pty {
     /// [`Pty::resize_screen`] and later [`Pty::resize_child`].
     pub fn session(&self) -> Option<Arc<Mutex<Session>>> {
         match &self.target {
-            Target::Frame(session) => Some(Arc::clone(session)),
+            Target::Frame(session, _) => Some(Arc::clone(session)),
             Target::Raw(_) => None,
         }
     }
@@ -550,9 +607,16 @@ impl Pty {
     /// resized. A drag that ends here back at the child's size is signalled as in
     /// [`Pty::resize_child`]. In [Raw mode](Pty::spawn_raw) there is no engine: the child is told
     /// `cols` × `rows` as asked, and that is returned.
+    ///
+    /// **On Windows the engine takes the size later than this call returns.** The pseudo-terminal
+    /// is resized first, and the engine follows when the console's repaint begins, or after half a
+    /// second if none comes, so a read of the grid straight after this call can still show the old
+    /// size. A console sends the scroll it had not yet painted after the resize and before that
+    /// repaint, and an engine already at the new size would lose a row to it
+    /// ([#1104](https://github.com/kihyun1998/justerm/issues/1104)).
     pub fn resize(&self, cols: usize, rows: usize) -> (usize, usize) {
-        let session = match &self.target {
-            Target::Frame(session) => session,
+        let (session, deferred) = match &self.target {
+            Target::Frame(session, deferred) => (session, deferred),
             Target::Raw(_) => {
                 self.tell_child((cols, rows));
                 return (cols, rows);
@@ -561,6 +625,16 @@ impl Pty {
         // The session stays locked until the pty has its size, so two resizes racing cannot leave
         // the engine at one size and the child told the other.
         let mut session = lock(session);
+        if cfg!(windows) && lock(&self.master).is_some() {
+            let adopted = (
+                cols.clamp(MIN_COLUMNS, MAX_COLUMNS),
+                rows.clamp(1, MAX_ROWS),
+            );
+            lock(deferred).defer(adopted);
+            self.tell_child(adopted);
+            return adopted;
+        }
+        lock(deferred).pending = None;
         let adopted = session.resize(cols, rows);
         self.tell_child(adopted);
         adopted
@@ -582,8 +656,9 @@ impl Pty {
     /// nothing and returns `None`.
     pub fn resize_screen(&self, cols: usize, rows: usize) -> Option<(usize, usize)> {
         match &self.target {
-            Target::Frame(session) => {
+            Target::Frame(session, deferred) => {
                 let mut session = lock(session);
+                lock(deferred).pending = None;
                 let grid = session.engine().grid();
                 let before = (grid.cols(), grid.rows());
                 let adopted = session.resize(cols, rows);
@@ -610,13 +685,14 @@ impl Pty {
     /// returned. In [Raw mode](Pty::spawn_raw) there is no engine size to tell, so this does
     /// nothing and returns `None`; [`Pty::resize`] resizes a Raw mode child.
     pub fn resize_child(&self) -> Option<(usize, usize)> {
-        let session = match &self.target {
-            Target::Frame(session) => session,
+        let (session, deferred) = match &self.target {
+            Target::Frame(session, deferred) => (session, deferred),
             Target::Raw(_) => return None,
         };
         let session = lock(session);
         let grid = session.engine().grid();
-        let size = (grid.cols(), grid.rows());
+        let waiting = lock(deferred).pending.map(|(size, _)| size);
+        let size = waiting.unwrap_or((grid.cols(), grid.rows()));
         self.tell_child(size);
         Some(size)
     }
@@ -797,7 +873,9 @@ fn decode_and_feed(
 /// happens when a grandchild still holds a Unix pty open.
 fn feed(target: &Target, input: &Input, on_output: &mut Option<OnOutput>, bytes: &[u8]) -> bool {
     match target {
-        Target::Frame(session) => feed_session(session, input, on_output, bytes),
+        Target::Frame(session, deferred) => {
+            feed_session(session, deferred, input, on_output, bytes)
+        }
         Target::Raw(raw) => feed_raw(raw, on_output, bytes),
     }
 }
@@ -830,6 +908,7 @@ fn feed_raw(raw: &Raw, on_output: &mut Option<OnOutput>, bytes: &[u8]) -> bool {
 /// Feed `bytes` and hand the replies they produced to the writer.
 fn feed_session(
     session: &Mutex<Session>,
+    deferred: &Mutex<DeferredResize>,
     input: &Input,
     on_output: &mut Option<OnOutput>,
     bytes: &[u8],
@@ -844,7 +923,22 @@ fn feed_session(
     if let Some(on_output) = on_output.as_mut() {
         on_output(bytes);
     }
-    session.feed(bytes);
+    let repaint = {
+        let mut deferred = lock(deferred);
+        if deferred.pending.is_some() {
+            deferred.find_repaint(bytes)
+        } else {
+            None
+        }
+    };
+    match repaint {
+        Some(at) => {
+            session.feed(&bytes[..at]);
+            apply_deferred(&mut session, deferred);
+            session.feed(&bytes[at..]);
+        }
+        None => session.feed(bytes),
+    }
     let replies = session.edit(|engine| engine.drain_replies());
     // Handed over while the session is still locked, so replies reach the writer in the order they
     // were drained. The send never blocks: the channel is unbounded.
@@ -871,6 +965,7 @@ impl Pump {
         let mut next_pump = Instant::now() + self.period;
         let mut exit = loop {
             thread::sleep(tick);
+            self.apply_overdue_resize();
             if Instant::now() >= next_pump {
                 self.pump(on_event);
                 next_pump = Instant::now() + self.period;
@@ -900,9 +995,10 @@ impl Pump {
         }
         exit.read_error = *lock(&self.reading.error);
         match &self.target {
-            Target::Frame(session) => {
+            Target::Frame(session, deferred) => {
                 let pumped = {
                     let mut session = lock(session);
+                    apply_deferred(&mut session, deferred);
                     let pumped = session.pump();
                     session.end();
                     pumped
@@ -934,9 +1030,18 @@ impl Pump {
         }
     }
 
+    /// Give the engine a deferred size no repaint has come for.
+    fn apply_overdue_resize(&self) {
+        if let Target::Frame(session, deferred) = &self.target
+            && lock(deferred).overdue()
+        {
+            apply_deferred(&mut lock(session), deferred);
+        }
+    }
+
     fn pump(&mut self, on_event: &mut impl FnMut(TermEvent)) {
         let session = match &self.target {
-            Target::Frame(session) => session,
+            Target::Frame(session, _) => session,
             Target::Raw(_) => {
                 if let Some(on_tick) = self.on_tick.as_mut() {
                     on_tick(None);
@@ -1085,6 +1190,36 @@ mod tests {
 
     fn watching() -> StartupQuery {
         StartupQuery::new(Some(b"\x1b[1;1R".to_vec()))
+    }
+
+    #[test]
+    fn a_repaint_start_is_found_where_it_begins() {
+        let mut d = DeferredResize::default();
+        assert_eq!(d.find_repaint(b"\n\x1b[Hrest"), Some(1));
+        let mut d = DeferredResize::default();
+        assert_eq!(d.find_repaint(b"\x1b[30;1H\n\x1b[H"), Some(8));
+        let mut d = DeferredResize::default();
+        assert_eq!(d.find_repaint(b"plain \x1b[K\x1b[2J text"), None);
+    }
+
+    #[test]
+    fn a_repaint_start_split_across_reads_is_still_found() {
+        for split in 1..3 {
+            let bytes = b"\x1b[H";
+            let mut d = DeferredResize::default();
+            assert_eq!(d.find_repaint(&bytes[..split]), None, "split {split}");
+            assert_eq!(d.find_repaint(&bytes[split..]), Some(0), "split {split}");
+        }
+    }
+
+    #[test]
+    fn a_broken_repaint_start_is_not_found_across_reads() {
+        let mut d = DeferredResize::default();
+        assert_eq!(d.find_repaint(b"\x1b["), None);
+        assert_eq!(d.find_repaint(b"K\x1b[H"), Some(1));
+        let mut d = DeferredResize::default();
+        assert_eq!(d.find_repaint(b"\x1b"), None);
+        assert_eq!(d.find_repaint(b"[2H"), None);
     }
 
     #[test]
@@ -1249,9 +1384,10 @@ mod tests {
                 wake: Condvar::new(),
             }))
         } else {
-            Target::Frame(Arc::new(Mutex::new(Session::new(
-                justerm_core::Engine::new(80, 24),
-            ))))
+            Target::Frame(
+                Arc::new(Mutex::new(Session::new(justerm_core::Engine::new(80, 24)))),
+                Deferred::default(),
+            )
         };
         let (tx, rx) = mpsc::channel();
         let injected = Arc::new(AtomicBool::new(false));
