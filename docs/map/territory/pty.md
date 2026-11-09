@@ -113,7 +113,8 @@ that took them.
     child's lines counts only output from before the resize
     (`raw_mode_has_no_screen_to_resize_apart_from_the_child`). The repaint is also why
     `Engine::set_grow_from_history(false)` exists ([reflow](reflow.md), #1100): a line the engine
-    moved from the scrollback onto the screen is overwritten by it.
+    moved from the scrollback onto the screen is overwritten by it, and it does not rejoin a line
+    across its viewport top, so the row at the top is repainted as its own line.
 
 **Exit**
 - **Exit is polled, not awaited.** A ConPTY reader can stay blocked after the child has exited, so EOF
