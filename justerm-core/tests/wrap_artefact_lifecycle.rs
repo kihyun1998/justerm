@@ -310,12 +310,16 @@ fn the_row_shift_seam_above_the_grid_is_a_scrollback_row() {
     // the whole defect survives one row above the grid — reachable from every `DL`/`IL`/`SU`/`SD`
     // and region `RI`, since `scroll_region_lines` always passes `evicts_to_scrollback: false`.
     // Same seam #540 found for the wrap flag.
-    let mut t = Engine::new(4, 2);
+    let mut t = Engine::new(4, 3);
     t.feed("abc한".as_bytes());
-    t.feed(b"\r\n"); // evict row 0 (marker + wrap) into scrollback
+    t.feed(b"\r\n\r\n"); // evict row 0 (marker + wrap) into scrollback
     t.feed(b"\x1b[1;1H\x1b[M"); // full-screen DL -> shift_region(top = 0)
+    assert_eq!(t.scrollback_len(), 1);
 
-    t.resize(8, 2); // reflow would bake a surviving marker in mid-row
+    // A wrapped line whose join shortens the buffer, so the widening brings the history row back.
+    t.feed(b"\x1b[1;1Hdefgh\x1b[3;1H");
+    t.resize(8, 3); // reflow would bake a surviving marker in mid-row
+    assert_eq!(t.scrollback_len(), 0);
     t.feed(b"\x1b[1;5HZ");
 
     assert_eq!(
@@ -338,5 +342,61 @@ fn reflow_does_not_carry_an_orphaned_marker_inward() {
     assert_eq!(
         t.accessible_text().lines().next().unwrap().trim_end(),
         "ab Z"
+    );
+}
+
+/// `aaaa` is the last history row and continues into the top screen row, `bbbb`.
+fn a_line_across_the_screen_top() -> Engine {
+    let mut t = Engine::new(4, 2);
+    t.feed(b"aaaabbbb\r\n");
+    assert_eq!(t.scrollback_len(), 1);
+    t
+}
+
+#[test]
+fn erasing_the_whole_top_row_ends_the_wrap_from_the_history() {
+    for (name, erase) in [
+        ("ED 2", &b"\x1b[2J"[..]),
+        ("ED 0 from home", &b"\x1b[H\x1b[J"[..]),
+        ("ED 1 from the row below", &b"\x1b[2;1H\x1b[1J"[..]),
+        (
+            "ED 1 from the top row's last column",
+            &b"\x1b[1;4H\x1b[1J"[..],
+        ),
+    ] {
+        let mut t = a_line_across_the_screen_top();
+        t.feed(erase);
+        t.feed(b"\x1b[1;1HZ");
+        let text = t.accessible_text();
+        let mut lines = text.lines();
+        assert_eq!(lines.next().unwrap().trim_end(), "aaaa", "{name}");
+        assert_eq!(lines.next().unwrap().trim_end(), "Z", "{name}");
+    }
+}
+
+#[test]
+fn a_top_row_that_keeps_cells_still_continues_the_history_line() {
+    for (name, erase, first) in [
+        ("ED 0 past column 0", &b"\x1b[1;2H\x1b[J"[..], "aaaab"),
+        (
+            "ED 1 short of the last column",
+            &b"\x1b[1;2H\x1b[1J"[..],
+            "aaaa  bb",
+        ),
+    ] {
+        let mut t = a_line_across_the_screen_top();
+        t.feed(erase);
+        let text = t.accessible_text();
+        assert_eq!(text.lines().next().unwrap().trim_end(), first, "{name}");
+    }
+}
+
+#[test]
+fn an_erase_on_the_alt_screen_leaves_the_history_wrap_alone() {
+    let mut t = a_line_across_the_screen_top();
+    t.feed(b"\x1b[?1049h\x1b[2J\x1b[?1049l");
+    assert_eq!(
+        t.accessible_text().lines().next().unwrap().trim_end(),
+        "aaaabbbb"
     );
 }

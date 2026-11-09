@@ -447,8 +447,8 @@ under it.
   overwrite** — a narrow write, an erase or a shift at columns 0/1 all end the pair the record was
   about, and a wide lead that arrives later by some other route did not *wrap* from anywhere. The
   clear is one-way; nothing re-arms it. The row above may be the last **scrollback** row, since the
-  readers walk `[scrollback ++ grid]` as one buffer — including `shift_region`'s `top == 0` seam,
-  the one wrap-ending path that is not a grid row and so has to couple the clear itself.
+  readers walk `[scrollback ++ grid]` as one buffer — including `Term::end_history_wrap`, the one
+  wrap-ending path that is not a grid row and so has to couple the clear itself.
   Ported, not derived: ghostty gates the print path on `cell.wide != wide`
   (`Terminal.zig:1484`) and reaches up a row from `DCH`/`ECH` through
   `Screen.splitCellBoundary` (`Screen.zig:1873`); alacritty has the print half only and clears
@@ -606,6 +606,11 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   the save and the restore run every time, as in xterm (#1092). The alt screen has no scrollback, and tab stops + scroll margins are
   *not* per-screen — they persist across the swap. The engine emits whichever grid is active; the
   switch is transparent to consumers. DEC private modes arrive as a `?` in the CSI `intermediates`. [#8]
+- **A resize leaves the history alone over a screen with nothing below the cursor** (#1100). The
+  cursor above the last row and only blank rows under it mean no history was pushed out, so no resize
+  moves any onto the screen; `set_grow_from_history(false)` extends that to every resize, for a
+  consumer behind a ConPTY. On by default, survives RIS. The rule and its measurements:
+  `docs/map/territory/reflow.md`.
 - **The alt screen resizes but does not reflow.** Both grids take the new dimensions on every resize
   — that part is load-bearing, because leaving alt used to restore an old-sized grid and a damage-driven
   render could panic on the mismatch — but only the **primary** re-splits its content. Reflow re-wraps

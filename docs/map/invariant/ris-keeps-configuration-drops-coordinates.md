@@ -8,7 +8,7 @@ short list back. At HEAD 7bb31f7 that list is `replies`, `events` (after appendi
 `MarkerDisposed` for every marker), `word_separators`, `selection_carries_line_end`, `next_tracked_id`,
 `next_marker_id` and `marker_epoch` (then bumped); `cols` / `rows` and `scrollback_limit` ride the
 constructor arguments. (The old note quoted a five-line copy-back list; it has grown, and #1096 added
-`erase_saved_lines` after that HEAD.)
+`erase_saved_lines` and #1100 `grow_from_history` after that HEAD.)
 
 So the default for a new field is "silently reverted the first time an application prints `reset`",
 and nothing at the definition site says which side a field is on. The line is not a judgement call —
@@ -16,7 +16,7 @@ ask what the field is:
 
 | Kind | RIS | Why | Instances |
 |---|---|---|---|
-| **Configuration** — chosen by the embedder, meaningful with no buffer | survives | RIS resets the terminal; the embedder's configuration is not the terminal | `scrollback_limit` and `cols` / `rows` (constructor arguments — so auditing the copy-back list undercounts survivors), `word_separators` (#545), `selection_carries_line_end` (#1031), `erase_saved_lines` (#1096) |
+| **Configuration** — chosen by the embedder, meaningful with no buffer | survives | RIS resets the terminal; the embedder's configuration is not the terminal | `scrollback_limit` and `cols` / `rows` (constructor arguments — so auditing the copy-back list undercounts survivors), `word_separators` (#545), `selection_carries_line_end` (#1031), `erase_saved_lines` (#1096), `grow_from_history` (#1100) |
 | **A coordinate into the buffer**, or anything derived from cells | dies | RIS wipes every cell; carrying it points live state at a buffer that no longer exists | `selection`, `search_highlights`, `active_search_highlight`, the marker sets, the tracked-point sets (#691) |
 | **A pending obligation to the consumer** | survives | it describes bytes the consumer still has to write, and RIS adds to it | `replies`, `events` |
 | **The id counter behind a handle the consumer still holds** | survives | the coordinate dies, but the id is out in the consumer's hands; a rebuilt counter would reissue it and a stale ask would be answered with a different object's state | `next_tracked_id` (#691 — no disposal event; the holder learns by `None`); `next_marker_id`, because a pulled handle outlives the announcement that killed it, so a reissued id would let a stale `MarkerDisposed(7)` drop the live post-RIS marker 7 |

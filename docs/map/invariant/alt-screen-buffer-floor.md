@@ -60,8 +60,8 @@ Non-derivable half — hand-maintained on purpose; no grep for `abs_floor` finds
 kind most likely to be "fixed" into a redundant call:
 
 - [soft wrap](../territory/soft-wrap.md) — the write path holds the floor by an explicit
-  `!self.on_alt` guard rather than `abs_floor`: `term.rs — Term::shift_region` clears the last
-  scrollback row's wrap at `top == 0` only on the primary, and `Term::void_wrap_artefact_above` reaches
+  `on_alt` guard rather than `abs_floor`: `term.rs — Term::end_history_wrap` clears the last
+  scrollback row's wrap only on the primary, and `Term::void_wrap_artefact_above` reaches
   into `scrollback.back_mut()` only on the primary.
 - [settled-cell paint](../territory/settled-cell-paint.md) — `term/paint.rs — Term::paint_logical_line`
   receives a coordinate the consumer held across IPC, so it carries the identity (`LineRef::alt`) and

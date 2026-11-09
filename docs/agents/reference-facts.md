@@ -3763,3 +3763,21 @@ ADR-0036 D1 and D5 differ from a straight port.
 
 justerm saves `?1048h` / `?1049h` into the DECSC slot as all four do, and `?1049l` restores from it
 on either screen as xterm, xterm.js and ghostty do (#1092).
+
+## A resize and the history above the screen (#1100, verified 2026-11-09)
+
+Corpus: alacritty, ghostty and xterm.js. xterm has no reflow and was not read for this.
+
+| Fact | Source | Where |
+|---|---|---|
+| A row grow takes from history only when the cursor is on the last row; otherwise the new rows are blank, whatever is below the cursor | xterm.js `699f553` | `common/buffer/Buffer.ts:204-217` |
+| With `windowsPty` set, a row grow never takes from history: *"conpty reprints the screen with its view of the world. Once a line enters scrollback for conpty it remains there"* | xterm.js `699f553` | `common/buffer/Buffer.ts:199-202` |
+| A widening that joins rows does `ybase--` per row removed, with no `windowsPty` check, so that path still takes from history behind a ConPTY | xterm.js `699f553` | `common/buffer/Buffer.ts:346-367` |
+| A row grow with the cursor not at the bottom adds rows and leaves the cursor: *"we don't want to 'pull down' scrollback"*; at the bottom it does pull | ghostty `e6e26e1` | `src/terminal/PageList.zig:2436-2461` |
+| A row grow always takes from history, as many as it has | alacritty `852e971` | `alacritty_terminal/src/grid/resize.rs:43-69` |
+| Erasing a row resets its `isWrapped`, the flag on the continuation row, so erasing row 0 ends the wrap from history | xterm.js `699f553` | `common/InputHandler.ts:1196-1201` |
+
+justerm's blank-rows rule is narrower than xterm.js's and ghostty's: a cursor with content below it
+still takes a grow from history, by the maintainer's call on #1100. ghostty's `ED 2` wrap handling was
+not read. justerm's setting, unlike xterm.js's `windowsPty`, also covers a widening, on justerm's own
+ConPTY measurement (`docs/map/territory/reflow.md`).
