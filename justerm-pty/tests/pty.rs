@@ -126,6 +126,13 @@ fn helper(mode: &str) {
             say(&format!("GOT:{}", visible(&read_line())));
             std::thread::sleep(Duration::from_millis(300));
         }
+        // Move the cursor far down the screen a moment after starting, then wait.
+        #[cfg(windows)]
+        "late-cursor-move" => {
+            std::thread::sleep(Duration::from_millis(30));
+            say("\x1b[35;100HZ");
+            std::thread::sleep(Duration::from_secs(60));
+        }
         "echo-line" => {
             say(&format!("GOT:{}", visible(&read_line())));
             std::thread::sleep(Duration::from_millis(300));
@@ -1176,12 +1183,11 @@ fn text_after_a_conpty_resize(
     text
 }
 
-/// Windows only: conhost sends the scroll it has not painted yet after the resize, just before its
-/// repaint. A resize with the last output barely read has to lose no row of it.
+/// Windows only: a resize with the last output barely read loses no row of it.
 #[cfg(windows)]
 fn a_conpty_resize_right_after_output_loses_no_row() {
     let last = format!("L40-{}", "x".repeat(96));
-    for size in [(120, 24), (60, 24)] {
+    for size in [(120, 24), (60, 24), (80, 20), (60, 20)] {
         for _ in 0..4 {
             let text = text_after_a_conpty_resize(
                 "forty-long-lines-then-echo",
@@ -1294,6 +1300,50 @@ fn a_resize_just_before_the_exit_still_reaches_the_engine() {
     assert_eq!((grid.cols(), grid.rows()), (100, 30));
 }
 
+/// Windows only: a resize before anything was painted puts no blank rows in the scrollback.
+#[cfg(windows)]
+fn a_resize_before_the_first_paint_leaves_the_scrollback_empty() {
+    let (pty, _rec, rx) = spawn("late-cursor-move", Options::default());
+    pty.resize(120, 40);
+    let session = pty.session().unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || screen(&pty).contains('Z')),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    assert_eq!(session.lock().unwrap().engine().scrollback_len(), 0);
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
+/// Windows only: resizes that keep coming do not hold the engine past the repaint bound.
+#[cfg(windows)]
+fn repeated_resizes_do_not_extend_the_wait_for_a_repaint() {
+    let options = Options {
+        decoder: Some(Box::new(NoRepaint)),
+        ..Options::default()
+    };
+    let (pty, _rec, rx) = spawn("print-then-sleep", options);
+    assert!(eventually(Duration::from_secs(10), || screen(&pty).contains(MARKER)));
+    let session = pty.session().unwrap();
+    let start = Instant::now();
+    let mut took = None;
+    let mut cols = 81;
+    while start.elapsed() < Duration::from_secs(2) && took.is_none() {
+        pty.resize(cols, 24);
+        cols += 1;
+        std::thread::sleep(Duration::from_millis(100));
+        if session.lock().unwrap().engine().grid().cols() != 80 {
+            took = Some(start.elapsed());
+        }
+    }
+    assert!(took.is_some(), "the engine stayed at 80 columns for 2 s");
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
 /// Windows only: resizes faster than conhost repaints leave the engine at the last size asked for.
 #[cfg(windows)]
 fn resizes_in_a_row_leave_the_engine_at_the_last_size() {
@@ -1333,8 +1383,13 @@ fn a_conpty_widening_loses_no_line_with_grow_from_history_off() {
         );
     }
     // The console repaints the piece of the line across the screen top, so a line the engine also
-    // joined across that boundary would hold those cells twice.
-    assert_eq!(text.matches('x').count(), 40 * 96, "{text:?}");
+    // joined across that boundary would hold those cells twice. The console may instead leave that
+    // 20-cell piece out, which is the most this resize can cost.
+    let cells = text.matches('x').count();
+    assert!(
+        (40 * 96 - 20..=40 * 96).contains(&cells),
+        "{cells} cells: {text:?}"
+    );
 }
 
 /// Windows only: the same repaint, on a row grow.
@@ -1737,6 +1792,14 @@ fn main() {
         (
             "resize_child_tells_the_size_waiting_for_a_repaint",
             resize_child_tells_the_size_waiting_for_a_repaint as fn(),
+        ),
+        (
+            "a_resize_before_the_first_paint_leaves_the_scrollback_empty",
+            a_resize_before_the_first_paint_leaves_the_scrollback_empty as fn(),
+        ),
+        (
+            "repeated_resizes_do_not_extend_the_wait_for_a_repaint",
+            repeated_resizes_do_not_extend_the_wait_for_a_repaint as fn(),
         ),
         (
             "resizes_in_a_row_leave_the_engine_at_the_last_size",

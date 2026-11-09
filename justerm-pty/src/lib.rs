@@ -307,9 +307,11 @@ struct DeferredResize {
 }
 
 impl DeferredResize {
-    /// Wait for the next repaint to give the engine `size`, replacing any size still waiting.
+    /// Wait for the next repaint to give the engine `size`, replacing any size still waiting. The
+    /// wait counts from the first size that has not been applied.
     fn defer(&mut self, size: (usize, usize)) {
-        self.pending = Some((size, Instant::now()));
+        let since = self.pending.map_or_else(Instant::now, |(_, since)| since);
+        self.pending = Some((size, since));
         self.matched = 0;
     }
 
@@ -598,21 +600,20 @@ impl Pty {
         }
     }
 
-    /// Resize the session, then the pseudo-terminal to the size the engine **adopted**, and return
-    /// that size as `(cols, rows)`.
+    /// Give the session and the pseudo-terminal a size, and return the size the engine **adopts** as
+    /// `(cols, rows)`.
     ///
     /// The engine widens a too-narrow width to its minimum (see
     /// [`Engine::resize`](justerm_core::Engine::resize)), and the child is told that width, never the
-    /// one asked for, so the two never disagree. After the child has exited only the session is
+    /// one asked for. After the child has exited only the session is
     /// resized. A drag that ends here back at the child's size is signalled as in
     /// [`Pty::resize_child`]. In [Raw mode](Pty::spawn_raw) there is no engine: the child is told
     /// `cols` × `rows` as asked, and that is returned.
     ///
-    /// **On Windows the engine takes the size later than this call returns.** The pseudo-terminal
-    /// is resized first, and the engine follows when the console's repaint begins, or after half a
-    /// second if none comes, so a read of the grid straight after this call can still show the old
-    /// size. A console sends the scroll it had not yet painted after the resize and before that
-    /// repaint, and an engine already at the new size would lose a row to it
+    /// **On Windows the engine can take the size later than this call returns.** Unless the size
+    /// removes rows or the cursor is above the last row, the pseudo-terminal is resized first and
+    /// the engine follows when the console's repaint begins, or within half a second if none comes,
+    /// so a read of the grid straight after this call can still show the old size
     /// ([#1104](https://github.com/kihyun1998/justerm/issues/1104)).
     pub fn resize(&self, cols: usize, rows: usize) -> (usize, usize) {
         let (session, deferred) = match &self.target {
@@ -625,11 +626,14 @@ impl Pty {
         // The session stays locked until the pty has its size, so two resizes racing cannot leave
         // the engine at one size and the child told the other.
         let mut session = lock(session);
-        if cfg!(windows) && lock(&self.master).is_some() {
-            let adopted = (
-                cols.clamp(MIN_COLUMNS, MAX_COLUMNS),
-                rows.clamp(1, MAX_ROWS),
-            );
+        let adopted = (
+            cols.clamp(MIN_COLUMNS, MAX_COLUMNS),
+            rows.clamp(1, MAX_ROWS),
+        );
+        let grid = session.engine().grid();
+        // Which resizes wait for the repaint: `docs/map/territory/pty.md`.
+        let waits = adopted.1 >= grid.rows() && session.engine().cursor().row + 1 == grid.rows();
+        if cfg!(windows) && waits && lock(&self.master).is_some() {
             lock(deferred).defer(adopted);
             self.tell_child(adopted);
             return adopted;
@@ -1040,7 +1044,10 @@ impl Pump {
         if let Target::Frame(session, deferred) = &self.target
             && lock(deferred).overdue()
         {
-            apply_deferred(&mut lock(session), deferred);
+            let mut session = lock(session);
+            if lock(deferred).overdue() {
+                apply_deferred(&mut session, deferred);
+            }
         }
     }
 
