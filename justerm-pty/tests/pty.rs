@@ -126,6 +126,14 @@ fn helper(mode: &str) {
             say(&format!("GOT:{}", visible(&read_line())));
             std::thread::sleep(Duration::from_millis(300));
         }
+        // Fill the screen, then behave as `size-on-line`.
+        #[cfg(windows)]
+        "full-then-size-on-line" => {
+            for i in 1..=40 {
+                say(&format!("L{i}\r\n"));
+            }
+            helper("size-on-line");
+        }
         // Move the cursor far down the screen a moment after starting, then wait.
         #[cfg(windows)]
         "late-cursor-move" => {
@@ -1200,6 +1208,20 @@ fn a_conpty_resize_right_after_output_loses_no_row() {
     }
 }
 
+/// Wait for the child to have filled the screen and left the cursor on its last row.
+#[cfg(windows)]
+fn wait_for_the_last_row(pty: &Pty) {
+    let session = pty.session().unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || {
+            let session = session.lock().unwrap();
+            let engine = session.engine();
+            engine.scrollback_len() > 0 && engine.cursor().row + 1 == engine.grid().rows()
+        }),
+        "the cursor never reached the last row"
+    );
+}
+
 /// Hides the console's repaint from the engine, so a deferred resize never sees one begin.
 #[cfg(windows)]
 struct NoRepaint;
@@ -1220,8 +1242,8 @@ fn a_resize_no_repaint_answers_still_reaches_the_engine() {
         decoder: Some(Box::new(NoRepaint)),
         ..Options::default()
     };
-    let (pty, _rec, rx) = spawn("print-then-sleep", options);
-    assert!(eventually(Duration::from_secs(10), || screen(&pty).contains(MARKER)));
+    let (pty, _rec, rx) = spawn("forty-lines-then-echo", options);
+    wait_for_the_last_row(&pty);
     pty.resize(100, 30);
     let session = pty.session().unwrap();
     assert!(eventually(Duration::from_secs(3), || {
@@ -1241,8 +1263,8 @@ fn a_resize_screen_replaces_a_size_waiting_for_a_repaint() {
         decoder: Some(Box::new(NoRepaint)),
         ..Options::default()
     };
-    let (pty, _rec, rx) = spawn("print-then-sleep", options);
-    assert!(eventually(Duration::from_secs(10), || screen(&pty).contains(MARKER)));
+    let (pty, _rec, rx) = spawn("forty-lines-then-echo", options);
+    wait_for_the_last_row(&pty);
     pty.resize(100, 30);
     assert_eq!(pty.resize_screen(70, 20), Some((70, 20)));
     std::thread::sleep(Duration::from_millis(900));
@@ -1264,7 +1286,8 @@ fn resize_child_tells_the_size_waiting_for_a_repaint() {
         decoder: Some(Box::new(NoRepaint)),
         ..Options::default()
     };
-    let (pty, _rec, rx) = spawn("size-on-line", options);
+    let (pty, _rec, rx) = spawn("full-then-size-on-line", options);
+    wait_for_the_last_row(&pty);
     assert!(eventually(Duration::from_secs(10), || screen(&pty)
         .contains("SIZE:80x24;")));
     pty.resize(100, 30);
@@ -1288,8 +1311,8 @@ fn a_resize_just_before_the_exit_still_reaches_the_engine() {
         decoder: Some(Box::new(NoRepaint)),
         ..Options::default()
     };
-    let (pty, _rec, rx) = spawn("print-then-sleep", options);
-    assert!(eventually(Duration::from_secs(10), || screen(&pty).contains(MARKER)));
+    let (pty, _rec, rx) = spawn("forty-lines-then-echo", options);
+    wait_for_the_last_row(&pty);
     let session = pty.session().unwrap();
     pty.resize(100, 30);
     pty.terminate();
@@ -1306,11 +1329,17 @@ fn a_resize_before_the_first_paint_leaves_the_scrollback_empty() {
     let (pty, _rec, rx) = spawn("late-cursor-move", Options::default());
     pty.resize(120, 40);
     let session = pty.session().unwrap();
+    assert!(eventually(Duration::from_secs(5), || {
+        let session = session.lock().unwrap();
+        let grid = session.engine().grid();
+        (grid.cols(), grid.rows()) == (120, 40)
+    }));
     assert!(
         eventually(Duration::from_secs(10), || screen(&pty).contains('Z')),
         "screen: {:?}",
         screen(&pty)
     );
+    std::thread::sleep(Duration::from_millis(300));
     assert_eq!(session.lock().unwrap().engine().scrollback_len(), 0);
     pty.terminate();
     rx.recv_timeout(Duration::from_secs(20))
@@ -1324,8 +1353,8 @@ fn repeated_resizes_do_not_extend_the_wait_for_a_repaint() {
         decoder: Some(Box::new(NoRepaint)),
         ..Options::default()
     };
-    let (pty, _rec, rx) = spawn("print-then-sleep", options);
-    assert!(eventually(Duration::from_secs(10), || screen(&pty).contains(MARKER)));
+    let (pty, _rec, rx) = spawn("forty-lines-then-echo", options);
+    wait_for_the_last_row(&pty);
     let session = pty.session().unwrap();
     let start = Instant::now();
     let mut took = None;
@@ -1347,9 +1376,8 @@ fn repeated_resizes_do_not_extend_the_wait_for_a_repaint() {
 /// Windows only: resizes faster than conhost repaints leave the engine at the last size asked for.
 #[cfg(windows)]
 fn resizes_in_a_row_leave_the_engine_at_the_last_size() {
-    let (pty, _rec, rx) = spawn("size-on-line", Options::default());
-    assert!(eventually(Duration::from_secs(10), || screen(&pty)
-        .contains("SIZE:80x24;")));
+    let (pty, _rec, rx) = spawn("full-then-size-on-line", Options::default());
+    wait_for_the_last_row(&pty);
     pty.resize(90, 25);
     pty.resize(91, 26);
     pty.resize(92, 27);
