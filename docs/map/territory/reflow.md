@@ -187,6 +187,15 @@ is the consumer-facing contract. No record governs it.
   and none once it covered the column change (10 of 10 runs). The name's "grow" therefore covers the
   rows a widening frees as well as the rows a grow adds. Widening is a divergence from xterm.js,
   which still takes from history there under `windowsPty`. Configuration, so it survives RIS.
+  - **Off, a column change ends a line across the screen top at that boundary** (#1100, maintainer
+    2026-11-09): `reflow_pane` clears the last history row's wrap before the re-split, so each side
+    re-wraps alone. Conhost repaints from its own view and does not rejoin across its viewport top:
+    captured through a Raw sink, the bytes after an 80 → 120 widening are `ESC[H`, the line's
+    20-cell second row, then the rows below. Joined in the engine, those 20 cells existed twice
+    and the engine's cursor was one row above conhost's (3991 glyphs became 4011, cursor 11 against
+    12). Cut, the count stays 3991 and the cursors agree, 12 of 12 runs over a widening, a narrowing,
+    both axes and a rows-only grow; that line then reads as two lines in copy and search.
+    A rows-only resize does not re-split, so it leaves the line joined.
 - **What leaves the buffer differs by holder.** `PaneReflow::evicted` counts rows dropped off the
   front by the cap (primary) or by the shrink (alt). Tracked points on such a row are released;
   alt markers are disposed with `MarkerDisposed`; primary markers saturate to line 0
@@ -298,11 +307,13 @@ rows rather than within one.
 - **Nothing in the family turns `grow_from_history` off yet** (#1100 left the wiring out, maintainer
   2026-11-09), so a ConPTY consumer still loses lines on a grow until `justerm-pty` or the consumer
   does.
-- **A line across the screen top shows a stray piece after a ConPTY widening** (#1100, 10 of 10
-  runs): the 100-cell line stays whole in history, and conhost's repaint draws the 20 cells that
-  were its second row at the top of the screen. A resize within moments of the output, before
-  conhost's last frame has landed, cut that line instead (7 of 10 runs with no 800 ms wait); why was
-  not established. A real SSH session was not measured either.
+- **A resize that lands while ConPTY output is still arriving can lose the top row** (#1100). The
+  engine is then a row behind conhost, measured as history 56 against 57 with the screen's top row
+  one row earlier, and conhost's repaint overwrites what the engine holds there: with the last
+  output 0 ms old the 100-cell line across the top was gone in 4 of 5 runs, at 800 ms in 0 of 3. The
+  length of that window between those two points was not measured. No signal says that conhost's
+  output has all arrived, so the engine cannot close this alone. A real SSH session was not measured
+  either.
 - **One governing record, for one line of it.** ADR-0035 decides the cursor's line; the rest of the
   operation with the widest blast radius in the engine has none.
 - **The DECAWM divergence is deliberate and unrecorded in a decision.** It diverges from a named

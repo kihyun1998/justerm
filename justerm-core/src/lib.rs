@@ -160,7 +160,9 @@ impl Engine {
     /// cursor above the last row and only blank rows under it, as after a `clear`, a resize moves
     /// no line from the scrollback onto the screen, except the line the cursor is on. The lines
     /// are re-wrapped where they are, and one that ran from the scrollback onto the top row stays
-    /// whole in the scrollback ([#1100](https://github.com/kihyun1998/justerm/issues/1100)).
+    /// whole in the scrollback, unless [`set_grow_from_history`](Self::set_grow_from_history) is
+    /// off, which ends it at the top row
+    /// ([#1100](https://github.com/kihyun1998/justerm/issues/1100)).
     /// Otherwise a resize may bring scrollback lines onto the screen, unless
     /// [`set_grow_from_history`](Self::set_grow_from_history) is off.
     ///

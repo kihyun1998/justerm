@@ -269,19 +269,40 @@ fn off_a_widening_with_no_rows_to_add_takes_nothing_from_history() {
 }
 
 #[test]
-fn off_a_line_across_the_screen_top_stays_whole_in_the_history() {
+fn off_a_column_change_cuts_a_line_across_the_screen_top() {
     // 40 lines of two rows each and a blank cursor row: 57 rows of history, the last the head of
     // L29, whose tail is the top screen row.
+    let mut t = lines_of_two_rows_off();
+    let before = glyphs(&t);
+    t.resize(80, 24);
+    assert_eq!(t.scrollback_len(), 29);
+    assert_eq!(cursor_row(&t), 12);
+    assert_eq!(row(&t, 0), "x".repeat(34));
+    let head = format!("L29-{}", "x".repeat(36));
+    let text = t.accessible_text();
+    assert!(text.lines().any(|l| l.trim_end() == head), "{text:?}");
+    assert_eq!(glyphs(&t), before);
+}
+
+#[test]
+fn off_a_rows_only_grow_leaves_a_line_across_the_screen_top_joined() {
+    let mut t = lines_of_two_rows_off();
+    t.resize(40, 30);
+    assert_eq!(t.scrollback_len(), 57);
+    let whole = format!("L29-{}", "x".repeat(70));
+    let text = t.accessible_text();
+    assert!(text.lines().any(|l| l.trim_end() == whole), "{text:?}");
+}
+
+/// 40x24, setting off, 40 lines of two rows each.
+fn lines_of_two_rows_off() -> Engine {
     let mut t = Engine::new(40, 24);
     t.set_grow_from_history(false);
     for i in 1..=40 {
         t.feed(format!("L{i}-{}\r\n", "x".repeat(70)).as_bytes());
     }
     assert_eq!(t.scrollback_len(), 57);
-    t.resize(80, 24);
-    assert_eq!(t.scrollback_len(), 29);
-    assert_eq!(cursor_row(&t), 11);
-    assert!(row(&t, 0).starts_with("L30-"), "{:?}", row(&t, 0));
+    t
 }
 
 #[test]
@@ -313,14 +334,15 @@ fn a_blank_screen_top_under_a_line_from_history_keeps_it_in_the_history() {
 
 #[test]
 fn a_cursor_on_a_line_across_the_screen_top_stays_on_that_line() {
-    let mut t = Engine::new(4, 2);
-    t.set_grow_from_history(false);
+    let mut t = Engine::new(4, 3);
     // A `redraw=0` prompt lets the cursor's own line re-split, and it starts in the history.
-    t.feed(b"aaaabbbb\x1b]133;A;redraw=0\x07c");
+    t.feed(b"aaaabbbbccccd\x1b[2;1H\x1b[J\x1b[1;4H\x1b]133;A;redraw=0\x07");
     assert_eq!(t.scrollback_len(), 1);
-    t.resize(16, 2);
-    assert_eq!(row(&t, 0), "aaaabbbbc");
-    assert_eq!((t.cursor().row, t.cursor().col), (0, 9));
+    assert_eq!((t.cursor().row, t.cursor().col), (0, 3));
+    t.resize(16, 3);
+    assert_eq!(t.scrollback_len(), 0);
+    assert_eq!(row(&t, 0), "aaaabbbb");
+    assert_eq!((t.cursor().row, t.cursor().col), (0, 7));
 }
 
 /// `count` lines of 100 cells at 80 columns, the last history row the head of a line.

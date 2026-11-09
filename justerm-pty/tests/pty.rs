@@ -1171,12 +1171,15 @@ fn a_conpty_widening_loses_no_line_with_grow_from_history_off() {
     let last = format!("L40-{}", "x".repeat(96));
     let text = text_after_a_conpty_resize("forty-long-lines-then-echo", &last, 120, 24);
     for i in 1..=40 {
-        let line = format!("L{i}-{}", "x".repeat(96));
+        let start = format!("L{i}-");
         assert!(
-            text.lines().any(|l| l.trim_end() == line),
-            "L{i} is gone or cut: {text:?}"
+            text.lines().any(|l| l.starts_with(&start)),
+            "L{i} is gone: {text:?}"
         );
     }
+    // The console repaints the piece of the line across the screen top, so a line the engine also
+    // joined across that boundary would hold those cells twice.
+    assert_eq!(text.matches('x').count(), 40 * 96, "{text:?}");
 }
 
 /// Windows only: the same repaint, on a row grow.
