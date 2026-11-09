@@ -159,6 +159,34 @@ is the consumer-facing contract. No record governs it.
     default-pen space row counts as vacant. xterm.js (`common/buffer/Buffer.ts:222-233` @
     `699f553`) and alacritty (`grid/resize.rs:78-97` @ `852e971`) drop the rows below the cursor
     whatever they hold, which the maintainer did not choose (2026-11-02, #1089 triage).
+- **A screen with nothing below the cursor leaves the history where it is** (#1100). `reflow_pane`
+  decides `holds_history` from the old screen, before the join: the cursor above the last row and
+  every row below it `Row::is_vacant`. Then `split` has a floor, the row the old screen top landed
+  on, which rides `pts` last and is popped before the extras are returned. Without the floor a row
+  grow took its rows from history (`split` is the pane's length minus `rows`), and a column change
+  took more, because the re-split absorbs the trailing blank lines and shortens the pane: 17 rows of
+  history under a cleared 80x24 screen went to 11 at 30 rows and to 0 at 100 columns.
+  - **A top row that landed inside a line leaves the whole line in history**: the point's `col > 0`
+    rounds the floor up one row. What comes down is never the head of a history line.
+  - **The floor stops at the cursor** (`cursor_abs`), so the line the cursor is on stays on the
+    screen when that line started in history (a `redraw=0` prompt, whose line re-splits).
+  - **The rows left over are blank rows at the bottom**, from `Grid::set_screen`'s pad; nothing is
+    materialised for them.
+  - **A cursor on the last row, or with content below it, still takes a grow from history**
+    (maintainer, 2026-11-09, #1100: the issue did not ask to change it). xterm.js and ghostty take
+    the narrower position when the cursor is not on the last row, whatever is below it; alacritty
+    always takes. Their rows are in the reference note below.
+- **`set_grow_from_history(false)` stops every resize from moving history onto the screen**
+  (maintainer, 2026-11-09, #1100, shown the measurements below), through
+  `ReflowDims::grow_from_history` into the same floor. It is for a consumer with a ConPTY in front
+  of the engine: conhost repaints the screen from its own buffer after a resize, so what moved from
+  the scrollback onto the screen is overwritten. The engine does not detect a ConPTY, which core's
+  no-I/O boundary rules out. Measured on Windows 11 26200 with the setting on and off, through a
+  real ConPTY: a full 80x24 screen grown to 30 rows lost 6 of 40 printed lines with it on and none
+  off; 40 lines of 100 cells widened 80 → 120 lost 12 with the row-grow-only version of the setting
+  and none once it covered the column change (10 of 10 runs). The name's "grow" therefore covers the
+  rows a widening frees as well as the rows a grow adds. Widening is a divergence from xterm.js,
+  which still takes from history there under `windowsPty`. Configuration, so it survives RIS.
 - **What leaves the buffer differs by holder.** `PaneReflow::evicted` counts rows dropped off the
   front by the cap (primary) or by the shrink (alt). Tracked points on such a row are released;
   alt markers are disposed with `MarkerDisposed`; primary markers saturate to line 0
@@ -196,11 +224,11 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
   `PointPlace`, `Row::resize`, `Row::is_vacant`, `Grid::take_lines`, `Grid::set_screen`
 - `justerm-core/src/term.rs` — `Term::resize`, `Term::resize_keep_from`, `Term::live_prompt_start`,
   `PromptRedraw`, `ReflowDims`, `PaneReflow`, `reflow_pane`, `saved_cursor_col`,
-  `is_default_tab_stop`, `default_tabs`
+  `is_default_tab_stop`, `default_tabs`, `Term::set_grow_from_history`, `Term::grow_from_history`
 - `justerm-core/src/term/selection.rs` — `Term::selection_reflowed`
 - `justerm-core/src/term/paint.rs` — `ChangeWatch::points`, `ChangeWatch::reflowed`
-- `justerm-core/src/lib.rs` — `Engine::resize`
-- Tests: `justerm-core/tests/resize.rs`, `alt_no_reflow.rs`, `reflow_past_end_points.rs`,
+- `justerm-core/src/lib.rs` — `Engine::resize`, `Engine::set_grow_from_history`
+- Tests: `justerm-core/tests/resize.rs`, `resize_keeps_history.rs`, `alt_no_reflow.rs`, `reflow_past_end_points.rs`,
   `reflow_point_mapping.rs`, `reflow_row_budget.rs`, `reflow_trim.rs`, `reflow_wide_pair.rs`,
   `resize_parked_prompt.rs`, `resize_cursor_line.rs` (with `fixtures/resize_shell_redraw.raw`), `decsc_resize.rs`,
   `resize_prompt_marks.rs` (with `fixtures/resize_prompt_marks.raw`),
@@ -224,6 +252,8 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
   — kitty's keep-and-paste, Ghostty's clear, and the hints their own shell scripts send (#1083).
 - [A selection when the screen changes under it](../../agents/reference-facts.md#a-selection-when-the-screen-changes-under-it-660-verified-2026-07-31)
   — dropping the selection on an alt-screen resize.
+- [A resize and the history above the screen](../../agents/reference-facts.md#a-resize-and-the-history-above-the-screen-1100-verified-2026-11-09)
+  — when each reference takes a grow from history, and what xterm.js does behind a ConPTY (#1100).
 - The DECAWM divergence is argued against ghostty's `Terminal.zig` with no pinned row.
 
 ## Cross-cutting invariants
@@ -232,6 +262,8 @@ population plus the tracked-point registry, the latter with no cap ([tracked poi
   that fact stops being cosmetic and becomes irreversible, which settled its repair in #810: a hidden
   element measures `0x0`, the fit paths floored that to a `2x1` grid, and on the alt screen a resize
   is a re-fit — rows dropped, nothing re-wrapped — so there is nothing to restore from on re-widening.
+- [RIS keeps configuration and drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
+  — `grow_from_history` is embedder configuration, on the copy-back list.
 
 ## Blast radius
 
@@ -263,6 +295,14 @@ rows rather than within one.
 
 ## Known holes / open
 
+- **Nothing in the family turns `grow_from_history` off yet** (#1100 left the wiring out, maintainer
+  2026-11-09), so a ConPTY consumer still loses lines on a grow until `justerm-pty` or the consumer
+  does.
+- **A line across the screen top shows a stray piece after a ConPTY widening** (#1100, 10 of 10
+  runs): the 100-cell line stays whole in history, and conhost's repaint draws the 20 cells that
+  were its second row at the top of the screen. A resize within moments of the output, before
+  conhost's last frame has landed, cut that line instead (7 of 10 runs with no 800 ms wait); why was
+  not established. A real SSH session was not measured either.
 - **One governing record, for one line of it.** ADR-0035 decides the cursor's line; the rest of the
   operation with the widest blast radius in the engine has none.
 - **The DECAWM divergence is deliberate and unrecorded in a decision.** It diverges from a named

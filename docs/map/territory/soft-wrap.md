@@ -48,8 +48,8 @@ ADR-0025 is authoritative; this is routing plus what the source shows.
   | `DCH` | **yes**, before the shift (#534) | `screen.c` | `cursorResetWrap()` — *"Our row's soft-wrap is always reset"* |
   | `EL 2` | **yes** — deliberate divergence, below | `ClearLine` has no `LineClrWrapped` (`util.c:1905`) | no, with a comment naming xterm |
   | `EL 1` (erase left) | no (drops only the artefact marker) | `ClearLeft`, no clear | no |
-  | `ED 0` / `ED 2` | yes, every erased row | — | — |
-  | `ED 1` | rows above: yes; the cursor row only when the erase covers it whole (xterm.js's `ED 1` arm) | — | — |
+  | `ED 0` / `ED 2` | yes, every erased row, and the last scrollback row when row 0 is erased whole (#1100) | — | — |
+  | `ED 1` | rows above: yes; the cursor row only when the erase covers it whole (xterm.js's `ED 1` arm); the last scrollback row when row 0 is erased whole (#1100) | — | — |
   | `ICH` | no | no | no |
   | a reverse-wrap walk (`BS` / `CSI D` under `?45`) | **no** (#873) | `CursorBack` writes no wrap flag | only *reads* `prev_row.wrap` |
 
@@ -79,8 +79,16 @@ ADR-0025 is authoritative; this is routing plus what the source shows.
   the bottom one; both are caller facts. Derived, not ported — no reference implements the rule — and
   sound only without DECSLRM. The scroll op is recorded before any seam clear, because
   `record_scroll` rotates line damage with the content.
+- **An erase that blanks row 0 whole ends the wrap from the scrollback** (#1100): `ED 2`, `ED 0` from
+  the home position, and `ED 1` from below row 0 or from its last column call
+  `Term::end_history_wrap`. Left set, the flag joined a line's head in history to whatever was printed
+  next at the top of the screen: `clear` under a 100-cell line glued the next output onto it, and a
+  narrowing kept the join as the cursor's line and cut it for good (2872 cells → 2832). xterm.js has
+  the flag on the continuation row, so resetting row 0 ends it there (`InputHandler.ts:1196-1201` @
+  `699f553`).
 - **At `top == 0` the seam is the last scrollback row** on the primary (the readers walk
-  `[scrollback ++ grid]` as one buffer), so `shift_region` clears that row's wrap and artefact marker
+  `[scrollback ++ grid]` as one buffer), so `Term::end_history_wrap` clears that row's wrap and
+  artefact marker
   there — **with no damage**, unlike `end_wrap`'s grid form: a scrollback row reaches the wire only
   while `display_offset > 0`, where `damage()` returns an empty `Partial` and any scroll that moves the
   viewport marks full damage. Valid as long as that frozen-viewport short-circuit holds. A linefeed is
@@ -95,7 +103,7 @@ ADR-0025 is authoritative; this is routing plus what the source shows.
 - `justerm-core/src/grid.rs` — `Row::is_wrapped`, `Row::set_wrapped`, the row's `wrapped` field,
   `Grid::is_row_wrapped`
 - `justerm-core/src/cell.rs` — `CellFlags` (`WRAPLINE`, wire-only; the live flag is on the row)
-- `justerm-core/src/term.rs` — `Term::begin_wrap`, `Term::end_wrap`, `Term::shift_region`,
+- `justerm-core/src/term.rs` — `Term::begin_wrap`, `Term::end_wrap`, `Term::end_history_wrap`, `Term::shift_region`,
   `Term::wrapline`, `Term::wrapline_advances`, `Term::erase_line`, `Term::erase_display`,
   `Term::erase_chars`, `Term::delete_chars`, `Term::step_back`, `Term::scroll_region_lines`
 - `justerm-core/src/term/walk.rs` — `Term::prev_pos` / `Term::next_pos` (word-selection stepping that
@@ -114,8 +122,8 @@ ADR-0025 is authoritative; this is routing plus what the source shows.
 ## Cross-cutting invariants
 
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — the write path reaches
-  above grid row 0 into scrollback at two sites, `Term::shift_region`'s `top == 0` seam and
-  `Term::void_wrap_artefact_above`, and holds the floor there with an explicit `!self.on_alt` guard
+  above grid row 0 into scrollback at two sites, `Term::end_history_wrap` and
+  `Term::void_wrap_artefact_above`, and holds the floor there with an explicit `on_alt` guard
   rather than `abs_floor`, so neither appears in a grep for it
 
 ## Blast radius

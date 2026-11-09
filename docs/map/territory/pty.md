@@ -111,7 +111,9 @@ that took them.
   - A ConPTY repaints the lines it holds after a pseudo-terminal resize (`ESC[H`, then each line
     again), measured on Windows 11 26200 at #1094 through a Raw sink. So a test counting the
     child's lines counts only output from before the resize
-    (`raw_mode_has_no_screen_to_resize_apart_from_the_child`).
+    (`raw_mode_has_no_screen_to_resize_apart_from_the_child`). The repaint is also why
+    `Engine::set_grow_from_history(false)` exists ([reflow](reflow.md), #1100): a line the engine
+    moved from the scrollback onto the screen is overwritten by it.
 
 **Exit**
 - **Exit is polled, not awaited.** A ConPTY reader can stay blocked after the child has exited, so EOF
@@ -284,6 +286,8 @@ crate is where it is discharged.
 
 ## Known holes / open
 
+- **`Pty` does not turn `grow_from_history` off behind a ConPTY** (#1100, the maintainer left the
+  wiring out on 2026-11-09). The consumer sets it on the `Engine` it hands over.
 - **A legacy decoder is proven on Unix only.** On Windows a console child cannot put legacy bytes on
   the pseudo-terminal. Measured (#1047): Rust's std refuses to write non-UTF-8 to a console with
   `InvalidData`. And conhost converts both directions, measured (#1066, Windows 11, OEMCP=ACP=949):
