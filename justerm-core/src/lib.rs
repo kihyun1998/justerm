@@ -156,6 +156,13 @@ impl Engine {
     /// search at the new width — a reflow moves match coordinates and can change the match
     /// set), while the selection is carried to its new coordinates for you.
     ///
+    /// **The scrollback does not come back over a screen with nothing below the cursor.** With the
+    /// cursor above the last row and only blank rows under it, as after a `clear`, no resize moves
+    /// a line from the scrollback onto the screen; its lines are re-wrapped where they are and the
+    /// cursor keeps its row unless the screen's own content pushes it down
+    /// ([#1100](https://github.com/kihyun1998/justerm/issues/1100)). Otherwise added rows come
+    /// from the scrollback, unless [`set_grow_from_history`](Self::set_grow_from_history) is off.
+    ///
     /// **The logical line holding the cursor is not reflowed**, on a narrowing or a widening: its
     /// rows are cut or padded to the new width, and the cursor stays on its row, clamped onto the
     /// last column if the row got narrower than it. A shell's SIGWINCH redraw climbs to its prompt
@@ -564,6 +571,22 @@ impl Engine {
     /// Whether [`set_erase_saved_lines`](Self::set_erase_saved_lines) is on.
     pub fn erase_saved_lines(&self) -> bool {
         self.term.erase_saved_lines()
+    }
+
+    /// Choose whether [`resize`](Self::resize) may take added rows from the scrollback — consumer
+    /// policy injected into a core mechanism
+    /// ([ADR-0017](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0017-core-consumer-boundary-mechanism-vs-policy.md)).
+    /// On by default; survives RIS. Turn it off when a Windows ConPTY feeds this engine: the
+    /// console repaints the screen from its own buffer after a resize, so lines moved from the
+    /// scrollback onto the screen are overwritten and lost. The engine does not detect a ConPTY.
+    /// The rule is on [`Term::set_grow_from_history`].
+    pub fn set_grow_from_history(&mut self, on: bool) {
+        self.term.set_grow_from_history(on);
+    }
+
+    /// Whether [`set_grow_from_history`](Self::set_grow_from_history) is on.
+    pub fn grow_from_history(&self) -> bool {
+        self.term.grow_from_history()
     }
 
     /// Clear the selection.

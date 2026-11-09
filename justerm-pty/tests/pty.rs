@@ -108,6 +108,15 @@ fn helper(mode: &str) {
             std::thread::sleep(Duration::from_millis(1500));
             say("LATE-OUTPUT\n");
         }
+        // Print forty numbered lines, then print the line that comes back.
+        #[cfg(windows)]
+        "forty-lines-then-echo" => {
+            for i in 1..=40 {
+                say(&format!("L{i}\r\n"));
+            }
+            say(&format!("GOT:{}", visible(&read_line())));
+            std::thread::sleep(Duration::from_millis(300));
+        }
         "echo-line" => {
             say(&format!("GOT:{}", visible(&read_line())));
             std::thread::sleep(Duration::from_millis(300));
@@ -1105,6 +1114,49 @@ fn a_raw_child_starts_with_no_consumer_write() {
     );
 }
 
+/// Windows only: conhost repaints the screen after a resize, so a row grow that took lines from the
+/// history would lose them under the repaint. With `set_grow_from_history(false)` every line stays.
+#[cfg(windows)]
+fn a_conpty_row_grow_loses_no_line_with_grow_from_history_off() {
+    let mut engine = Engine::new(80, 24);
+    engine.set_grow_from_history(false);
+    let (tx, rx) = mpsc::channel();
+    let command =
+        Command::new(std::env::current_exe().unwrap()).env(HELPER, "forty-lines-then-echo");
+    let pty = Pty::spawn(
+        command,
+        Session::new(engine),
+        Options::default(),
+        |_event| {},
+        move |exit| {
+            let _ = tx.send(exit);
+        },
+    )
+    .expect("spawn the helper in a pty");
+    let session = pty.session().unwrap();
+    let text = || session.lock().unwrap().engine().accessible_text();
+    assert!(
+        eventually(Duration::from_secs(20), || text()
+            .lines()
+            .any(|l| l.trim_end() == "L40")),
+        "{:?}",
+        text()
+    );
+    pty.resize(80, 30);
+    pty.write(b"END\r\n").unwrap();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("the child echoes and exits");
+    let text = text();
+    assert!(text.contains("GOT:END"), "{text:?}");
+    for i in 1..=40 {
+        let line = format!("L{i}");
+        assert!(
+            text.lines().any(|l| l.trim_end() == line),
+            "{line} is gone: {text:?}"
+        );
+    }
+}
+
 /// Windows only: the position the pty reports at start is the one conhost then holds, so a child's
 /// own CPR (which conhost answers) counts from it: `START` moves the column on by five.
 #[cfg(windows)]
@@ -1467,6 +1519,10 @@ fn main() {
         (
             "a_raw_child_starts_with_no_consumer_write",
             a_raw_child_starts_with_no_consumer_write as fn(),
+        ),
+        (
+            "a_conpty_row_grow_loses_no_line_with_grow_from_history_off",
+            a_conpty_row_grow_loses_no_line_with_grow_from_history_off as fn(),
         ),
         (
             "conhost_adopts_the_start_cursor",

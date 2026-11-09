@@ -101,6 +101,9 @@ pub struct Term {
     /// Whether `ED 3` erases the saved lines — consumer policy (ADR-0017), so it survives RIS.
     /// On by default; set through `set_erase_saved_lines`.
     erase_saved_lines: bool,
+    /// Whether a resize that adds rows may take them from the history.
+    /// On by default; set through `set_grow_from_history`.
+    grow_from_history: bool,
     /// The window title the application last set (OSC 0/2), retained so a title pop has
     /// something to restore (#823). Application state, so it dies on RIS:
     /// `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md`.
@@ -760,6 +763,7 @@ impl Term {
             word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
             selection_carries_line_end: false,
             erase_saved_lines: true,
+            grow_from_history: true,
             window_title: String::new(),
             icon_name: String::new(),
             window_title_stack: Vec::new(),
@@ -1143,6 +1147,19 @@ impl Term {
         self.erase_saved_lines
     }
 
+    /// Choose whether a resize that adds rows may take them from the history. On by default.
+    ///
+    /// When off, the added rows are blank rows at the bottom of the primary screen, and the
+    /// history and the cursor's row stay as they were. A resize with no rows to add is unchanged.
+    pub fn set_grow_from_history(&mut self, on: bool) {
+        self.grow_from_history = on;
+    }
+
+    /// Whether [`Term::set_grow_from_history`] is on.
+    pub fn grow_from_history(&self) -> bool {
+        self.grow_from_history
+    }
+
     /// Number of lines currently held in scrollback history.
     pub fn scrollback_len(&self) -> usize {
         self.scrollback.len()
@@ -1219,6 +1236,7 @@ impl Term {
             rows,
             limit,
             reflow: true,
+            grow_from_history: self.grow_from_history,
         };
         let scrollback = std::mem::take(&mut self.scrollback);
         if self.on_alt {
@@ -1903,6 +1921,7 @@ impl Term {
         let word_separators = std::mem::take(&mut self.word_separators);
         let selection_carries_line_end = self.selection_carries_line_end;
         let erase_saved_lines = self.erase_saved_lines;
+        let grow_from_history = self.grow_from_history;
         // Tracked points die, but their id counter rides across: they have no disposal event,
         // so a reissued id would answer a stale ask with another point (#691).
         let next_tracked_id = self.next_tracked_id;
@@ -1916,6 +1935,7 @@ impl Term {
         self.word_separators = word_separators;
         self.selection_carries_line_end = selection_carries_line_end;
         self.erase_saved_lines = erase_saved_lines;
+        self.grow_from_history = grow_from_history;
         self.next_tracked_id = next_tracked_id;
         self.next_marker_id = next_marker_id;
         self.marker_epoch = marker_epoch;
@@ -3292,6 +3312,8 @@ struct ReflowDims {
     /// Whether a column change may re-split this pane's content, or only re-fit its rows —
     /// false for the alt screen (#567, `docs/map/territory/reflow.md`).
     reflow: bool,
+    /// Whether added rows may come from this pane's history (`Term::set_grow_from_history`).
+    grow_from_history: bool,
 }
 
 /// The result of reflowing one pane.
@@ -3344,6 +3366,11 @@ fn reflow_pane(
 ) -> PaneReflow {
     let scroll_len = scrollback.len();
     let removed_rows = screen.len().saturating_sub(dims.rows);
+    // Whether this resize leaves the history where it is: nothing below the cursor pushed it out,
+    // or the consumer forbade taking added rows from it: `docs/map/territory/reflow.md` (#1100).
+    let vacant_below =
+        point.0 + 1 < screen.len() && screen[point.0 + 1..].iter().all(Row::is_vacant);
+    let holds_history = vacant_below || (!dims.grow_from_history && dims.rows > screen.len());
     let mut all: Vec<Row> = scrollback.into();
     all.extend(screen);
 
@@ -3352,11 +3379,13 @@ fn reflow_pane(
     let mut pts: Vec<(usize, usize)> = Vec::with_capacity(1 + extra_abs.len());
     pts.push((scroll_len + point.0, point.1));
     pts.extend_from_slice(extra_abs);
+    // The screen's top row rides last and leaves before the extras are returned.
+    pts.push((scroll_len, 0));
 
     // A kept run holds the cursor's line (#1082, #1083), so the cursor keeps its row and its
     // column, clamped onto the last column when the row got narrower than it:
     // `docs/map/territory/reflow.md`.
-    let (pts, places) = if dims.reflow && dims.cols != dims.old_cols {
+    let (mut pts, mut places) = if dims.reflow && dims.cols != dims.old_cols {
         let keep = keep_from.map(|from| (from, pts[0].0));
         let (rows, mut np, places) = crate::grid::reflow(all, dims.cols, &pts, keep);
         all = rows;
@@ -3368,6 +3397,8 @@ fn reflow_pane(
         let places = vec![PointPlace::Kept; pts.len()];
         (pts, places)
     };
+    let screen_top = pts.pop().map_or(0, |(line, _)| line);
+    places.pop();
 
     // A cursor one row past the content (#562) buys that row from history when the pane can
     // pay (`limit > 0`): `docs/map/territory/reflow.md`.
@@ -3394,7 +3425,8 @@ fn reflow_pane(
         trim -= 1;
     }
 
-    let split = all.len().saturating_sub(dims.rows);
+    let floor = if holds_history { screen_top } else { 0 };
+    let split = all.len().saturating_sub(dims.rows).max(floor);
     let history: Vec<Row> = all.drain(0..split).collect();
     let mut sb: VecDeque<Row> = history.into();
     let mut dropped = 0usize;
