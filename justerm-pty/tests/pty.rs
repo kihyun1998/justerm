@@ -1178,8 +1178,13 @@ fn a_conpty_widening_loses_no_line_with_grow_from_history_off() {
         );
     }
     // The console repaints the piece of the line across the screen top, so a line the engine also
-    // joined across that boundary would hold those cells twice.
-    assert_eq!(text.matches('x').count(), 40 * 96, "{text:?}");
+    // joined across that boundary would hold those cells twice. The console may instead leave that
+    // 20-cell piece out, which is the most this resize can cost.
+    let cells = text.matches('x').count();
+    assert!(
+        (40 * 96 - 20..=40 * 96).contains(&cells),
+        "{cells} cells: {text:?}"
+    );
 }
 
 /// Windows only: the same repaint, on a row grow.

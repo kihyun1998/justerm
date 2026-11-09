@@ -314,6 +314,11 @@ rows rather than within one.
   length of that window between those two points was not measured. No signal says that conhost's
   output has all arrived, so the engine cannot close this alone. A real SSH session was not measured
   either.
+- **Conhost sometimes does not repaint the piece at the screen top** (#1100, 1 of 23 local runs, on a
+  loaded machine and not reproduced alone): with the setting off, it drew from the next line, so the
+  20-cell piece of the line across the top was absent and the line read as its 80-cell head. Why
+  conhost differed was not established. `a_conpty_widening_loses_no_line_with_grow_from_history_off`
+  bounds the count to at most that piece's loss and no duplicate.
 - **One governing record, for one line of it.** ADR-0035 decides the cursor's line; the rest of the
   operation with the widest blast radius in the engine has none.
 - **The DECAWM divergence is deliberate and unrecorded in a decision.** It diverges from a named
