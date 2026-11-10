@@ -126,6 +126,21 @@ fn helper(mode: &str) {
             say(&format!("GOT:{}", visible(&read_line())));
             std::thread::sleep(Duration::from_millis(300));
         }
+        // Fill the screen, then behave as `size-on-line`.
+        #[cfg(windows)]
+        "full-then-size-on-line" => {
+            for i in 1..=40 {
+                say(&format!("L{i}\r\n"));
+            }
+            helper("size-on-line");
+        }
+        // Move the cursor far down the screen a moment after starting, then wait.
+        #[cfg(windows)]
+        "late-cursor-move" => {
+            std::thread::sleep(Duration::from_millis(30));
+            say("\x1b[35;100HZ");
+            std::thread::sleep(Duration::from_secs(60));
+        }
         "echo-line" => {
             say(&format!("GOT:{}", visible(&read_line())));
             std::thread::sleep(Duration::from_millis(300));
@@ -1124,9 +1139,14 @@ fn a_raw_child_starts_with_no_consumer_write() {
 }
 
 /// The text of an 80x24 engine with `set_grow_from_history(false)`, after helper `mode` printed
-/// forty lines ending in `last` and the pty was resized to `cols` x `rows`.
+/// forty lines ending in `last` and, `settle` later, the pty was resized to `cols` x `rows`.
 #[cfg(windows)]
-fn text_after_a_conpty_resize(mode: &str, last: &str, cols: usize, rows: usize) -> String {
+fn text_after_a_conpty_resize(
+    mode: &str,
+    last: &str,
+    settle: Duration,
+    (cols, rows): (usize, usize),
+) -> String {
     let mut engine = Engine::new(80, 24);
     engine.set_grow_from_history(false);
     let (tx, rx) = mpsc::channel();
@@ -1153,9 +1173,16 @@ fn text_after_a_conpty_resize(mode: &str, last: &str, cols: usize, rows: usize) 
                 .any(|l| l.trim_end() == last)
     };
     assert!(eventually(Duration::from_secs(20), printed), "{:?}", text());
-    // Conhost's last frame has to land before the resize, or the screen top is not settled.
-    std::thread::sleep(Duration::from_millis(800));
+    std::thread::sleep(settle);
     pty.resize(cols, rows);
+    assert!(
+        eventually(Duration::from_secs(5), || {
+            let session = session.lock().unwrap();
+            let grid = session.engine().grid();
+            (grid.cols(), grid.rows()) == (cols, rows)
+        }),
+        "the engine never took {cols}x{rows}"
+    );
     pty.write(b"END\r\n").unwrap();
     rx.recv_timeout(Duration::from_secs(20))
         .expect("the child echoes and exits");
@@ -1164,12 +1191,231 @@ fn text_after_a_conpty_resize(mode: &str, last: &str, cols: usize, rows: usize) 
     text
 }
 
+/// Windows only: a resize with the last output barely read loses no row of it.
+#[cfg(windows)]
+fn a_conpty_resize_right_after_output_loses_no_row() {
+    let last = format!("L40-{}", "x".repeat(96));
+    for size in [(120, 24), (60, 24), (80, 20), (60, 20)] {
+        for _ in 0..4 {
+            let text = text_after_a_conpty_resize(
+                "forty-long-lines-then-echo",
+                &last,
+                Duration::ZERO,
+                size,
+            );
+            assert_eq!(text.matches('x').count(), 40 * 96, "{size:?}: {text:?}");
+        }
+    }
+}
+
+/// Wait for the child to have filled the screen and left the cursor on its last row.
+#[cfg(windows)]
+fn wait_for_the_last_row(pty: &Pty) {
+    let session = pty.session().unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || {
+            let session = session.lock().unwrap();
+            let engine = session.engine();
+            engine.scrollback_len() > 0 && engine.cursor().row + 1 == engine.grid().rows()
+        }),
+        "the cursor never reached the last row"
+    );
+}
+
+/// Hides the console's repaint from the engine, so a deferred resize never sees one begin.
+#[cfg(windows)]
+struct NoRepaint;
+
+#[cfg(windows)]
+impl Decode for NoRepaint {
+    fn decode(&mut self, bytes: &[u8]) -> Vec<u8> {
+        String::from_utf8_lossy(bytes)
+            .replace("\x1b[H", "")
+            .into_bytes()
+    }
+}
+
+/// Windows only: with no repaint to wait for, the engine still takes the size.
+#[cfg(windows)]
+fn a_resize_no_repaint_answers_still_reaches_the_engine() {
+    let options = Options {
+        decoder: Some(Box::new(NoRepaint)),
+        ..Options::default()
+    };
+    let (pty, _rec, rx) = spawn("forty-lines-then-echo", options);
+    wait_for_the_last_row(&pty);
+    pty.resize(100, 30);
+    let session = pty.session().unwrap();
+    assert!(eventually(Duration::from_secs(3), || {
+        let session = session.lock().unwrap();
+        let grid = session.engine().grid();
+        (grid.cols(), grid.rows()) == (100, 30)
+    }));
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
+/// Windows only: a size given to the screen replaces one still waiting for a repaint.
+#[cfg(windows)]
+fn a_resize_screen_replaces_a_size_waiting_for_a_repaint() {
+    let options = Options {
+        decoder: Some(Box::new(NoRepaint)),
+        ..Options::default()
+    };
+    let (pty, _rec, rx) = spawn("forty-lines-then-echo", options);
+    wait_for_the_last_row(&pty);
+    pty.resize(100, 30);
+    assert_eq!(pty.resize_screen(70, 20), Some((70, 20)));
+    std::thread::sleep(Duration::from_millis(900));
+    let session = pty.session().unwrap();
+    {
+        let session = session.lock().unwrap();
+        let grid = session.engine().grid();
+        assert_eq!((grid.cols(), grid.rows()), (70, 20));
+    }
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
+/// Windows only: resize_child tells the child a size still waiting for a repaint, not the old one.
+#[cfg(windows)]
+fn resize_child_tells_the_size_waiting_for_a_repaint() {
+    let options = Options {
+        decoder: Some(Box::new(NoRepaint)),
+        ..Options::default()
+    };
+    let (pty, _rec, rx) = spawn("full-then-size-on-line", options);
+    wait_for_the_last_row(&pty);
+    assert!(eventually(Duration::from_secs(10), || screen(&pty)
+        .contains("SIZE:80x24;")));
+    pty.resize(100, 30);
+    assert_eq!(pty.resize_child(), Some((100, 30)));
+    pty.write(b"\r").unwrap();
+    assert!(
+        eventually(Duration::from_secs(10), || screen(&pty)
+            .contains("SIZE:100x30;")),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
+/// Windows only: the child ending before the console repaints still leaves the engine at the size.
+#[cfg(windows)]
+fn a_resize_just_before_the_exit_still_reaches_the_engine() {
+    let options = Options {
+        decoder: Some(Box::new(NoRepaint)),
+        ..Options::default()
+    };
+    let (pty, _rec, rx) = spawn("forty-lines-then-echo", options);
+    wait_for_the_last_row(&pty);
+    let session = pty.session().unwrap();
+    pty.resize(100, 30);
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+    let session = session.lock().unwrap();
+    let grid = session.engine().grid();
+    assert_eq!((grid.cols(), grid.rows()), (100, 30));
+}
+
+/// Windows only: a resize before anything was painted puts no blank rows in the scrollback.
+#[cfg(windows)]
+fn a_resize_before_the_first_paint_leaves_the_scrollback_empty() {
+    let mut engine = Engine::new(80, 24);
+    engine.set_grow_from_history(false);
+    let (tx, rx) = mpsc::channel();
+    let command = Command::new(std::env::current_exe().unwrap()).env(HELPER, "late-cursor-move");
+    let pty = Pty::spawn(
+        command,
+        Session::new(engine),
+        Options::default(),
+        |_event| {},
+        move |exit| {
+            let _ = tx.send(exit);
+        },
+    )
+    .expect("spawn the helper in a pty");
+    pty.resize(120, 40);
+    let session = pty.session().unwrap();
+    assert!(eventually(Duration::from_secs(5), || {
+        let session = session.lock().unwrap();
+        let grid = session.engine().grid();
+        (grid.cols(), grid.rows()) == (120, 40)
+    }));
+    assert!(
+        eventually(Duration::from_secs(10), || screen(&pty).contains('Z')),
+        "screen: {:?}",
+        screen(&pty)
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(session.lock().unwrap().engine().scrollback_len(), 0);
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
+/// Windows only: resizes that keep coming do not hold the engine past the repaint bound.
+#[cfg(windows)]
+fn repeated_resizes_do_not_extend_the_wait_for_a_repaint() {
+    let options = Options {
+        decoder: Some(Box::new(NoRepaint)),
+        ..Options::default()
+    };
+    let (pty, _rec, rx) = spawn("forty-lines-then-echo", options);
+    wait_for_the_last_row(&pty);
+    let session = pty.session().unwrap();
+    let start = Instant::now();
+    let mut took = None;
+    let mut cols = 81;
+    while start.elapsed() < Duration::from_secs(2) && took.is_none() {
+        pty.resize(cols, 24);
+        cols += 1;
+        std::thread::sleep(Duration::from_millis(100));
+        if session.lock().unwrap().engine().grid().cols() != 80 {
+            took = Some(start.elapsed());
+        }
+    }
+    assert!(took.is_some(), "the engine stayed at 80 columns for 2 s");
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
+/// Windows only: resizes faster than conhost repaints leave the engine at the last size asked for.
+#[cfg(windows)]
+fn resizes_in_a_row_leave_the_engine_at_the_last_size() {
+    let (pty, _rec, rx) = spawn("full-then-size-on-line", Options::default());
+    wait_for_the_last_row(&pty);
+    pty.resize(90, 25);
+    pty.resize(91, 26);
+    pty.resize(92, 27);
+    let session = pty.session().unwrap();
+    assert!(eventually(Duration::from_secs(5), || {
+        let session = session.lock().unwrap();
+        let grid = session.engine().grid();
+        (grid.cols(), grid.rows()) == (92, 27)
+    }));
+    pty.terminate();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("terminated");
+}
+
 /// Windows only: conhost repaints the screen after a resize, so a widening that took lines from the
 /// history would lose them under the repaint.
 #[cfg(windows)]
 fn a_conpty_widening_loses_no_line_with_grow_from_history_off() {
     let last = format!("L40-{}", "x".repeat(96));
-    let text = text_after_a_conpty_resize("forty-long-lines-then-echo", &last, 120, 24);
+    let text = text_after_a_conpty_resize(
+        "forty-long-lines-then-echo",
+        &last,
+        Duration::from_millis(800),
+        (120, 24),
+    );
     for i in 1..=40 {
         let start = format!("L{i}-");
         assert!(
@@ -1190,7 +1436,12 @@ fn a_conpty_widening_loses_no_line_with_grow_from_history_off() {
 /// Windows only: the same repaint, on a row grow.
 #[cfg(windows)]
 fn a_conpty_row_grow_loses_no_line_with_grow_from_history_off() {
-    let text = text_after_a_conpty_resize("forty-lines-then-echo", "L40", 80, 30);
+    let text = text_after_a_conpty_resize(
+        "forty-lines-then-echo",
+        "L40",
+        Duration::from_millis(800),
+        (80, 30),
+    );
     for i in 1..=40 {
         let line = format!("L{i}");
         assert!(
@@ -1562,6 +1813,38 @@ fn main() {
         (
             "a_raw_child_starts_with_no_consumer_write",
             a_raw_child_starts_with_no_consumer_write as fn(),
+        ),
+        (
+            "a_conpty_resize_right_after_output_loses_no_row",
+            a_conpty_resize_right_after_output_loses_no_row as fn(),
+        ),
+        (
+            "a_resize_no_repaint_answers_still_reaches_the_engine",
+            a_resize_no_repaint_answers_still_reaches_the_engine as fn(),
+        ),
+        (
+            "a_resize_just_before_the_exit_still_reaches_the_engine",
+            a_resize_just_before_the_exit_still_reaches_the_engine as fn(),
+        ),
+        (
+            "a_resize_screen_replaces_a_size_waiting_for_a_repaint",
+            a_resize_screen_replaces_a_size_waiting_for_a_repaint as fn(),
+        ),
+        (
+            "resize_child_tells_the_size_waiting_for_a_repaint",
+            resize_child_tells_the_size_waiting_for_a_repaint as fn(),
+        ),
+        (
+            "a_resize_before_the_first_paint_leaves_the_scrollback_empty",
+            a_resize_before_the_first_paint_leaves_the_scrollback_empty as fn(),
+        ),
+        (
+            "repeated_resizes_do_not_extend_the_wait_for_a_repaint",
+            repeated_resizes_do_not_extend_the_wait_for_a_repaint as fn(),
+        ),
+        (
+            "resizes_in_a_row_leave_the_engine_at_the_last_size",
+            resizes_in_a_row_leave_the_engine_at_the_last_size as fn(),
         ),
         (
             "a_conpty_widening_loses_no_line_with_grow_from_history_off",

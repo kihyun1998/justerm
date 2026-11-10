@@ -76,13 +76,45 @@ that took them.
   `a_reply_the_pump_drains_reaches_the_child` run on Unix only, where the tty passes the bytes through.
 
 **Size**
-- **Resize is engine first, then the pty at the adopted size.** The engine widens a too-narrow width to
+- **Resize is engine first, then the pty at the adopted size**, except the Windows case below. The engine widens a too-narrow width to
   its minimum; telling the child the requested width would make the two disagree, so the child is
   told the adopted one. The Session stays locked until the pty has its size, so two racing resizes
   cannot split. In Raw mode there is no engine: the child is told the size as asked. `pty_size`
   saturates both axes at `u16::MAX`. On Windows that is still too wide past 32767: `portable-pty`
   0.9.0 casts each axis `as i16` for the ConPTY (`win/conpty.rs`, read at #1094), the resize fails,
   and the error is dropped, so the child keeps its old size. No UI produces such a width.
+- **On Windows a resize with the cursor on the last row and no rows removed waits for the console's repaint** (#1104, maintainer 2026-11-09;
+  [ADR-0034](../../adr/0034-the-family-owns-the-pty-loop-and-the-session-lives-in-core.md) amendment
+  S4). There `Pty::resize` tells the pseudo-terminal first and stores the adopted size in
+  `DeferredResize`; `feed_session` finds the next `REPAINT_START` (`ESC[H`), even split across reads,
+  feeds what is before it, resizes the engine, then feeds the repaint. Conhost sends the scroll it had
+  not painted **after** the resize and just before that repaint, as a bare `LF`
+  (`ESC[?25l ESC[8;24;120t LF ESC[H`), so an engine already at the new size took it mid-screen, did
+  not scroll, and let the repaint overwrite that row. Measured on conhost 10.0.26100.9949 over 120
+  sessions (six cases of twenty: widen, narrow, rows-grow, each straight after a burst and during
+  continuous output): engine-first lost a row in 56 (15, 14; 14, 13; 0, 0), this order in 0. Through
+  the real `Pty`, eight shapes of forty sessions each lost nothing but one shape below. The engine
+  took the size within 40 ms in all of them.
+  - **Removing rows is engine-first.** Conhost moves to the new last row (`ESC[20;1H`) before that
+    `LF`, which is mid-screen on an engine still at 24 rows; waiting lost a row in 48 of 64 sessions
+    (80x20 and 60x20) and engine-first in 0.
+  - **A cursor above the last row is engine-first**: there is no scroll to wait for, and a resize
+    before the first paint would let conhost draw the new height into a shorter engine, sending blank
+    rows to history (16 rows in 11 of 12 sessions at 80x24 → 120x40; 0 of 12 engine-first).
+  - **`ESC[8;rows;cols t` is not the point to act on**: it precedes that `LF`, and conhost suppresses
+    it for a resize the terminal asked for (`PtySignalInputThread`, `VtEngine::UpdateViewport`,
+    microsoft/terminal `0c98216`).
+  - **`REPAINT_WAIT` is the bound for a repaint that does not come** (500 ms, far above the 40 ms
+    measured), counted from the first size not yet applied: two resizes with no gap can produce no
+    bytes for the first. `Pump::apply_overdue_resize` applies it, and the exit path applies what is
+    still waiting. Another `Pty::resize` replaces the size; `Pty::resize_screen` drops it;
+    `Pty::resize_child` tells it.
+  - **The rule rests on conhost's repaint opening with `ESC[H`**, measured on the system conhost.
+    `portable-pty` prefers a `conpty.dll` deployed beside the application, which was not measured and
+    is not shipped by penterm (2026-11-09); a host with no such repaint would wait the 500 ms bound on
+    every resize.
+  - An `ESC[H` of an ordinary frame while a size waits applies the size early, which is the old
+    engine-first order and no worse than before.
 - **A drag can reflow the screen without telling the child** (#1094). `resize_screen` resizes the
   Session only; `resize_child` takes no size and, under the Session lock, tells the pseudo-terminal
   the size the engine holds, so the child still hears only an adopted size. Between the two the
@@ -238,6 +270,8 @@ that took them.
   `OnTick`, `RawSink`, `Flow`, `Exit::read_error`, `Exit::success`, `Pty::spawn`, `Pty::spawn_raw`,
   `Pty::session`, `Pty::resume`, `Pty::write`, `Pty::resize`, `Pty::resize_screen`,
   `Pty::resize_child`, `Pty::tell_child`, `Pty::screen_moved`, `Pty::terminate`, `Target`, `Raw`,
+  `Deferred`, `DeferredResize`, `DeferredResize::find_repaint`, `apply_deferred`, `REPAINT_START`,
+  `REPAINT_WAIT`, `Pump::apply_overdue_resize`,
   `RawState`, `ChildState`, `Input`, `Master`, `start`, `start_with`, `pty_size`, `write_back`,
   `spawn_writer`, `Reading`, `spawn_reader`, `decode_and_feed`, `feed`, `feed_raw`, `feed_session`,
   `Pump::run`, `Pump::pump`, `Pump::wait_until_the_reader_is_idle`, `StartupQuery`, `Lead`, `lead`,
@@ -287,6 +321,14 @@ crate is where it is discharged.
 
 ## Known holes / open
 
+- **A resize that widens and removes rows at once is still engine-first** (#1104): during output it
+  lost a row in 2 of 20 sessions, and a 20-cell piece came out twice in 15 of 20 (17 of 20 straight
+  after a burst, with none lost). Taking the rows first and waiting for the width lost none but
+  repeated two whole lines in 40 of 40 sessions, and made a narrowing that removes rows worse, so it was
+  not kept.
+- **A drag on Windows is still engine-first** (#1104): `Pty::resize_screen` resizes the engine with
+  the console unaware, so output around the later `Pty::resize_child` can lose a row as `Pty::resize`
+  did. Not measured for this path. penterm does not call `resize_screen` (2026-11-09).
 - **`Pty` does not turn `grow_from_history` off behind a ConPTY** (#1100, the maintainer left the
   wiring out on 2026-11-09). The consumer sets it on the `Engine` it hands over.
 - **A legacy decoder is proven on Unix only.** On Windows a console child cannot put legacy bytes on
