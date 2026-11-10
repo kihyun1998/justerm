@@ -1195,7 +1195,7 @@ fn text_after_a_conpty_resize(
 #[cfg(windows)]
 fn a_conpty_resize_right_after_output_loses_no_row() {
     let last = format!("L40-{}", "x".repeat(96));
-    for size in [(120, 24), (60, 24), (80, 20), (60, 20)] {
+    for size in [(120, 24), (60, 24), (80, 20), (60, 20), (100, 20)] {
         for _ in 0..4 {
             let text = text_after_a_conpty_resize(
                 "forty-long-lines-then-echo",
@@ -1326,7 +1326,20 @@ fn a_resize_just_before_the_exit_still_reaches_the_engine() {
 /// Windows only: a resize before anything was painted puts no blank rows in the scrollback.
 #[cfg(windows)]
 fn a_resize_before_the_first_paint_leaves_the_scrollback_empty() {
-    let (pty, _rec, rx) = spawn("late-cursor-move", Options::default());
+    let mut engine = Engine::new(80, 24);
+    engine.set_grow_from_history(false);
+    let (tx, rx) = mpsc::channel();
+    let command = Command::new(std::env::current_exe().unwrap()).env(HELPER, "late-cursor-move");
+    let pty = Pty::spawn(
+        command,
+        Session::new(engine),
+        Options::default(),
+        |_event| {},
+        move |exit| {
+            let _ = tx.send(exit);
+        },
+    )
+    .expect("spawn the helper in a pty");
     pty.resize(120, 40);
     let session = pty.session().unwrap();
     assert!(eventually(Duration::from_secs(5), || {
