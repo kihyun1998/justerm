@@ -610,8 +610,8 @@ impl Pty {
     /// [`Pty::resize_child`]. In [Raw mode](Pty::spawn_raw) there is no engine: the child is told
     /// `cols` × `rows` as asked, and that is returned.
     ///
-    /// **On Windows the engine can take the size later than this call returns.** With the cursor on
-    /// the last row, unless the size only removes rows, the pseudo-terminal is resized first and
+    /// **On Windows the engine can take the size later than this call returns.** Unless the size
+    /// removes rows or the cursor is above the last row, the pseudo-terminal is resized first and
     /// the engine follows when the console's repaint begins, or within half a second if none comes,
     /// so a read of the grid straight after this call can still show the old size
     /// ([#1104](https://github.com/kihyun1998/justerm/issues/1104)).
@@ -631,14 +631,9 @@ impl Pty {
             rows.clamp(1, MAX_ROWS),
         );
         let grid = session.engine().grid();
-        let (held_cols, held_rows) = (grid.cols(), grid.rows());
         // Which resizes wait for the repaint: `docs/map/territory/pty.md`.
-        let waits = (adopted.1 >= held_rows || adopted.0 != held_cols)
-            && session.engine().cursor().row + 1 == held_rows;
+        let waits = adopted.1 >= grid.rows() && session.engine().cursor().row + 1 == grid.rows();
         if cfg!(windows) && waits && lock(&self.master).is_some() {
-            if adopted.1 < held_rows {
-                session.resize(held_cols, adopted.1);
-            }
             lock(deferred).defer(adopted);
             self.tell_child(adopted);
             return adopted;

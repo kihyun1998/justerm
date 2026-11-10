@@ -277,11 +277,11 @@ and deferring it to another slice. Decided on:
 both times, marks nothing, so it costs no signal: each extra `SIGWINCH` is one more redraw bash 5.0
 and 5.1 can leave a row behind for.
 
-## Amended 2026-11-09, #1104: on Windows the engine resize waits for the console's repaint
+## Amended 2026-11-09, #1104: on Windows a resize can wait for the console's repaint
 
-**S4 — On Windows `Pty::resize` tells the pseudo-terminal first, and the engine takes the size when
-the console's repaint begins.** The first sentence of the resize contract, *engine first, then the
-PTY at the adopted size*, now holds on Unix only. **A judgement made by the maintainer**, shown the
+**S4 — On Windows, with the cursor on the last row and no rows removed, `Pty::resize` tells the
+pseudo-terminal first, and the engine takes the size when the console's repaint begins.** Elsewhere
+the resize contract, *engine first, then the PTY at the adopted size*, stands. **A judgement made by the maintainer**, shown the
 measurement below and two alternatives with their consequences: recording the loss and leaving the
 contract alone (a resize during output keeps losing a row), and the same order on every OS (Unix has no
 repaint to wait for, so it would hang on the bound and gain nothing). Decided on: conhost emits its
@@ -290,6 +290,8 @@ a row in 56 of 120 sessions engine-first and in 0 of 120 with the engine after t
 still only hears an adopted size: the size is clamped as the engine would, without asking it.
 
 The shapes are derivations: the point is the repaint's `ESC[H` because `ESC[8;rows;cols t` comes before
-the scroll and is usually absent (1 of 9 resizes), and a 500 ms bound covers a repaint that never comes.
+the scroll and was absent from the later resizes of the one session measured for it, a 500 ms bound
+covers a repaint that never comes, and the two engine-first conditions were each measured (a resize
+that removes rows, and a cursor above the last row, which includes a resize before the first paint).
 `Pty::resize_screen` is unchanged, since the console is not being resized: S1's split is not covered by
 this. What it does not decide: whether a drag on Windows needs the same treatment.

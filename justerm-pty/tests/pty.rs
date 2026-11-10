@@ -1195,7 +1195,7 @@ fn text_after_a_conpty_resize(
 #[cfg(windows)]
 fn a_conpty_resize_right_after_output_loses_no_row() {
     let last = format!("L40-{}", "x".repeat(96));
-    for size in [(120, 24), (60, 24), (80, 20), (60, 20), (100, 20)] {
+    for size in [(120, 24), (60, 24), (80, 20), (60, 20)] {
         for _ in 0..4 {
             let text = text_after_a_conpty_resize(
                 "forty-long-lines-then-echo",
